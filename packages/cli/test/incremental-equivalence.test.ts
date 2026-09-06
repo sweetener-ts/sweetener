@@ -83,5 +83,9 @@ describe("incremental equivalence protocol", () => {
     });
     expect(steps.map(({ name }) => name)).toEqual(cases.map(([name]) => name));
     expect(steps.every(({ runtime }) => Array.isArray(runtime))).toBe(true);
-  }, 60_000);
+    // The slowest test in the suite: it builds a project clean and again
+    // incrementally for every edit class. Sixty seconds was enough when it ran
+    // alone and not when the rest of the suite was competing for cores, so it
+    // failed on load rather than on anything it measured.
+  }, 180_000);
 });

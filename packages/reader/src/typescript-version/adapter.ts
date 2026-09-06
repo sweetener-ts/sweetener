@@ -282,6 +282,13 @@ export function scanWithSupportedTypeScript(
       variant === "jsx" &&
       (jsxMode === "standard" || jsxMode === "expression") &&
       kind === ts.SyntaxKind.LessThanToken &&
+      // JSX can only begin where an expression can begin, which is the same
+      // position a regular expression can. After anything that ends one — an
+      // identifier, `)`, a literal — a `<` opens type arguments or is a
+      // comparison. Deciding from the lookahead alone read the `<T>` of
+      // `declare function useState<T>(v: T)` as an element and reported a
+      // missing closing tag for a line that is ordinary TSX.
+      regularExpressionAllowed &&
       looksLikeJsxStart(source, scanner.getTokenStart())
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });

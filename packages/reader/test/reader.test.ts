@@ -101,6 +101,53 @@ describe("delimiter reader", () => {
     expect(printLossless(result.root)).toBe(source);
   });
 
+  /**
+   * A `<` opens JSX only where an expression can begin.
+   *
+   * The decision used to be made from the lookahead alone: anything shaped
+   * like `<Name ... >` opened an element, so the `<T>` of a generic signature
+   * or a generic call was read as one and the file was reported as having a
+   * missing closing tag. All of these are ordinary TSX.
+   */
+  const typeArgumentPositions: readonly (readonly [string, string])[] = [
+    ["a generic function signature", "declare function f<T>(v: T): T;"],
+    ["a generic call", "const value = identity<number>(1);"],
+    ["a generic constructor", "const ids = new Map<string, number>();"],
+    ["a generic type annotation", "let box: Container<string>;"],
+    ["a comparison", "const smaller = a <b && c> d;"],
+  ];
+
+  for (const [description, source] of typeArgumentPositions)
+    it(`reads ${description} as type arguments, not JSX`, () => {
+      const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      expect(result.diagnostics).toEqual([]);
+      expect(
+        JSON.stringify(result.root).includes("jsx-element"),
+        "a type-argument list was read as a JSX element",
+      ).toBe(false);
+      expect(printLossless(result.root)).toBe(source);
+    });
+
+  const jsxPositions: readonly (readonly [string, string])[] = [
+    ["after a return", "function f() { return <View />; }"],
+    ["after an equals sign", "const view = <View />;"],
+    ["inside an array", "const views = [<View />, <View />];"],
+    ["inside a call", "render(<View />);"],
+    ["after an arrow", "const f = () => <View />;"],
+    ["after a logical operator", "const v = ready && <View />;"],
+  ];
+
+  for (const [description, source] of jsxPositions)
+    it(`still reads an element ${description}`, () => {
+      const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      expect(result.diagnostics).toEqual([]);
+      expect(
+        JSON.stringify(result.root).includes("jsx-element"),
+        "a JSX element was not recognized",
+      ).toBe(true);
+      expect(printLossless(result.root)).toBe(source);
+    });
+
   it("retains unexpected closers as source tokens", () => {
     const source = "value ) next";
     const result = readSyntax(source, { sourceId, scopes });
