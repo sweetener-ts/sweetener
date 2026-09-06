@@ -50,7 +50,9 @@
   ],
   "dependencies": {
     "@sweetener/compiler": "workspace:*",
-    "unplugin": "3.3.0"
+    "unplugin": "3.3.0",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "@sweetener/typescript-host": "workspace:*"
   },
   "devDependencies": {
     "@farmfe/core": "1.7.11",

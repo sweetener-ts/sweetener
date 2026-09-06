@@ -14,9 +14,13 @@ function fixture(host: string) {
     join(root, "macros.sts"),
     `export syntax twice:expr { rule { twice($x:tt) } => { [$x, $x] } }\n`,
   );
+  // Annotated on purpose. The loader emits what expansion produced, which is
+  // TypeScript, and webpack's parser cannot read it: with an untyped fixture
+  // the documented single-loader rule passed here while failing on the first
+  // annotated declaration any real project would write.
   writeFileSync(
     entry,
-    `import { twice } from "./macros.sts" for syntax;\nexport const answer = twice(21);\n`,
+    `import { twice } from "./macros.sts" for syntax;\nexport const answer: readonly number[] = twice(21);\n`,
   );
   writeFileSync(
     config,
@@ -61,7 +65,9 @@ describe("native webpack loader", () => {
       compiler.close((error) => (error == null ? done() : reject(error))),
     );
     expect(stats.hasErrors(), stats.toString({ errors: true })).toBe(false);
-    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21,21");
+    expect(readFileSync(join(output, "bundle.js"), "utf8")).toMatch(
+      /21,\s*21/u,
+    );
     expect(readFileSync(join(output, "bundle.js.map"), "utf8")).toContain(
       "main.sts",
     );
@@ -96,7 +102,9 @@ describe("native webpack loader", () => {
       compiler.close((error) => (error == null ? done() : reject(error))),
     );
     expect(stats.hasErrors(), stats.toString({ errors: true })).toBe(false);
-    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21,21");
+    expect(readFileSync(join(output, "bundle.js"), "utf8")).toMatch(
+      /21,\s*21/u,
+    );
   });
 });
 

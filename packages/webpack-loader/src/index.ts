@@ -1,4 +1,4 @@
-import { createSweetenerSession } from "@sweetener/compiler";
+import { createSweetenerSession, stripTypes } from "@sweetener/compiler";
 import type { LoaderContext } from "webpack";
 
 /**
@@ -38,6 +38,18 @@ function describeDiagnostics(
 
 export interface SweetenerLoaderOptions {
   readonly configFile?: string | undefined;
+  /**
+   * What to hand the next step in the chain. Defaults to `"javascript"`.
+   *
+   * Expansion produces TypeScript, and webpack's own parser cannot read it:
+   * the documented single-loader rule failed on the first annotated
+   * declaration with `Module parse failed: Unexpected token`, which names
+   * neither Sweetener nor types. Stripping here is what makes that rule work
+   * on its own. Choose `"typescript"` when a loader after this one should do
+   * the stripping — to control its target, or because the host, like
+   * Turbopack's `as: "*.ts"`, is expecting TypeScript.
+   */
+  readonly emit?: "javascript" | "typescript" | undefined;
 }
 
 const sessions = new WeakMap<
@@ -78,14 +90,22 @@ export default function sweetenerLoader(
         callback(new Error(describeDiagnostics(result.diagnostics)));
         return;
       }
-      callback(null, result.code, {
-        ...result.map,
-        file: result.map.file ?? result.virtualFilename,
-        sources: [...result.map.sources],
-        sourcesContent: (result.map.sourcesContent ?? []).map(
+      const emitted =
+        options.emit === "typescript"
+          ? { code: result.code, map: undefined }
+          : stripTypes(result, {
+              filename: this.resourcePath,
+              configFile: options.configFile,
+            });
+      const map = emitted.map ?? result.map;
+      callback(null, emitted.code, {
+        ...map,
+        file: map.file ?? result.virtualFilename,
+        sources: [...map.sources],
+        sourcesContent: (map.sourcesContent ?? []).map(
           (content) => content ?? "",
         ),
-        names: [...result.map.names],
+        names: [...map.names],
       });
     })
     .catch((error: unknown) =>

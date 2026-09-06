@@ -14,6 +14,15 @@ export function integrationFixture(
   options: {
     readonly entryExtension?: ".sts" | ".ts" | undefined;
     readonly directive?: boolean | undefined;
+    /**
+     * Whether the entry carries a type annotation. On by default.
+     *
+     * It used to be off, and every host but Vite and Bun was verified against
+     * `export const answer = duplicate(21);` — source with nothing in it a
+     * JavaScript parser would refuse. Expansion emits TypeScript, so those
+     * hosts were failing on the first annotated declaration a real project
+     * would write, and the suite could not see it.
+     */
     readonly typed?: boolean | undefined;
   } = {},
 ): IntegrationFixture {
@@ -28,7 +37,7 @@ export function integrationFixture(
   );
   writeFileSync(
     entry,
-    `${options.directive === true ? '"use sweetener";\n' : ""}import { duplicate } from "./macros.sts" for syntax;\n${options.typed === true ? "export interface Answer { readonly values: number[] }\nexport const answer: Answer = { values: duplicate(21) };\n" : "export const answer = duplicate(21);\n"}`,
+    `${options.directive === true ? '"use sweetener";\n' : ""}import { duplicate } from "./macros.sts" for syntax;\n${options.typed === false ? "export const answer = duplicate(21);\n" : "export interface Answer { readonly values: number[] }\nexport const answer: Answer = { values: duplicate(21) };\n"}`,
   );
   writeFileSync(
     config,
