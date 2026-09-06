@@ -17,11 +17,21 @@ export default { plugins: [sweetener] };
 
 The formatter reads delimiter structure with `@sweetener/reader`, so it accepts
 user-defined syntax without teaching Prettier every macro invocation. For
-application files, it masks compile-time imports and imported item-macro
-prefixes while Prettier formats the surrounding TypeScript and JSX, then
-restores the Sweetener syntax. Files that cannot be represented this way use a
-conservative delimiter-based fallback; that fallback preserves template and
-JSX whitespace because it can have runtime meaning.
+application files, it masks compile-time imports — including bindings named by
+an operator, `(|>)`, or by a core form being shadowed, `typeof` — and imported
+item-macro prefixes, while Prettier formats the surrounding TypeScript and JSX,
+then restores the Sweetener syntax. Files that cannot be represented this way
+use a conservative delimiter-based fallback; that fallback preserves template
+and JSX whitespace because it can have runtime meaning.
+
+**It normalizes layout and leaves the tokens alone.** A semicolon and a quote
+character are both real tokens to a macro matcher, and a macro can match on one
+not being there: the implicit-return example in the language tour returns a
+function's final expression, and what distinguishes that from an expression
+statement is the absence of a `;`. So `semi` and `singleQuote` are not applied
+to `.sts` and `.stsx` — a file keeps whichever style it is written in, and
+everything around it is still formatted. Where no printing preserves every
+token, the file is left as it was.
 
 ## Editors
 

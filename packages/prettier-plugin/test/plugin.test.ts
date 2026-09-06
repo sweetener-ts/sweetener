@@ -104,28 +104,26 @@ wrapped const example = { single: 'quoted', trailing: [1, 2] };
       filepath: "main.sts",
     });
 
-    // The item-macro prefix survives, no trailing comma is introduced, and the
-    // string's contents are exactly what they were. Which quote encloses it is
-    // the project's setting, not something a macro matcher should hinge on:
-    // treating a normalized quote as a changed token left every file holding a
-    // single-quoted string unformatted, and said nothing about it.
+    // The item-macro prefix survives, no trailing comma is introduced, and
+    // the string is exactly as written, quotes included.
     expect(formatted).toContain("wrapped const example");
     expect(formatted).toContain("[1, 2]");
     expect(formatted).not.toContain(",\n}");
-    expect(formatted).toContain("quoted");
+    expect(formatted).toContain("{ single: 'quoted'");
   });
 
-  test("keeps the quotes a project asks for", async () => {
+  test("keeps a string's quotes whatever the project asks for", async () => {
     const source = `import { wrapped } from "./macros.sts" for syntax;
 
 wrapped const example = { single: 'quoted' };
 `;
-    expect(
-      await formatSweetenerWithPrettier(source, {
-        filepath: "main.sts",
-        singleQuote: true,
-      }),
-    ).toContain("{ single: 'quoted' }");
+    for (const singleQuote of [true, false])
+      expect(
+        await formatSweetenerWithPrettier(source, {
+          filepath: "main.sts",
+          singleQuote,
+        }),
+      ).toContain("{ single: 'quoted' }");
   });
 
   test("rejects structurally malformed input", () => {
@@ -136,31 +134,35 @@ wrapped const example = { single: 'quoted' };
 });
 
 /**
- * The guard that keeps Prettier from changing tokens a macro can match used to
- * count two things it should not have. Prettier inserts a semicolon where the
- * source relied on automatic insertion, and normalizes quotes to whatever the
- * project configured; either one made the guard reject the whole formatting
- * and hand the file back exactly as it came in — silently, so `--check`
- * reported it as already correct.
+ * Layout is normalized; the tokens are left as written.
+ *
+ * Semicolons and quotes are real tokens to a macro matcher, so Prettier's
+ * normalizing of them cannot be applied — the implicit-return macro below
+ * shows what it would cost. Counting them as changed tokens, though, meant a
+ * file written without semicolons, or holding a single-quoted string, failed
+ * the check entirely and came back unformatted with nothing said about it. The
+ * file is printed again with the other choice instead, so its own style is
+ * what survives and everything around it still gets formatted.
  */
-describe("formatting source that omits semicolons or uses single quotes", () => {
+describe("formatting a file written in its own style", () => {
   const cases: readonly (readonly [string, string, string])[] = [
-    ["a statement with no semicolon", "const   a=1\n", "const a = 1;\n"],
+    ["a statement with no semicolon", "const   a=1\n", "const a = 1\n"],
     [
       "several statements with no semicolons",
       "const   a=1\nconst   b=2\n",
-      "const a = 1;\nconst b = 2;\n",
+      "const a = 1\nconst b = 2\n",
     ],
     [
       "a function body with no semicolons",
       "function f(  a:number,b:number ){return a+b}\n",
-      "function f(a: number, b: number) {\n  return a + b;\n}\n",
+      "function f(a: number, b: number) {\n  return a + b\n}\n",
     ],
-    ["a single-quoted string", "const   a='x'\n", 'const a = "x";\n'],
+    ["a single-quoted string", "const   a='x'\n", "const a = 'x'\n"],
+    ["a double-quoted string", 'const   a="x"\n', 'const a = "x"\n'],
     [
       "the import prologue of the default Vite template",
       "import { useState } from 'react'\nimport './App.css'\n",
-      'import { useState } from "react";\nimport "./App.css";\n',
+      "import { useState } from 'react'\nimport './App.css'\n",
     ],
   ];
 
@@ -171,7 +173,7 @@ describe("formatting source that omits semicolons or uses single quotes", () => 
 
   test("keeps quotes that would otherwise need escaping", async () => {
     expect(await formatSweetenerWithPrettier("const   a='say \"hi\"'\n")).toBe(
-      "const a = 'say \"hi\"';\n",
+      "const a = 'say \"hi\"'\n",
     );
   });
 
@@ -185,9 +187,9 @@ describe("formatting source that omits semicolons or uses single quotes", () => 
     expect(await formatSweetenerWithPrettier(source)).toBe(
       [
         'import { twice } from "./macros.sts" for syntax;',
-        "export const pair: number[] = twice(21);",
+        "export const pair: number[] = twice(21)",
         "function f(a: number) {",
-        "  return twice(a);",
+        "  return twice(a)",
         "}",
         "",
       ].join("\n"),
@@ -207,12 +209,19 @@ describe("project Prettier options", () => {
     ).toBe("const a = 1\n");
   });
 
-  test("honours singleQuote", async () => {
+  test("leaves a string's quotes as the source wrote them", async () => {
+    // `singleQuote` cannot be applied: the quote is part of the token's
+    // spelling, and a rule may select on how a token is spelled.
     expect(
       await formatSweetenerWithPrettier('const   a="x"\n', {
         singleQuote: true,
       }),
-    ).toBe("const a = 'x';\n");
+    ).toBe('const a = "x"\n');
+    expect(
+      await formatSweetenerWithPrettier("const   a='x'\n", {
+        singleQuote: false,
+      }),
+    ).toBe("const a = 'x'\n");
   });
 
   test("honours printWidth", async () => {
@@ -242,10 +251,10 @@ describe("a compile-time import with no semicolon", () => {
     ].join("\n");
     expect(await formatSweetenerWithPrettier(source)).toBe(
       [
-        `import { twice } from "./macros.sts" for syntax`,
-        "export const pair: number[] = twice(21);",
+        `import { twice } from './macros.sts' for syntax`,
+        "export const pair: number[] = twice(21)",
         "function f(a: number) {",
-        "  return twice(a);",
+        "  return twice(a)",
         "}",
         "",
       ].join("\n"),
@@ -260,7 +269,7 @@ describe("a compile-time import with no semicolon", () => {
     ].join("\n");
     const formatted = await formatSweetenerWithPrettier(source);
     expect(formatted).toContain("for syntax shadows core");
-    expect(formatted).toContain("const kind = typeof 1;");
+    expect(formatted).toContain("const kind = typeof 1");
   });
 });
 
@@ -293,7 +302,7 @@ describe("importing a macro that is not named by an identifier", () => {
       const formatted = await formatSweetenerWithPrettier(source);
       // The file formats, and the import comes back exactly as written.
       expect(formatted).toContain(source.split("\n")[0]);
-      expect(formatted).toMatch(/const (?:x = 1|kind = typeof 1);/u);
+      expect(formatted).toMatch(/const (?:x = 1|kind = typeof 1);?/u);
       expect(await formatSweetenerWithPrettier(formatted)).toBe(formatted);
     });
 
@@ -305,6 +314,41 @@ describe("importing a macro that is not named by an identifier", () => {
         `import { twice, (|>) } from "./ops.sts" for syntax;\nconst   x=1;\n`,
       ),
     ).toContain(`import { twice, (|>) } from "./ops.sts" for syntax;`);
+  });
+});
+
+/**
+ * A macro can match on a semicolon not being there.
+ *
+ * The implicit-return example returns a function's final expression, and what
+ * tells that from an expression statement is the absence of a `;`. Prettier
+ * adds one under its default settings, which changes what the program means —
+ * so a formatting that does it has to be refused, however the project is
+ * configured. Treating statement semicolons as layout, which is the obvious
+ * way to make semicolon-free files format, breaks exactly this.
+ */
+describe("formatting that would change what a macro matches", () => {
+  const implicitReturn = [
+    `import { function } from "./macros.sts" for syntax shadows core;`,
+    "",
+    "export const calculate = function(value: number) {",
+    "  const doubled = value * 2;",
+    "  doubled + 1",
+    "};",
+    "",
+  ].join("\n");
+
+  test("is refused rather than applied", async () => {
+    const formatted = await formatSweetenerWithPrettier(implicitReturn);
+    expect(formatted).toContain("doubled + 1\n");
+    expect(formatted).not.toContain("doubled + 1;");
+  });
+
+  test("is still refused when the project asks for semicolons", async () => {
+    const formatted = await formatSweetenerWithPrettier(implicitReturn, {
+      semi: true,
+    });
+    expect(formatted).not.toContain("doubled + 1;");
   });
 });
 
@@ -340,11 +384,10 @@ describe("a compile-time import under the project's own Prettier settings", () =
       expect(formatted).toContain("(|>)");
       // The statement below the import keeps its own line.
       expect(formatted).toMatch(/for syntax\n/u);
-      expect(formatted).toMatch(
-        options.semi === false
-          ? /const x = twice\(21\)\n/u
-          : /const x = twice\(21\);/u,
-      );
+      // The source has no semicolon, so neither does the result, whatever
+      // the project asked for: the style the file is written in is what a
+      // macro may be matching on.
+      expect(formatted).toMatch(/const x = twice\(21\)\n/u);
       expect(await formatSweetenerWithPrettier(formatted, options)).toBe(
         formatted,
       );

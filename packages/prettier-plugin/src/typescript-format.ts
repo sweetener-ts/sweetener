@@ -73,73 +73,29 @@ function removeInsertedJsxLayout(
 /**
  * Tokens that must survive formatting, in order.
  *
- * A semicolon standing between statements is left out. Prettier inserts them
- * where the source relied on automatic insertion, and treating that as a token
- * change meant any file written without semicolons failed this guard and was
- * handed back exactly as it came in — the whole file unformatted, reported as
- * already correct. Only semicolons directly inside a root or a brace group are
- * ignored, so one inside an invocation's arguments, a `for` header, or any
- * other delimiter still counts: those are tokens a macro can match on.
+ * Every token counts, semicolons included. A semicolon is a real token to a
+ * macro matcher, and a macro can match on one not being there: the
+ * implicit-return example returns a function's final expression, and telling
+ * it from an expression statement is exactly the absence of a `;`. Prettier
+ * adding one there changes what the program means, so formatting that changes
+ * any token is not applied.
  */
-function tokenFingerprint(
-  syntax: Syntax,
-  betweenStatements = false,
-): readonly TokenFingerprint[] {
+function tokenFingerprint(syntax: Syntax): readonly TokenFingerprint[] {
   switch (syntax.tag) {
     case "token":
-      if (betweenStatements && syntax.raw === ";") return [];
       return [{ kind: syntax.kind, raw: syntax.raw }];
-    case "group": {
-      const inStatements = syntax.delimiter === "brace";
+    case "group":
       return [
         { kind: syntax.open.kind, raw: syntax.open.raw },
-        ...syntax.children.flatMap((child) =>
-          tokenFingerprint(child, inStatements),
-        ),
+        ...syntax.children.flatMap(tokenFingerprint),
         ...(syntax.close.tag === "token"
           ? [{ kind: syntax.close.kind, raw: syntax.close.raw }]
           : []),
       ];
-    }
     case "protected":
-      return syntax.children.flatMap((child) =>
-        tokenFingerprint(child, betweenStatements),
-      );
     case "root":
-      return syntax.children.flatMap((child) => tokenFingerprint(child, true));
+      return syntax.children.flatMap(tokenFingerprint);
   }
-}
-
-/**
- * Whether two string literals differ only in which quote character encloses
- * them. Prettier normalizes quotes to whatever the project configured, and
- * counting that as a changed token left every file containing a single-quoted
- * string — the default in a great many projects — completely unformatted.
- * The text between the quotes still has to match exactly.
- */
-function sameStringExceptQuotes(left: string, right: string): boolean {
-  const quoted = /^(['"])(.*)\1$/su;
-  const before = quoted.exec(left);
-  const after = quoted.exec(right);
-  if (before === null || after === null) return false;
-  const unescape = (text: string, quote: string) =>
-    text.replaceAll(`\\${quote}`, quote);
-  return (
-    unescape(before[2]!, before[1]!) === unescape(after[2]!, after[1]!) &&
-    !before[2]!.includes("\\") === !after[2]!.includes("\\")
-  );
-}
-
-function sameToken(
-  left: TokenFingerprint,
-  right: TokenFingerprint | undefined,
-): boolean {
-  if (right === undefined || left.kind !== right.kind) return false;
-  if (left.raw === right.raw) return true;
-  return (
-    left.kind === "string-literal" &&
-    sameStringExceptQuotes(left.raw, right.raw)
-  );
 }
 
 function preservesTokens(before: RootSyntax, after: RootSyntax): boolean {
@@ -147,7 +103,10 @@ function preservesTokens(before: RootSyntax, after: RootSyntax): boolean {
   const right = tokenFingerprint(after);
   return (
     left.length === right.length &&
-    left.every((token, index) => sameToken(token, right[index]))
+    left.every(
+      (token, index) =>
+        token.kind === right[index]?.kind && token.raw === right[index]?.raw,
+    )
   );
 }
 
@@ -363,6 +322,31 @@ function restoreSweetenerSyntax(
   return restored;
 }
 
+/**
+ * The printing choices to try, in order.
+ *
+ * Prettier normalizes semicolons and quotes, and both are real tokens to a
+ * macro matcher, so whichever the project asked for may be the one that
+ * changes the program. Rather than tolerate the difference — the
+ * implicit-return macro shows why that is not safe — the file is printed
+ * again with the other choice and the result checked. A file already written
+ * in the project's style is formatted on the first attempt; one written the
+ * other way is formatted on a later one; a file mixing both, where no single
+ * choice preserves every token, keeps its own layout.
+ */
+function printingAttempts(
+  options: SweetenerFormatOptions,
+): readonly SweetenerFormatOptions[] {
+  const semi = options.semi ?? true;
+  const singleQuote = options.singleQuote ?? false;
+  return [
+    options,
+    { ...options, semi: !semi },
+    { ...options, singleQuote: !singleQuote },
+    { ...options, semi: !semi, singleQuote: !singleQuote },
+  ];
+}
+
 export async function formatSweetenerWithPrettier(
   source: string,
   options: SweetenerFormatOptions = {},
@@ -376,41 +360,51 @@ export async function formatSweetenerWithPrettier(
     import("prettier/plugins/estree"),
   ]);
 
-  try {
-    const formatted = await format(masked.source, {
-      parser: "typescript",
-      plugins: [typescriptPlugin, estreePlugin],
-      // A trailing comma is a real token to a macro matcher. Prettier's
-      // default (`all`) would therefore change which macro rules accept an
-      // invocation even though it appears to be a layout-only operation.
-      trailingComma: "none",
-      // The project's own Prettier settings. Only `trailingComma` is pinned,
-      // for the reason above; forwarding nothing else meant a `.sts` was
-      // formatted to Prettier's defaults no matter what the repository had
-      // configured, so `semi: false` or `singleQuote: true` applied to every
-      // file except these.
-      ...pick(options, [
-        "filepath",
-        "printWidth",
-        "tabWidth",
-        "useTabs",
-        "semi",
-        "singleQuote",
-        "jsxSingleQuote",
-        "quoteProps",
-        "bracketSpacing",
-        "bracketSameLine",
-        "arrowParens",
-        "endOfLine",
-      ]),
-    });
-    const restored = restoreSweetenerSyntax(formatted, masked.masks);
-    if (restored === undefined) return structurallyFormatted;
+  for (const attempt of printingAttempts(options)) {
+    const printed = await printOnce(attempt);
+    if (printed !== undefined) return printed;
+  }
+  return structurallyFormatted;
 
-    // Sweetener macros match token trees, so formatting is allowed to change
-    // trivia only. Guard against every other token-generating Prettier option
-    // too (quote normalization, inserted parentheses, semicolons, and future
-    // printer changes), rather than relying on a growing list of exceptions.
+  /** One printing, or nothing when it did not survive the token check. */
+  async function printOnce(
+    attempt: SweetenerFormatOptions,
+  ): Promise<string | undefined> {
+    let formatted: string;
+    try {
+      formatted = await format(masked.source, {
+        parser: "typescript",
+        plugins: [typescriptPlugin, estreePlugin],
+        // A trailing comma is a real token to a macro matcher. Prettier's
+        // default (`all`) would therefore change which macro rules accept an
+        // invocation even though it appears to be a layout-only operation.
+        trailingComma: "none",
+        // The project's own settings otherwise, so a `.sts` is formatted the
+        // way every other file in the repository is.
+        ...pick(attempt, [
+          "filepath",
+          "printWidth",
+          "tabWidth",
+          "useTabs",
+          "semi",
+          "singleQuote",
+          "jsxSingleQuote",
+          "quoteProps",
+          "bracketSpacing",
+          "bracketSameLine",
+          "arrowParens",
+          "endOfLine",
+        ]),
+      });
+    } catch {
+      return undefined;
+    }
+    const restored = restoreSweetenerSyntax(formatted, masked.masks);
+    if (restored === undefined) return undefined;
+
+    // Sweetener macros match token trees, so formatting may change trivia and
+    // nothing else. This is what refuses a printing that would have changed
+    // the program, whichever option produced it.
     const formattedRoot = readSweetenerSyntax(restored, options);
     const withoutInsertedJsxLayout = removeInsertedJsxLayout(
       restored,
@@ -420,8 +414,6 @@ export async function formatSweetenerWithPrettier(
     const safeRoot = readSweetenerSyntax(withoutInsertedJsxLayout, options);
     return preservesTokens(root, safeRoot)
       ? withoutInsertedJsxLayout
-      : structurallyFormatted;
-  } catch {
-    return structurallyFormatted;
+      : undefined;
   }
 }
