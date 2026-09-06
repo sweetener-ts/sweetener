@@ -1,0 +1,76 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sweetener TypeScript",
+  "scopeName": "source.sweetener",
+  "patterns": [
+    { "include": "#compile-time-import" },
+    { "include": "#macro-definition-head" },
+    { "include": "#rule-arrow" },
+    { "include": "#definition-keyword" },
+    { "include": "#capture" },
+    { "include": "#operation" },
+    { "include": "source.tsx" }
+  ],
+  "repository": {
+    "compile-time-import": {
+      "comment": "The `for syntax` tail of an import, and the opt-in to shadowing a core form. The rest of the import is ordinary TypeScript.",
+      "match": "\\b(for)\\s+(syntax)\\b(?:\\s+(shadows)\\s+(core)\\b)?",
+      "captures": {
+        "1": { "name": "keyword.control.import.sweetener" },
+        "2": { "name": "keyword.control.import.sweetener" },
+        "3": { "name": "keyword.control.import.sweetener" },
+        "4": { "name": "keyword.control.import.sweetener" }
+      }
+    },
+    "macro-definition-head": {
+      "comment": "`export rec syntax name:expr`, and the operator form that names its spelling in parentheses.",
+      "begin": "\\b(?:(rec)\\s+)?(syntax|operator)\\s+(?:([A-Za-z_$][A-Za-z0-9_$]*)|(\\([^)]*\\)))\\s*(:)\\s*([A-Za-z]+)",
+      "beginCaptures": {
+        "1": { "name": "storage.modifier.sweetener" },
+        "2": { "name": "storage.type.sweetener" },
+        "3": { "name": "entity.name.function.macro.sweetener" },
+        "4": { "name": "entity.name.function.macro.sweetener" },
+        "5": { "name": "punctuation.separator.sweetener" },
+        "6": { "name": "support.type.category.sweetener" }
+      },
+      "end": "(?=\\{)",
+      "patterns": [
+        {
+          "match": "\\b(shadows)\\s+(core)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.sweetener" },
+            "2": { "name": "keyword.control.sweetener" }
+          }
+        }
+      ]
+    },
+    "rule-arrow": {
+      "comment": "The `=>` between a rule's pattern and its template. Scoped apart from an arrow function so a theme can tell them apart.",
+      "match": "(?<=\\})\\s*(=>)\\s*(?=\\{)",
+      "captures": { "1": { "name": "keyword.operator.expansion.sweetener" } }
+    },
+    "definition-keyword": {
+      "comment": "The words that only mean anything inside a macro definition.",
+      "match": "\\b(fallback\\s+rule|rule|literal|fixity|associativity|precedence|infix|prefix|postfix|left|right|none)\\b(?=[\\s{(:])",
+      "name": "keyword.control.sweetener"
+    },
+    "capture": {
+      "comment": "`$name`, and the `:class` that says what it may match.",
+      "match": "(\\$)([A-Za-z_$][A-Za-z0-9_$]*)(?:\\s*(:)\\s*([A-Za-z_$][A-Za-z0-9_$]*))?",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.sweetener" },
+        "2": { "name": "variable.parameter.capture.sweetener" },
+        "3": { "name": "punctuation.separator.sweetener" },
+        "4": { "name": "support.type.category.sweetener" }
+      }
+    },
+    "operation": {
+      "comment": "Template operations such as #core, #join and #text.",
+      "match": "(#)([A-Za-z_$][A-Za-z0-9_$]*)(?=\\()",
+      "captures": {
+        "1": { "name": "punctuation.definition.keyword.sweetener" },
+        "2": { "name": "support.function.operation.sweetener" }
+      }
+    }
+  }
+}

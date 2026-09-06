@@ -23,6 +23,28 @@ restores the Sweetener syntax. Files that cannot be represented this way use a
 conservative delimiter-based fallback; that fallback preserves template and
 JSX whitespace because it can have runtime meaning.
 
+## Editors
+
+`editors/vscode` contributes a language for `.sts` and `.stsx` with a grammar
+that embeds VS Code's own TSX grammar and adds the syntax TypeScript does not
+have. Without it these open as plain text: no highlighting, no bracket
+matching, no comment toggling.
+
+```sh
+ln -s "$PWD/editors/vscode" ~/.vscode/extensions/sweetener
+```
+
+It contributes no language server, deliberately. Associating these files with
+the built-in `typescript` language would start TypeScript's own service on
+them, and every macro definition and invocation would be reported as a syntax
+error. For checking, run `sweetener check`, or `sweetener watch` to have it
+report as you edit.
+
+Ordinary `.ts` and `.tsx` files that import a `.sts` module do get completions
+and type errors across the boundary — see source declarations below. The two
+language ids match the ones `@sweetener/prettier-plugin` declares, so with both
+installed, formatting a `.sts` from the editor works as it does elsewhere.
+
 ## Universal plugin
 
 `@sweetener/unplugin` provides these entry points:

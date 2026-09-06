@@ -1,0 +1,57 @@
+{
+  "name": "sweetener-vscode",
+  "displayName": "Sweetener",
+  "description": "Syntax highlighting for Sweetener's .sts and .stsx files.",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "publisher": "sweetener",
+  "license": "MIT",
+  "engines": {
+    "vscode": ">=1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sweetener-typescript",
+        "aliases": [
+          "Sweetener TypeScript"
+        ],
+        "extensions": [
+          ".sts"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "sweetener-typescriptreact",
+        "aliases": [
+          "Sweetener TSX"
+        ],
+        "extensions": [
+          ".stsx"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sweetener-typescript",
+        "scopeName": "source.sweetener",
+        "path": "./syntaxes/sweetener.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.tsx": "typescriptreact"
+        }
+      },
+      {
+        "language": "sweetener-typescriptreact",
+        "scopeName": "source.sweetener",
+        "path": "./syntaxes/sweetener.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.tsx": "typescriptreact"
+        }
+      }
+    ]
+  }
+}
