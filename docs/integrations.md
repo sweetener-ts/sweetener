@@ -234,6 +234,13 @@ back as `ts`/`tsx`, so Parcel's own pipeline finishes the job:
 A `.sweetenerrc` or a `sweetener` key in `package.json` can name the project
 config.
 
+Parcel warns once per build that the transformer "contains non-statically
+analyzable dependencies in its module graph", and invalidates its cache at
+startup because of it. The dependency it cannot analyze is the TypeScript
+compiler, which expansion needs and which loads some of its own modules
+dynamically. The build itself is unaffected; what it costs is Parcel's
+warm-start cache.
+
 ## Jest
 
 `@sweetener/jest` is an asynchronous ESM transformer with dependency-aware

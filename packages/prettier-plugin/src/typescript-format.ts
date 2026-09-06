@@ -147,6 +147,16 @@ function pick(
   return chosen;
 }
 
+/** Whether a node begins a line, which ends the statement before it. */
+function startsNewLine(syntax: Syntax | undefined): boolean {
+  if (syntax === undefined) return false;
+  const first = syntax.tag === "group" ? syntax.open : syntax;
+  return (
+    first.tag === "token" &&
+    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
+  );
+}
+
 function tokenRaw(syntax: Syntax | undefined): string | undefined {
   return syntax?.tag === "token" ? syntax.raw : undefined;
 }
@@ -167,6 +177,32 @@ function nextMarker(source: string, index: number): string {
   }
 }
 
+function nextBindingMarker(source: string, index: number): string {
+  let suffix = index;
+  for (;;) {
+    // Short on purpose: a long stand-in changes where Prettier wraps the
+    // import, and the wrap survives the shorter original going back in.
+    const marker = `__sw${String(suffix)}__`;
+    if (!source.includes(marker)) return marker;
+    suffix += 1;
+  }
+}
+
+/**
+ * A binding that TypeScript cannot spell in an import clause.
+ *
+ * Sweetener imports a macro by whatever it is called, and two of the things it
+ * can be called are not identifiers: an operator, written `(|>)`, and a core
+ * form being shadowed, written `typeof`. Prettier parses what is left after
+ * the compile-time tail is masked, and `import { (|>) }` is not TypeScript, so
+ * it failed to parse and returned the file untouched — silently, and for the
+ * headline example in the README among others.
+ */
+function unspellableBinding(syntax: Syntax): boolean {
+  if (syntax.tag === "group") return syntax.delimiter === "parenthesis";
+  return syntax.tag === "token" && syntax.kind === "keyword";
+}
+
 function maskSweetenerSyntax(
   source: string,
   root: RootSyntax,
@@ -181,11 +217,24 @@ function maskSweetenerSyntax(
   for (let index = 0; index < children.length; index += 1) {
     if (tokenRaw(children[index]) !== "import") continue;
     let end = index + 1;
-    for (; end < children.length && tokenRaw(children[end]) !== ";"; end += 1) {
+    // The import ends at its semicolon, or where the next line starts. It used
+    // to look only for the semicolon, so a `for syntax` import written without
+    // one — which the compiler accepts, as it does for any other statement —
+    // was never masked, Prettier could not parse what it was handed, and the
+    // whole file came back unformatted.
+    for (
+      ;
+      end < children.length &&
+      tokenRaw(children[end]) !== ";" &&
+      !startsNewLine(children[end]);
+      end += 1
+    ) {
       const child = children[end];
       if (child?.tag === "group")
         for (const name of importedIdentifiers(child)) imports.add(name);
     }
+    const terminator =
+      tokenRaw(children[end]) === ";" ? children[end] : children[end - 1];
     for (let cursor = index + 1; cursor < end; cursor += 1) {
       if (
         tokenRaw(children[cursor]) !== "for" ||
@@ -193,11 +242,26 @@ function maskSweetenerSyntax(
       )
         continue;
       const firstNode = children[cursor];
-      const lastNode = children[end];
+      const lastNode = terminator;
       if (firstNode === undefined || lastNode === undefined) continue;
-      const marker = `with { type: "__SWEETENER_FORMAT_IMPORT_${String(
-        masks.length,
-      )}__" };`;
+      // Each binding Prettier could not read stands in as an identifier while
+      // it formats, and goes back as written afterwards.
+      const clause = children[index + 1];
+      if (clause?.tag === "group" && clause.delimiter === "brace")
+        for (const binding of clause.children)
+          if (unspellableBinding(binding))
+            masks.push({
+              marker: nextBindingMarker(source, masks.length),
+              original: source.slice(binding.span.start, binding.span.end),
+              start: binding.span.start,
+              end: binding.span.end,
+            });
+      // The replacement keeps a semicolon whether or not the source had one:
+      // it stands in for an import in a position where TypeScript expects a
+      // statement, and the original text goes back verbatim afterwards.
+      // Kept short for the same reason the binding stand-ins are: it occupies
+      // the width of `for syntax;` while Prettier decides where to wrap.
+      const marker = `with { type: "__swi${String(masks.length)}__" };`;
       masks.push({
         marker,
         original: source.slice(firstNode.span.start, lastNode.span.end),

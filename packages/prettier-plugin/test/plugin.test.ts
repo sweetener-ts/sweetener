@@ -222,3 +222,88 @@ describe("project Prettier options", () => {
     ).toContain("\n");
   });
 });
+
+/**
+ * A compile-time import ends at a line break, so the formatter must too.
+ *
+ * The mask that stands in for the import while Prettier formats the file
+ * looked only for the import's semicolon. A `for syntax` import written
+ * without one — which the compiler accepts, as it does for any statement — was
+ * therefore never masked, Prettier could not parse `for syntax`, and the whole
+ * file came back unformatted with nothing said about it.
+ */
+describe("a compile-time import with no semicolon", () => {
+  test("is masked, so the file around it still formats", async () => {
+    const source = [
+      "import {twice} from './macros.sts' for syntax",
+      "export const   pair:number[]=twice(21)",
+      "function f(  a:number ){return twice(a)}",
+      "",
+    ].join("\n");
+    expect(await formatSweetenerWithPrettier(source)).toBe(
+      [
+        `import { twice } from "./macros.sts" for syntax`,
+        "export const pair: number[] = twice(21);",
+        "function f(a: number) {",
+        "  return twice(a);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("keeps shadows core intact", async () => {
+    const source = [
+      "import {typeof} from './forms.sts' for syntax shadows core",
+      "const   kind=typeof 1",
+      "",
+    ].join("\n");
+    const formatted = await formatSweetenerWithPrettier(source);
+    expect(formatted).toContain("for syntax shadows core");
+    expect(formatted).toContain("const kind = typeof 1;");
+  });
+});
+
+/**
+ * Sweetener imports a macro by whatever it is called, and two of the things it
+ * can be called are not identifiers: an operator, `(|>)`, and a core form
+ * being shadowed, `typeof`. Prettier parses what is left after the
+ * compile-time tail is masked, and neither is TypeScript, so it failed to
+ * parse and returned the file untouched — for the pipeline operator that opens
+ * the README, among others.
+ */
+describe("importing a macro that is not named by an identifier", () => {
+  const cases: readonly (readonly [string, string])[] = [
+    [
+      "an operator",
+      `import { (|>) } from "./ops.sts" for syntax;\nconst   x=1;\n`,
+    ],
+    [
+      "a shadowed core form",
+      `import { typeof } from "./forms.sts" for syntax shadows core;\nconst   kind=typeof 1;\n`,
+    ],
+    [
+      "an operator beside an ordinary macro",
+      `import { twice, (|>) } from "./ops.sts" for syntax;\nconst   x=1;\n`,
+    ],
+  ];
+
+  for (const [description, source] of cases)
+    test(`formats around ${description}`, async () => {
+      const formatted = await formatSweetenerWithPrettier(source);
+      // The file formats, and the import comes back exactly as written.
+      expect(formatted).toContain(source.split("\n")[0]);
+      expect(formatted).toMatch(/const (?:x = 1|kind = typeof 1);/u);
+      expect(await formatSweetenerWithPrettier(formatted)).toBe(formatted);
+    });
+
+  test("does not let a stand-in change where the import wraps", async () => {
+    // The stand-ins occupy the width of what they replace while Prettier
+    // decides on line breaks; long ones wrapped imports that fit.
+    expect(
+      await formatSweetenerWithPrettier(
+        `import { twice, (|>) } from "./ops.sts" for syntax;\nconst   x=1;\n`,
+      ),
+    ).toContain(`import { twice, (|>) } from "./ops.sts" for syntax;`);
+  });
+});

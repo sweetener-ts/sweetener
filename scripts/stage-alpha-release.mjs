@@ -78,7 +78,7 @@ const summaries = {
     ].join("\n"),
   },
   "parcel-transformer": {
-    text: "A Parcel 2 transformer for Sweetener sources.",
+    text: "A Parcel 2 transformer for Sweetener sources. Parcel invalidates its cache at startup because the TypeScript compiler this depends on loads modules dynamically; builds are unaffected.",
     usage: [
       "```json",
       "{",

@@ -1,8 +1,8 @@
 import { function } from "./macros.sts" for syntax shadows core;
 
-export const calculate = function(value: number) {
+export const calculate = function (value: number) {
   const doubled = value * 2;
-  doubled + 1
+  doubled + 1;
 };
 
 export const result = calculate(3);
