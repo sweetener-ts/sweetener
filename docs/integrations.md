@@ -46,11 +46,28 @@ cannot assign a module type after attempting to load an unknown `.sts` file.
 
 ```ts
 // vite.config.ts
+import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import sweetener from "@sweetener/unplugin/vite";
 
-export default defineConfig({ plugins: [...sweetener()] });
+export default defineConfig({
+  plugins: [
+    ...sweetener({
+      configFile: resolve(import.meta.dirname, "sweetener.json"),
+    }),
+  ],
+});
 ```
+
+Pass `configFile` unless the project's own `tsconfig.json` lists the macro
+sources. Without it the adapter discovers the nearest `tsconfig.json`, and a
+file that config does not list is not opted into expansion. `sweetener init`
+detects the host and prints the wiring for it, including this.
+
+Expansion emits TypeScript. The Vite entry point follows it with Vite's own
+Oxc transform; esbuild and Bun are told which loader to read the output with;
+the remaining entry points have no TypeScript of their own, so the adapter
+strips types for them using the Sweetener project's compiler options.
 
 ### React and Fast Refresh
 
@@ -97,9 +114,19 @@ so Bun watch-mode reloads see changes made only to an imported macro module.
 
 ## Deno tasks
 
-Deno does not currently provide a custom module-loader hook for arbitrary file
-extensions. The checked-in Deno example therefore uses Deno-native tasks to
-expand `.sts` into an ignored `.sweetener` tree before Deno checks or runs it:
+`@sweetener/deno/register` installs Deno's `module.registerHooks`, so Deno runs
+`.sts` directly. Deno resolves a preload by path rather than by package
+specifier, so name the file inside the package:
+
+```sh
+SWEETENER_CONFIG=./sweetener.json deno run \
+  --import ./node_modules/@sweetener/deno/dist/src/register.js src/main.sts
+```
+
+`deno check` is a separate matter: it parses `.sts` with its own TypeScript
+front end and cannot read macro syntax. The checked-in Deno example therefore
+also uses Deno-native tasks to expand `.sts` into an ignored `.sweetener` tree
+for checking:
 
 ```sh
 deno task check
@@ -130,22 +157,85 @@ export default {
 };
 ```
 
+The loader emits JavaScript, so that rule stands on its own. Pass
+`options.emit: "typescript"` when a loader after this one should strip the
+types instead — to control its target, or for a host like Turbopack that is
+told to expect TypeScript.
+
 For Next/Turbopack, add a `turbopack.rules["*.sts"]` loader rule with
 `as: "*.ts"`. Use a separate Sweetener project configuration if Next's own
 TypeScript checker owns `tsconfig.json`, and provide declarations for runtime
 exports imported from `.sts` modules.
 
+## Importing a macro module from ordinary TypeScript
+
+`tsc` does not know what a `.sts` is, so `import { pair } from "./main.sts"` in
+a `.ts` or `.tsx` file is unresolvable — which breaks the build script a Vite
+app ships with, `tsc -b && vite build`. Turn on source declarations:
+
+```json
+{
+  "compilerOptions": { "allowArbitraryExtensions": true },
+  "sweet": { "sourceDeclarations": true },
+  "files": ["src/macros.sts", "src/main.sts"]
+}
+```
+
+`sweetener build` then writes `src/main.d.sts.ts` beside each source, which is
+the name TypeScript resolves `./main.sts` through. Real types cross the
+boundary: assigning a `readonly number[]` export to a `string` is an error in
+plain `tsc`, and editors report it too, because they are running the same
+compiler. Add `*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
+
+This replaces hand-written `declare module "*.sts"` blocks, which have to
+restate every export and go stale silently.
+
+## Parcel
+
+`@sweetener/parcel-transformer` is a Parcel 2 transformer. It hands the asset
+back as `ts`/`tsx`, so Parcel's own pipeline finishes the job:
+
+```json
+{
+  "extends": "@parcel/config-default",
+  "transformers": { "*.sts": ["@sweetener/parcel-transformer", "..."] }
+}
+```
+
+A `.sweetenerrc` or a `sweetener` key in `package.json` can name the project
+config.
+
+## Jest
+
+`@sweetener/jest` is an asynchronous ESM transformer with dependency-aware
+cache keys, so editing a macro re-expands the files that import it:
+
+```js
+// jest.config.mjs
+export default {
+  transform: { "\\.stsx?$": ["@sweetener/jest", {}] },
+  moduleFileExtensions: ["sts", "stsx", "js", "ts", "json"],
+  extensionsToTreatAsEsm: [".sts", ".stsx"],
+};
+```
+
+Run Jest with `NODE_OPTIONS=--experimental-vm-modules`.
+
 ## Other native integrations
 
-- `@sweetener/parcel-transformer` is a Parcel 2 transformer.
-- `@sweetener/babel` expands a file before Babel parses it and passes the
-  Sweetener map as Babel's input map.
-- `@sweetener/jest` is an asynchronous Jest ESM transformer with dependency-
-  aware cache keys.
+- `@sweetener/babel` is a programmatic entry point, `transformSweetenerFile`,
+  not a Babel plugin. It cannot be one: expansion has to happen before Babel
+  parses, and a `parserOverride` returning an AST built from different text
+  would leave every source-map position pointing into the expansion. Under
+  babel-loader use `@sweetener/webpack-loader`; in place of babel-jest use
+  `@sweetener/jest`.
 - `@sweetener/node/register` installs Node module customization hooks, expands
   `.sts`, strips TypeScript with the official compiler, and executes it as ESM.
+  Emitted JavaScript carries a composed inline source map, so
+  `--enable-source-maps` reports stack frames at their `.sts` lines.
 - `@sweetener/cli` and `@sweetener/compiler` remain the full-project TypeScript
-  check/build/declaration path.
+  check/build/declaration path. Emitted `.js.map` and `.d.ts.map` are composed
+  against the expansion, so they name the `.sts` and carry its text.
 
 Tools such as Turborepo, Nx, Storybook, Electron, tsup, and unbuild orchestrate
 or embed one of the verified hosts above; select the adapter for their chosen

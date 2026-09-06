@@ -21,6 +21,7 @@ import {
   type ExpansionInspectionProvider,
 } from "./expansion-tools.js";
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
+import { loadSweetProject } from "./configuration.js";
 import { emitStandalone } from "./standalone-emit.js";
 
 export interface CliIo {
@@ -44,13 +45,49 @@ export type CliInvocation =
       readonly directory: string;
       readonly assumeYes: boolean;
     }
-  | { readonly command: "expand"; readonly fileName: string }
-  | { readonly command: "explain"; readonly position: string }
+  | {
+      readonly command: "expand";
+      readonly fileName: string;
+      readonly configPath?: string | undefined;
+    }
+  | {
+      readonly command: "explain";
+      readonly position: string;
+      readonly configPath?: string | undefined;
+    }
+  | { readonly command: "help" }
   | {
       readonly command: "emit";
       readonly fileNames: readonly string[];
       readonly outDir: string;
     };
+
+/**
+ * Pull `-p`/`--project` out of an argument list.
+ *
+ * `expand` and `explain` used to reject it, and only ever discovered a
+ * `tsconfig.json`. `init` writes `sweetener.json`, so in a scaffolded project
+ * two of the commands could not read the config the other four were using.
+ */
+function splitProjectOption(argv: readonly string[]): {
+  readonly positional: readonly string[];
+  readonly configPath: string | undefined;
+} {
+  const positional: string[] = [];
+  let configPath: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument === "-p" || argument === "--project") {
+      const value = argv[++index];
+      if (value === undefined)
+        throw new TypeError(`${argument} requires a path`);
+      configPath = value;
+    } else if (argument.startsWith("-"))
+      throw new TypeError(`Unknown argument ${argument}`);
+    else positional.push(argument);
+  }
+  return { positional: Object.freeze(positional), configPath };
+}
 
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   const command = argv[0];
@@ -70,10 +107,22 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       assumeYes,
     });
   }
+  if (
+    command === undefined ||
+    command === "--help" ||
+    command === "-h" ||
+    command === "help"
+  )
+    return Object.freeze({ command: "help" });
   if (command === "expand") {
-    if (argv.length !== 2)
+    const { positional, configPath } = splitProjectOption(argv.slice(1));
+    if (positional.length !== 1)
       throw new TypeError("expand requires one source file");
-    return Object.freeze({ command, fileName: argv[1]! });
+    return Object.freeze({
+      command,
+      fileName: positional[0]!,
+      ...(configPath === undefined ? {} : { configPath }),
+    });
   }
   if (command === "emit") {
     const fileNames: string[] = [];
@@ -102,10 +151,15 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     });
   }
   if (command === "explain") {
-    if (argv.length !== 2)
+    const { positional, configPath } = splitProjectOption(argv.slice(1));
+    if (positional.length !== 1)
       throw new TypeError("explain requires one file:line:column position");
-    parseSourcePosition(argv[1]!);
-    return Object.freeze({ command, position: argv[1]! });
+    parseSourcePosition(positional[0]!);
+    return Object.freeze({
+      command,
+      position: positional[0]!,
+      ...(configPath === undefined ? {} : { configPath }),
+    });
   }
   if (command !== "check" && command !== "build" && command !== "watch")
     throw new TypeError(
@@ -149,6 +203,31 @@ function renderDiagnostic(diagnostic: ts.Diagnostic): string {
   return [head, ...related].join("\n");
 }
 
+const usage = `sweetener — hygienic declarative macros for TypeScript
+
+Usage: sweetener <command> [options]
+
+Commands:
+  init [directory]        Scaffold a project. Shows what it would write; pass
+                          --yes to write it.
+  check                   Type-check the project through the official compiler.
+  build                   Check, then expand and emit.
+  watch                   Rebuild as sources and macros change.
+  expand <file>           Print the expanded TypeScript for one source.
+  explain <file:line:col> Report where a position came from, and through which
+                          macros.
+  emit <files...>         Expand named files into a directory, without checking.
+
+Options:
+  -p, --project <path>    Project config to use. Defaults to the nearest
+                          tsconfig.json; \`init\` writes sweetener.json, so pass
+                          it here.
+  --yes, -y               For init: write the files rather than listing them.
+  --out-dir <dir>         For emit: where to write. Required.
+  --debug                 Print the expansion's internal state after the run.
+  -h, --help              Show this.
+`;
+
 export function runCli(options: {
   readonly argv: readonly string[];
   readonly expansionProvider?: ProjectExpansionProvider | undefined;
@@ -172,6 +251,10 @@ export function runCli(options: {
       `${error instanceof Error ? error.message : String(error)}\n`,
     );
     return Object.freeze({ exitCode: 1 });
+  }
+  if (invocation.command === "help") {
+    options.io.stdout(usage);
+    return Object.freeze({ exitCode: 0 });
   }
   const report = (result: ReturnType<typeof runConfiguredProjectCommand>) => {
     for (const diagnostic of result.diagnostics)
@@ -277,6 +360,25 @@ export function runCli(options: {
     if (inspectionProvider === undefined) {
       options.io.stderr("Expansion inspection is unavailable\n");
       return Object.freeze({ exitCode: 1 });
+    }
+    // Expanding the named project first is what makes `-p` mean anything: the
+    // inspection provider answers about files it has already expanded, and on
+    // its own it only ever discovers a tsconfig.json.
+    if (invocation.configPath !== undefined) {
+      if (!("expandProject" in inspectionProvider)) {
+        options.io.stderr("This expansion provider cannot load a project\n");
+        return Object.freeze({ exitCode: 1 });
+      }
+      try {
+        (
+          inspectionProvider as unknown as ProjectExpansionProvider
+        ).expandProject(loadSweetProject(resolve(invocation.configPath)));
+      } catch (error) {
+        options.io.stderr(
+          `${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        return Object.freeze({ exitCode: 1 });
+      }
     }
     const position =
       invocation.command === "explain"

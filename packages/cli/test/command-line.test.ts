@@ -146,3 +146,32 @@ describe("sweet-ts command line", () => {
     expect(stdout.at(-1)).toContain('"invocations"');
   });
 });
+
+/**
+ * `init` writes `sweetener.json`, so every command has to be able to read it.
+ *
+ * `expand` and `explain` rejected `-p` outright and only ever discovered a
+ * `tsconfig.json`, which left two of the six commands unable to read the
+ * config the scaffolder had just written.
+ */
+test("expand and explain accept a project path", () => {
+  expect(
+    parseCliInvocation(["expand", "-p", "sweetener.json", "a.sts"]),
+  ).toEqual({
+    command: "expand",
+    fileName: "a.sts",
+    configPath: "sweetener.json",
+  });
+  expect(
+    parseCliInvocation(["explain", "--project", "sweetener.json", "a.sts:1:1"]),
+  ).toEqual({
+    command: "explain",
+    position: "a.sts:1:1",
+    configPath: "sweetener.json",
+  });
+});
+
+test("asks for help rather than reporting an unknown command", () => {
+  for (const argv of [[], ["--help"], ["-h"], ["help"]])
+    expect(parseCliInvocation(argv)).toEqual({ command: "help" });
+});

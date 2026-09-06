@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [24.0.0, 24.18.1]
+        node: [24.0.0, 24.18.1, 26.5.0]
         typescript: [6.0.0, 6.0.2]
     runs-on: ubuntu-latest
     steps:

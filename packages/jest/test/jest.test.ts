@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -105,4 +111,63 @@ test("re-expands after a macro changes, with no configFile given", async () => {
 
   // The file itself did not change; the macros it expands through did.
   expect(after).not.toBe(before);
+});
+
+/**
+ * Jest has to be able to find this by name.
+ *
+ * `transform: { "\\.sts$": ["@sweetener/jest", {}] }` — the configuration
+ * anyone would write — failed with `Module @sweetener/jest in the transform
+ * option was not found`, because the exports map offered only `types` and
+ * `import` and Jest resolves a transformer under conditions that need
+ * `require` or `default`. The suite pointed at `dist/src/index.js` by absolute
+ * path, so it never asked the question a user's config asks.
+ */
+test("Jest resolves the transformer by package name", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sweet-jest-named-"));
+  const scope = join(root, "node_modules", "@sweetener");
+  mkdirSync(scope, { recursive: true });
+  symlinkSync(resolve("packages/jest"), join(scope, "jest"), "dir");
+  writeFileSync(
+    join(root, "macros.sts"),
+    `export syntax twice:expr { rule { twice($x:tt) } => { [$x, $x] } }\n`,
+  );
+  writeFileSync(
+    join(root, "value.sts"),
+    `import { twice } from "./macros.sts" for syntax;\nexport const answer: number[] = twice(21);\n`,
+  );
+  writeFileSync(
+    join(root, "value.test.mjs"),
+    `import { answer } from "./value.sts";\ntest("expanded", () => expect(answer).toEqual([21, 21]));\n`,
+  );
+  const config = join(root, "sweetener.json");
+  writeFileSync(
+    config,
+    JSON.stringify({
+      compilerOptions: { module: "ESNext" },
+      files: ["value.sts", "macros.sts"],
+    }),
+  );
+  writeFileSync(
+    join(root, "jest.config.mjs"),
+    `export default { rootDir: ${JSON.stringify(root)}, testEnvironment: "node", testMatch: ["**/*.test.mjs"], extensionsToTreatAsEsm: [".sts"], transform: { "\\.sts$": ["@sweetener/jest", { configFile: ${JSON.stringify(config)} }] } };\n`,
+  );
+  const result = await execute(
+    process.execPath,
+    [
+      "--experimental-vm-modules",
+      resolve("packages/jest/node_modules/jest/bin/jest.js"),
+      "--runInBand",
+      "--watchman=false",
+      "--config",
+      join(root, "jest.config.mjs"),
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
+      timeout: 60_000,
+    },
+  );
+  expect(result.stderr).toMatch(/1 passed/u);
 });
