@@ -1,6 +1,12 @@
-import { dirname } from "node:path";
-import type { VirtualTypeScriptFile } from "@sweetener/typescript-host";
-import { createVirtualProgram } from "@sweetener/typescript-host";
+import { dirname, relative } from "node:path";
+import type {
+  SourceMapComposer,
+  VirtualTypeScriptFile,
+} from "@sweetener/typescript-host";
+import {
+  composeSourceMap,
+  createVirtualProgram,
+} from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
   loadSweetProject,
@@ -151,6 +157,70 @@ function remapGeneratedDiagnostics(options: {
   });
 }
 
+/**
+ * Rewrite the maps TypeScript emits so they describe the sources on disk.
+ *
+ * TypeScript is handed expanded TypeScript under a virtual `.ts` name, so the
+ * maps it emits name that file and carry positions inside it. Left alone they
+ * point a debugger at a path that does not exist, at lines that belong to a
+ * text nobody has. The expansion already knows where every generated region
+ * came from, so composing the two gives a map that reaches the `.sts` — and
+ * carries its text, since a build output is often read somewhere the sources
+ * are not.
+ *
+ * Returns nothing when the provider cannot be inspected, which leaves the
+ * previous behaviour in place rather than emitting a map that is wrong in a
+ * new way.
+ */
+function sourceMapComposerFor(
+  provider: ProjectExpansionProvider,
+  virtualBySource: ReadonlyMap<string, string>,
+): SourceMapComposer | undefined {
+  if (!("inspectSource" in provider)) return undefined;
+  const inspect = (
+    provider as ProjectExpansionProvider & ExpansionInspectionProvider
+  ).inspectSource.bind(provider);
+  const sourceBySourceId = new Map<number, { name: string; text: string }>();
+  const sourceByVirtual = new Map<string, string>();
+  for (const [source, virtual] of virtualBySource) {
+    sourceByVirtual.set(virtual, source);
+    const inspected = inspect(source);
+    if (inspected !== undefined)
+      sourceBySourceId.set(inspected.sourceId as number, {
+        name: source,
+        text: inspected.sourceText,
+      });
+  }
+  if (sourceBySourceId.size === 0) return undefined;
+  return ({ mapFileName, virtualFileName, map }) => {
+    const source = sourceByVirtual.get(virtualFileName);
+    if (source === undefined) return undefined;
+    const inspected = inspect(source);
+    if (inspected === undefined) return undefined;
+    const directory = dirname(mapFileName);
+    try {
+      return composeSourceMap({
+        typescriptMap: map,
+        generatedSource: inspected.generated.text,
+        generated: inspected.generated,
+        origins: inspected.origins,
+        sourceName: (sourceId) => {
+          const known = sourceBySourceId.get(sourceId as number);
+          const path = relative(directory, known?.name ?? source);
+          return path.startsWith(".") ? path : `./${path}`;
+        },
+        sourceText: (sourceId) =>
+          sourceBySourceId.get(sourceId as number)?.text,
+      });
+    } catch {
+      // A map that cannot be composed is left as TypeScript emitted it. It is
+      // no worse than before, and refusing to emit would fail the build over
+      // a debugging aid.
+      return undefined;
+    }
+  };
+}
+
 export function runConfiguredProjectCommand(options: {
   readonly command: ConfiguredProjectCommand;
   readonly configPath: string;
@@ -225,6 +295,7 @@ export function runConfiguredProjectCommand(options: {
   const rootNames = project.typescript.fileNames.map(
     (fileName) => virtualBySource.get(fileName) ?? fileName,
   );
+  const composer = sourceMapComposerFor(expansionProvider, virtualBySource);
   const created = createVirtualProgram({
     rootNames,
     compilerOptions: {
@@ -232,6 +303,7 @@ export function runConfiguredProjectCommand(options: {
       ...(options.command === "check" ? { noEmit: true } : {}),
     },
     files: virtualFiles,
+    ...(composer === undefined ? {} : { composeSourceMap: composer }),
     ...(project.typescript.projectReferences === undefined
       ? {}
       : { projectReferences: project.typescript.projectReferences }),

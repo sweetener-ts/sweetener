@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
+import { composeSourceMap } from "@sweetener/typescript-host";
 import type { RawSourceMap } from "@sweetener/typescript-host";
 import type * as ts from "typescript";
 import {
@@ -20,9 +21,19 @@ export interface SweetenerTransformRequest {
 
 export interface SweetenerTransformResult {
   readonly code: string;
-  /** Sweetener's lossless origin map. Standard source-map emission is pending. */
   readonly originMap: OriginMap;
+  /** Maps the expanded TypeScript in `code` back to the source on disk. */
   readonly map: RawSourceMap;
+  /**
+   * Compose a map produced from `code` with this expansion's own.
+   *
+   * A host that strips types or bundles emits a map against the expanded
+   * TypeScript, which exists only in memory. Passing that map through here
+   * rewrites it to reach the `.sts` the author wrote, with the source text
+   * carried along. Returns nothing when the two cannot be composed, which
+   * leaves the caller to emit what it had.
+   */
+  composeMap(typescriptMap: RawSourceMap): RawSourceMap | undefined;
   readonly diagnostics: readonly ts.Diagnostic[];
   readonly dependencies: readonly string[];
   readonly missingDependencies: readonly string[];
@@ -168,10 +179,36 @@ export function createSweetenerSession(
         .map(canonical)
         .sort(),
     );
+    // Every source in the project, so a composed map can name a macro module
+    // it reaches through as well as the file being transformed.
+    const sourceNames = new Map<number, { name: string; text: string }>();
+    for (const name of project.typescript.fileNames) {
+      const other = provider.inspectSource(name);
+      if (other !== undefined)
+        sourceNames.set(other.sourceId as number, {
+          name,
+          text: other.sourceText,
+        });
+    }
     const result: SweetenerTransformResult = Object.freeze({
       code: generated.generated.text,
       originMap: generated.generated.originMap,
       map: inspected.sourceMap,
+      composeMap: (typescriptMap: RawSourceMap) => {
+        try {
+          return composeSourceMap({
+            typescriptMap,
+            generatedSource: inspected.generated.text,
+            generated: inspected.generated,
+            origins: inspected.origins,
+            sourceName: (sourceId) =>
+              sourceNames.get(sourceId as number)?.name ?? filename,
+            sourceText: (sourceId) => sourceNames.get(sourceId as number)?.text,
+          });
+        } catch {
+          return undefined;
+        }
+      },
       diagnostics: Object.freeze([...expanded.diagnostics]),
       dependencies,
       missingDependencies: Object.freeze([]),
