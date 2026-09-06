@@ -183,19 +183,53 @@ function tokenLexicalMode(kind: ts.SyntaxKind, jsxMode: JsxMode): LexicalMode {
   return "standard";
 }
 
+const identifierStart = /[\p{ID_Start}_$]/u;
+const identifierPart = /[\p{ID_Continue}.$:-]/u;
+
+/**
+ * Whether the `<` at `start` opens a JSX element rather than type arguments.
+ *
+ * Read directly out of the source rather than by slicing it and matching two
+ * regular expressions against the slice. Both are linear — V8 slices a long
+ * string by taking a view of it, not by copying — but this runs at every `<`
+ * in expression position, and doing it without allocating is about twice as
+ * fast on element-dense source.
+ */
 function looksLikeJsxStart(source: string, start: number): boolean {
-  const rest = source.slice(start);
-  if (rest.startsWith("<>")) return true;
-  const name = /^<([\p{ID_Start}_$][\p{ID_Continue}.$:-]*)/u.exec(rest)?.[1];
-  if (name === undefined) return false;
-  const headerEnd = rest.indexOf(">");
-  if (headerEnd < 0) return false;
-  const header = rest.slice(0, headerEnd);
-  if (/[,]|\bextends\b/u.test(header)) return false;
-  return true;
+  if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
+  const nameStart = start + 1;
+  if (nameStart >= source.length || !identifierStart.test(source[nameStart]!))
+    return false;
+  // A comma or an `extends` before the closing `>` means type parameters:
+  // `<T,>` and `<T extends U>` are the two spellings that are unambiguous in
+  // TSX, and neither is an element.
+  for (let index = nameStart + 1; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === ">") return true;
+    if (character === ",") return false;
+    if (
+      character === "e" &&
+      source.startsWith("extends", index) &&
+      !identifierPart.test(source[index - 1] ?? "") &&
+      !identifierPart.test(source[index + 7] ?? "")
+    )
+      return false;
+  }
+  return false;
 }
 
+const endsExpression: boolean[] = [];
+for (let kind = 0; kind <= ts.SyntaxKind.LastToken; kind += 1)
+  endsExpression.push(computeEndsExpression(kind));
+
+/** Runs for every token, so it is a table for the same reason the others are. */
 function tokenCanEndExpression(kind: ts.SyntaxKind): boolean {
+  return kind >= 0 && kind < endsExpression.length
+    ? endsExpression[kind]!
+    : computeEndsExpression(kind);
+}
+
+function computeEndsExpression(kind: ts.SyntaxKind): boolean {
   switch (kind) {
     case ts.SyntaxKind.Identifier:
     case ts.SyntaxKind.PrivateIdentifier:

@@ -96,6 +96,8 @@ export class OriginStore {
   #count = 0;
   readonly #interned = new Map<string, OriginId>();
   readonly #sourceIndex = new Map<SourceId, Map<number, OriginId>>();
+  #lastSourceId: SourceId | undefined;
+  #lastSpans: Map<number, OriginId> | undefined;
 
   constructor(options: OriginStoreOptions = {}) {
     this.#ids = createIdAllocator<OriginId>(options.startId);
@@ -132,11 +134,18 @@ export class OriginStore {
     // built-up string meant allocating and hashing a key per token only to
     // miss on it. Nesting maps on the numbers keeps the same guarantee, that
     // one span in one file is one origin, without the key.
-    let spans = this.#sourceIndex.get(sourceId);
+    // Tokens arrive in file order, so the same source is asked for thousands
+    // of times in a row before another one is.
+    let spans =
+      sourceId === this.#lastSourceId
+        ? this.#lastSpans
+        : this.#sourceIndex.get(sourceId);
     if (spans === undefined) {
       spans = new Map();
       this.#sourceIndex.set(sourceId, spans);
     }
+    this.#lastSourceId = sourceId;
+    this.#lastSpans = spans;
     // One number for the pair rather than a map per start offset. Since a
     // token's span hardly ever repeats, the inner map held a single entry and
     // allocating it cost a Map for every token in the file.
@@ -160,7 +169,10 @@ export class OriginStore {
         id,
         kind: "source",
         sourceId,
-        span: createSpan(span.start, span.end),
+        // A caller that already holds an immutable span holds exactly what
+        // this would build. Rebuilding it allocated and revalidated a second
+        // span for every token in the file.
+        span: Object.isFrozen(span) ? span : createSpan(span.start, span.end),
       }),
     );
     if (key !== undefined) spans.set(key, id);

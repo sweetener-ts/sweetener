@@ -42,14 +42,28 @@ export function Component${String(index)}({ items }: { items: readonly string[] 
   return parts.join("");
 }
 
-function nanosecondsPerCharacter(source: string): number {
-  for (let index = 0; index < 3; index += 1)
-    readSyntax(source, { sourceId, scopes, variant: "jsx" });
-  const runs = 5;
-  const started = performance.now();
-  for (let index = 0; index < runs; index += 1)
-    readSyntax(source, { sourceId, scopes, variant: "jsx" });
-  return ((performance.now() - started) / runs / source.length) * 1e6;
+/**
+ * The cost of one read, in nanoseconds per character.
+ *
+ * The suite runs these in parallel with everything else, so any single
+ * measurement may have spent its time waiting for a core. The fastest round is
+ * the one that was least interrupted, and it is stable in a way a mean is not.
+ */
+function nanosecondsPerCharacter(sources: readonly string[]): number[] {
+  const best = sources.map(() => Number.POSITIVE_INFINITY);
+  for (const source of sources)
+    for (let index = 0; index < 3; index += 1)
+      readSyntax(source, { sourceId, scopes, variant: "jsx" });
+  // Interleaved, so a slow stretch of machine falls on both rather than on
+  // whichever happened to be measured during it.
+  for (let round = 0; round < 5; round += 1)
+    for (const [index, source] of sources.entries()) {
+      const started = performance.now();
+      readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      const rate = ((performance.now() - started) / source.length) * 1e6;
+      best[index] = Math.min(best[index]!, rate);
+    }
+  return best;
 }
 
 describe("reading scales with the size of the file", () => {
@@ -58,16 +72,20 @@ describe("reading scales with the size of the file", () => {
     const large = components(200);
     expect(large.length / small.length).toBeGreaterThan(7);
 
-    const smallRate = nanosecondsPerCharacter(small);
-    const largeRate = nanosecondsPerCharacter(large);
+    const [smallRate, largeRate] = nanosecondsPerCharacter([small, large]) as [
+      number,
+      number,
+    ];
 
-    // Generous, because this shares a machine with the rest of the suite. A
-    // per-character cost that grew with the file — an allocation per token
-    // that the collector then has to walk, or a scan of the remaining source
-    // at every `<` — shows up here as a multiple, not as a few percent.
+    // Generous, because this shares a machine with the rest of the suite. What
+    // this catches is cost that grows with the file rather than with the
+    // tokens in it: work per token that the collector then has to walk, or a
+    // lookahead that reads further the longer the file gets. Injecting work
+    // proportional to a token's offset moves this ratio to about eight, so the
+    // threshold has room for a loaded machine and still fails on the shape.
     expect(
       largeRate / smallRate,
       `${largeRate.toFixed(0)} ns/char at ${String(large.length)} characters against ${smallRate.toFixed(0)} at ${String(small.length)}`,
-    ).toBeLessThan(2);
+    ).toBeLessThan(3);
   });
 });
