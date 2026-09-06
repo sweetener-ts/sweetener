@@ -12,6 +12,17 @@ export interface SweetCompilerOptions {
   readonly typescriptVersionPolicy: "exact" | "compatible-minor";
   readonly macroExtensions: readonly string[];
   readonly allowCoreShadowing: boolean;
+  /**
+   * Also write a declaration beside each macro source, as `main.d.sts.ts`.
+   *
+   * TypeScript resolves `import ... from "./main.sts"` through that name when
+   * `allowArbitraryExtensions` is on, so an ordinary `.ts` file in the project
+   * — or in another project entirely — can import a `.sts` module and get its
+   * real types. Without them the only way to consume one from TypeScript was a
+   * hand-written `declare module "*.sts"`, restated for every export and kept
+   * in step by hand.
+   */
+  readonly sourceDeclarations: boolean;
   readonly trace: "off" | "errors" | "full";
   readonly limits: Partial<ResourceBudget>;
 }
@@ -34,6 +45,7 @@ const defaults: SweetCompilerOptions = Object.freeze({
   typescriptVersionPolicy: "exact",
   macroExtensions: Object.freeze([".sts", ".stsx"]),
   allowCoreShadowing: false,
+  sourceDeclarations: false,
   trace: "errors",
   limits: Object.freeze({}),
 });
@@ -43,6 +55,7 @@ const knownKeys = new Set([
   "typescriptVersionPolicy",
   "macroExtensions",
   "allowCoreShadowing",
+  "sourceDeclarations",
   "trace",
   "limits",
 ]);
@@ -146,6 +159,16 @@ export function parseSweetCompilerOptions(value: unknown): {
   )
     problems.push(problem("sweet.allowCoreShadowing", "must be boolean"));
 
+  const sourceDeclarations =
+    typeof input["sourceDeclarations"] === "boolean"
+      ? input["sourceDeclarations"]
+      : defaults.sourceDeclarations;
+  if (
+    input["sourceDeclarations"] !== undefined &&
+    typeof input["sourceDeclarations"] !== "boolean"
+  )
+    problems.push(problem("sweet.sourceDeclarations", "must be boolean"));
+
   const traceValue = input["trace"];
   const trace =
     traceValue === "off" || traceValue === "errors" || traceValue === "full"
@@ -193,6 +216,7 @@ export function parseSweetCompilerOptions(value: unknown): {
       typescriptVersionPolicy,
       macroExtensions,
       allowCoreShadowing,
+      sourceDeclarations,
       trace,
       limits,
     }),

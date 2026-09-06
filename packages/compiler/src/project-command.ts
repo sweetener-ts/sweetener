@@ -1,4 +1,5 @@
-import { dirname, relative } from "node:path";
+import { writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -221,6 +222,90 @@ function sourceMapComposerFor(
   };
 }
 
+/**
+ * Write a declaration beside every macro source, as `main.d.sts.ts`.
+ *
+ * With `allowArbitraryExtensions`, TypeScript resolves
+ * `import { x } from "./main.sts"` through exactly that name, so an ordinary
+ * `.ts` or `.tsx` file gets the real types of a `.sts` module — from `tsc`,
+ * from an editor, from another project. Without them the only way to consume a
+ * macro module from TypeScript was `declare module "*.sts"` with every export
+ * restated by hand, which the checked-in Next example has to do and which goes
+ * stale the moment a type changes.
+ *
+ * Declarations are emitted from a program of their own, because a project that
+ * leaves emit to a bundler sets `noEmit` and one that emits JavaScript should
+ * not start emitting `.d.ts` into its output as a side effect of asking for
+ * these.
+ */
+function withoutOutputDirectories(
+  compilerOptions: ts.CompilerOptions,
+): ts.CompilerOptions {
+  // These declarations go beside their sources, so the emitter must not be
+  // told to redirect them anywhere. Deleting beats assigning undefined under
+  // exactOptionalPropertyTypes.
+  const rest = { ...compilerOptions };
+  delete rest.outDir;
+  delete rest.declarationDir;
+  delete rest.rootDir;
+  return rest;
+}
+
+function writeSourceDeclarations(options: {
+  readonly virtualBySource: ReadonlyMap<string, string>;
+  readonly virtualFiles: readonly VirtualTypeScriptFile[];
+  readonly project: LoadedSweetProject;
+  readonly writeThrough: boolean;
+  readonly outputs: Map<string, string>;
+}): readonly ts.Diagnostic[] {
+  if (options.virtualBySource.size === 0) return [];
+  const declarationBySource = new Map<string, string>();
+  for (const [source, virtual] of options.virtualBySource) {
+    // `main.sts` is declared by `main.d.sts.ts`, beside it: that is the name
+    // TypeScript looks for, so it cannot go to an output directory.
+    const match = /\.(s[a-z]+)$/u.exec(source);
+    if (match === null) continue;
+    declarationBySource.set(
+      virtual,
+      `${source.slice(0, -match[1]!.length - 1)}.d.${match[1]!}.ts`,
+    );
+  }
+  const emitted = new Map<string, string>();
+  const { program } = createVirtualProgram({
+    rootNames: options.project.typescript.fileNames.map(
+      (fileName) => options.virtualBySource.get(fileName) ?? fileName,
+    ),
+    compilerOptions: {
+      ...withoutOutputDirectories(options.project.typescript.options),
+      noEmit: false,
+      declaration: true,
+      emitDeclarationOnly: true,
+      declarationMap: false,
+    },
+    files: options.virtualFiles,
+    writeThrough: false,
+  });
+  // Only the macro sources get one. An ordinary `.ts` in the project already
+  // has a name TypeScript can resolve, and emitting a second declaration for
+  // it beside the source would be a file nobody asked for.
+  const result = program.emit(
+    undefined,
+    (_fileName, text, _bom, _onError, sourceFiles) => {
+      const virtual = sourceFiles?.[0]?.fileName;
+      const target =
+        virtual === undefined ? undefined : declarationBySource.get(virtual);
+      if (target !== undefined) emitted.set(target, text);
+    },
+    undefined,
+    true,
+  );
+  for (const [fileName, text] of emitted) {
+    options.outputs.set(resolve(fileName).replaceAll("\\", "/"), text);
+    if (options.writeThrough) writeFileSync(fileName, text, "utf8");
+  }
+  return result.diagnostics;
+}
+
 export function runConfiguredProjectCommand(options: {
   readonly command: ConfiguredProjectCommand;
   readonly configPath: string;
@@ -317,6 +402,20 @@ export function runConfiguredProjectCommand(options: {
       ? created.program.emit()
       : undefined;
   diagnostics.push(...(emit?.diagnostics ?? []));
+  if (
+    project.sweet.sourceDeclarations &&
+    options.command === "build" &&
+    diagnostics.length === 0
+  )
+    diagnostics.push(
+      ...writeSourceDeclarations({
+        virtualBySource,
+        virtualFiles,
+        project,
+        writeThrough: options.writeThrough !== false,
+        outputs: created.virtualHost.outputs as Map<string, string>,
+      }),
+    );
   diagnostics = [
     ...remapGeneratedDiagnostics({
       diagnostics,

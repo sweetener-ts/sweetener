@@ -356,10 +356,18 @@ const consumerConfig = (files: readonly string[], emit: boolean): string =>
         moduleResolution: "Bundler",
         strict: true,
         skipLibCheck: true,
+        // What lets an ordinary `.ts` file import a `.sts` one: with this on,
+        // `sourceDeclarations` writes a `main.d.sts.ts` that TypeScript
+        // resolves `./main.sts` through.
+        allowArbitraryExtensions: true,
         ...(emit
           ? { declaration: true, outDir: "dist", rootDir: "src" }
           : { noEmit: true }),
       },
+      // Under a bundler the rest of the app is TypeScript that imports these,
+      // and without declarations beside them `tsc` cannot resolve the import
+      // — which breaks the build script the project already had.
+      sweet: { sourceDeclarations: true },
       files,
     },
     null,
@@ -412,6 +420,7 @@ export function scaffoldIntoProject(options: {
         ? "Run `sweetener build -p sweetener.json` to expand, or see examples/ for a bundler setup."
         : host.wiring.join("\n"),
       "sweetener.json lists the files to expand. Add your own .sts files to it.",
+      "`sweetener build` writes a .d.sts.ts beside each .sts so ordinary TypeScript can import it. Add `*.d.sts.ts` and `*.d.stsx.ts` to .gitignore.",
       "Nothing you already had was modified.",
     ]),
   });

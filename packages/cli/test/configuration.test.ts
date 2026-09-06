@@ -28,6 +28,7 @@ describe("sweet project configuration", () => {
       typescriptVersionPolicy: "compatible-minor",
       macroExtensions: [".stsx", ".sts", ".sts"],
       allowCoreShadowing: true,
+      sourceDeclarations: true,
       trace: "full",
       limits: { maxOutputTokens: 1000, maxMatcherSteps: 500 },
     });
@@ -37,6 +38,7 @@ describe("sweet project configuration", () => {
       typescriptVersionPolicy: "compatible-minor",
       macroExtensions: [".sts", ".stsx"],
       allowCoreShadowing: true,
+      sourceDeclarations: true,
       trace: "full",
       limits: { maxMatcherSteps: 500, maxOutputTokens: 1000 },
     });
