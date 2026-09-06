@@ -10,8 +10,16 @@ import type {
 
 export interface SweetenerFormatOptions {
   readonly filepath?: string | undefined;
+  readonly printWidth?: number | undefined;
   readonly tabWidth?: number | undefined;
   readonly useTabs?: boolean | undefined;
+  readonly semi?: boolean | undefined;
+  readonly singleQuote?: boolean | undefined;
+  readonly jsxSingleQuote?: boolean | undefined;
+  readonly quoteProps?: "as-needed" | "consistent" | "preserve" | undefined;
+  readonly bracketSpacing?: boolean | undefined;
+  readonly bracketSameLine?: boolean | undefined;
+  readonly arrowParens?: "always" | "avoid" | undefined;
   readonly endOfLine?: "lf" | "crlf" | "cr" | "auto" | undefined;
 }
 

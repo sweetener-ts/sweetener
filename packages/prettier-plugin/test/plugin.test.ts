@@ -98,18 +98,127 @@ memoized function Component({ cond = false, id }: FixtureProps) {
   test("never changes the token stream seen by macro matchers", async () => {
     const source = `import { wrapped } from "./macros.sts" for syntax;
 
-wrapped const example = { single: 'quoted' };
+wrapped const example = { single: 'quoted', trailing: [1, 2] };
 `;
     const formatted = await formatSweetenerWithPrettier(source, {
       filepath: "main.sts",
     });
 
-    expect(formatted).toContain("{ single: 'quoted' }");
+    // The item-macro prefix survives, no trailing comma is introduced, and the
+    // string's contents are exactly what they were. Which quote encloses it is
+    // the project's setting, not something a macro matcher should hinge on:
+    // treating a normalized quote as a changed token left every file holding a
+    // single-quoted string unformatted, and said nothing about it.
+    expect(formatted).toContain("wrapped const example");
+    expect(formatted).toContain("[1, 2]");
+    expect(formatted).not.toContain(",\n}");
+    expect(formatted).toContain("quoted");
+  });
+
+  test("keeps the quotes a project asks for", async () => {
+    const source = `import { wrapped } from "./macros.sts" for syntax;
+
+wrapped const example = { single: 'quoted' };
+`;
+    expect(
+      await formatSweetenerWithPrettier(source, {
+        filepath: "main.sts",
+        singleQuote: true,
+      }),
+    ).toContain("{ single: 'quoted' }");
   });
 
   test("rejects structurally malformed input", () => {
     expect(() =>
       formatSweetener("syntax broken {", { filepath: "bad.sts" }),
     ).toThrow(/malformed source/u);
+  });
+});
+
+/**
+ * The guard that keeps Prettier from changing tokens a macro can match used to
+ * count two things it should not have. Prettier inserts a semicolon where the
+ * source relied on automatic insertion, and normalizes quotes to whatever the
+ * project configured; either one made the guard reject the whole formatting
+ * and hand the file back exactly as it came in — silently, so `--check`
+ * reported it as already correct.
+ */
+describe("formatting source that omits semicolons or uses single quotes", () => {
+  const cases: readonly (readonly [string, string, string])[] = [
+    ["a statement with no semicolon", "const   a=1\n", "const a = 1;\n"],
+    [
+      "several statements with no semicolons",
+      "const   a=1\nconst   b=2\n",
+      "const a = 1;\nconst b = 2;\n",
+    ],
+    [
+      "a function body with no semicolons",
+      "function f(  a:number,b:number ){return a+b}\n",
+      "function f(a: number, b: number) {\n  return a + b;\n}\n",
+    ],
+    ["a single-quoted string", "const   a='x'\n", 'const a = "x";\n'],
+    [
+      "the import prologue of the default Vite template",
+      "import { useState } from 'react'\nimport './App.css'\n",
+      'import { useState } from "react";\nimport "./App.css";\n',
+    ],
+  ];
+
+  for (const [description, source, expected] of cases)
+    test(`formats ${description}`, async () => {
+      expect(await formatSweetenerWithPrettier(source)).toBe(expected);
+    });
+
+  test("keeps quotes that would otherwise need escaping", async () => {
+    expect(await formatSweetenerWithPrettier("const   a='say \"hi\"'\n")).toBe(
+      "const a = 'say \"hi\"';\n",
+    );
+  });
+
+  test("expands macro invocations' surroundings all the same", async () => {
+    const source = [
+      'import {twice} from "./macros.sts" for syntax;',
+      "export const   pair:number[]=twice(21)",
+      "function f(  a:number ){return twice(a)}",
+      "",
+    ].join("\n");
+    expect(await formatSweetenerWithPrettier(source)).toBe(
+      [
+        'import { twice } from "./macros.sts" for syntax;',
+        "export const pair: number[] = twice(21);",
+        "function f(a: number) {",
+        "  return twice(a);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+});
+
+/**
+ * The project's own Prettier settings have to reach the inner format call.
+ * Only `trailingComma` is pinned; everything else was dropped, so a `.sts` was
+ * formatted to Prettier's defaults no matter what the repository configured.
+ */
+describe("project Prettier options", () => {
+  test("honours semi: false", async () => {
+    expect(
+      await formatSweetenerWithPrettier("const   a=1\n", { semi: false }),
+    ).toBe("const a = 1\n");
+  });
+
+  test("honours singleQuote", async () => {
+    expect(
+      await formatSweetenerWithPrettier('const   a="x"\n', {
+        singleQuote: true,
+      }),
+    ).toBe("const a = 'x';\n");
+  });
+
+  test("honours printWidth", async () => {
+    const source = "const value = someFunction(alpha, beta, gamma, delta)\n";
+    expect(
+      await formatSweetenerWithPrettier(source, { printWidth: 30 }),
+    ).toContain("\n");
   });
 });
