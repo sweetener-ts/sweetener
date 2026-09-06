@@ -29,7 +29,12 @@ const expandedView = execFileSync(
 const explanation = JSON.parse(
   execFileSync(
     process.execPath,
-    [executable, "explain", `${resolve(directory, "src/main.sts")}:5:43`],
+    [
+      executable,
+      "explain",
+      "--json",
+      `${resolve(directory, "src/main.sts")}:5:43`,
+    ],
     { cwd: directory, encoding: "utf8" },
   ),
 );

@@ -129,6 +129,7 @@
             "npm:@rsbuild/core@2.1.9",
             "npm:@rspack/core@2.1.7",
             "npm:@types/bun@1.2.22",
+            "npm:@typescript/typescript6@6.0.2",
             "npm:bun@1.2.22",
             "npm:esbuild@0.28.1",
             "npm:rolldown@1.2.1",
