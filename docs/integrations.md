@@ -137,13 +137,20 @@ so Bun watch-mode reloads see changes made only to an imported macro module.
 ## Deno tasks
 
 `@sweetener/deno/register` installs Deno's `module.registerHooks`, so Deno runs
-`.sts` directly. Deno resolves a preload by path rather than by package
-specifier, so name the file inside the package:
+`.sts` directly. Name it the way Deno names an npm package:
 
 ```sh
 SWEETENER_CONFIG=./sweetener.json deno run \
-  --import ./node_modules/@sweetener/deno/dist/src/register.js src/main.sts
+  --import npm:@sweetener/deno/register src/main.sts
 ```
+
+A bare `@sweetener/deno/register` is resolved as a path, not as a package, so
+Deno reports the specifier as a missing file. `SWEETENER_CONFIG` names the
+project config, since a preload takes no arguments.
+
+The checked-in example names a path inside the package instead, because it
+links the workspace copy rather than installing one from npm, and `npm:` will
+not reach a linked package.
 
 `deno check` is a separate matter: it parses `.sts` with its own TypeScript
 front end and cannot read macro syntax. The checked-in Deno example therefore

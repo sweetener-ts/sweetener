@@ -100,11 +100,14 @@ const summaries = {
     text: "Run Sweetener sources on Deno, through its module hooks.",
     usage: [
       "```sh",
-      "deno run --import ./node_modules/@sweetener/deno/dist/src/register.js src/main.sts",
+      "SWEETENER_CONFIG=./sweetener.json \\",
+      "  deno run --import npm:@sweetener/deno/register src/main.sts",
       "```",
       "",
-      "`SWEETENER_CONFIG` names the project config, since a preload takes no",
-      "arguments. `deno check` cannot read `.sts`; expand first for that.",
+      "A bare `@sweetener/deno/register` is resolved as a path rather than as a",
+      "package, so name it as npm. `SWEETENER_CONFIG` names the project config,",
+      "since a preload takes no arguments. `deno check` cannot read `.sts`;",
+      "expand first for that.",
     ].join("\n"),
   },
   jest: {

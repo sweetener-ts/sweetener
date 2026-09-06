@@ -49,11 +49,13 @@ import {
 import {
   createGroup,
   createSyntaxSequence,
+  createToken,
   OriginStore,
   type Syntax,
   type SyntaxSequence,
   type TokenSyntax,
   type RootSyntax,
+  type Trivia,
 } from "@sweetener/syntax";
 import {
   resolveSourceMacroImports,
@@ -261,17 +263,60 @@ function definitionRanges(
   return ranges;
 }
 
+/** The leading trivia of a node, or of the token a group opens with. */
+function leadingTriviaOf(syntax: Syntax): readonly Trivia[] {
+  if (syntax.tag === "token") return syntax.leadingTrivia;
+  if (syntax.tag === "group") return syntax.open.leadingTrivia;
+  return [];
+}
+
+/** The node with more layout in front of it than it came with. */
+function withLeadingTrivia(
+  syntax: Syntax,
+  leadingTrivia: readonly Trivia[],
+): Syntax {
+  if (leadingTrivia.length === 0) return syntax;
+  if (syntax.tag === "token")
+    return createToken({
+      ...syntax,
+      leadingTrivia: [...leadingTrivia, ...syntax.leadingTrivia],
+    });
+  if (syntax.tag === "group")
+    return createGroup({
+      ...syntax,
+      open: withLeadingTrivia(syntax.open, leadingTrivia) as TokenSyntax,
+    });
+  return syntax;
+}
+
 function runtimeSyntax(file: ParsedFile, origins: OriginStore) {
   const ranges = compileTimeRanges(file, origins);
-  return createSyntaxSequence(
-    file.root.children.filter((syntax) => {
-      if (syntax.tag === "token" && syntax.kind === "end-of-file") return false;
-      return !ranges.some(
-        ({ start, end }) =>
-          syntax.span.start >= start && syntax.span.end <= end,
+  const kept: Syntax[] = [];
+  // Comments written above a compile-time import describe the module, not the
+  // import: a licence header at the top of a file was deleted from the output
+  // along with the import it happened to sit on. They move to whatever
+  // survives instead. Comments inside the removed construct go with it.
+  let carried: readonly Trivia[] = [];
+  for (const syntax of file.root.children) {
+    if (syntax.tag === "token" && syntax.kind === "end-of-file") continue;
+    const removed = ranges.some(
+      ({ start, end }) => syntax.span.start >= start && syntax.span.end <= end,
+    );
+    if (removed) {
+      const leading = leadingTriviaOf(syntax);
+      // From the first comment to the end, so the line breaks between comments
+      // come too. Keeping only the comments themselves ran two line comments
+      // together, which puts the second inside the first.
+      const first = leading.findIndex(
+        ({ kind }) => kind === "line-comment" || kind === "block-comment",
       );
-    }),
-  );
+      if (first >= 0) carried = [...carried, ...leading.slice(first)];
+      continue;
+    }
+    kept.push(withLeadingTrivia(syntax, carried));
+    carried = [];
+  }
+  return createSyntaxSequence(kept);
 }
 
 function runtimeImportDeclarations(

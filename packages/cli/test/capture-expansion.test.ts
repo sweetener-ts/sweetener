@@ -33,12 +33,12 @@ export syntax unless:stmt {
 }
 `;
 
-function expand(source: string): string {
+function expand(source: string, header = ""): string {
   const directory = mkdtempSync(join(tmpdir(), "sweet-capture-"));
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { duplicate, wrapExpr, unless } from "./macros.sts" for syntax;\n${source}\n`,
+    `${header}import { duplicate, wrapExpr, unless } from "./macros.sts" for syntax;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -104,5 +104,33 @@ describe("macro invocations inside captures", () => {
     );
     expect(short).toContain("[1,1]");
     expect(padded).toContain("[1,1]");
+  });
+});
+
+/**
+ * A comment above a compile-time import describes the module, not the import.
+ *
+ * The import is removed from the generated file, and its leading trivia went
+ * with it — so a licence header at the top of a `.sts`, or any module comment
+ * written above the first `for syntax` import, was deleted from the output.
+ */
+describe("comments above a compile-time import", () => {
+  test("survive the import being removed", () => {
+    const generated = expand(
+      `export const value = duplicate(1);`,
+      `// Copyright someone.\n// All rights reserved.\n`,
+    );
+    expect(generated).toContain("// Copyright someone.");
+    expect(generated).toContain("// All rights reserved.");
+    // On their own lines: run together, the second is inside the first.
+    expect(generated).toMatch(
+      /\/\/ Copyright someone\.\s*\n\s*\/\/ All rights reserved\./u,
+    );
+  });
+
+  test("do not disturb a file that has none", () => {
+    expect(expand(`export const value = duplicate(1);`)).toContain(
+      "[1, 1]".replace(", ", ","),
+    );
   });
 });
