@@ -306,6 +306,32 @@ function writeSourceDeclarations(options: {
   return result.diagnostics;
 }
 
+/**
+ * One message per place, however many copies of it the expansion produced.
+ *
+ * A macro that repeats its argument repeats every error in it: `twice(1)` in a
+ * `string[]` expanded to `[1, 1]`, TypeScript reported both elements, and both
+ * remapped to the same span — the same sentence twice, about one mistake, at
+ * one position.
+ */
+function deduplicateDiagnostics(
+  diagnostics: readonly ts.Diagnostic[],
+): readonly ts.Diagnostic[] {
+  const seen = new Set<string>();
+  return diagnostics.filter((diagnostic) => {
+    const key = JSON.stringify([
+      diagnostic.file?.fileName,
+      diagnostic.start,
+      diagnostic.length,
+      diagnostic.code,
+      ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    ]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function runConfiguredProjectCommand(options: {
   readonly command: ConfiguredProjectCommand;
   readonly configPath: string;
@@ -384,6 +410,12 @@ export function runConfiguredProjectCommand(options: {
   const created = createVirtualProgram({
     rootNames,
     compilerOptions: {
+      // A macro module whose every item is a macro definition expands to
+      // nothing, and TypeScript reads a file with no imports or exports as a
+      // script: the emitted JavaScript was a lone `"use strict";` and the
+      // declaration described a global scope. Every Sweetener source is a
+      // module, so say so unless the project has an opinion.
+      moduleDetection: ts.ModuleDetectionKind.Force,
       ...project.typescript.options,
       ...(options.command === "check" ? { noEmit: true } : {}),
     },
@@ -417,12 +449,14 @@ export function runConfiguredProjectCommand(options: {
       }),
     );
   diagnostics = [
-    ...remapGeneratedDiagnostics({
-      diagnostics,
-      provider: expansionProvider,
-      virtualBySource,
-      target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
-    }),
+    ...deduplicateDiagnostics(
+      remapGeneratedDiagnostics({
+        diagnostics,
+        provider: expansionProvider,
+        virtualBySource,
+        target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
+      }),
+    ),
   ];
   return Object.freeze({
     command: options.command,

@@ -54,6 +54,7 @@ export type CliInvocation =
       readonly command: "explain";
       readonly position: string;
       readonly configPath?: string | undefined;
+      readonly json?: boolean | undefined;
     }
   | { readonly command: "help" }
   | {
@@ -151,7 +152,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     });
   }
   if (command === "explain") {
-    const { positional, configPath } = splitProjectOption(argv.slice(1));
+    const json = argv.includes("--json");
+    const { positional, configPath } = splitProjectOption(
+      argv.slice(1).filter((argument) => argument !== "--json"),
+    );
     if (positional.length !== 1)
       throw new TypeError("explain requires one file:line:column position");
     parseSourcePosition(positional[0]!);
@@ -159,6 +163,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       command,
       position: positional[0]!,
       ...(configPath === undefined ? {} : { configPath }),
+      ...(json ? { json } : {}),
     });
   }
   if (command !== "check" && command !== "build" && command !== "watch")
@@ -224,9 +229,107 @@ Options:
                           it here.
   --yes, -y               For init: write the files rather than listing them.
   --out-dir <dir>         For emit: where to write. Required.
+  --json                  For explain: print the raw origin records instead of
+                          a description.
   --debug                 Print the expansion's internal state after the run.
   -h, --help              Show this.
 `;
+
+/** One-based line and column for a byte offset, the way an editor counts. */
+function lineColumn(text: string, offset: number): string {
+  const before = text.slice(0, Math.max(0, offset));
+  const line = before.split("\n").length;
+  const column = offset - (before.lastIndexOf("\n") + 1) + 1;
+  return `${String(line)}:${String(column)}`;
+}
+
+/** The source line with a caret under the span, the way a compiler shows one. */
+function excerpt(text: string, start: number, end: number): string[] {
+  const lineStart = text.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const lineEnd = text.indexOf("\n", start);
+  const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  const width = Math.max(
+    1,
+    Math.min(end, lineEnd < 0 ? text.length : lineEnd) - start,
+  );
+  return [
+    `  ${line}`,
+    `  ${" ".repeat(Math.max(0, start - lineStart))}${"^".repeat(width)}`,
+  ];
+}
+
+/**
+ * What `explain` says to a person.
+ *
+ * It used to print the raw origin records: interned numeric ids, byte offsets,
+ * and a `sourceId` in place of a file name. That is the shape a tool wants,
+ * and it is still available behind `--json`, but a command called `explain`
+ * should answer in the terms the question was asked in.
+ */
+function describeExplanation(options: {
+  readonly explanation: ReturnType<typeof explainOriginalPosition>;
+  readonly fileName: string;
+  readonly sourceText: string;
+  readonly generatedText: string;
+}): string {
+  const { explanation, fileName, sourceText, generatedText } = options;
+  const lines: string[] = [
+    `${fileName}:${lineColumn(sourceText, explanation.offset)}`,
+    ...excerpt(sourceText, explanation.offset, explanation.offset + 1),
+  ];
+  if (explanation.regions.length === 0) {
+    lines.push("", "This position produced no generated TypeScript.");
+    return `${lines.join("\n")}\n`;
+  }
+  const kinds = new Set(explanation.regions.map(({ kind }) => kind));
+  const stack = explanation.regions.flatMap(
+    ({ expansionStack }) => expansionStack,
+  );
+  lines.push("");
+  if (stack.length === 0) {
+    lines.push("Copied through expansion untouched.");
+  } else {
+    const seen = new Set<unknown>();
+    lines.push("Expanded by:");
+    for (const entry of stack) {
+      if (seen.has(entry.invocationId)) continue;
+      seen.add(entry.invocationId);
+      lines.push(
+        `  ${entry.macroName}, invoked at ${fileName}:${lineColumn(
+          sourceText,
+          entry.origin.start,
+        )}`,
+      );
+    }
+  }
+  lines.push("", "Generated at:");
+  // Layout regions are where the whitespace around a token went. They answer a
+  // question nobody asked here, and there are more of them than of anything
+  // else, so the interesting regions do not get lost among them.
+  const regions = [...explanation.regions]
+    .filter(
+      ({ generatedStart, generatedEnd }) =>
+        generatedText.slice(generatedStart, generatedEnd).trim().length > 0,
+    )
+    .sort((left, right) => left.generatedStart - right.generatedStart);
+  for (const region of regions) {
+    const at = lineColumn(generatedText, region.generatedStart);
+    const text = generatedText
+      .slice(region.generatedStart, region.generatedEnd)
+      .replaceAll("\n", "\\n");
+    lines.push(
+      `  ${at}  ${JSON.stringify(text)}${
+        region.kind === "source" ? "" : ` (${region.kind})`
+      }`,
+    );
+  }
+  if (kinds.has("introduced"))
+    lines.push(
+      "",
+      "`introduced` marks syntax the macro wrote rather than syntax it was given.",
+    );
+  return `${lines.join("\n")}\n`;
+}
 
 export function runCli(options: {
   readonly argv: readonly string[];
@@ -433,27 +536,46 @@ export function runCli(options: {
         );
         return Object.freeze({ exitCode: 1 });
       }
+      const explanation = explainOriginalPosition({
+        sourceId: inspected.sourceId,
+        offset,
+        index: inspected.index,
+        trace: inspected.trace,
+        generatedNames: inspected.generatedNames,
+      });
       options.io.stdout(
-        `${JSON.stringify(
-          explainOriginalPosition({
-            sourceId: inspected.sourceId,
-            offset,
-            index: inspected.index,
-            trace: inspected.trace,
-            generatedNames: inspected.generatedNames,
-          }),
-          null,
-          2,
-        )}\n`,
+        invocation.json === true
+          ? `${JSON.stringify(explanation, null, 2)}\n`
+          : describeExplanation({
+              explanation,
+              fileName,
+              sourceText: inspected.sourceText,
+              generatedText: inspected.generated.text,
+            }),
       );
     }
     return Object.freeze({ exitCode: 0 });
   }
   if (invocation.command === "watch") {
+    // `build: success` on its own said nothing about when it happened or
+    // whether the run was still watching, so a rebuild was indistinguishable
+    // from the first build scrolling past.
+    const time = () =>
+      new Date().toLocaleTimeString(undefined, { hour12: false });
+    let first = true;
     const watch = watchConfiguredProject({
       configPath: invocation.configPath,
       expansionProvider,
-      onResult: report,
+      onResult: (result) => {
+        options.io.stdout(
+          `[${time()}] ${first ? "Building" : "Rebuilding"} ${invocation.configPath}\n`,
+        );
+        first = false;
+        report(result);
+        options.io.stdout(
+          `[${time()}] Watching for changes. Press Ctrl+C to stop.\n`,
+        );
+      },
       ...(options.system === undefined ? {} : { system: options.system }),
     });
     return Object.freeze({ exitCode: watch.result.exitCode, watch });

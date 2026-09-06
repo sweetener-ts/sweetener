@@ -73,7 +73,7 @@ const summaries = {
       "};",
       "```",
       "",
-      "It emits JavaScript. Pass `options.emit: \"typescript\"` when a loader",
+      'It emits JavaScript. Pass `options.emit: "typescript"` when a loader',
       "after this one should strip the types instead.",
     ].join("\n"),
   },
@@ -128,7 +128,7 @@ const summaries = {
       "```ts",
       'import { transformSweetenerFile } from "@sweetener/babel";',
       "",
-      "const result = await transformSweetenerFile(\"src/main.sts\", {",
+      'const result = await transformSweetenerFile("src/main.sts", {',
       "  babel: { presets: [typescript] },",
       "});",
       "```",
@@ -174,7 +174,8 @@ function readmeFor(name, directory) {
     "declarative macros for TypeScript. Alpha: the language version is 1 and the",
     "package interfaces may still change.",
   ];
-  if (summary?.usage !== undefined) lines.push("", "## Usage", "", summary.usage);
+  if (summary?.usage !== undefined)
+    lines.push("", "## Usage", "", summary.usage);
   return `${lines.join("\n")}\n`;
 }
 
@@ -238,7 +239,9 @@ for (const directory of packageDirectories) {
     // the matrix happened to list: an install on 25 or 26 warned about a dozen
     // packages and failed outright under engine-strict, for a runtime the
     // suite passes on. The matrix covers current Node as well as the LTS.
-    engines: { node: ">=24" },
+    // Parcel asks a plugin to declare the Parcel it supports, and warns on
+    // every build when it does not.
+    engines: { node: ">=24", ...(manifest.engines ?? {}) },
     // Provenance is a publish-time flag, not a property of the package.
     // Declaring it here made `npm publish` fail anywhere but a CI with an
     // OIDC token — `Automatic provenance generation not supported for

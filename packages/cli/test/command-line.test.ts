@@ -100,10 +100,21 @@ describe("sweet-ts command line", () => {
       0,
     );
     expect(stdout.pop()).toBe("value");
+    // `--json` is the raw origin records, for a tool.
+    expect(
+      runCli({ ...common, argv: ["explain", "--json", "file.sts:1:2"] })
+        .exitCode,
+    ).toBe(0);
+    expect(JSON.parse(stdout.pop()!)).toMatchObject({ offset: 1 });
+    // Without it, `explain` answers in the terms the question was asked in:
+    // a file and a line, not an interned id and a byte offset.
     expect(
       runCli({ ...common, argv: ["explain", "file.sts:1:2"] }).exitCode,
     ).toBe(0);
-    expect(JSON.parse(stdout.pop()!)).toMatchObject({ offset: 1 });
+    const described = stdout.pop()!;
+    expect(described).toContain("file.sts:1:2");
+    expect(described).toContain("Copied through expansion untouched.");
+    expect(described).not.toContain("queriedSourceId");
     expect(stderr).toEqual([]);
   });
 
@@ -141,7 +152,7 @@ describe("sweet-ts command line", () => {
     expect(runCli({ ...base, argv: ["expand", "file.sts"] }).exitCode).toBe(0);
     expect(stdout.at(-1)).toBe("expanded");
     expect(
-      runCli({ ...base, argv: ["explain", "file.sts:1:1"] }).exitCode,
+      runCli({ ...base, argv: ["explain", "--json", "file.sts:1:1"] }).exitCode,
     ).toBe(0);
     expect(stdout.at(-1)).toContain('"invocations"');
   });
