@@ -95,6 +95,57 @@ describe("source declarations", () => {
     ).toThrow();
   });
 
+  /**
+   * They cannot wait for the project to check.
+   *
+   * A `.ts` file importing a `.sts` one is unresolvable until the declaration
+   * exists, so writing them only after a clean check meant they were never
+   * written at all: the check could not pass without what it refused to
+   * produce, and `sweetener check` reported `Cannot find module "./main.sts"`
+   * for a project that was correct.
+   */
+  test("are written even when the project does not check", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-declarations-first-"));
+    writeFileSync(join(directory, "macros.sts"), macros, "utf8");
+    writeFileSync(join(directory, "main.sts"), main, "utf8");
+    writeFileSync(
+      join(directory, "consumer.ts"),
+      `import { pair } from "./main.sts";\nexport const wrong: string = pair;\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          allowArbitraryExtensions: true,
+          noEmit: true,
+        },
+        sweet: { macroExtensions: [".sts"], sourceDeclarations: true },
+        files: ["macros.sts", "main.sts", "consumer.ts"],
+      }),
+      "utf8",
+    );
+    const result = runConfiguredProjectCommand({
+      command: "build",
+      configPath: join(directory, "tsconfig.json"),
+    });
+    // The project has a real error in it, and the declaration is still there.
+    expect(result.exitCode).toBe(1);
+    expect(readFileSync(join(directory, "main.d.sts.ts"), "utf8")).toContain(
+      "export declare const pair",
+    );
+    // And the error is the assignment, not an unresolved module.
+    const messages = result.diagnostics.map(({ messageText }) =>
+      String(messageText),
+    );
+    expect(messages.join("\n")).toContain("not assignable");
+    expect(messages.join("\n")).not.toContain("Cannot find module");
+  });
+
   /** The point of the exercise: plain `tsc` reads them, and checks against them. */
   test("lets ordinary TypeScript import the macro module, with real types", () => {
     const { directory } = project(

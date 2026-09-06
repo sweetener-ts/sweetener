@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, relative } from "node:path";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -238,6 +238,15 @@ function sourceMapComposerFor(
  * not start emitting `.d.ts` into its output as a side effect of asking for
  * these.
  */
+/** A declaration only gets rewritten when it changed, so watchers stay quiet. */
+function readFileIfPresent(fileName: string): string | undefined {
+  try {
+    return readFileSync(fileName, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function withoutOutputDirectories(
   compilerOptions: ts.CompilerOptions,
 ): ts.CompilerOptions {
@@ -256,9 +265,8 @@ function writeSourceDeclarations(options: {
   readonly virtualFiles: readonly VirtualTypeScriptFile[];
   readonly project: LoadedSweetProject;
   readonly writeThrough: boolean;
-  readonly outputs: Map<string, string>;
-}): readonly ts.Diagnostic[] {
-  if (options.virtualBySource.size === 0) return [];
+}): void {
+  if (options.virtualBySource.size === 0) return;
   const declarationBySource = new Map<string, string>();
   for (const [source, virtual] of options.virtualBySource) {
     // `main.sts` is declared by `main.d.sts.ts`, beside it: that is the name
@@ -288,7 +296,10 @@ function writeSourceDeclarations(options: {
   // Only the macro sources get one. An ordinary `.ts` in the project already
   // has a name TypeScript can resolve, and emitting a second declaration for
   // it beside the source would be a file nobody asked for.
-  const result = program.emit(
+  // Whatever TypeScript says about the sources is reported by the program that
+  // checks them, mapped back to the `.sts`. Reporting it here as well would
+  // say it twice, in terms of a virtual file.
+  program.emit(
     undefined,
     (_fileName, text, _bom, _onError, sourceFiles) => {
       const virtual = sourceFiles?.[0]?.fileName;
@@ -299,11 +310,10 @@ function writeSourceDeclarations(options: {
     undefined,
     true,
   );
-  for (const [fileName, text] of emitted) {
-    options.outputs.set(resolve(fileName).replaceAll("\\", "/"), text);
-    if (options.writeThrough) writeFileSync(fileName, text, "utf8");
-  }
-  return result.diagnostics;
+  if (!options.writeThrough) return;
+  for (const [fileName, text] of emitted)
+    if (readFileIfPresent(fileName) !== text)
+      writeFileSync(fileName, text, "utf8");
 }
 
 /**
@@ -406,6 +416,18 @@ export function runConfiguredProjectCommand(options: {
   const rootNames = project.typescript.fileNames.map(
     (fileName) => virtualBySource.get(fileName) ?? fileName,
   );
+  // Before the program that checks the project, not after it. These are what
+  // TypeScript resolves a `./main.sts` import through, so a `.ts` file that
+  // imports one cannot be checked until they exist — and writing them only
+  // once the check passed meant they were never written, because the check
+  // could not pass without them.
+  if (project.sweet.sourceDeclarations)
+    writeSourceDeclarations({
+      virtualBySource,
+      virtualFiles,
+      project,
+      writeThrough: options.writeThrough !== false,
+    });
   const composer = sourceMapComposerFor(expansionProvider, virtualBySource);
   const created = createVirtualProgram({
     rootNames,
@@ -434,20 +456,6 @@ export function runConfiguredProjectCommand(options: {
       ? created.program.emit()
       : undefined;
   diagnostics.push(...(emit?.diagnostics ?? []));
-  if (
-    project.sweet.sourceDeclarations &&
-    options.command === "build" &&
-    diagnostics.length === 0
-  )
-    diagnostics.push(
-      ...writeSourceDeclarations({
-        virtualBySource,
-        virtualFiles,
-        project,
-        writeThrough: options.writeThrough !== false,
-        outputs: created.virtualHost.outputs as Map<string, string>,
-      }),
-    );
   diagnostics = [
     ...deduplicateDiagnostics(
       remapGeneratedDiagnostics({
