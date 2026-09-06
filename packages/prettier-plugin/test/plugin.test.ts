@@ -307,3 +307,46 @@ describe("importing a macro that is not named by an identifier", () => {
     ).toContain(`import { twice, (|>) } from "./ops.sts" for syntax;`);
   });
 });
+
+/**
+ * The stand-in for a compile-time import is written as an import-attributes
+ * clause, and Prettier prints it under the project's own settings: `semi:
+ * false` drops its semicolon, `singleQuote` rewrites its quotes. Restoration
+ * searched for the text as written, found nothing, and returned the file
+ * untouched — which is every file with a compile-time import in it, in any
+ * project configured either way.
+ */
+describe("a compile-time import under the project's own Prettier settings", () => {
+  const source = [
+    "import {twice, (|>)} from './macros.sts' for syntax",
+    "const   x=twice(21)",
+    "",
+  ].join("\n");
+
+  const settings: readonly (readonly [
+    string,
+    { semi?: boolean; singleQuote?: boolean },
+  ])[] = [
+    ["defaults", {}],
+    ["semi: false", { semi: false }],
+    ["singleQuote", { singleQuote: true }],
+    ["both", { semi: false, singleQuote: true }],
+  ];
+
+  for (const [description, options] of settings)
+    test(`formats with ${description}`, async () => {
+      const formatted = await formatSweetenerWithPrettier(source, options);
+      expect(formatted).toContain("for syntax");
+      expect(formatted).toContain("(|>)");
+      // The statement below the import keeps its own line.
+      expect(formatted).toMatch(/for syntax\n/u);
+      expect(formatted).toMatch(
+        options.semi === false
+          ? /const x = twice\(21\)\n/u
+          : /const x = twice\(21\);/u,
+      );
+      expect(await formatSweetenerWithPrettier(formatted, options)).toBe(
+        formatted,
+      );
+    });
+});

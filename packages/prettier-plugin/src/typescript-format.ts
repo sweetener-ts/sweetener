@@ -7,9 +7,24 @@ import {
 
 interface Mask {
   readonly marker: string;
+  /**
+   * What the marker looks like after Prettier has printed it.
+   *
+   * The import stand-in is written as an import-attributes clause, and
+   * Prettier prints it under the project's own settings: `semi: false` drops
+   * its semicolon and `singleQuote` rewrites its quotes. Searching for the
+   * text as written then found nothing, restoration gave up, and the file came
+   * back unformatted — for every file with a compile-time import in it, in any
+   * project configured either of those ways.
+   */
+  readonly pattern: RegExp;
   readonly original: string;
   readonly start: number;
   readonly end: number;
+}
+
+function literalPattern(text: string): RegExp {
+  return new RegExp(text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, "\\$&"), "gu");
 }
 
 interface TokenFingerprint {
@@ -203,6 +218,21 @@ function unspellableBinding(syntax: Syntax): boolean {
   return syntax.tag === "token" && syntax.kind === "keyword";
 }
 
+/** A mask whose marker Prettier prints back exactly as it was given. */
+function textMask(
+  marker: string,
+  source: string,
+  span: { readonly start: number; readonly end: number },
+): Mask {
+  return {
+    marker,
+    pattern: literalPattern(marker),
+    original: source.slice(span.start, span.end),
+    start: span.start,
+    end: span.end,
+  };
+}
+
 function maskSweetenerSyntax(
   source: string,
   root: RootSyntax,
@@ -250,20 +280,29 @@ function maskSweetenerSyntax(
       if (clause?.tag === "group" && clause.delimiter === "brace")
         for (const binding of clause.children)
           if (unspellableBinding(binding))
-            masks.push({
-              marker: nextBindingMarker(source, masks.length),
-              original: source.slice(binding.span.start, binding.span.end),
-              start: binding.span.start,
-              end: binding.span.end,
-            });
+            masks.push(
+              textMask(
+                nextBindingMarker(source, masks.length),
+                source,
+                binding.span,
+              ),
+            );
       // The replacement keeps a semicolon whether or not the source had one:
       // it stands in for an import in a position where TypeScript expects a
       // statement, and the original text goes back verbatim afterwards.
       // Kept short for the same reason the binding stand-ins are: it occupies
       // the width of `for syntax;` while Prettier decides where to wrap.
-      const marker = `with { type: "__swi${String(masks.length)}__" };`;
+      const name = `__swi${String(masks.length)}__`;
+      const marker = `with { type: "${name}" };`;
       masks.push({
         marker,
+        pattern: new RegExp(
+          // Horizontal space only before the optional semicolon: \s* would
+          // swallow the line break after it, and putting the original back
+          // then joined the import to the statement below it.
+          `with\\s*\\{\\s*type\\s*:\\s*['"]${name}['"]\\s*,?\\s*\\}[^\\S\\n]*;?`,
+          "gu",
+        ),
         original: source.slice(firstNode.span.start, lastNode.span.end),
         start: firstNode.span.start,
         end: lastNode.span.end,
@@ -295,12 +334,7 @@ function maskSweetenerSyntax(
       !declarations.has(tokenRaw(declaration) ?? "")
     )
       continue;
-    masks.push({
-      marker: nextMarker(source, masks.length),
-      original: prefix.raw,
-      start: prefix.span.start,
-      end: prefix.span.end,
-    });
+    masks.push(textMask(nextMarker(source, masks.length), source, prefix.span));
   }
 
   let masked = source;
@@ -315,13 +349,16 @@ function restoreSweetenerSyntax(
 ): string | undefined {
   let restored = formatted;
   for (const mask of masks) {
-    const first = restored.indexOf(mask.marker);
-    if (first < 0 || restored.indexOf(mask.marker, first + 1) >= 0)
-      return undefined;
+    mask.pattern.lastIndex = 0;
+    const found = [...restored.matchAll(mask.pattern)];
+    // Exactly one, or the text this puts back would land somewhere it was
+    // never taken from.
+    const match = found.length === 1 ? found[0] : undefined;
+    if (match?.index === undefined) return undefined;
     restored =
-      restored.slice(0, first) +
+      restored.slice(0, match.index) +
       mask.original +
-      restored.slice(first + mask.marker.length);
+      restored.slice(match.index + match[0].length);
   }
   return restored;
 }
