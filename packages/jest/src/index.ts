@@ -4,6 +4,7 @@ import { transformAsync } from "@babel/core";
 import typescript from "@babel/preset-typescript";
 import {
   createSweetenerSession,
+  describeDiagnostics,
   discoverSweetConfig,
   loadSweetProject,
 } from "@sweetener/compiler";
@@ -64,11 +65,7 @@ const transformer = {
         mode: "test",
       });
       if (expanded.diagnostics.length > 0)
-        throw new Error(
-          expanded.diagnostics
-            .map(({ messageText }) => String(messageText))
-            .join("\n"),
-        );
+        throw new Error(describeDiagnostics(expanded.diagnostics));
       const babel = await transformAsync(expanded.code, {
         filename: expanded.virtualFilename,
         presets: [typescript],

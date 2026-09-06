@@ -41,6 +41,22 @@ function namedGroup(node: Syntax | undefined): node is GroupSyntax {
   return node?.tag === "group" && node.delimiter === "brace";
 }
 
+/**
+ * Whether an import with no semicolon after it ends here anyway.
+ *
+ * Every other statement may end at a line break, and a compile-time import
+ * that insisted on a semicolon could not be written at all in a project that
+ * does without them — which the default Vite template is, so the first import
+ * anyone wrote in one was rejected.
+ */
+function automaticTerminator(node: Syntax | undefined): boolean {
+  if (node === undefined) return true;
+  const first = node.tag === "group" ? node.open : node;
+  if (first.tag !== "token") return false;
+  if (first.kind === "end-of-file") return true;
+  return first.leadingTrivia.some((trivia) => trivia.hasLineBreak);
+}
+
 function importName(
   node: Syntax | undefined,
 ): { readonly value: string; readonly origin: OriginId } | undefined {
@@ -112,7 +128,13 @@ export function parseCompileTimeSyntaxImports(
     const coreKeyword = nodes[index + 7];
     const shadowsCore =
       token(shadowsKeyword, "shadows") && token(coreKeyword, "core");
-    const semicolon = nodes[index + (shadowsCore ? 8 : 6)];
+    const width = shadowsCore ? 8 : 6;
+    const terminator = nodes[index + width];
+    const semicolon = token(terminator, ";") ? terminator : undefined;
+    const terminated =
+      semicolon !== undefined || automaticTerminator(terminator);
+    // Where the import ends when nothing terminates it explicitly.
+    const lastWord = shadowsCore ? coreKeyword : syntaxKeyword;
     const isSyntaxImport =
       token(forKeyword, "for") || token(syntaxKeyword, "syntax");
     if (!isSyntaxImport) continue;
@@ -126,18 +148,18 @@ export function parseCompileTimeSyntaxImports(
       typeof specifier.value !== "string" ||
       !token(forKeyword, "for") ||
       !token(syntaxKeyword, "syntax") ||
-      !token(semicolon, ";")
+      !terminated
     ) {
       diagnostics.push(
         macroLanguageDiagnosticRegistry.create(malformedSyntaxImportCode, {
           primaryOrigin: {
             sourceId: options.sourceId,
             start: start.span.start,
-            end: (semicolon ?? syntaxKeyword ?? start).span.end,
+            end: (terminator ?? syntaxKeyword ?? start).span.end,
             originId: start.origin,
           },
           messageArguments: [
-            "expected named bindings, module string, `for syntax`, optional `shadows core`, and semicolon",
+            "expected named bindings, module string, `for syntax`, and optional `shadows core`",
           ],
         }),
       );
@@ -151,11 +173,11 @@ export function parseCompileTimeSyntaxImports(
         origin: start.origin,
         span: Object.freeze({
           start: start.span.start,
-          end: semicolon.span.end,
+          end: (semicolon ?? lastWord ?? start).span.end,
         }),
       }),
     );
-    index += shadowsCore ? 8 : 6;
+    index += semicolon === undefined ? width - 1 : width;
   }
   return Object.freeze({
     imports: Object.freeze(imports),

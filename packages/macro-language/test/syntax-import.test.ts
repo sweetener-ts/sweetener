@@ -60,3 +60,67 @@ describe("compile-time syntax imports", () => {
     ]);
   });
 });
+
+/**
+ * A compile-time import ends where any other statement ends.
+ *
+ * Requiring the semicolon meant a project that does without them could not
+ * write one at all — and the default Vite template is such a project, so the
+ * very first import anyone added to one was rejected, with a message that
+ * listed what was expected and no line to look at.
+ */
+describe("a syntax import without a semicolon", () => {
+  test("ends at a line break", () => {
+    const result = parse(
+      `import { doForm } from "./language.sts" for syntax\n\nconst answer = doForm(42)\n`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.imports).toMatchObject([{ specifier: "./language.sts" }]);
+  });
+
+  test("ends at a line break before another import", () => {
+    const result = parse(
+      `import { doForm } from "./language.sts" for syntax\nimport "./side.css"\n`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.imports).toMatchObject([{ specifier: "./language.sts" }]);
+  });
+
+  test("ends at the end of the file", () => {
+    const result = parse(`import { doForm } from "./language.sts" for syntax`);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.imports).toMatchObject([{ specifier: "./language.sts" }]);
+  });
+
+  test("ends at a line break after shadows core", () => {
+    const result = parse(
+      `import { typeof } from "./forms.sts" for syntax shadows core\n\nconst kind = typeof 1\n`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.imports).toMatchObject([
+      { specifier: "./forms.sts", shadowsCore: true },
+    ]);
+  });
+
+  test("covers only itself, so what follows still expands", () => {
+    const result = parse(
+      `import { doForm } from "./language.sts" for syntax\nconst answer = doForm(42)\n`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    const [only] = result.imports;
+    expect(
+      `import { doForm } from "./language.sts" for syntax\nconst answer = doForm(42)\n`.slice(
+        only!.span.start,
+        only!.span.end,
+      ),
+    ).toBe(`import { doForm } from "./language.sts" for syntax`);
+  });
+
+  test("still refuses one that runs into the next statement", () => {
+    const result = parse(
+      `import { doForm } from "./language.sts" for syntax const answer = 1;`,
+    );
+    expect(result.imports).toEqual([]);
+    expect(result.diagnostics).toMatchObject([{ code: "SWR2019" }]);
+  });
+});

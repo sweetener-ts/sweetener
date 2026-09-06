@@ -1,4 +1,8 @@
-import { createSweetenerSession, stripTypes } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+  stripTypes,
+} from "@sweetener/compiler";
 import { createUnplugin } from "unplugin";
 
 export interface SweetenerPluginOptions {
@@ -70,15 +74,8 @@ export const sweetenerUnplugin = createUnplugin<
         });
         for (const dependency of result.dependencies)
           this.addWatchFile(dependency);
-        if (result.diagnostics.length > 0) {
-          const message = result.diagnostics
-            .map(
-              ({ code: diagnosticCode, messageText }) =>
-                `SWR${String(diagnosticCode)} ${String(messageText)}`,
-            )
-            .join("\n");
-          this.error(message);
-        }
+        if (result.diagnostics.length > 0)
+          this.error(describeDiagnostics(result.diagnostics));
         const emitted = stripsTypeScript.has(meta.framework)
           ? stripTypes(result, {
               filename,

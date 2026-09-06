@@ -1,40 +1,9 @@
-import { createSweetenerSession, stripTypes } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+  stripTypes,
+} from "@sweetener/compiler";
 import type { LoaderContext } from "webpack";
-
-/**
- * A macro failure with the place it happened, the way the command line reports
- * it. Reporting only the message left someone with an error and no line.
- */
-function describeDiagnostics(
-  diagnostics: readonly {
-    readonly file?:
-      | {
-          readonly fileName: string;
-          getLineAndCharacterOfPosition(position: number): {
-            line: number;
-            character: number;
-          };
-        }
-      | undefined;
-    readonly start?: number | undefined;
-    readonly code?: number | string | undefined;
-    readonly messageText: unknown;
-  }[],
-): string {
-  return diagnostics
-    .map((diagnostic) => {
-      const code =
-        diagnostic.code === undefined ? "" : `TS${String(diagnostic.code)}: `;
-      const message = `${code}${String(diagnostic.messageText)}`;
-      if (diagnostic.file === undefined || diagnostic.start === undefined)
-        return message;
-      const at = diagnostic.file.getLineAndCharacterOfPosition(
-        diagnostic.start,
-      );
-      return `${diagnostic.file.fileName}:${String(at.line + 1)}:${String(at.character + 1)} ${message}`;
-    })
-    .join("\n");
-}
 
 export interface SweetenerLoaderOptions {
   readonly configFile?: string | undefined;

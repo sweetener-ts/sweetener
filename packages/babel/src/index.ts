@@ -4,7 +4,10 @@ import {
   type FileResult,
   type InputOptions,
 } from "@babel/core";
-import { createSweetenerSession } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+} from "@sweetener/compiler";
 
 export interface SweetenerBabelOptions {
   readonly configFile?: string | undefined;
@@ -24,11 +27,7 @@ export async function transformSweetenerFile(
       mode: "production",
     });
     if (expanded.diagnostics.length > 0)
-      throw new Error(
-        expanded.diagnostics
-          .map(({ messageText }) => String(messageText))
-          .join("\n"),
-      );
+      throw new Error(describeDiagnostics(expanded.diagnostics));
     const transformed = await transformAsync(expanded.code, {
       ...options.babel,
       filename: expanded.virtualFilename,
