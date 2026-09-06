@@ -11,8 +11,19 @@ export const invalidMacroContextCode = diagnosticCode("SWR4008");
 export const unresolvedBindingLiteralCode = diagnosticCode("SWR4009");
 export const duplicateMacroDefinitionCode = diagnosticCode("SWR4010");
 export const uncategorizedExpansionCode = diagnosticCode("SWR4011");
+export const unreadableItemCode = diagnosticCode("SWR4012");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
+  {
+    code: unreadableItemCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Syntax the enforester cannot read is passed through untouched, which is only safe while it invokes no macro. Passing an invocation through would emit a call to a name that expansion removes.",
+    format: (arguments_) =>
+      `Sweetener could not read this item, so ${String(arguments_[0] ?? "a macro")} in it was left unexpanded. Its compile-time import does not survive into the output, so the emitted code would call a name that does not exist.`,
+  },
   {
     code: uncategorizedExpansionCode,
     owner: "expansion-enforestation",

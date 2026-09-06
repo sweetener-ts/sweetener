@@ -1020,9 +1020,24 @@ class ItemConsumer implements SyntaxConsumer {
     if (variable !== undefined) return variable;
     if (itemStarts.has(raw(first) ?? "")) {
       const children: Syntax[] = [];
-      const headWords = Array.from({ length: 4 }, (_, offset) =>
-        raw(cursor.peek(offset)),
-      ).filter((word): word is string => word !== undefined);
+      // Only this item's own head decides whether it ends at a block. The
+      // lookahead used to run a fixed four nodes and so read into whatever
+      // followed: `import "./x"` with no semicolon saw the `function` of the
+      // next declaration, concluded it was itself a block item, and failed for
+      // having no body. Stop where the consumption loop below stops.
+      const headWords: string[] = [];
+      for (let offset = 0; offset < 4; offset += 1) {
+        const node = cursor.peek(offset);
+        if (node === undefined) break;
+        if (
+          offset > 0 &&
+          leadingLineBreak(node) &&
+          itemStarts.has(raw(node) ?? "")
+        )
+          break;
+        const word = raw(node);
+        if (word !== undefined) headWords.push(word);
+      }
       const endsAtBlock = headWords.some((word) => blockItemHeads.has(word));
       while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
         checkWork(context);

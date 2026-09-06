@@ -1,5 +1,9 @@
 import { EnforestationError } from "./enforestation-error.js";
 import {
+  expansionDiagnosticRegistry,
+  unreadableItemCode,
+} from "./diagnostics.js";
+import {
   bindingMacroResolver,
   createBindingConsumer,
   createJsxChildConsumer,
@@ -153,6 +157,13 @@ export function createExpansionFrontendSession(
   const expansionStore = new ExpansionEnvironmentStore();
   const operatorTraces: MacroTraceEvent[] = [];
   const operatorDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
+    [];
+  /**
+   * Reported when recovery passed syntax through that still invokes a macro.
+   * Separate from the operator list only so that resetting one per expansion
+   * does not depend on the other.
+   */
+  const recoveryDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
     [];
   const expansionEnvironmentByModule = new Map(
     modules.map((module) => {
@@ -702,6 +713,106 @@ export function createExpansionFrontendSession(
     });
   };
 
+  /** The macro names a file's own text can invoke: its own and its imports. */
+  const macroSpellingsInScope = (): ReadonlySet<string> =>
+    new Set([
+      ...options.module.macros.map(({ binding }) => binding.spelling),
+      ...(options.importedBindings?.keys() ?? []),
+    ]);
+
+  const rawText = (syntax: Syntax | undefined): string | undefined =>
+    syntax?.tag === "token" ? syntax.raw : undefined;
+
+  const leadingItemBoundary = (syntax: Syntax): boolean => {
+    const first = syntax.tag === "group" ? syntax.open : syntax;
+    return (
+      first.tag === "token" &&
+      first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
+    );
+  };
+
+  /**
+   * Macro invocations that recovery passed through, by the origin of the token
+   * naming them. Recovering an item does not by itself mean the macro in it
+   * goes unexpanded — a binder macro in a `const` initializer, for instance, is
+   * recovered and then still dispatched — so nothing is reported here. These
+   * are the candidates the check after expansion looks for in the output.
+   */
+  const recoveredMacroNames = new Map<OriginId, string>();
+
+  const noteRecoveredMacros = (raw: readonly Syntax[]): void => {
+    const spellings = macroSpellingsInScope();
+    if (spellings.size === 0) return;
+    const visit = (node: Syntax): void => {
+      if (node.tag === "token") {
+        if (node.kind === "identifier" && spellings.has(node.raw))
+          recoveredMacroNames.set(node.origin, node.raw);
+        return;
+      }
+      if (node.tag === "group") for (const child of node.children) visit(child);
+    };
+    for (const node of raw) visit(node);
+  };
+
+  /**
+   * Passing syntax through untouched is only safe while it invokes no macro.
+   * A compile-time import never reaches the output, so an invocation still
+   * standing in the expanded syntax emits a call to a name nothing defines —
+   * and doing that in silence is how a build reported success and shipped a
+   * runtime error. Checked against what expansion actually produced, so a
+   * recovered invocation that some other consumer went on to expand is not
+   * reported.
+   */
+  const reportSurvivingMacros = (
+    syntax: SyntaxSequence,
+    reportedAlready: readonly ExpandMacroSyntaxResult["diagnostics"][number][],
+  ): void => {
+    if (recoveredMacroNames.size === 0) return;
+    const reported = new Set<OriginId>();
+    // An invocation that failed to expand for a reason expansion already
+    // described — no rule matched, say — is not a silent miscompile, and
+    // saying so twice helps nobody. Only speak where nothing else did.
+    const described = ({
+      sourceId,
+      start,
+      end,
+    }: ReturnType<typeof originOfSyntax>) =>
+      reportedAlready.some(
+        (diagnostic) =>
+          diagnostic.primaryOrigin.sourceId === sourceId &&
+          diagnostic.primaryOrigin.start <= end &&
+          diagnostic.primaryOrigin.end >= start,
+      );
+    const visit = (node: Syntax): void => {
+      if (node.tag === "token") {
+        if (recoveredMacroNames.get(node.origin) !== node.raw) return;
+        if (reported.has(node.origin)) return;
+        if (described(originOfSyntax(node))) return;
+        reported.add(node.origin);
+        recoveryDiagnostics.push(
+          expansionDiagnosticRegistry.create(unreadableItemCode, {
+            primaryOrigin: originOfSyntax(node),
+            messageArguments: [node.raw],
+          }),
+        );
+        return;
+      }
+      if ("children" in node)
+        for (const child of node.children) visit(child as Syntax);
+    };
+    for (const node of syntax) visit(node);
+  };
+
+  const originOfSyntax = (node: Syntax) => {
+    const selected = options.origins.selectPrimarySource(node.origin);
+    return {
+      sourceId: selected?.sourceId ?? options.sourceId,
+      start: selected?.span.start ?? node.span.start,
+      end: selected?.span.end ?? node.span.end,
+      originId: node.origin,
+    };
+  };
+
   const prepareInput = (
     syntax: SyntaxSequence,
     category: SyntaxCategory,
@@ -766,9 +877,21 @@ export function createExpansionFrontendSession(
           const next = fallback.consume()!;
           raw.push(next);
           if (next.tag === "token" && next.raw === ";") break;
+          // Recovery used to run to the next top-level semicolon, and a file
+          // whose remaining semicolons all sat inside braces had the whole
+          // rest of itself swallowed by one unreadable item. An item start on
+          // a new line ends the damage where the next item begins.
+          const following = fallback.peek();
+          if (
+            following !== undefined &&
+            leadingItemBoundary(following) &&
+            definiteItemStarts.has(rawText(following) ?? "")
+          )
+            break;
         }
         if (raw.length === 0)
           throw new TypeError("source file contains an unenforestable item");
+        noteRecoveredMacros(raw);
         cursor.advance(fallback.index - cursor.index);
         prepared.push(fallbackItem(raw));
         continue;
@@ -813,6 +936,8 @@ export function createExpansionFrontendSession(
     ): ExpandMacroSyntaxResult => {
       operatorTraces.length = 0;
       operatorDiagnostics.length = 0;
+      recoveryDiagnostics.length = 0;
+      recoveredMacroNames.clear();
       const result = expandMacroSyntax({
         module: options.module,
         sourceId: options.sourceId,
@@ -998,9 +1123,14 @@ export function createExpansionFrontendSession(
           };
         },
       });
+      reportSurvivingMacros(result.syntax, [
+        ...operatorDiagnostics,
+        ...result.diagnostics,
+      ]);
       const diagnosticKeys = new Set<string>();
       const uniqueDiagnostics = [
         ...operatorDiagnostics,
+        ...recoveryDiagnostics,
         ...result.diagnostics,
       ].filter((diagnostic) => {
         const key = JSON.stringify([
