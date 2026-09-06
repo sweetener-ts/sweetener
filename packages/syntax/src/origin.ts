@@ -66,29 +66,64 @@ export class OriginGraphError extends Error {
   override readonly name = "OriginGraphError";
 }
 
+/**
+ * One number standing for a span, or nothing when it will not fit.
+ *
+ * Offsets and lengths below 2^26 — a 67 MB file, with a 67 MB token in it —
+ * pack into a safe integer. Anything larger falls back to a string key, so the
+ * guarantee that one span in one file is one origin does not depend on the
+ * size of the file.
+ */
+const spanKeyLimit = 0x4000000;
+
+function spanKey(start: number, end: number): number | undefined {
+  const length = end - start;
+  if (start >= spanKeyLimit || length >= spanKeyLimit) return undefined;
+  return start * spanKeyLimit + length;
+}
+
 export class OriginStore {
   readonly #ids;
-  readonly #origins = new Map<OriginId, Origin>();
+  /**
+   * Origins by id, in an array rather than a map.
+   *
+   * Ids come from an allocator that counts up from a known start, so the id is
+   * an index. A map cost a hash and a bucket write for every token in the file
+   * to store a dense integer key.
+   */
+  readonly #origins: (Origin | undefined)[] = [];
+  readonly #firstId: number;
+  #count = 0;
   readonly #interned = new Map<string, OriginId>();
-  readonly #sourceIndex = new Map<
-    SourceId,
-    Map<number, Map<number, OriginId>>
-  >();
+  readonly #sourceIndex = new Map<SourceId, Map<number, OriginId>>();
 
   constructor(options: OriginStoreOptions = {}) {
     this.#ids = createIdAllocator<OriginId>(options.startId);
+    this.#firstId = options.startId ?? 1;
+  }
+
+  #store(id: OriginId, origin: Origin): void {
+    this.#origins[id - this.#firstId] = origin;
+    this.#count += 1;
+  }
+
+  #read(id: OriginId): Origin | undefined {
+    const index = id - this.#firstId;
+    return index >= 0 && index < this.#origins.length
+      ? this.#origins[index]
+      : undefined;
   }
 
   get size(): number {
-    return this.#origins.size;
+    return this.#count;
   }
 
   has(id: OriginId): boolean {
-    return this.#origins.has(id);
+    return this.#read(id) !== undefined;
   }
 
   get(id: OriginId): Origin | undefined {
-    return this.#origins.get(id);
+    return this.#read(id);
   }
 
   source(sourceId: SourceId, span: Span): OriginId {
@@ -97,20 +132,29 @@ export class OriginStore {
     // built-up string meant allocating and hashing a key per token only to
     // miss on it. Nesting maps on the numbers keeps the same guarantee, that
     // one span in one file is one origin, without the key.
-    let byStart = this.#sourceIndex.get(sourceId);
-    if (byStart === undefined) {
-      byStart = new Map();
-      this.#sourceIndex.set(sourceId, byStart);
+    let spans = this.#sourceIndex.get(sourceId);
+    if (spans === undefined) {
+      spans = new Map();
+      this.#sourceIndex.set(sourceId, spans);
     }
-    let byEnd = byStart.get(span.start);
-    if (byEnd === undefined) {
-      byEnd = new Map();
-      byStart.set(span.start, byEnd);
+    // One number for the pair rather than a map per start offset. Since a
+    // token's span hardly ever repeats, the inner map held a single entry and
+    // allocating it cost a Map for every token in the file.
+    const key = spanKey(span.start, span.end);
+    if (key !== undefined) {
+      const existing = spans.get(key);
+      if (existing !== undefined) return existing;
     }
-    const existing = byEnd.get(span.end);
-    if (existing !== undefined) return existing;
+    const fallbackKey =
+      key === undefined
+        ? `${String(sourceId)}:${String(span.start)}:${String(span.end)}`
+        : undefined;
+    if (fallbackKey !== undefined) {
+      const existing = this.#interned.get(fallbackKey);
+      if (existing !== undefined) return existing;
+    }
     const id = this.#ids.allocate();
-    this.#origins.set(
+    this.#store(
       id,
       Object.freeze({
         id,
@@ -119,7 +163,8 @@ export class OriginStore {
         span: createSpan(span.start, span.end),
       }),
     );
-    byEnd.set(span.end, id);
+    if (key !== undefined) spans.set(key, id);
+    else this.#interned.set(fallbackKey!, id);
     return id;
   }
 
@@ -227,7 +272,7 @@ export class OriginStore {
   }
 
   #require(id: OriginId): Origin {
-    const origin = this.#origins.get(id);
+    const origin = this.#read(id);
     if (origin === undefined) {
       throw new OriginGraphError(
         `Origin ${String(id)} is not owned by this store; unknown and forward references are forbidden`,
@@ -241,7 +286,7 @@ export class OriginStore {
     if (existing !== undefined) return existing;
     const id = this.#ids.allocate();
     const origin = create(id);
-    this.#origins.set(id, origin);
+    this.#store(id, origin);
     this.#interned.set(key, id);
     return id;
   }

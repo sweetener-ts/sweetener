@@ -47,7 +47,7 @@ export function assertSupportedTypeScriptVersion(version: string): void {
   }
 }
 
-function projectTriviaKind(kind: ts.SyntaxKind): TriviaKind | undefined {
+function computeTriviaKind(kind: ts.SyntaxKind): TriviaKind | undefined {
   switch (kind) {
     case ts.SyntaxKind.WhitespaceTrivia:
     case ts.SyntaxKind.NewLineTrivia:
@@ -65,7 +65,41 @@ function projectTriviaKind(kind: ts.SyntaxKind): TriviaKind | undefined {
   }
 }
 
+/**
+ * Every projection, precomputed once and indexed by syntax kind.
+ *
+ * These two run for every token and every piece of trivia in the file, and
+ * each was a chain of comparisons that ended, for the commonest answers —
+ * keyword and punctuation — only after falling through the whole switch. A
+ * table is one array read. It is built from the same functions below, so the
+ * two cannot drift.
+ */
+const tokenKinds: (TokenKind | undefined)[] = [];
+const triviaKinds: (TriviaKind | undefined)[] = [];
+for (let kind = 0; kind <= ts.SyntaxKind.LastToken; kind += 1) {
+  tokenKinds.push(computeTokenKind(kind, "standard"));
+  triviaKinds.push(computeTriviaKind(kind));
+}
+
 function projectTokenKind(
+  kind: ts.SyntaxKind,
+  mode: LexicalMode,
+): TokenKind | undefined {
+  if (mode === "jsx-tag" && kind === ts.SyntaxKind.Identifier) {
+    return "jsx-identifier";
+  }
+  return kind >= 0 && kind < tokenKinds.length
+    ? tokenKinds[kind]
+    : computeTokenKind(kind, mode);
+}
+
+function projectTriviaKind(kind: ts.SyntaxKind): TriviaKind | undefined {
+  return kind >= 0 && kind < triviaKinds.length
+    ? triviaKinds[kind]
+    : computeTriviaKind(kind);
+}
+
+function computeTokenKind(
   kind: ts.SyntaxKind,
   mode: LexicalMode,
 ): TokenKind | undefined {

@@ -73,14 +73,26 @@ export interface CreateTokenOptions extends SyntaxBaseFields {
   readonly lexicalMode?: LexicalMode;
 }
 
+/** Shared, so the overwhelmingly common empty case allocates nothing. */
+const noTrivia: readonly Trivia[] = Object.freeze([]);
+
 function freezeTrivia(
   trivia: readonly Trivia[] | undefined,
 ): readonly Trivia[] {
+  if (trivia === undefined || trivia.length === 0) return noTrivia;
+  // Trivia that is already immutable is already what this would build. Copying
+  // it anyway rebuilt and re-froze an object per piece of whitespace in the
+  // file, which is one of the largest sources of garbage in a read.
+  if (Object.isFrozen(trivia) && trivia.every(isFrozenTrivia)) return trivia;
   return Object.freeze(
-    (trivia ?? []).map((item) =>
+    trivia.map((item) =>
       createTrivia({ kind: item.kind, raw: item.raw, span: item.span }),
     ),
   );
+}
+
+function isFrozenTrivia(item: Trivia): boolean {
+  return Object.isFrozen(item) && Object.isFrozen(item.span);
 }
 
 function requireFrozenSyntax(

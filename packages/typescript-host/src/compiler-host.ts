@@ -36,6 +36,26 @@ function canonical(fileName: string): string {
   return resolve(fileName).replaceAll("\\", "/");
 }
 
+/**
+ * Parsed default-library files, shared across every program in the process.
+ *
+ * Each program re-read and re-parsed the whole of `lib.es2022.d.ts` and its
+ * dependents — megabytes of declarations — because each got a fresh compiler
+ * host with nothing behind it. They are the same files every time and they do
+ * not change while the process runs: a watch rebuild, a project reference, and
+ * every adapter session paid for them again. The key carries the target so two
+ * projects compiled for different ones do not share a parse.
+ */
+const libraryFiles = new Map<string, ts.SourceFile>();
+const libraryDirectory = canonical(
+  dirname(ts.getDefaultLibFilePath({})),
+).toLowerCase();
+
+/** Whether a path is one of TypeScript's own immutable library declarations. */
+function isLibraryFile(fileName: string): boolean {
+  return canonical(fileName).toLowerCase().startsWith(`${libraryDirectory}/`);
+}
+
 export function createVirtualCompilerHost(options: {
   readonly compilerOptions: ts.CompilerOptions;
   readonly files: readonly VirtualTypeScriptFile[];
@@ -102,13 +122,25 @@ export function createVirtualCompilerHost(options: {
     getSourceFile: (fileName, languageVersion, onError, shouldCreateNew) => {
       const path = canonical(fileName);
       const virtual = files.get(path);
-      if (virtual === undefined)
-        return delegate.getSourceFile(
+      if (virtual === undefined) {
+        const shared =
+          shouldCreateNew !== true && isLibraryFile(fileName)
+            ? `${path}\u0000${JSON.stringify(languageVersion)}`
+            : undefined;
+        if (shared !== undefined) {
+          const cached = libraryFiles.get(shared);
+          if (cached !== undefined) return cached;
+        }
+        const loaded = delegate.getSourceFile(
           fileName,
           languageVersion,
           onError,
           shouldCreateNew,
         );
+        if (shared !== undefined && loaded !== undefined)
+          libraryFiles.set(shared, loaded);
+        return loaded;
+      }
       if (shouldCreateNew !== true) {
         const cached = sourceFiles.get(path);
         if (cached !== undefined) return cached;
