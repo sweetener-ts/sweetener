@@ -1,5 +1,11 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative } from "node:path";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative } from "node:path";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -314,6 +320,52 @@ function writeSourceDeclarations(options: {
   for (const [fileName, text] of emitted)
     if (readFileIfPresent(fileName) !== text)
       writeFileSync(fileName, text, "utf8");
+  removeStaleDeclarations(new Set(emitted.keys()), declarationBySource);
+}
+
+/**
+ * Delete declarations whose source is gone.
+ *
+ * These sit beside the sources rather than in an output directory, and they
+ * are what TypeScript resolves a `./main.sts` import through. A leftover one
+ * therefore does not merely take up space: it keeps answering for a module
+ * that no longer exists, so an import of a deleted file goes on type-checking
+ * until the bundler fails on it.
+ *
+ * Only a `.d.sts.ts` whose own source is missing is removed, and only in a
+ * directory this project has sources in, so nothing another tool put there is
+ * touched.
+ */
+function removeStaleDeclarations(
+  written: ReadonlySet<string>,
+  declarationBySource: ReadonlyMap<string, string>,
+): void {
+  const directories = new Set(
+    [...declarationBySource.values()].map((fileName) => dirname(fileName)),
+  );
+  const declaration = /^(.*)\.d\.(s[a-z]+)\.ts$/u;
+  for (const directory of directories) {
+    let entries: string[];
+    try {
+      entries = readdirSync(directory);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const match = declaration.exec(entry);
+      if (match === null) continue;
+      const fileName = join(directory, entry);
+      if (written.has(fileName)) continue;
+      // The source it stands for, which is the only thing it can be for.
+      if (existsSync(join(directory, `${match[1]!}.${match[2]!}`))) continue;
+      try {
+        rmSync(fileName);
+      } catch {
+        // Another process may have removed it already, which is the outcome
+        // this wanted.
+      }
+    }
+  }
 }
 
 /**

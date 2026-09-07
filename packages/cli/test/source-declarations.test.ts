@@ -146,6 +146,34 @@ describe("source declarations", () => {
     expect(messages.join("\n")).not.toContain("Cannot find module");
   });
 
+  /**
+   * A declaration outlives its source only until the next run.
+   *
+   * These stand beside the sources and are what TypeScript resolves a
+   * `./main.sts` import through, so one left behind keeps answering for a
+   * module that no longer exists: an import of a deleted file goes on
+   * type-checking until the bundler fails on it.
+   */
+  test("removes one whose source has been deleted", () => {
+    const { directory } = project(main);
+    const orphan = join(directory, "gone.d.sts.ts");
+    writeFileSync(orphan, "export declare const gone: number;\n", "utf8");
+    // A declaration whose source is still there is left alone.
+    expect(readFileSync(join(directory, "main.d.sts.ts"), "utf8")).toContain(
+      "pair",
+    );
+
+    runConfiguredProjectCommand({
+      command: "build",
+      configPath: join(directory, "tsconfig.json"),
+    });
+
+    expect(() => readFileSync(orphan, "utf8")).toThrow();
+    expect(readFileSync(join(directory, "main.d.sts.ts"), "utf8")).toContain(
+      "pair",
+    );
+  });
+
   /** The point of the exercise: plain `tsc` reads them, and checks against them. */
   test("lets ordinary TypeScript import the macro module, with real types", () => {
     const { directory } = project(

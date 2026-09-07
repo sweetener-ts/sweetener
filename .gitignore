@@ -23,3 +23,6 @@ examples/*/node_modules/.nitro/
 
 # Local git worktrees
 .worktrees/
+
+# Agent worktrees
+.claude/
