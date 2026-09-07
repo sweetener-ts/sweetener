@@ -199,7 +199,7 @@ function readmeFor(name, directory) {
     "",
     summary.text,
     "",
-    "Part of [Sweetener](https://github.com/jimmyhmiller/sweetener), hygienic",
+    "Part of [Sweetener](https://github.com/sweetener-ts/sweetener), hygienic",
     "declarative macros for TypeScript. Alpha: the language version is 1 and the",
     "package interfaces may still change.",
   ];
@@ -376,11 +376,11 @@ for (const directory of packageDirectories) {
     author: "Jimmy Miller <jimmyhmiller@gmail.com>",
     repository: {
       type: "git",
-      url: "git+https://github.com/jimmyhmiller/sweetener.git",
+      url: "git+https://github.com/sweetener-ts/sweetener.git",
       directory: `packages/${directory}`,
     },
-    homepage: `https://github.com/jimmyhmiller/sweetener/tree/main/packages/${directory}#readme`,
-    bugs: { url: "https://github.com/jimmyhmiller/sweetener/issues" },
+    homepage: `https://github.com/sweetener-ts/sweetener/tree/main/packages/${directory}#readme`,
+    bugs: { url: "https://github.com/sweetener-ts/sweetener/issues" },
     keywords: [
       "sweetener",
       "macros",

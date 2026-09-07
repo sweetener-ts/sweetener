@@ -8,7 +8,7 @@ official TypeScript compiler. Macro-enabled files expand from `.sts` or `.stsx`
 into ordinary TypeScript, with source maps and expansion traces connecting the
 result back to the source.
 
-[Try the playground](https://jimmyhmiller.github.io/sweetener/) — it runs the
+[Try the playground](https://sweetener-ts.github.io/sweetener/) — it runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
 > Sweetener is currently an alpha-stage project. The implementation and local
