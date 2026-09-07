@@ -52,7 +52,7 @@ describe("public compiler session", () => {
     });
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.code).toContain("[21,21]");
+    expect(result.code).toContain("[21, 21]");
     expect(result.virtualFilename).toMatch(/main\.ts$/u);
     expect(result.dependencies).toEqual(
       [fixture.config, fixture.macros, fixture.main]

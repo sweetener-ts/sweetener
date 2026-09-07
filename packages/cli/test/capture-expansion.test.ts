@@ -91,7 +91,7 @@ describe("macro invocations inside captures", () => {
     test(`expands ${description}`, () => {
       const generated = expand(source);
       expect(generated, description).not.toContain("duplicate(");
-      expect(generated, description).toContain("[1,1]");
+      expect(generated, description).toContain("[1, 1]");
     });
 
   test("expansion does not depend on the call site's offset in its file", () => {
@@ -102,8 +102,8 @@ describe("macro invocations inside captures", () => {
     const padded = expand(
       `${"// padding\n".repeat(20)}export const value = wrapExpr(duplicate(1));`,
     );
-    expect(short).toContain("[1,1]");
-    expect(padded).toContain("[1,1]");
+    expect(short).toContain("[1, 1]");
+    expect(padded).toContain("[1, 1]");
   });
 });
 

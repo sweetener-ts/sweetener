@@ -288,13 +288,40 @@ export function createOriginQueryIndex(options: {
           matches.push(candidate);
       }
       // One source offset can be covered by more than one region: the text
-      // itself, and the layout printed around it — separators, trivia,
-      // grouping parens — which carry the same origin. A caller asking where
-      // its source went wants the text, so regions holding it come first.
-      // Most offsets match a single region, which needs no ordering at all.
-      if (matches.length > 1) matches.sort(bySubstanceThenPosition);
+      // itself, and the layout printed around it — trivia, separators, the
+      // parentheses that hold an expression together — which reach this index
+      // under the very same source origin, because the printer gives layout
+      // the origin of what it surrounds rather than minting one per token.
+      //
+      // Only a region carrying the source's own characters is a place that
+      // source went. Layout indexed under a source origin that some region
+      // here already holds the text of is that text's own spacing, not a
+      // second occurrence of it, and reporting it as one made callers ask
+      // what a space means: rename asked TypeScript which binding lived at
+      // the offset of a separator, got no answer, and read the silence as a
+      // second, distinct binding — refusing to rename `[seed, seed]` on the
+      // grounds that the two copies of one written name denoted different
+      // things. So the text speaks for its own layout and the layout drops
+      // out. Layout under a source origin with no text here — a definition's
+      // spacing seen from the definition file — is all that offset has, and
+      // stands.
+      //
+      // Most offsets match a single region, which needs neither filtering nor
+      // ordering at all.
+      let reported: SourceIndexedRegion[] = matches;
+      if (reported.length > 1) {
+        const spokenFor = new Set<OriginId>();
+        for (const match of reported)
+          if (substance(match.region) === 0) spokenFor.add(match.source.id);
+        if (spokenFor.size > 0)
+          reported = reported.filter(
+            (match) =>
+              substance(match.region) === 0 || !spokenFor.has(match.source.id),
+          );
+        reported.sort(bySubstanceThenPosition);
+      }
       return Object.freeze(
-        matches.map(({ region }) =>
+        reported.map(({ region }) =>
           Object.freeze({
             ...plain(region),
             expansionStack: region.expansionStack,

@@ -32,6 +32,7 @@ import {
   type SyntaxSequence,
   type TokenKind,
   type TokenSyntax,
+  type Trivia,
 } from "@sweetener/syntax";
 import type {
   EvaluatedGroup,
@@ -141,7 +142,21 @@ class Instantiator {
       piece.source === "template"
         ? { kind: "template" }
         : { kind: "capture", capture: piece.capture! };
-    return piece.syntax.map((syntax) => this.#clone(syntax, policy));
+    const cloned = piece.syntax.map((syntax) => this.#clone(syntax, policy));
+    // A placeholder carries the template's own layout -- the space in
+    // `[$value, $value]` is trivia on the second `$value` -- and substitution
+    // throws the placeholder away. Handing that layout to the syntax that took
+    // its place is what makes the expansion read the way the template was
+    // written. Syntax that arrived with layout of its own keeps it: that came
+    // from the call site, which is the author's spelling of this very text and
+    // so outranks the template's.
+    const head = cloned[0];
+    return head === undefined || piece.templateLeadingTrivia.length === 0
+      ? cloned
+      : [
+          this.#defaultLeadingTrivia(head, piece.templateLeadingTrivia),
+          ...cloned.slice(1),
+        ];
   }
 
   #groupPiece(piece: EvaluatedGroup): GroupSyntax {
@@ -342,6 +357,44 @@ class Instantiator {
                 ...syntax.children.slice(1),
               ],
             });
+      }
+      default:
+        return syntax;
+    }
+  }
+
+  /**
+   * Gives the first token layout it does not already have, leaving syntax that
+   * brought its own untouched.
+   *
+   * Trivia is not the only way syntax carries its own spacing: the whitespace
+   * between JSX children is text, so a captured child begins with a `jsx-text`
+   * token that already holds the newline the author wrote. Reading only the
+   * trivia there put the template's space in front of that newline and printed
+   * a line ending in one.
+   */
+  #defaultLeadingTrivia(syntax: Syntax, trivia: readonly Trivia[]): Syntax {
+    switch (syntax.tag) {
+      case "token":
+        return syntax.leadingTrivia.length > 0 || /^\s/u.test(syntax.raw)
+          ? syntax
+          : createToken({ ...syntax, leadingTrivia: trivia });
+      case "group":
+        return createGroup({
+          ...syntax,
+          open: this.#defaultLeadingTrivia(syntax.open, trivia) as TokenSyntax,
+        });
+      case "protected":
+      case "root": {
+        const head = syntax.children[0];
+        if (head === undefined) return syntax;
+        const children = [
+          this.#defaultLeadingTrivia(head, trivia),
+          ...syntax.children.slice(1),
+        ];
+        return syntax.tag === "protected"
+          ? createProtectedSyntax({ ...syntax, children })
+          : createRootSyntax({ ...syntax, children });
       }
       default:
         return syntax;

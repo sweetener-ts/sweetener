@@ -11,7 +11,7 @@ export function total(values: readonly number[]): number {
       return inspected_1;
     })(values.reduce((left, right) => left + right, 0));
   {
-      const actual =sum;
+      const actual = sum;
       const bound = 0;
       if (!(actual >= bound)) {
         throw (new globalThis.Error(
@@ -22,7 +22,7 @@ export function total(values: readonly number[]): number {
       }
     }
   {
-      const actual_1 =values.length;
+      const actual_1 = values.length;
       const expected = 3;
       if (!globalThis.Object.is(actual_1, expected)) {
         throw (new globalThis.Error(

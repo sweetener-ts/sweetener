@@ -88,7 +88,7 @@ try {
     mainSourcePath,
     ts.FileWatcherEventKind.Changed,
   );
-  if (!(await rebuilt("[22,22]")))
+  if (!(await rebuilt("[22, 22]")))
     throw new Error("call-site watch edit was not rebuilt");
   writeFileSync(
     macroSourcePath,
@@ -98,7 +98,7 @@ try {
     macroSourcePath,
     ts.FileWatcherEventKind.Changed,
   );
-  if (!(await rebuilt("[22,22,22]")))
+  if (!(await rebuilt("[22, 22, 22]")))
     throw new Error("macro-definition watch edit was not rebuilt");
 } finally {
   watch.close();
@@ -106,7 +106,7 @@ try {
   writeFileSync(macroSourcePath, originalMacros);
 }
 if (!output.includes("build: success")) throw new Error("CLI build failed");
-if (!expandedView.includes("[21,21]"))
+if (!expandedView.includes("[21, 21]"))
   throw new Error("CLI expansion view failed");
 if (explanation.invocations?.[0]?.attemptedRules?.[0]?.status !== "selected")
   throw new Error("CLI expansion explanation failed");

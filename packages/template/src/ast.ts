@@ -14,6 +14,7 @@ import type {
   MissingToken,
   Syntax,
   TokenSyntax,
+  Trivia,
 } from "@sweetener/syntax";
 
 export interface TemplateBase {
@@ -29,6 +30,16 @@ export interface CaptureTemplate extends TemplateBase {
   readonly kind: "capture";
   readonly path: CapturePath;
   readonly shape: CaptureShape;
+  /**
+   * The layout the template author wrote before the placeholder.
+   *
+   * `[$value, $value]` says the second element is spaced from the comma, and
+   * that spacing is written as trivia on the placeholder token -- which
+   * substitution then replaces along with it. Keeping it here lets the
+   * substituted syntax wear it, so the template's own formatting reaches the
+   * expansion instead of being thrown away with the placeholder.
+   */
+  readonly leadingTrivia: readonly Trivia[];
 }
 
 export interface SequenceTemplate extends TemplateBase {
@@ -107,6 +118,8 @@ export interface LocalTemplate extends TemplateBase {
   readonly kind: "local";
   readonly local: FoldLocal;
   readonly fields: readonly CapturePathSegment[];
+  /** The layout written before the placeholder, as on a capture. */
+  readonly leadingTrivia: readonly Trivia[];
 }
 
 export interface FoldTemplate extends TemplateBase {
@@ -142,11 +155,18 @@ export function createCaptureTemplate(
   origin: OriginId,
   path: CapturePath,
   shape: CaptureShape,
+  leadingTrivia: readonly Trivia[],
 ): CaptureTemplate {
   if (!Object.isFrozen(path) || !Object.isFrozen(shape)) {
     throw new TypeError("Capture template path and shape must be immutable");
   }
-  return Object.freeze({ kind: "capture", origin, path, shape });
+  return Object.freeze({
+    kind: "capture",
+    origin,
+    path,
+    shape,
+    leadingTrivia: Object.freeze([...leadingTrivia]),
+  });
 }
 
 export function createSequenceTemplate(
@@ -281,6 +301,7 @@ export function createLocalTemplate(options: {
   readonly origin: OriginId;
   readonly local: FoldLocal;
   readonly fields?: readonly CapturePathSegment[] | undefined;
+  readonly leadingTrivia: readonly Trivia[];
 }): LocalTemplate {
   const fields = options.fields ?? [];
   if (options.local !== "element" && fields.length > 0) {
@@ -291,6 +312,7 @@ export function createLocalTemplate(options: {
     origin: options.origin,
     local: options.local,
     fields: Object.freeze(fields.map((field) => Object.freeze({ ...field }))),
+    leadingTrivia: Object.freeze([...options.leadingTrivia]),
   });
 }
 

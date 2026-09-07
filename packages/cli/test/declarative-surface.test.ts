@@ -86,7 +86,7 @@ describe("optional captures", () => {
        export const some = atLeast(size > 0);`,
     );
     expect(text).toContain("export const none = [true]");
-    expect(text).toContain("export const some = [true&&(size > 0)]");
+    expect(text).toContain("export const some = [true&& (size > 0)]");
   });
 
   test("answer #if(present) rather than failing when absent", () => {
@@ -128,7 +128,7 @@ describe("optional captures", () => {
        export const table = arms { _ => 1, 2 if (size > 0) => 3 };`,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("[[ 1, true],[ 3,(size > 0)]]");
+    expect(text).toContain("[[ 1, true],[ 3, (size > 0)]]");
   });
 });
 
@@ -298,8 +298,8 @@ declare global {
     );
     expect(messages).toEqual([]);
     // An attribute sits before the tag closes, so it is not a child.
-    expect(text).toContain("data={[1,1]}");
-    expect(text).toContain(">{[2,2]}<");
+    expect(text).toContain("data={[1, 1]}");
+    expect(text).toContain(">{[2, 2]}<");
   });
 });
 
@@ -369,7 +369,7 @@ describe("binder position", () => {
     expect(messages).toEqual([]);
     // The property the macro writes keeps its spelling; the caller's binding
     // of the same name is untouched.
-    expect(text).toContain("const { value:held } = source");
+    expect(text).toContain("const { value: held } = source");
     expect(text).toContain('const value = "call-site value"');
   });
 });
@@ -673,7 +673,7 @@ describe("where a macro may be written", () => {
     expect(messages).toEqual([]);
     // A property name is not an expression, but a computed one holds one.
     expect(text).not.toContain("twice(");
-    expect(text).toContain("export default [3,3]");
+    expect(text).toContain("export default [3, 3]");
   });
 
   test("leaves a plain property name alone", () => {
@@ -702,9 +702,9 @@ describe("where a macro may be written", () => {
     // A parameter default and a class field initializer are expressions even
     // though the syntax around them is a parameter list and a member list.
     expect(text).not.toContain("twice(");
-    expect(text).toContain("value: number[] = [1,1]");
-    expect(text).toContain("field = [2,2]");
-    expect(text).toContain("static shared = [3,3]");
+    expect(text).toContain("value: number[] = [1, 1]");
+    expect(text).toContain("field = [2, 2]");
+    expect(text).toContain("static shared = [3, 3]");
   });
 
   test("leaves the loops it does not appear in alone", () => {
@@ -809,8 +809,8 @@ export const b = classify(1);
 `,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain(`export const a = ["text","hello"];`);
-    expect(text).toContain(`export const b = ["other",1];`);
+    expect(text).toContain(`export const a = ["text", "hello"];`);
+    expect(text).toContain(`export const b = ["other", 1];`);
   });
 
   test("selects on how a token is spelled", () => {

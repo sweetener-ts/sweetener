@@ -14,7 +14,7 @@ export const total: number = ((inspected_1) => {
 
 export function check(): void {
   {
-      const actual_1 =inspected;
+      const actual_1 = inspected;
       const expected_1 = 1;
       if (!globalThis.Object.is(actual_1, expected_1)) {
         throw (new globalThis.Error(

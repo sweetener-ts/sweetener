@@ -169,6 +169,28 @@ export const doubled = twice(seed);
     expect(result.reason).toContain("binding identity proof");
   });
 
+  test("does not read a macro's own spacing as another occurrence", () => {
+    const source = `import { twice } from "./macros.sts" for syntax;
+const seed = 41;
+export const doubled = twice(seed + 1);
+`;
+    const { service, sourceFileName } = editor(macros, source);
+    // `twice` writes `[$value, $value]`, so the expansion holds a space before
+    // the second copy and a grouping parenthesis around each -- text the
+    // printer gives the copy's own origin. Counted as places the written
+    // `seed` landed, they made the service ask TypeScript which binding lived
+    // at a space, and read the silence as a second, distinct one. The refusal
+    // that stands is the one this input earns: nothing yet proves which
+    // binding each copy denotes.
+    const result = service.rename(
+      sourceFileName,
+      source.lastIndexOf("seed") + 1,
+    );
+    expect(result.canRename).toBe(false);
+    if (result.canRename) throw new Error("unreachable");
+    expect(result.reason).toContain("binding identity proof");
+  });
+
   test("refuses to rename a name that the expansion erases", () => {
     const source = `import { twice } from "./macros.sts" for syntax;
 export const doubled = twice(41);

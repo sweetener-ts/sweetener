@@ -178,6 +178,91 @@ describe("origin query index", () => {
     expect(index.originalToGenerated(1007 as SourceId, 100)).toEqual([]);
   });
 
+  test("does not report a token's own layout as a second occurrence", () => {
+    const origins = new OriginStore();
+    const value = origins.source(1008 as SourceId, { start: 10, end: 15 });
+    const copied = origins.copied(1 as CaptureId, value);
+    const held = origins.source(1008 as SourceId, { start: 4, end: 9 });
+    const invocation = origins.source(1008 as SourceId, { start: 0, end: 4 });
+    const definition = origins.source(1009 as SourceId, { start: 3, end: 4 });
+    const introduced = origins.introduced(definition, invocation);
+    // What the printer writes for `[$value, $value]`: the comma it introduced,
+    // the space the template wrote before the second placeholder, and the two
+    // copies of the captured token. The space is the copy's own trivia, so it
+    // carries the copy's origin.
+    const index = createOriginQueryIndex({
+      file: {
+        text: "value[value, value]",
+        originMap: {
+          schemaVersion: 1,
+          entries: [
+            {
+              generatedStart: 0,
+              generatedEnd: 5,
+              origin: held,
+              kind: "source",
+            },
+            {
+              generatedStart: 5,
+              generatedEnd: 6,
+              origin: introduced,
+              kind: "introduced",
+            },
+            {
+              generatedStart: 6,
+              generatedEnd: 11,
+              origin: copied,
+              kind: "copied",
+            },
+            {
+              generatedStart: 11,
+              generatedEnd: 12,
+              origin: introduced,
+              kind: "introduced",
+            },
+            {
+              generatedStart: 12,
+              generatedEnd: 13,
+              origin: copied,
+              kind: "synthesized",
+            },
+            {
+              generatedStart: 13,
+              generatedEnd: 18,
+              origin: copied,
+              kind: "copied",
+            },
+            {
+              generatedStart: 18,
+              generatedEnd: 19,
+              origin: introduced,
+              kind: "introduced",
+            },
+          ],
+        },
+        trace: [],
+        tokenSpans: [],
+        serializedTrace: "[]\n",
+      },
+      origins,
+    });
+    // Two copies of the name reached the output, and the space beside the
+    // second is not a third. A caller that asked TypeScript what binding lived
+    // at each answer would otherwise have had to ask about a space.
+    expect(
+      index
+        .originalToGenerated(1008 as SourceId, 11)
+        .map(({ generatedStart, kind }) => `${String(generatedStart)}:${kind}`),
+    ).toEqual(["6:copied", "13:copied"]);
+    // Layout for a source origin that no text here belongs to still stands:
+    // it is all that offset has.
+    expect(
+      index
+        .originalToGenerated(1009 as SourceId, 3)
+        .map(({ generatedStart }) => generatedStart),
+    ).toEqual([5, 11, 18]);
+  });
+
   test("rejects unordered, out-of-bounds, and unknown origin regions", () => {
     const origins = new OriginStore();
     const known = origins.source(1004 as SourceId, { start: 0, end: 1 });
