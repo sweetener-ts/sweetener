@@ -104,7 +104,10 @@
       "packages/prettier-plugin": {
         "packageJson": {
           "dependencies": [
-            "npm:prettier@3.9.6"
+            "npm:prettier@3.9.6",
+            "npm:tm-grammars@1.32.12",
+            "npm:vscode-oniguruma@2.0.1",
+            "npm:vscode-textmate@9.3.2"
           ]
         }
       },

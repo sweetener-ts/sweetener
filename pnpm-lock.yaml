@@ -619,6 +619,15 @@ importers:
       prettier:
         specifier: 3.9.6
         version: 3.9.6
+      tm-grammars:
+        specifier: 1.32.12
+        version: 1.32.12
+      vscode-oniguruma:
+        specifier: 2.0.1
+        version: 2.0.1
+      vscode-textmate:
+        specifier: 9.3.2
+        version: 9.3.2
 
   packages/printer:
     dependencies:
@@ -8289,6 +8298,9 @@ packages:
     resolution: {integrity: sha512-KxVu8EYHDPBdUYdKZdKtU2aj2XfEx9AfjXxE/Aj0vT06w2icA09Vus1rh6eSu1y01akYg6BjIK/hxyLJINoMLQ==}
     engines: {node: '>=12'}
 
+  tm-grammars@1.32.12:
+    resolution: {integrity: sha512-emljodsx/PN8Eq8vi5cZeDzsOMeom/Zd9Y5/TK9rFzZpEGMwtb0eCQKh30nHd8YScBCL8YPcq+oZ1x/o/lUHug==}
+
   tmpl@1.0.5:
     resolution: {integrity: sha512-3f0uOEAQwIqGuWW2MVzYg8fV/QNnc/IpuJNG837rLuczAaLVHslWHZQj4IGiEl5Hs3kkbhwL9Ab7Hrsmuj+Smw==}
 
@@ -8894,6 +8906,12 @@ packages:
         optional: true
       jsdom:
         optional: true
+
+  vscode-oniguruma@2.0.1:
+    resolution: {integrity: sha512-poJU8iHIWnC3vgphJnrLZyI3YdqRlR27xzqDmpPXYzA93R4Gk8z7T6oqDzDoHjoikA2aS82crdXFkjELCdJsjQ==}
+
+  vscode-textmate@9.3.2:
+    resolution: {integrity: sha512-n2uGbUcrjhUEBH16uGA0TvUfhWwliFZ1e3+pTjrkim1Mt7ydB41lV08aUvsi70OlzDWp6X7Bx3w/x3fAXIsN0Q==}
 
   vue-bundle-renderer@2.3.2:
     resolution: {integrity: sha512-BtazFw0lm3N/ZE4+tre2g8G+c5wolfizu+e5jxZAcao0gcy5KJei9Yopl1svDato2poeFldVLfmLMk57Sg8rLg==}
@@ -18021,6 +18039,8 @@ snapshots:
 
   titleize@3.0.0: {}
 
+  tm-grammars@1.32.12: {}
+
   tmpl@1.0.5: {}
 
   to-regex-range@5.0.1:
@@ -18601,6 +18621,10 @@ snapshots:
       '@types/node': 24.13.3
     transitivePeerDependencies:
       - msw
+
+  vscode-oniguruma@2.0.1: {}
+
+  vscode-textmate@9.3.2: {}
 
   vue-bundle-renderer@2.3.2:
     dependencies:
