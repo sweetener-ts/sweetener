@@ -186,9 +186,11 @@ const viteWiring = (importPath: string, plugins: string) => [
 /**
  * Which integration a project needs, read from what it already depends on.
  *
- * Every one of these is how one of the projects under `examples/` is wired.
- * Working it out otherwise means finding the example that matches your host
- * and reading its config, which is only discoverable if you know to look.
+ * Every one of these is how one of the projects under `examples/` is wired, or
+ * — for Rsbuild and Farm, which have an entry point but no example — how
+ * `docs/integrations.md` says to wire it. Working it out otherwise means
+ * finding the example that matches your host and reading its config, which is
+ * only discoverable if you know to look.
  */
 export function detectHost(options: {
   readonly manifest?:
@@ -246,6 +248,14 @@ export function detectHost(options: {
         `      }),`,
         `    ],`,
         `  });`,
+        ``,
+        `To import .sts directly under \`bun run\`, register the same plugin from`,
+        `a preload named in bunfig.toml:`,
+        ``,
+        `  preload = ["./sweetener.preload.ts"]`,
+        ``,
+        `  // sweetener.preload.ts`,
+        `  Bun.plugin(sweetener({ configFile: resolve(import.meta.dir, "sweetener.json") }));`,
       ],
     };
 
@@ -288,6 +298,43 @@ export function detectHost(options: {
       name: "Astro",
       integration: "@sweetener/unplugin",
       wiring: viteWiring("@sweetener/unplugin/vite", "vite: { plugins: ["),
+    };
+  // Before Rspack and webpack: an Rsbuild project depends on Rsbuild, and the
+  // entry point that knows how to register with it is the one it wants.
+  if (has("@rsbuild/core"))
+    return {
+      name: "Rsbuild",
+      integration: "@sweetener/unplugin",
+      wiring: [
+        `Add the plugin to rsbuild.config.ts:`,
+        ``,
+        `  import sweetener from "@sweetener/unplugin/rsbuild";`,
+        `  import { resolve } from "node:path";`,
+        ``,
+        `  plugins: [`,
+        `    sweetener({`,
+        `      configFile: resolve(import.meta.dirname, "sweetener.json"),`,
+        `    }),`,
+        `  ]`,
+      ],
+    };
+  if (has("@farmfe/core"))
+    return {
+      name: "Farm",
+      integration: "@sweetener/unplugin",
+      wiring: [
+        `Add the plugin to farm.config.ts:`,
+        ``,
+        `  import sweetener from "@sweetener/unplugin/farm";`,
+        `  import { resolve } from "node:path";`,
+        ``,
+        `  plugins: [`,
+        `    sweetener({ configFile: resolve(process.cwd(), "sweetener.json") }),`,
+        `  ]`,
+        ``,
+        `Farm bundles farm.config.ts into node_modules/.farm before running it,`,
+        `so import.meta.dirname there is that directory, not this one.`,
+      ],
     };
   if (has("vite"))
     return {

@@ -137,6 +137,22 @@ describe("sweetener init in a project that already exists", () => {
     }
   });
 
+  test("recognises the hosts unplugin has an entry point for", () => {
+    // Rsbuild and Farm each get their own entry point and their own row in the
+    // integrations table, and init used to tell such a project that no bundler
+    // was recognised — sending someone with a working bundler to the command
+    // line instead.
+    const rsbuild = into({ devDependencies: { "@rsbuild/core": "^2.0.0" } });
+    expect(rsbuild.output).toContain("Detected Rsbuild");
+    expect(rsbuild.output).toContain("@sweetener/unplugin/rsbuild");
+
+    const farm = into({ devDependencies: { "@farmfe/core": "^1.7.0" } });
+    expect(farm.output).toContain("Detected Farm");
+    expect(farm.output).toContain("@sweetener/unplugin/farm");
+    // The trap that makes a correct-looking config point at nothing.
+    expect(farm.output).toContain("node_modules/.farm");
+  });
+
   test("sets up the command line when it recognises no bundler", () => {
     const { output } = into({ dependencies: { express: "^4.0.0" } });
     expect(output).toContain("No bundler was recognised");
@@ -261,6 +277,10 @@ describe("runtimes without a bundler", () => {
     expect(output).toContain("Detected Bun");
     expect(output).toContain("@sweetener/unplugin/bun");
     expect(output).toContain("Bun.build");
+    // Bun's other half: running .sts directly needs the preload, and the
+    // plugin needs the config either way.
+    expect(output).toContain("bunfig.toml");
+    expect(output).toContain("Bun.plugin(");
   });
 });
 
