@@ -11,7 +11,7 @@ export function page(): string {
 }
 
 if (import.meta.main) {
-  Bun.serve({
+  const server = Bun.serve({
     port: Number(Bun.env.PORT ?? 3000),
     routes: {
       "/": new Response(page(), { headers: { "content-type": "text/html" } }),
@@ -23,5 +23,5 @@ if (import.meta.main) {
       ),
     },
   });
-  console.log("Sweetener + Bun: http://localhost:3000");
+  console.log(`Sweetener + Bun: ${server.url.href}`);
 }
