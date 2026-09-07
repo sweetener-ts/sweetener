@@ -49,8 +49,17 @@ export function integrationFixture(
   return { root, entry, macros, config };
 }
 
+/**
+ * The fixture macro expands `duplicate(21)` into `[21, 21]`, so a host that
+ * emitted the captured value once — passing the argument through without
+ * running the rule — is as wrong as one that emitted nothing. Look for the
+ * whole expansion, however the host spaced or minified it.
+ */
+const expansion = /\[\s*21\s*,\s*21\s*\]/u;
+
 export function expectExpanded(code: string): void {
-  if (!code.includes("21")) throw new Error("bundle omitted expanded value");
+  if (!expansion.test(code))
+    throw new Error("bundle omitted the expanded value");
   if (code.includes("duplicate") || code.includes("for syntax"))
     throw new Error("bundle retained compile-time Sweetener syntax");
 }
