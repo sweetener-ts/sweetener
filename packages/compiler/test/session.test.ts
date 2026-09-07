@@ -107,6 +107,41 @@ describe("public compiler session", () => {
     ).rejects.toThrow(/closed/u);
   });
 
+  test("names the config a build tool could not read, not the source", async () => {
+    // A configFile that is not there parses as an empty project, in which every
+    // file looks merely unlisted. Farm resolves a relative config against its
+    // own bundled config directory, so an adapter reached this with a path that
+    // did not exist and reported the .sts as not opted in.
+    const fixture = project();
+    const session = createSweetenerSession();
+    await expect(
+      session.transform({
+        code: readFile(fixture.main),
+        filename: fixture.main,
+        configFile: join(fixture.directory, "nowhere", "sweetener.json"),
+      }),
+    ).rejects.toThrow(/nowhere.*Cannot read file/su);
+
+    // The file really being left out still says so, and says where to add it.
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts"],
+      }),
+    );
+    await expect(
+      session.transform({
+        code: readFile(fixture.main),
+        filename: fixture.main,
+        configFile: fixture.config,
+      }),
+    ).rejects.toThrow(
+      /is not opted into Sweetener expansion by .*tsconfig\.json/u,
+    );
+    await session.close();
+  });
+
   test("preserves constructor calls captured by a statement macro", async () => {
     const fixture = project();
     writeFileSync(

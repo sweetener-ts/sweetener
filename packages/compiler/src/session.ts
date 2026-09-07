@@ -4,7 +4,7 @@ import { dirname, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
 import { composeSourceMap } from "@sweetener/typescript-host";
 import type { RawSourceMap } from "@sweetener/typescript-host";
-import type * as ts from "typescript";
+import * as ts from "typescript";
 import {
   createDefaultProjectExpansionProvider,
   type DefaultProjectExpansionProvider,
@@ -89,7 +89,9 @@ function discoverConfig(fileName: string): string {
     const candidate = resolve(directory, "tsconfig.json");
     if (existsSync(candidate)) return candidate;
     if (directory === root)
-      throw new Error(`No tsconfig.json found for ${fileName}`);
+      throw new Error(
+        `No tsconfig.json found for ${fileName}. Pass configFile to the Sweetener plugin — \`sweetener init\` writes a sweetener.json to point it at.`,
+      );
     directory = dirname(directory);
   }
 }
@@ -161,6 +163,22 @@ export function createSweetenerSession(
     if (existing !== undefined) cache.delete(cacheKey);
 
     const project = loadSweetProject(configFile);
+    // A config that cannot be read parses as an empty project, and every file
+    // then looks merely left out of it. The command line refuses such a
+    // project before expanding; an adapter used to expand anyway and report a
+    // configFile pointing at nothing as the source not being opted in.
+    const configurationErrors = [
+      ...project.typescript.errors.map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+      ),
+      ...project.problems.map(
+        ({ code, path, message }) => `${code} ${path} ${message}`,
+      ),
+    ];
+    if (configurationErrors.length > 0)
+      throw new Error(
+        `Sweetener cannot use ${configFile}: ${configurationErrors.join("; ")}`,
+      );
     const expanded = provider.expandProject(project);
     const inspected = provider.inspectSource(filename);
     const sourceStem = filename.replace(/\.s(?:ts|js)x?$/u, "");
@@ -173,7 +191,9 @@ export function createSweetenerSession(
       inspected.sourceMap === undefined ||
       generated === undefined
     )
-      throw new Error(`${filename} is not opted into Sweetener expansion`);
+      throw new Error(
+        `${filename} is not opted into Sweetener expansion by ${configFile}. List it there, under "files" or "include".`,
+      );
     const dependencies = Object.freeze(
       [...new Set([configFile, ...provider.macroDependencies(project)])]
         .map(canonical)
