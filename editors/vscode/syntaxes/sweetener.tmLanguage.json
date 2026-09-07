@@ -2,16 +2,79 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Sweetener TypeScript",
   "scopeName": "source.sweetener",
-  "patterns": [
-    { "include": "#compile-time-import" },
-    { "include": "#macro-definition-head" },
-    { "include": "#rule-arrow" },
-    { "include": "#definition-keyword" },
-    { "include": "#capture" },
-    { "include": "#operation" },
-    { "include": "source.tsx" }
-  ],
+  "comment": "A Sweetener file is a TypeScript file with macro definitions in it, so the TSX grammar owns everything except the definitions. Adding Sweetener's patterns alongside `source.tsx` in this list would not work: TypeScript's own rules open a region at the start of `export …` or `import …` and win the tie, and once a nested rule is on the stack a top-level pattern is unreachable. The macro-specific rules are injected instead, which applies them at every depth, and each injection names the context it is allowed in so that `rule`, `left`, and `$name` keep meaning nothing in ordinary application code.",
+  "patterns": [{ "include": "#macro-definition" }, { "include": "source.tsx" }],
+  "injections": {
+    "L:source.sweetener meta.import.tsx -comment -string": {
+      "patterns": [{ "include": "#compile-time-import" }]
+    },
+    "L:source.sweetener meta.import.tsx meta.block.tsx": {
+      "patterns": [{ "include": "#imported-operator" }]
+    },
+    "L:source.sweetener meta.macro.sweetener -comment -string -meta.jsx.children.tsx": {
+      "patterns": [{ "include": "#macro-body" }]
+    },
+    "L:source.sweetener meta.macro.sweetener meta.jsx.children.tsx meta.embedded.expression.tsx": {
+      "comment": "A JSX expression container inside a template holds code, so a capture there is a capture. The surrounding JSX text is not, which is why the injection above excludes it.",
+      "patterns": [{ "include": "#macro-body" }]
+    },
+    "L:source.sweetener meta.macro.sweetener meta.template.expression.tsx": {
+      "comment": "Same for `${…}`: the substitution is code, the literal text around it is not.",
+      "patterns": [{ "include": "#macro-body" }]
+    }
+  },
   "repository": {
+    "macro-definition": {
+      "comment": "A macro definition is a module item, so it starts in column one and the `}` that closes it does too. Ending on that brace rather than on a counted one is what keeps the region honest: `while` is re-checked against every line whatever TypeScript rule happens to be open, so a template whose braces do not balance the way TSX reads them still cannot swallow the rest of the file.",
+      "name": "meta.macro.sweetener",
+      "begin": "^(?=(?:export\\s+)?(?:rec\\s+)?(?:syntax|operator)\\s)",
+      "while": "^(?!\\})",
+      "patterns": [
+        { "include": "#macro-definition-head" },
+        { "include": "source.tsx" }
+      ]
+    },
+    "macro-definition-head": {
+      "comment": "`export rec syntax name:category`, the operator form that names its spelling in parentheses, and `syntax class Name`, which declares a syntax class and takes no category.",
+      "begin": "\\b(?:(export)\\s+)?(?:(rec)\\s+)?(syntax|operator)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.export.sweetener" },
+        "2": { "name": "storage.modifier.sweetener" },
+        "3": { "name": "storage.type.sweetener" }
+      },
+      "end": "(?=\\{)|$",
+      "patterns": [
+        { "include": "#capture" },
+        {
+          "match": "\\b(class)\\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "storage.type.sweetener" },
+            "2": { "name": "entity.name.type.class.sweetener" }
+          }
+        },
+        { "include": "#shadows-core" },
+        {
+          "match": "(?:([A-Za-z_][A-Za-z0-9_$]*)|(\\([^)]*\\)))\\s*(:)\\s*([A-Za-z][A-Za-z0-9_$]*)",
+          "captures": {
+            "1": { "name": "entity.name.function.macro.sweetener" },
+            "2": { "name": "entity.name.function.macro.sweetener" },
+            "3": { "name": "punctuation.separator.sweetener" },
+            "4": { "name": "support.type.category.sweetener" }
+          }
+        }
+      ]
+    },
+    "macro-body": {
+      "comment": "Everything that only means something inside a macro definition.",
+      "patterns": [
+        { "include": "#macro-definition-head" },
+        { "include": "#definition-keyword" },
+        { "include": "#rule-arrow" },
+        { "include": "#operation" },
+        { "include": "#repetition" },
+        { "include": "#capture" }
+      ]
+    },
     "compile-time-import": {
       "comment": "The `for syntax` tail of an import, and the opt-in to shadowing a core form. The rest of the import is ordinary TypeScript.",
       "match": "\\b(for)\\s+(syntax)\\b(?:\\s+(shadows)\\s+(core)\\b)?",
@@ -22,37 +85,86 @@
         "4": { "name": "keyword.control.import.sweetener" }
       }
     },
-    "macro-definition-head": {
-      "comment": "`export rec syntax name:expr`, and the operator form that names its spelling in parentheses.",
-      "begin": "\\b(?:(rec)\\s+)?(syntax|operator)\\s+(?:([A-Za-z_$][A-Za-z0-9_$]*)|(\\([^)]*\\)))\\s*(:)\\s*([A-Za-z]+)",
-      "beginCaptures": {
-        "1": { "name": "storage.modifier.sweetener" },
-        "2": { "name": "storage.type.sweetener" },
-        "3": { "name": "entity.name.function.macro.sweetener" },
-        "4": { "name": "entity.name.function.macro.sweetener" },
-        "5": { "name": "punctuation.separator.sweetener" },
-        "6": { "name": "support.type.category.sweetener" }
-      },
-      "end": "(?=\\{)",
+    "imported-operator": {
+      "comment": "An operator is imported by the spelling it is defined under, `import { (|>) } from …`. TypeScript's grammar leaves it unpainted because it is not an identifier.",
+      "match": "\\(\\s*[^()\\s]+\\s*\\)",
+      "name": "entity.name.function.macro.sweetener"
+    },
+    "shadows-core": {
+      "match": "\\b(shadows)\\s+(core)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.sweetener" },
+        "2": { "name": "keyword.control.sweetener" }
+      }
+    },
+    "rule-arrow": {
+      "comment": "The `=>` between a rule's pattern and its template, which the formatter is free to leave at the end of the pattern line or to start the next line with. Scoped apart from an arrow function so a theme can tell them apart.",
+      "match": "(?:(?<=\\})\\s*|^\\s*)(=>)(?=\\s*\\{)",
+      "captures": { "1": { "name": "keyword.operator.expansion.sweetener" } }
+    },
+    "definition-keyword": {
+      "comment": "The clause keywords. Every one of these is an ordinary identifier in TypeScript — `rule`, `left`, `precedence`, `fields` — so each is anchored to the start of the clause and, where the word alone is ambiguous, to what has to follow it. Recognising them anywhere would repaint application code, and templates are full of ordinary TypeScript that happens to use these words.",
       "patterns": [
         {
-          "match": "\\b(shadows)\\s+(core)\\b",
+          "match": "^\\s*(?:(fallback)\\s+)?(rule)\\b(?=\\s*(?:\\{|$))",
           "captures": {
             "1": { "name": "keyword.control.sweetener" },
             "2": { "name": "keyword.control.sweetener" }
           }
-        }
+        },
+        {
+          "match": "^\\s*(fields)\\b(?=\\s*(?:\\{|$))",
+          "captures": { "1": { "name": "keyword.control.sweetener" } }
+        },
+        {
+          "match": "^\\s*(fixity)\\s+(infix|prefix|postfix)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.sweetener" },
+            "2": { "name": "keyword.control.sweetener" }
+          }
+        },
+        {
+          "match": "^\\s*(associativity)\\s+(left|right|none)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.sweetener" },
+            "2": { "name": "keyword.control.sweetener" }
+          }
+        },
+        {
+          "match": "^\\s*(precedence)\\s+([0-9]+)",
+          "captures": {
+            "1": { "name": "keyword.control.sweetener" },
+            "2": { "name": "constant.numeric.sweetener" }
+          }
+        },
+        {
+          "match": "^\\s*(literal)\\b(?=\\s)",
+          "captures": { "1": { "name": "keyword.control.sweetener" } }
+        },
+        {
+          "match": "^\\s*(expect)\\b(?=\\s+[\"'])",
+          "captures": { "1": { "name": "keyword.control.sweetener" } }
+        },
+        {
+          "match": "^\\s*(context)\\s+(generator)\\b",
+          "captures": {
+            "1": { "name": "keyword.control.sweetener" },
+            "2": { "name": "keyword.control.sweetener" }
+          }
+        },
+        {
+          "match": "^\\s*(bind|refine)\\b(?=\\s+[$#])",
+          "captures": { "1": { "name": "keyword.control.sweetener" } }
+        },
+        { "include": "#shadows-core" }
       ]
     },
-    "rule-arrow": {
-      "comment": "The `=>` between a rule's pattern and its template. Scoped apart from an arrow function so a theme can tell them apart.",
-      "match": "(?<=\\})\\s*(=>)\\s*(?=\\{)",
-      "captures": { "1": { "name": "keyword.operator.expansion.sweetener" } }
-    },
-    "definition-keyword": {
-      "comment": "The words that only mean anything inside a macro definition.",
-      "match": "\\b(fallback\\s+rule|rule|literal|fixity|associativity|precedence|infix|prefix|postfix|left|right|none)\\b(?=[\\s{(:])",
-      "name": "keyword.control.sweetener"
+    "repetition": {
+      "comment": "The `$` that opens `$(…),*`. The group itself is ordinary syntax the patterns inside still apply to.",
+      "match": "(\\$)(?=\\()",
+      "captures": {
+        "1": { "name": "punctuation.definition.repetition.sweetener" }
+      }
     },
     "capture": {
       "comment": "`$name`, and the `:class` that says what it may match.",
@@ -65,8 +177,8 @@
       }
     },
     "operation": {
-      "comment": "Template operations such as #core, #join and #text.",
-      "match": "(#)([A-Za-z_$][A-Za-z0-9_$]*)(?=\\()",
+      "comment": "Template operations, from `templateOperations` in packages/template. A closed list followed by the group it takes, because `#name` is also how TypeScript spells a private member: the lookbehind rules out `this.#count(…)` and the closed list rules out every other private method.",
+      "match": "(?<![.\\w$])(#)\\s*(callsite|capture|core|count|definition|else|fold|fresh|if|index|join|metavar|syntax|text|trim)\\b(?=\\s*[({])",
       "captures": {
         "1": { "name": "punctuation.definition.keyword.sweetener" },
         "2": { "name": "support.function.operation.sweetener" }

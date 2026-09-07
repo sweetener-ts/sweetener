@@ -21,6 +21,9 @@
     "prettier": ">=3.0.0"
   },
   "devDependencies": {
-    "prettier": "3.9.6"
+    "prettier": "3.9.6",
+    "tm-grammars": "1.32.12",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
   }
 }
