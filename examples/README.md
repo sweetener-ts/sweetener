@@ -41,8 +41,16 @@ add framework coverage.
   a production build. Its hook declarations keep setters and dependency arrays
   explicit.
 
-- Deno has no custom module-loader hook. The Deno example wraps pre-expansion,
-  checking, serving, testing, and macro-aware watch restarts in native tasks.
+- Deno runs `.sts` directly through `@sweetener/deno/register`, which installs
+  `module.registerHooks`. What it cannot do is `deno check` and `deno test`:
+  both build the module graph before loader hooks apply. The Deno example
+  therefore wraps pre-expansion, checking, serving, testing, and macro-aware
+  watch restarts in native tasks.
+- `bun --watch` does not restart for a `.sts` change. Bun watches the files it
+  resolved itself, and neither a module the plugin loaded nor a macro module
+  imported `for syntax` is one of them. The Bun example's `dev` script picks up
+  an edit to `server.ts`; a macro edit needs a restart, and the restart does
+  re-expand from disk.
 - SWC and Oxc cannot directly parse arbitrary Sweetener syntax. Sweetener must
   run before them. The Vite adapter now performs Vite's official Oxc transform
   after expansion so typed `.sts` output continues through Vite as JavaScript.

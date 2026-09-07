@@ -101,6 +101,42 @@ Oxc transform; esbuild and Bun are told which loader to read the output with;
 the remaining entry points have no TypeScript of their own, so the adapter
 strips types for them using the Sweetener project's compiler options.
 
+### Rsbuild and Farm
+
+Both take one plugin rather than the array Vite's entry returns:
+
+```ts
+// rsbuild.config.ts
+import { resolve } from "node:path";
+import { defineConfig } from "@rsbuild/core";
+import sweetener from "@sweetener/unplugin/rsbuild";
+
+export default defineConfig({
+  plugins: [
+    sweetener({ configFile: resolve(import.meta.dirname, "sweetener.json") }),
+  ],
+  source: { entry: { index: "./src/index.ts" } },
+});
+```
+
+```ts
+// farm.config.ts
+import { resolve } from "node:path";
+import { defineConfig } from "@farmfe/core";
+import sweetener from "@sweetener/unplugin/farm";
+
+export default defineConfig({
+  plugins: [
+    sweetener({ configFile: resolve(process.cwd(), "sweetener.json") }),
+  ],
+  compilation: { input: { index: "./src/index.ts" } },
+});
+```
+
+Farm's config is `process.cwd()`, not `import.meta.dirname`, because Farm
+bundles `farm.config.ts` into `node_modules/.farm` before running it — the
+config resolves relative to where it ends up, not to where it was written.
+
 ### React and Fast Refresh
 
 React hook macros work in `.stsx`, but `@vitejs/plugin-react` does not include
@@ -135,14 +171,22 @@ preload = ["./sweetener.preload.ts"]
 
 ```ts
 // sweetener.preload.ts
+import { resolve } from "node:path";
 import sweetener from "@sweetener/unplugin/bun";
 
-Bun.plugin(sweetener());
+Bun.plugin(
+  sweetener({ configFile: resolve(import.meta.dir, "sweetener.json") }),
+);
 ```
 
 Typed `.sts` and `.stsx` output is handed back through Bun's TypeScript loaders.
-Macro dependencies participate in the compiler session's content-aware cache,
-so Bun watch-mode reloads see changes made only to an imported macro module.
+
+**`bun --watch` does not reload for a `.sts` change.** Bun watches the files it
+resolved itself; a module a plugin loaded is not one of them, and a macro module
+imported `for syntax` never enters its graph at all. Editing an ordinary `.ts`
+does restart the process, and the reload that follows re-expands from disk —
+macro dependencies are part of the session's content-aware cache, so a rule
+changed in the meantime takes effect. A `.sts`-only change needs a restart.
 
 ## Deno tasks
 
