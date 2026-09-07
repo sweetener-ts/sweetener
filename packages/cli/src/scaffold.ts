@@ -395,10 +395,18 @@ export function scaffoldIntoProject(options: {
   });
   const cli = cliSpecifier();
   const integration = host?.integration ?? "@sweetener/cli";
+  // Telling someone to install what they have just run reads as though the
+  // scaffolder did not look. The manifest says whether it is already there.
+  const dependencies = {
+    ...(options.manifest?.dependencies ?? {}),
+    ...(options.manifest?.devDependencies ?? {}),
+  };
   const install =
     cli.specifier.startsWith("link:") && host !== undefined
       ? `${integration} is not published yet. Add it as a link: dependency pointing into the checkout, the way ${cliSpecifier().specifier} does.`
-      : `Install ${integration}.`;
+      : integration in dependencies
+        ? `${integration} is already a dependency here.`
+        : `Install ${integration}.`;
   return Object.freeze({
     files: Object.freeze([
       {
