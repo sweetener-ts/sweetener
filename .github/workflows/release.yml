@@ -59,12 +59,33 @@ jobs:
       # where it is once a stable version exists. It does not hold for a
       # package's first publish: that version becomes `latest` whatever --tag
       # says, because a package with no `latest` cannot be installed by name.
+      # Two ways in, and the workflow takes whichever is configured.
+      #
+      # A trusted publisher (npmjs.com -> Packages -> package -> Settings ->
+      # Trusted publishing) authenticates with the OIDC token this job already
+      # requests, needs no secret at all, and attaches provenance on its own.
+      # It is configured per package on a package's settings page, so it cannot
+      # be set up for a package that does not exist yet: the first publish of a
+      # new name goes out with NPM_TOKEN, and every release after it can drop
+      # the secret. Requires npm >= 11.5.1, which Node 24.18.1 carries (11.16.0).
+      #
+      # When you do remove the secret, also drop `registry-url` from the
+      # setup-node step above: it writes an .npmrc naming NODE_AUTH_TOKEN, and
+      # an empty one authenticates as nobody rather than falling through to
+      # OIDC. Confirm with a dry run before trusting it.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DRY_RUN: ${{ inputs.dryRun }}
         run: |
           set -eu
+          # Provenance is automatic under a trusted publisher and has to be
+          # asked for under a token.
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            attest="--provenance"
+          else
+            attest=""
+          fi
           # The compiler first: every other package depends on it, and a plain
           # glob publishes @sweetener/cli before it exists, leaving a window in
           # which installing the command line fails on a missing dependency.
@@ -79,7 +100,7 @@ jobs:
             if [ "${DRY_RUN:-false}" = "true" ]; then
               npm publish "$tarball" --tag alpha --access public --dry-run
             else
-              npm publish "$tarball" --tag alpha --access public --provenance
+              npm publish "$tarball" --tag alpha --access public $attest
             fi
           done
 
