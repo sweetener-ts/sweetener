@@ -94,7 +94,7 @@ describe("watching a project", () => {
         watch.result.virtualFiles.find(({ fileName }) =>
           fileName.endsWith("main.ts"),
         )?.generated.text,
-      ).toContain("[2,2,2]");
+      ).toContain("[2, 2, 2]");
     } finally {
       watch.close();
     }

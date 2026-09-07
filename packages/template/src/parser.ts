@@ -741,6 +741,7 @@ class TemplateParser {
               origin: current.origin,
               local: "element",
               fields,
+              leadingTrivia: current.leadingTrivia,
             }),
           );
           index = next;
@@ -749,6 +750,7 @@ class TemplateParser {
             createLocalTemplate({
               origin: current.origin,
               local: current.raw === "$acc" ? "accumulator" : "index",
+              leadingTrivia: current.leadingTrivia,
             }),
           );
           index += 1;
@@ -819,6 +821,7 @@ class TemplateParser {
             current.origin,
             createCapturePath(captureName, binding.capture, fields),
             shape,
+            current.leadingTrivia,
           ),
         );
         index = next;

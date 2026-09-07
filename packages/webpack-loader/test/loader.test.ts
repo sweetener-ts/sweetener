@@ -61,7 +61,7 @@ describe("native webpack loader", () => {
       compiler.close((error) => (error == null ? done() : reject(error))),
     );
     expect(stats.hasErrors(), stats.toString({ errors: true })).toBe(false);
-    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21,21");
+    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21, 21");
     expect(readFileSync(join(output, "bundle.js.map"), "utf8")).toContain(
       "main.sts",
     );
@@ -96,7 +96,7 @@ describe("native webpack loader", () => {
       compiler.close((error) => (error == null ? done() : reject(error))),
     );
     expect(stats.hasErrors(), stats.toString({ errors: true })).toBe(false);
-    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21,21");
+    expect(readFileSync(join(output, "bundle.js"), "utf8")).toContain("21, 21");
   });
 });
 

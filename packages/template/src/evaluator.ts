@@ -20,6 +20,7 @@ import type {
   MissingToken,
   SyntaxSequence,
   TokenSyntax,
+  Trivia,
 } from "@sweetener/syntax";
 import type {
   ConditionalPredicate,
@@ -34,6 +35,11 @@ export interface EvaluatedSyntax {
   readonly syntax: SyntaxSequence;
   readonly source: "template" | "capture";
   readonly capture: CaptureId | undefined;
+  /**
+   * The layout the template wrote before the placeholder this replaced, which
+   * the substituted syntax wears when it brought none of its own.
+   */
+  readonly templateLeadingTrivia: readonly Trivia[];
 }
 
 export interface EvaluatedGroup {
@@ -334,6 +340,10 @@ class Evaluator {
             syntax: Object.freeze([node.syntax]),
             source: "template",
             capture: undefined,
+            // A literal is the template's own token, trivia included; nothing
+            // was substituted for it, so there is no placeholder layout to
+            // hand on.
+            templateLeadingTrivia: Object.freeze([]),
           }),
         ];
       case "capture": {
@@ -343,7 +353,7 @@ class Evaluator {
             `Capture $${node.path.rootName} still has ${String(value.depth)} unselected dimensions`,
           );
         }
-        return [this.#capture(value)];
+        return [this.#capture(value, node.leadingTrivia)];
       }
       case "sequence":
         return this.#sequence(node, indices, locals);
@@ -427,7 +437,7 @@ class Evaluator {
             "Fold element still has unselected dimensions",
           );
         }
-        return [this.#capture(value)];
+        return [this.#capture(value, node.leadingTrivia)];
       }
       case "fold":
         return this.#nested(() => {
@@ -622,13 +632,17 @@ class Evaluator {
     return optional !== undefined && isPresent(optional);
   }
 
-  #capture(value: CaptureLeaf): EvaluatedSyntax {
+  #capture(
+    value: CaptureLeaf,
+    templateLeadingTrivia: readonly Trivia[],
+  ): EvaluatedSyntax {
     return Object.freeze({
       kind: "syntax",
       origin: value.origin,
       syntax: value.syntax,
       source: "capture",
       capture: value.id,
+      templateLeadingTrivia,
     });
   }
 

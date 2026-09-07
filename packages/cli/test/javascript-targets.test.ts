@@ -197,7 +197,7 @@ describe("config-free emit", () => {
     });
     expect(result.diagnostics).toEqual([]);
     const emitted = readFileSync(join(directory, "out/main.js"), "utf8");
-    expect(emitted).toContain("[21,21]");
+    expect(emitted).toContain("[21, 21]");
     expect(emitted).not.toContain("use sweetener");
   });
 });

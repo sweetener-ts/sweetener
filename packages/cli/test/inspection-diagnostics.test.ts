@@ -65,7 +65,7 @@ describe("what an inspection reports", () => {
   test("carries nothing when the macros compiled", () => {
     const { inspection } = inspect(working);
     expect(inspection?.diagnostics).toEqual([]);
-    expect(inspection?.generated.text).toContain("[1,1]");
+    expect(inspection?.generated.text).toContain("[1, 1]");
   });
 
   test("expand and explain both refuse a file whose macros failed", () => {
@@ -108,7 +108,7 @@ describe("what an inspection reports", () => {
         io: { stdout: (text: string) => stdout.push(text), stderr: () => {} },
       }).exitCode,
     ).toBe(0);
-    expect(stdout.join("")).toContain("[1,1]");
+    expect(stdout.join("")).toContain("[1, 1]");
   });
 });
 

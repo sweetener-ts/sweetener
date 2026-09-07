@@ -71,13 +71,13 @@ describe("expansion after a type assertion", () => {
     test(`${name} leaves the following statement expandable`, () => {
       expect(
         expand(`export function f() { ${assertion} return duplicate(2); }`),
-      ).toContain("[2,2]");
+      ).toContain("[2, 2]");
     });
 
     test(`${name} leaves the following item expandable`, () => {
       expect(
         expand(`${assertion}\nexport const value = duplicate(2);`),
-      ).toContain("[2,2]");
+      ).toContain("[2, 2]");
     });
   }
 
@@ -86,6 +86,6 @@ describe("expansion after a type assertion", () => {
       "export function f() { const held = 1 as number; return duplicate(held); }",
     );
     expect(generated).toContain("as number");
-    expect(generated).toContain("[held,held]");
+    expect(generated).toContain("[held, held]");
   });
 });

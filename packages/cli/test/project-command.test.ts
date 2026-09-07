@@ -724,7 +724,7 @@ describe("project commands", () => {
     expect(result.diagnostics).toEqual([]);
     expect(result.exitCode).toBe(0);
     expect(result.virtualFiles).toHaveLength(1);
-    expect(result.virtualFiles[0]?.generated.text).toContain("[9,9]");
+    expect(result.virtualFiles[0]?.generated.text).toContain("[9, 9]");
 
     const expansionProvider = createDefaultProjectExpansionProvider();
     const project = loadSweetProject(config);
@@ -861,7 +861,7 @@ describe("project commands", () => {
     expect(
       result.virtualFiles.find(({ fileName }) => fileName.endsWith("main.ts"))
         ?.generated.text,
-    ).toContain("[21,21]");
+    ).toContain("[21, 21]");
     const mainGenerated = result.virtualFiles.find(({ fileName }) =>
       fileName.endsWith("main.ts"),
     )?.generated.text;

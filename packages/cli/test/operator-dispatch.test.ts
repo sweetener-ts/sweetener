@@ -63,8 +63,11 @@ function expand(source: string): string {
 
 describe("what counts as writing a multi-token operator", () => {
   test("tokens written together are the operator", () => {
+    // The rule's template writes `assign($left, $right)`, and that spacing is
+    // now the expansion's, so both spellings print alike; what is under test
+    // is that each of them dispatched the operator at all.
     expect(expand("export const x = a <- b;")).toContain("assign( a, b)");
-    expect(expand("export const x = a <-b;")).toContain("assign( a,b)");
+    expect(expand("export const x = a <-b;")).toContain("assign( a, b)");
   });
 
   test("tokens written apart are the comparison they read as", () => {
