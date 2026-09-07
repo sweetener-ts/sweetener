@@ -47,12 +47,34 @@ function canonical(fileName: string): string {
  * projects compiled for different ones do not share a parse.
  */
 const libraryFiles = new Map<string, ts.SourceFile>();
-const libraryDirectory = canonical(
-  dirname(ts.getDefaultLibFilePath({})),
-).toLowerCase();
+
+/**
+ * Where TypeScript's own library declarations live, or nowhere.
+ *
+ * Read on first use rather than at module load. `getDefaultLibFilePath` throws
+ * "only supported when consumed as a node module" outside Node, so computing
+ * it eagerly made this module — and so the compiler — impossible to import in
+ * a bundled worker at all. The playground is one, and its built worker stopped
+ * loading.
+ *
+ * Where it does throw there is no directory of library files on disk to share
+ * parses of, so nothing is one. That is the honest answer in a browser, not a
+ * fallback: the cache below exists only to avoid re-reading files that a
+ * bundle does not have.
+ */
+let libraryDirectory: string | undefined | null;
 
 /** Whether a path is one of TypeScript's own immutable library declarations. */
 function isLibraryFile(fileName: string): boolean {
+  if (libraryDirectory === undefined)
+    try {
+      libraryDirectory = canonical(
+        dirname(ts.getDefaultLibFilePath({})),
+      ).toLowerCase();
+    } catch {
+      libraryDirectory = null;
+    }
+  if (libraryDirectory === null) return false;
   return canonical(fileName).toLowerCase().startsWith(`${libraryDirectory}/`);
 }
 

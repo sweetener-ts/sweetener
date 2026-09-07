@@ -72,6 +72,9 @@ function compile(request: CompileRequest) {
       typescriptVersionPolicy: "exact",
       macroExtensions: [".sts", ".stsx"],
       allowCoreShadowing: true,
+      // The playground expands in the browser and imports nothing from a
+      // .sts, so there is no ordinary TypeScript here to hand a declaration to.
+      sourceDeclarations: false,
       trace: "full",
       limits: {},
     },
