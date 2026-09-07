@@ -125,25 +125,6 @@ const summaries = {
       "Run Jest with `NODE_OPTIONS=--experimental-vm-modules`.",
     ].join("\n"),
   },
-  babel: {
-    text: "Expand a Sweetener source and hand the result to Babel, with the expansion's map as Babel's input map.",
-    usage: [
-      "```ts",
-      'import { transformSweetenerFile } from "@sweetener/babel";',
-      "",
-      'const result = await transformSweetenerFile("src/main.sts", {',
-      "  babel: { presets: [typescript] },",
-      "});",
-      "```",
-      "",
-      "This is a programmatic entry point, not a Babel plugin, and it cannot be",
-      "one: expansion has to happen before Babel parses, and a `parserOverride`",
-      "returning an AST built from different text would leave every position in",
-      "the source map pointing into the expansion. For a build, use",
-      "`@sweetener/webpack-loader` under babel-loader, or `@sweetener/jest`",
-      "instead of babel-jest.",
-    ].join("\n"),
-  },
   "prettier-plugin": {
     text: "Format `.sts` and `.stsx` with Prettier 3.",
     usage: [

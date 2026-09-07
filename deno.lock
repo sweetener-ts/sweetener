@@ -28,16 +28,6 @@
       ]
     },
     "members": {
-      "packages/babel": {
-        "packageJson": {
-          "dependencies": [
-            "npm:@babel/core@8.0.1",
-            "npm:@babel/plugin-transform-modules-commonjs@8.0.1",
-            "npm:@babel/preset-typescript@8.0.1",
-            "npm:@types/babel__core@7.20.5"
-          ]
-        }
-      },
       "packages/cli": {
         "packageJson": {
           "dependencies": [

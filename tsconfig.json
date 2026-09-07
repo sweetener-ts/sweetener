@@ -16,7 +16,6 @@
     { "path": "packages/test-support" },
     { "path": "packages/compiler" },
     { "path": "packages/cli" },
-    { "path": "packages/babel" },
     { "path": "packages/jest" },
     { "path": "packages/deno" },
     { "path": "packages/node" },

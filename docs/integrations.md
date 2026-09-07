@@ -319,12 +319,13 @@ Run Jest with `NODE_OPTIONS=--experimental-vm-modules`.
 
 ## Other native integrations
 
-- `@sweetener/babel` is a programmatic entry point, `transformSweetenerFile`,
-  not a Babel plugin. It cannot be one: expansion has to happen before Babel
-  parses, and a `parserOverride` returning an AST built from different text
-  would leave every source-map position pointing into the expansion. Under
-  babel-loader use `@sweetener/webpack-loader`; in place of babel-jest use
-  `@sweetener/jest`.
+- **There is no Babel integration**, and there cannot be a Babel plugin:
+  expansion has to happen before Babel parses, and a `parserOverride` returning
+  an AST built from different text would leave every source-map position
+  pointing into the expansion. Under babel-loader use
+  `@sweetener/webpack-loader`; in place of babel-jest use `@sweetener/jest`,
+  which runs Babel itself and passes the expansion's map as Babel's input map
+  so the result still names the `.sts`.
 - `@sweetener/node/register` installs Node module customization hooks, expands
   `.sts`, strips TypeScript with the official compiler, and executes it as ESM.
   Emitted JavaScript carries a composed inline source map, so
