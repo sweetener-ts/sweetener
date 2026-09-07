@@ -3,7 +3,14 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  absorbed,
+  core,
+  coreEntryPoints,
+  coreSpecifier,
+  publishedDirectories,
+} from "./release-packages.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const output = join(root, "artifacts", "release");
@@ -16,10 +23,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
 await mkdir(tarballs, { recursive: true });
 
-const packageDirectories = (await readdir(packageRoot, { withFileTypes: true }))
-  .filter((entry) => entry.isDirectory())
-  .map(({ name }) => name)
-  .sort();
+const packageDirectories = await publishedDirectories(root);
 /**
  * What a package's npm page says.
  *
@@ -137,22 +141,38 @@ const summaries = {
     ].join("\n"),
   },
   compiler: {
-    text: "The expansion session every build-tool adapter is built on. Reach for an adapter first.",
-  },
-  "typescript-host": {
-    text: "Runs the official TypeScript compiler and language service over expanded virtual files.",
+    text: "The Sweetener compiler: the expansion session every build-tool adapter is built on. Reach for an adapter first.",
+    usage: [
+      "```ts",
+      'import { createSweetenerSession } from "@sweetener/compiler";',
+      "",
+      "const session = createSweetenerSession();",
+      "const result = await session.transform({ code, filename, configFile });",
+      "```",
+      "",
+      "Subpaths expose the layers a host reaches past the session for:",
+      "`/typescript-host` runs the official TypeScript compiler and language",
+      "service over expanded virtual files, and `/reader`, `/syntax` and",
+      "`/shared` read Sweetener source without expanding it. Everything else is",
+      "internal and has no stable API.",
+    ].join("\n"),
   },
 };
 
-const internals =
-  "An internal part of the Sweetener compiler. It has no stable API of its own; install @sweetener/cli, or the adapter for your build tool, instead.";
-
 function readmeFor(name, directory) {
   const summary = summaries[directory];
+  // Every published package is one someone installs deliberately, so every one
+  // has something to say. This used to fall back to a sentence about being an
+  // internal part of the compiler, which is what the layers now inside
+  // `@sweetener/compiler` published instead of a page.
+  if (summary === undefined)
+    throw new Error(
+      `No README summary for ${directory}. Add one to \`summaries\` in this script, or absorb the package into @sweetener/${core}.`,
+    );
   const lines = [
     `# ${name}`,
     "",
-    summary?.text ?? internals,
+    summary.text,
     "",
     "Part of [Sweetener](https://github.com/jimmyhmiller/sweetener), hygienic",
     "declarative macros for TypeScript. Alpha: the language version is 1 and the",
@@ -163,6 +183,51 @@ function readmeFor(name, directory) {
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * Every module specifier in built output, and nothing that merely looks like
+ * one.
+ *
+ * Each layer exports a `packageName` constant holding its own name, so a blind
+ * replacement rewrote a string value into a relative path. Anchoring on the
+ * import forms keeps to specifiers.
+ */
+const specifierPattern =
+  /(from\s*|import\(\s*|require\(\s*)"(@sweetener\/[a-z-]+)"/gu;
+
+async function filesUnder(directory) {
+  const found = [];
+  for (const entry of await readdir(directory, {
+    withFileTypes: true,
+    recursive: true,
+  }))
+    if (entry.isFile()) found.push(join(entry.parentPath, entry.name));
+  return found;
+}
+
+/** Rewrite the specifiers in built JavaScript and declarations, in place. */
+async function rewriteSpecifiers(directory, resolveSpecifier) {
+  for (const file of await filesUnder(directory)) {
+    if (!/\.(?:js|d\.ts)$/u.test(file)) continue;
+    const before = await readFile(file, "utf8");
+    const after = before.replaceAll(
+      specifierPattern,
+      (match, lead, specifier) => {
+        const replacement = resolveSpecifier(specifier, file);
+        return replacement === undefined ? match : `${lead}"${replacement}"`;
+      },
+    );
+    if (after !== before) await writeFile(file, after, "utf8");
+  }
+}
+
+/** Where an absorbed layer's entry point sits inside the merged package. */
+function entryPointFor(name) {
+  const found = Object.entries(coreEntryPoints).find(
+    ([, directory]) => directory === name,
+  );
+  return found?.[0];
+}
+
 const staged = [];
 for (const directory of packageDirectories) {
   const sourceDirectory = join(packageRoot, directory);
@@ -171,10 +236,24 @@ for (const directory of packageDirectories) {
   );
   const targetDirectory = join(staging, directory);
   await mkdir(targetDirectory, { recursive: true });
+  // The merged package holds one directory per layer, its own included, so
+  // every entry point is addressed the same way and nothing has to know which
+  // layer it came from.
+  const layers = directory === core ? [core, ...absorbed] : [];
+  for (const layer of layers)
+    await cp(
+      join(packageRoot, layer, "dist"),
+      join(targetDirectory, "dist", layer),
+      {
+        filter: (path) =>
+          !/(?:^|[\\/])(?:test|\.tsbuildinfo)(?:[\\/]|$)/u.test(path),
+        recursive: true,
+      },
+    );
   // Everything the package says it ships, not just `dist` — a package whose
   // command lives outside `dist` was staged without it, so the tarball
   // declared a command it did not contain.
-  for (const entry of manifest.files ?? ["dist"]) {
+  for (const entry of layers.length > 0 ? [] : (manifest.files ?? ["dist"])) {
     await cp(join(sourceDirectory, entry), join(targetDirectory, entry), {
       // Compiled tests and the incremental build log are not part of the
       // package. `files: ["dist"]` swept them in: 128 test artifacts in the
@@ -187,13 +266,46 @@ for (const directory of packageDirectories) {
       recursive: true,
     });
   }
+  if (layers.length > 0)
+    // Inside the merged package a layer reaches its neighbour by path. The
+    // names it used to import are the directories it now sits beside.
+    await rewriteSpecifiers(targetDirectory, (specifier, file) => {
+      const layer = specifier.slice("@sweetener/".length);
+      if (!layers.includes(layer)) return undefined;
+      const target = join(targetDirectory, "dist", layer, "src", "index.js");
+      const path = relative(dirname(file), target).replaceAll("\\", "/");
+      return path.startsWith(".") ? path : `./${path}`;
+    });
+  else
+    // Outside it, a layer is a subpath of the compiler — or it is internal,
+    // and a package importing it has to say what it needs before this can
+    // publish something whose imports do not resolve.
+    await rewriteSpecifiers(targetDirectory, (specifier) => {
+      const layer = specifier.slice("@sweetener/".length);
+      if (!absorbed.includes(layer)) return undefined;
+      const entryPoint = entryPointFor(layer);
+      if (entryPoint === undefined)
+        throw new Error(
+          `${manifest.name} imports ${specifier}, which ships inside @sweetener/${core} with no entry point. Add one to \`coreEntryPoints\`, or stop importing it.`,
+        );
+      return coreSpecifier(entryPoint);
+    });
   const dependencies = Object.fromEntries(
-    Object.entries(manifest.dependencies ?? {}).map(([name, requirement]) => [
-      name,
-      typeof requirement === "string" && requirement.startsWith("workspace:")
-        ? version
-        : requirement,
-    ]),
+    Object.entries(manifest.dependencies ?? {})
+      // An absorbed layer is not a dependency any more; the package that holds
+      // it is.
+      .map(([name, requirement]) =>
+        absorbed.includes(name.slice("@sweetener/".length))
+          ? [`@sweetener/${core}`, `workspace:*`]
+          : [name, requirement],
+      )
+      .filter(([name]) => name !== manifest.name)
+      .map(([name, requirement]) => [
+        name,
+        typeof requirement === "string" && requirement.startsWith("workspace:")
+          ? version
+          : requirement,
+      ]),
   );
   const publishManifest = {
     name: manifest.name,
@@ -204,7 +316,21 @@ for (const directory of packageDirectories) {
     // command-line tool with no command; dropping `main` and `types` published
     // a package with no entry point at all, for the ones that name their entry
     // that way instead of through `exports`.
-    ...(manifest.exports === undefined ? {} : { exports: manifest.exports }),
+    ...(layers.length > 0
+      ? {
+          exports: Object.fromEntries(
+            Object.entries(coreEntryPoints).map(([entryPoint, layer]) => [
+              entryPoint,
+              {
+                types: `./dist/${layer}/src/index.d.ts`,
+                import: `./dist/${layer}/src/index.js`,
+              },
+            ]),
+          ),
+        }
+      : manifest.exports === undefined
+        ? {}
+        : { exports: manifest.exports }),
     ...(manifest.main === undefined ? {} : { main: manifest.main }),
     ...(manifest.types === undefined ? {} : { types: manifest.types }),
     ...(manifest.bin === undefined ? {} : { bin: manifest.bin }),

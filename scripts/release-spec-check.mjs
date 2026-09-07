@@ -2,6 +2,11 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import {
+  coreEntryPoints,
+  coreSpecifier,
+  publishedPackageNames,
+} from "./release-packages.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const specificationDirectory = join(root, "docs", "specifications");
@@ -19,21 +24,13 @@ const requiredSections = [
   "Public packages",
   "Migration from Sweet.js",
 ];
+// Derived, not listed: the spec has to name what actually publishes, and a
+// second copy of the list is a second place to forget.
 const requiredPackages = [
-  "shared",
-  "syntax",
-  "reader",
-  "pattern",
-  "macro-language",
-  "hygiene",
-  "template",
-  "enforestation",
-  "expansion",
-  "printer",
-  "prettier-plugin",
-  "typescript-host",
-  "cli",
-  "test-support",
+  ...(await publishedPackageNames(root)),
+  ...Object.keys(coreEntryPoints)
+    .filter((entryPoint) => entryPoint !== ".")
+    .map(coreSpecifier),
 ];
 const problems = [];
 for (const [index, section] of requiredSections.entries())

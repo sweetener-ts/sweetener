@@ -116,24 +116,37 @@ not use it.
 
 ## 7. Public packages
 
-| Package           | Contract                                                        |
-| ----------------- | --------------------------------------------------------------- |
-| `shared`          | opaque IDs, cancellation, diagnostics, results, resource limits |
-| `syntax`          | immutable syntax, cursors, spans, origins                       |
-| `reader`          | TS/TSX scanning, trees, incremental reads, lossless printing    |
-| `pattern`         | declarative IR, shape inference, matcher compiler/VM, classes   |
-| `macro-language`  | definition AST, parser, finite declarative surface              |
-| `hygiene`         | scopes, bindings, environments, contracts, resolution           |
-| `template`        | template AST, validation, instantiation, finite operations      |
-| `enforestation`   | category consumers, Pratt operators, protected syntax           |
-| `expansion`       | modules, invocation, recursion, generated definitions, traces   |
-| `printer`         | hygienic names, generated TypeScript, origins, query indexes    |
-| `prettier-plugin` | conservative, syntax-safe formatting for `.sts` and `.stsx`     |
-| `typescript-host` | manifests, resolution, hosts, maps, caches, tooling reads       |
-| `cli`             | configuration and check/build/watch/expand/explain commands     |
-| `test-support`    | fixture, golden, conformance, and benchmark protocols           |
+| Package                         | Contract                                                             |
+| ------------------------------- | -------------------------------------------------------------------- |
+| `@sweetener/compiler`           | the expansion session every adapter is built on                      |
+| `@sweetener/cli`                | configuration and check/build/watch/expand/explain commands          |
+| `@sweetener/unplugin`           | Vite, Rollup, Rolldown, webpack, Rspack, Rsbuild, esbuild, Farm, Bun |
+| `@sweetener/webpack-loader`     | the loader a webpack rule names, and Next.js through Turbopack       |
+| `@sweetener/parcel-transformer` | Parcel transformer, named as Parcel requires plugins to be           |
+| `@sweetener/jest`               | Jest transformer for `.sts` and `.stsx`                              |
+| `@sweetener/prettier-plugin`    | conservative, syntax-safe formatting for `.sts` and `.stsx`          |
+| `@sweetener/node`               | `node --import @sweetener/node/register`                             |
+| `@sweetener/deno`               | `deno run --import npm:@sweetener/deno/register`                     |
 
-Only package root exports are public. Cross-package internal paths are
+The compiler's layers — opaque IDs and diagnostics, immutable syntax and
+origins, the reader, the pattern IR and matcher, the definition parser,
+hygiene, templates, enforestation, expansion, the printer, and the TypeScript
+host — ship inside `@sweetener/compiler` rather than as packages of their own.
+Four are reachable, because a published package reaches them:
+
+| Entry point                           | Contract                                                     |
+| ------------------------------------- | ------------------------------------------------------------ |
+| `@sweetener/compiler/typescript-host` | manifests, resolution, hosts, maps, caches, tooling reads    |
+| `@sweetener/compiler/reader`          | TS/TSX scanning, trees, incremental reads, lossless printing |
+| `@sweetener/compiler/syntax`          | immutable syntax, cursors, spans, origins                    |
+| `@sweetener/compiler/shared`          | opaque IDs, cancellation, diagnostics, results, limits       |
+
+The layering itself is normative and enforced by the boundary gate, which reads
+the workspace rather than the registry: a layer may import only the layers
+below it whether or not they are published separately. The remaining layers
+have no entry point and no stable API.
+
+Only the entry points above are public. Deeper paths into any package are
 unsupported and rejected by the boundary gate. Version `0.x` packages may
 change TypeScript signatures, but observable language behavior follows the
 language and format versions above.

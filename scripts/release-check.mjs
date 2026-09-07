@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import {
+  absorbed,
+  publishedDirectories,
+  publishedPackageNames,
+  unpublished,
+  workspaceDirectories,
+} from "./release-packages.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const releaseRoot = join(root, "artifacts", "release");
@@ -21,27 +28,27 @@ for (const field of [
   "fixtureVersion",
 ])
   if (release[field] === undefined) problems.push(`missing ${field}`);
-const expectedPackageNames = new Set(
-  await Promise.all(
-    (await readdir(join(root, "packages"), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry) => {
-        const manifest = JSON.parse(
-          await readFile(
-            join(root, "packages", entry.name, "package.json"),
-            "utf8",
-          ),
-        );
-        return manifest.name;
-      }),
-  ),
-);
+// Not every workspace package is published — eleven ship inside
+// @sweetener/compiler and one is not published at all — but every one has to
+// be accounted for, or a new package is dropped from the release by being
+// absent from a list rather than by a decision.
+const directories = await workspaceDirectories(root);
+for (const directory of directories)
+  if (
+    !absorbed.includes(directory) &&
+    !unpublished.includes(directory) &&
+    !(await publishedDirectories(root)).includes(directory)
+  )
+    problems.push(`${directory} is neither published, absorbed, nor excluded`);
+const expectedPackageNames = new Set(await publishedPackageNames(root));
 const releasedPackageNames = new Set(release.packages.map((item) => item.name));
 if (
   expectedPackageNames.size !== releasedPackageNames.size ||
   [...expectedPackageNames].some((name) => !releasedPackageNames.has(name))
 )
-  problems.push("release package set does not match the workspace");
+  problems.push(
+    "release package set does not match what the workspace publishes",
+  );
 for (const item of release.packages) {
   const bytes = await readFile(join(releaseRoot, item.file));
   const sha256 = createHash("sha256").update(bytes).digest("hex");
