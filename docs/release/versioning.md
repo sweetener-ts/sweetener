@@ -26,6 +26,17 @@ all. `scripts/release-packages.mjs` holds that division, and the release check
 fails on a workspace package that is neither published, absorbed, nor
 deliberately excluded.
 
-Alpha succession uses `0.1.0-alpha.N`. A changed tarball is never republished
-under an existing version. Registry tags, when authorized, use `alpha`; no alpha
-is assigned `latest`.
+Alpha succession uses `0.1.0-alpha.N`, which `npm version prerelease` produces.
+A changed tarball is never republished under an existing version.
+
+Registry publication uses the `alpha` dist-tag. That keeps an alpha out of
+`latest` only once something stable has been published: a package's first
+version becomes `latest` whatever `--tag` says, because a package with no
+`latest` cannot be installed by name at all. So the first alpha is what
+`npm install @sweetener/cli` gives you, and the README says so.
+
+A prerelease also does not satisfy an ordinary range: `^0.1.0` does not match
+`0.1.0-alpha.0`, and neither does `~0.1.0`. Only an exact version or a range
+carrying its own prerelease — `^0.1.0-alpha.0` — resolves one, which is why
+staged manifests pin internal dependencies to the exact version rather than a
+caret range.

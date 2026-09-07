@@ -55,9 +55,10 @@ jobs:
             exit 1
           fi
 
-      # Every alpha goes out under the `alpha` dist-tag. `npm install
-      # @sweetener/cli` must not hand someone an alpha because it happened to
-      # be the newest thing published.
+      # Every alpha goes out under the `alpha` dist-tag, which keeps `latest`
+      # where it is once a stable version exists. It does not hold for a
+      # package's first publish: that version becomes `latest` whatever --tag
+      # says, because a package with no `latest` cannot be installed by name.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
