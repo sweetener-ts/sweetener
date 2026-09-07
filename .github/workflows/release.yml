@@ -65,7 +65,17 @@ jobs:
           DRY_RUN: ${{ inputs.dryRun }}
         run: |
           set -eu
+          # The compiler first: every other package depends on it, and a plain
+          # glob publishes @sweetener/cli before it exists, leaving a window in
+          # which installing the command line fails on a missing dependency.
+          ordered=$(ls artifacts/release/tarballs/sweetener-compiler-*.tgz)
           for tarball in artifacts/release/tarballs/*.tgz; do
+            case "$tarball" in
+              *sweetener-compiler-*) ;;
+              *) ordered="$ordered $tarball" ;;
+            esac
+          done
+          for tarball in $ordered; do
             if [ "${DRY_RUN:-false}" = "true" ]; then
               npm publish "$tarball" --tag alpha --access public --dry-run
             else
