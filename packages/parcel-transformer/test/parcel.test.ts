@@ -8,6 +8,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { Parcel } from "@parcel/core";
 import { afterEach, expect, test } from "vitest";
@@ -19,7 +20,7 @@ afterEach(() => {
   temporaryProjects.clear();
 });
 
-test("Parcel builds Sweetener with its native transformer", async () => {
+const createProject = (): string => {
   const temporaryRoot = resolve("_tmp");
   mkdirSync(temporaryRoot, { recursive: true });
   const root = realpathSync(mkdtempSync(join(temporaryRoot, "sweet-parcel-")));
@@ -38,7 +39,6 @@ test("Parcel builds Sweetener with its native transformer", async () => {
     join(parcelScope, "config-default"),
     "dir",
   );
-  const output = join(root, "dist");
   writeFileSync(
     join(root, "macros.sts"),
     `export syntax twice:expr { rule { twice($x:tt) } => { [$x, $x] } }\n`,
@@ -63,7 +63,14 @@ test("Parcel builds Sweetener with its native transformer", async () => {
       },
     }),
   );
-  const parcel = new Parcel({
+  return root;
+};
+
+const buildProject = (
+  root: string,
+  output: string,
+): Promise<{ type: string }> =>
+  new Parcel({
     entries: join(root, "main.sts"),
     defaultConfig: "@parcel/config-default",
     config: join(root, ".parcelrc"),
@@ -73,12 +80,54 @@ test("Parcel builds Sweetener with its native transformer", async () => {
       sourceMaps: true,
       shouldOptimize: false,
     },
-  });
-  const event = await parcel.run();
+  }).run();
+
+test("Parcel builds Sweetener with its native transformer", async () => {
+  const root = createProject();
+  const output = join(root, "dist");
+  const event = await buildProject(root, output);
   expect(event.type).toBe("buildSuccess");
   const javascript = readdirSync(output).find((name) => name.endsWith(".js"));
   expect(javascript).toBeDefined();
   const code = readFileSync(join(output, javascript!), "utf8");
   expect(code).toContain("21");
   expect(code).not.toContain("twice(");
+});
+
+// `@parcel/logger` ships no types, and its diagnostics are the only place these
+// warnings surface: Parcel reports them through the logger rather than in the
+// build event, so a build can "succeed" while telling the user its cache is
+// useless.
+interface ParcelLogEvent {
+  readonly level: string;
+  readonly diagnostics?: readonly { readonly message: string }[] | undefined;
+}
+interface ParcelLogger {
+  onLog(callback: (event: ParcelLogEvent) => void): { dispose(): void };
+}
+
+// Parcel analyses an ES module plugin's whole module graph, gives up when it
+// reaches the TypeScript compiler's dynamic `require` calls, and then throws
+// away its cache on every startup. A CommonJS entry is loaded through Parcel's
+// own `require` instead and is never analysed, so nothing is warned about and
+// nothing is invalidated. Reverting the entry to an ES module brings both
+// warnings back, which is what this test exists to catch.
+test("a Parcel build with the transformer installed warns about nothing", async () => {
+  const require = createRequire(import.meta.url);
+  const logger = (require("@parcel/logger") as { default: ParcelLogger })
+    .default;
+  const warnings: string[] = [];
+  const subscription = logger.onLog((event) => {
+    if (event.level !== "warn" && event.level !== "error") return;
+    for (const diagnostic of event.diagnostics ?? [])
+      warnings.push(diagnostic.message);
+  });
+  try {
+    const root = createProject();
+    const event = await buildProject(root, join(root, "dist"));
+    expect(event.type).toBe("buildSuccess");
+  } finally {
+    subscription.dispose();
+  }
+  expect(warnings).toEqual([]);
 });

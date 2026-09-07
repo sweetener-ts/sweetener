@@ -244,12 +244,18 @@ back as `ts`/`tsx`, so Parcel's own pipeline finishes the job:
 A `.sweetenerrc` or a `sweetener` key in `package.json` can name the project
 config.
 
-Parcel warns once per build that the transformer "contains non-statically
-analyzable dependencies in its module graph", and invalidates its cache at
-startup because of it. The dependency it cannot analyze is the TypeScript
-compiler, which expansion needs and which loads some of its own modules
-dynamically. The build itself is unaffected; what it costs is Parcel's
-warm-start cache.
+The transformer's entry point is CommonJS, and deliberately so. Parcel loads a
+CommonJS plugin through a `require` it has patched, so it sees each dependency
+as the plugin asks for it. An ES module plugin is loaded with `import()`, which
+Parcel cannot intercept, so it parses the plugin's whole module graph up front
+instead — and this plugin's graph reaches the TypeScript compiler, whose bundle
+calls `require` on paths it computes at runtime. Parcel used to report that as
+"contains non-statically analyzable dependencies in its module graph" and throw
+away its cache at every startup. A CommonJS entry is never analyzed, so both
+that warning and the cache loss are gone, and so is Parcel's separate warning
+that ES module plugins are experimental. The compiler itself is still an ES
+module; the transformer reaches it with `import()` on the first file it
+expands.
 
 ## Jest
 

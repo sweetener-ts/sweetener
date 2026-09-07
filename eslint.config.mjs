@@ -47,6 +47,17 @@ export default tseslint.config(
     },
   },
   {
+    // A `.cts` file is CommonJS, and under `verbatimModuleSyntax` the only
+    // static import it can spell is `import x = require(...)`.
+    files: ["**/*.cts"],
+    rules: {
+      "@typescript-eslint/no-require-imports": [
+        "error",
+        { allowAsImport: true },
+      ],
+    },
+  },
+  {
     files: [
       "examples/**/*.ts",
       "examples/**/*.tsx",

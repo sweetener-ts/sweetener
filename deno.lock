@@ -96,6 +96,7 @@
           "dependencies": [
             "npm:@parcel/config-default@2.16.4",
             "npm:@parcel/core@2.16.4",
+            "npm:@parcel/logger@2.16.4",
             "npm:@parcel/plugin@2.16.4",
             "npm:@parcel/source-map@2.1.1"
           ]

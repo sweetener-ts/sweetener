@@ -594,6 +594,9 @@ importers:
       '@parcel/core':
         specifier: 2.16.4
         version: 2.16.4(@swc/helpers@0.5.23)
+      '@parcel/logger':
+        specifier: 2.16.4
+        version: 2.16.4
 
   packages/pattern:
     dependencies:

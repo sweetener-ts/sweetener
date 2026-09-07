@@ -78,7 +78,7 @@ const summaries = {
     ].join("\n"),
   },
   "parcel-transformer": {
-    text: "A Parcel 2 transformer for Sweetener sources. Parcel invalidates its cache at startup because the TypeScript compiler this depends on loads modules dynamically; builds are unaffected.",
+    text: "A Parcel 2 transformer for Sweetener sources. Its entry point is CommonJS so that Parcel loads it through its own `require` rather than analyzing the plugin's module graph, which reaches the TypeScript compiler and its runtime `require` calls; builds with it warn about nothing and keep their cache.",
     usage: [
       "```json",
       "{",
