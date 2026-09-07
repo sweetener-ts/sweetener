@@ -13,8 +13,5 @@
     "@sweetener/compiler": "workspace:*",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "@sweetener/typescript-host": "workspace:*"
-  },
-  "engines": {
-    "node": ">=22.15"
   }
 }

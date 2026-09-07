@@ -1,10 +1,10 @@
 # Supported toolchain compatibility matrix
 
-Date: 2026-08-03
+Date: 2026-09-07
 
 ## Declared support
 
-- Node.js: `>=24 <25`
+- Node.js: `>=24`
 - TypeScript compiler API: `6.0.x`
 - Published compatibility-package endpoints tested: `6.0.0` and `6.0.2`
 
@@ -20,6 +20,8 @@ version are recorded separately because they are not interchangeable.
 | 24.0.0  | 6.0.2                 | 6.0.3        | CI matrix      | CI matrix     | CI matrix        |
 | 24.18.1 | 6.0.0                 | 6.0.3        | CI matrix      | CI matrix     | CI matrix        |
 | 24.18.1 | 6.0.2                 | 6.0.3        | pass           | pass          | pass             |
+| 26.5.0  | 6.0.0                 | 6.0.3        | CI matrix      | CI matrix     | CI matrix        |
+| 26.5.0  | 6.0.2                 | 6.0.3        | CI matrix      | CI matrix     | CI matrix        |
 
 The oldest combined endpoint passed 27 focused tests covering the scanner and
 lexical modes, virtual compiler checking/emission/imports, and mutable virtual

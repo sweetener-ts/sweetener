@@ -291,7 +291,10 @@ const release = {
   originMapSchemaVersion: 1,
   expansionTraceSchemaVersion: 1,
   fixtureVersion: "1",
-  node: ">=24 <25",
+  // The same floor the packages carry. This said `>=24 <25` while every
+  // package it describes said `>=24`, and the compatibility workflow passes
+  // on current Node.
+  node: ">=24",
   typescriptApi: "6.0.x",
   packages,
 };
