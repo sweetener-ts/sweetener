@@ -16,7 +16,12 @@ const root = resolve(import.meta.dirname, "..");
 const output = join(root, "artifacts", "release");
 const staging = join(output, "staging");
 const tarballs = join(output, "tarballs");
-const version = "0.1.0-alpha.0";
+// The one place the release version is written. It was a constant here, which
+// made bumping it an edit to a build script rather than to the thing `npm
+// version` bumps.
+const version = JSON.parse(
+  await readFile(join(root, "package.json"), "utf8"),
+).version;
 const packageRoot = join(root, "packages");
 
 await rm(output, { recursive: true, force: true });
@@ -35,6 +40,7 @@ const packageDirectories = await publishedDirectories(root);
  */
 const summaries = {
   cli: {
+    keywords: ["command-line", "build", "watch"],
     text: "Check, build, and watch a Sweetener project, and scaffold one into an existing repository.",
     usage: [
       "```sh",
@@ -46,6 +52,18 @@ const summaries = {
     ].join("\n"),
   },
   unplugin: {
+    keywords: [
+      "vite",
+      "rollup",
+      "rolldown",
+      "webpack",
+      "rspack",
+      "rsbuild",
+      "esbuild",
+      "farm",
+      "bun",
+      "unplugin",
+    ],
     text: "Sweetener for Vite, Rollup, Rolldown, webpack, Rspack, Rsbuild, esbuild, Farm, and Bun.",
     usage: [
       "```ts",
@@ -65,6 +83,7 @@ const summaries = {
     ].join("\n"),
   },
   "webpack-loader": {
+    keywords: ["webpack", "loader", "nextjs", "turbopack"],
     text: "A webpack, Rspack, and Turbopack loader for Sweetener sources.",
     usage: [
       "```js",
@@ -82,6 +101,7 @@ const summaries = {
     ].join("\n"),
   },
   "parcel-transformer": {
+    keywords: ["parcel", "transformer"],
     text: "A Parcel 2 transformer for Sweetener sources. Its entry point is CommonJS so that Parcel loads it through its own `require` rather than analyzing the plugin's module graph, which reaches the TypeScript compiler and its runtime `require` calls; builds with it warn about nothing and keep their cache.",
     usage: [
       "```json",
@@ -93,6 +113,7 @@ const summaries = {
     ].join("\n"),
   },
   node: {
+    keywords: ["node", "loader", "register"],
     text: "Run Sweetener sources directly on Node, through its module customization hooks.",
     usage: [
       "```sh",
@@ -101,6 +122,7 @@ const summaries = {
     ].join("\n"),
   },
   deno: {
+    keywords: ["deno", "loader", "register"],
     text: "Run Sweetener sources on Deno, through its module hooks.",
     usage: [
       "```sh",
@@ -115,6 +137,7 @@ const summaries = {
     ].join("\n"),
   },
   jest: {
+    keywords: ["jest", "transformer", "testing"],
     text: "An asynchronous Jest transformer for Sweetener sources, with macro-aware cache keys.",
     usage: [
       "```js",
@@ -130,6 +153,7 @@ const summaries = {
     ].join("\n"),
   },
   "prettier-plugin": {
+    keywords: ["prettier", "formatter", "plugin"],
     text: "Format `.sts` and `.stsx` with Prettier 3.",
     usage: [
       "```js",
@@ -141,6 +165,7 @@ const summaries = {
     ].join("\n"),
   },
   compiler: {
+    keywords: ["compiler", "expansion", "hygiene"],
     text: "The Sweetener compiler: the expansion session every build-tool adapter is built on. Reach for an adapter first.",
     usage: [
       "```ts",
@@ -343,6 +368,27 @@ for (const directory of packageDirectories) {
     ...(manifest.peerDependenciesMeta === undefined
       ? {}
       : { peerDependenciesMeta: manifest.peerDependenciesMeta }),
+    // npm carries a LICENSE beside a package whether or not `files` lists it,
+    // but only if one is there: each staged package is built from nothing, so
+    // the repository's has to be copied in. Without it every package publishes
+    // as all-rights-reserved, which is a licence nobody can use.
+    license: "MIT",
+    author: "Jimmy Miller <jimmyhmiller@gmail.com>",
+    repository: {
+      type: "git",
+      url: "git+https://github.com/jimmyhmiller/sweetener.git",
+      directory: `packages/${directory}`,
+    },
+    homepage: `https://github.com/jimmyhmiller/sweetener/tree/main/packages/${directory}#readme`,
+    bugs: { url: "https://github.com/jimmyhmiller/sweetener/issues" },
+    keywords: [
+      "sweetener",
+      "macros",
+      "typescript",
+      "hygienic",
+      "syntax",
+      ...(summaries[directory]?.keywords ?? []),
+    ],
     files: manifest.files ?? ["dist"],
     dependencies,
     // A floor, not a ceiling. `>=24 <25` refused every Node newer than the one
@@ -369,6 +415,7 @@ for (const directory of packageDirectories) {
     readmeFor(manifest.name, directory),
     "utf8",
   );
+  await cp(join(root, "LICENSE"), join(targetDirectory, "LICENSE"));
   const packed = execFileSync(
     "npm",
     ["pack", "--silent", "--pack-destination", tarballs],

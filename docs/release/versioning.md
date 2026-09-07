@@ -15,9 +15,16 @@ fields may remain within schema 1. Removing, reinterpreting, or requiring a
 field increments its schema. Readers must reject unsupported manifest versions
 and may ignore unknown trace fields within a supported schema.
 
-All publishable packages use one synchronized version. Internal workspace
-dependency ranges are rewritten to that exact alpha version in staged manifests.
-Release tarballs are content-hashed in `artifacts/release/release.json`.
+All publishable packages use one synchronized version, taken from the root
+`package.json`. Internal workspace dependency ranges are rewritten to that exact
+alpha version in staged manifests. Release tarballs are content-hashed in
+`artifacts/release/release.json`.
+
+Not every package in the workspace is published: eleven compiler layers ship
+inside `@sweetener/compiler`, and the shared test harness is not published at
+all. `scripts/release-packages.mjs` holds that division, and the release check
+fails on a workspace package that is neither published, absorbed, nor
+deliberately excluded.
 
 Alpha succession uses `0.1.0-alpha.N`. A changed tarball is never republished
 under an existing version. Registry tags, when authorized, use `alpha`; no alpha

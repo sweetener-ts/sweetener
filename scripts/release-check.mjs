@@ -40,6 +40,15 @@ for (const directory of directories)
     !(await publishedDirectories(root)).includes(directory)
   )
     problems.push(`${directory} is neither published, absorbed, nor excluded`);
+// The staged version and the manifest `npm version` bumps have to agree, or a
+// release is cut at a number nothing in the repository records.
+const rootVersion = JSON.parse(
+  await readFile(join(root, "package.json"), "utf8"),
+).version;
+if (release.release !== rootVersion)
+  problems.push(
+    `release.json is ${release.release} but package.json is ${rootVersion}`,
+  );
 const expectedPackageNames = new Set(await publishedPackageNames(root));
 const releasedPackageNames = new Set(release.packages.map((item) => item.name));
 if (

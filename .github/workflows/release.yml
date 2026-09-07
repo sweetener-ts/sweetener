@@ -1,0 +1,81 @@
+name: Release
+
+# Publication is deliberate: this runs only when someone starts it, or pushes
+# an annotated tag at a reviewed commit. Nothing publishes from a branch push.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Pack and check without publishing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # Provenance is signed with a short-lived OIDC token from this workflow. It
+  # is why the packages do not declare `publishConfig.provenance`: declaring it
+  # made `npm publish` fail anywhere without an OIDC provider, which is every
+  # maintainer's machine.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      # `pnpm check` builds every example, and the Deno example verifies itself
+      # with `deno task`. The runner has no Deno of its own.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pnpm install --frozen-lockfile
+      - name: Gate
+        run: pnpm check
+
+      - name: Stage and verify the tarballs
+        run: pnpm release:verify
+
+      - name: Check the tag against the staged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          staged=$(node -p "require('./artifacts/release/release.json').release")
+          tagged=${GITHUB_REF_NAME#v}
+          if [ "$staged" != "$tagged" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match staged version $staged" >&2
+            exit 1
+          fi
+
+      # Every alpha goes out under the `alpha` dist-tag. `npm install
+      # @sweetener/cli` must not hand someone an alpha because it happened to
+      # be the newest thing published.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dryRun }}
+        run: |
+          set -eu
+          for tarball in artifacts/release/tarballs/*.tgz; do
+            if [ "${DRY_RUN:-false}" = "true" ]; then
+              npm publish "$tarball" --tag alpha --access public --dry-run
+            else
+              npm publish "$tarball" --tag alpha --access public --provenance
+            fi
+          done
+
+      - name: Keep what was published
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: |
+            artifacts/release/release.json
+            artifacts/release/tarballs
