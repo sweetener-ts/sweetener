@@ -129,8 +129,8 @@ describe("comments above a compile-time import", () => {
   });
 
   test("do not disturb a file that has none", () => {
-    expect(expand(`export const value = duplicate(1);`)).toContain(
-      "[1, 1]".replace(", ", ","),
-    );
+    const generated = expand(`export const value = duplicate(1);`);
+    expect(generated).toContain("[1, 1]");
+    expect(generated.trimStart()).toBe("export const value = [1, 1];");
   });
 });
