@@ -69,10 +69,10 @@ jobs:
       # new name goes out with NPM_TOKEN, and every release after it can drop
       # the secret. Requires npm >= 11.5.1, which Node 24.18.1 carries (11.16.0).
       #
-      # When you do remove the secret, also drop `registry-url` from the
-      # setup-node step above: it writes an .npmrc naming NODE_AUTH_TOKEN, and
-      # an empty one authenticates as nobody rather than falling through to
-      # OIDC. Confirm with a dry run before trusting it.
+      # Keep `registry-url` on setup-node when the secret goes: npm's own
+      # example for trusted publishing keeps it, and the CLI detects an OIDC
+      # environment and uses it before falling back to a token, so the empty
+      # `_authToken` that setup-node writes does not get in the way.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
