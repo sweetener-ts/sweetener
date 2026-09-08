@@ -161,10 +161,40 @@ Introduced identifiers receive definition and introduction scopes, while
 captured identifiers retain their call-site identity. That keeps generated
 bindings from accidentally capturing—or being captured by—user code.
 
-## Start a project
+## Use it in a project you already have
+
+Run `init` inside it. It reads what the project already depends on, writes a
+`sweetener.json` listing the files to expand and a starter macro under `src/`,
+and prints the integration that host needs with the config to paste. It shows
+every file it would create before writing anything, and touches nothing that
+is already there.
 
 ```bash
 npm install --save-dev @sweetener/cli@alpha
+npx sweetener init
+```
+
+| Host                                                     | What it wires up                       |
+| -------------------------------------------------------- | -------------------------------------- |
+| Vite, Astro, Nuxt, SvelteKit, SolidStart, TanStack Start | `@sweetener/unplugin/vite`             |
+| Rsbuild, Farm                                            | `@sweetener/unplugin/rsbuild`, `/farm` |
+| Bun                                                      | `@sweetener/unplugin/bun`              |
+| Next.js, webpack                                         | `@sweetener/webpack-loader`            |
+| Parcel                                                   | `@sweetener/parcel-transformer`        |
+| Jest                                                     | `@sweetener/jest`                      |
+| Deno                                                     | `@sweetener/deno/register`             |
+| Node                                                     | `@sweetener/node/register`             |
+| anything else                                            | the command line                       |
+
+`@sweetener/unplugin` also has entry points for Rollup, Rolldown, esbuild, and
+Rspack, and `@sweetener/prettier-plugin` formats `.sts` and `.stsx`. Deno and
+Bun are recognised by their own config files, so a project with no
+`package.json` is still read as the project it is. See
+[build-tool integrations](docs/integrations.md) for every host in full.
+
+### Starting from nothing
+
+```bash
 npx sweetener init my-app
 ```
 
@@ -172,39 +202,41 @@ That writes the `package.json`, `tsconfig.json`, and `src/` a macro needs,
 including a macro definition and a file that uses it. `npm run check` expands
 and type-checks it; `npm run build` emits into `dist/`.
 
-Run from a clone of this repository instead, `init` points the new project at
-that checkout with a `link:` dependency rather than at the registry, and says
-so in its output — build the checkout once first.
+## Importing a macro module from ordinary TypeScript
+
+`tsc` does not know what a `.sts` is, so `import { pair } from "./main.sts"` in
+a `.ts` file is unresolvable — which breaks the `tsc -b && vite build` script a
+Vite app ships with. Turn on source declarations:
+
+```json
+{
+  "compilerOptions": { "allowArbitraryExtensions": true },
+  "sweet": { "sourceDeclarations": true },
+  "files": ["src/macros.sts", "src/main.sts"]
+}
+```
+
+`sweetener build` then writes `src/main.d.sts.ts` beside each source, which is
+the name TypeScript resolves `./main.sts` through. Real types cross the
+boundary: assigning a `readonly number[]` export to a `string` is an error in
+plain `tsc`, and your editor reports it too, because it is running the same
+compiler. Add `*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
+
+This replaces hand-written `declare module "*.sts"` blocks, which have to
+restate every export and go stale silently.
+
+## The command line
+
+```bash
+sweetener check -p tsconfig.json    # type-check through the official compiler
+sweetener build -p tsconfig.json    # expand and emit
+sweetener watch -p tsconfig.json    # rebuild on change
+sweetener expand src/main.sts       # show the expanded TypeScript
+sweetener explain src/main.sts:12:8 # explain what expanded at a position
+```
 
 [SKILL.md](SKILL.md) is a short reference for writing macros: declaring them,
 the pattern forms, and how to read the compiler's diagnostics.
-
-## Run it from source
-
-Sweetener currently requires Node.js 24 and pnpm 11.18.0.
-
-```bash
-pnpm install
-pnpm build
-pnpm test
-```
-
-Run the browser playground locally:
-
-```bash
-pnpm playground
-```
-
-The CLI supports project checking, building, watching, expansion inspection,
-and explanations:
-
-```bash
-sweetener check -p tsconfig.json
-sweetener build -p tsconfig.json
-sweetener watch -p tsconfig.json
-sweetener expand src/main.sts
-sweetener explain src/main.sts:12:8
-```
 
 ## Documentation
 
@@ -213,20 +245,31 @@ sweetener explain src/main.sts:12:8
 - [Syntax objects and hygiene](docs/specifications/02-syntax-objects-hygiene.md)
 - [Compiler architecture](docs/specifications/01-compiler-architecture.md)
 - [Build-tool integrations](docs/integrations.md)
+- [Contributing](CONTRIBUTING.md)
 - [Project status](STATUS.md)
 
 ## Project status
 
 The compiler, CLI, browser playground, TypeScript host, language-service
-mapping, integrations, compatibility checks, and alpha release artifacts are
-implemented and tested locally. npm publication and a release tag remain
-intentionally blocked until explicitly authorized. See [STATUS.md](STATUS.md)
-for the generated capability dashboard and current validation evidence.
+mapping, integrations, and compatibility checks are implemented and tested.
+Every documented host is verified by installing the packed tarballs into a
+project created from scratch, not from inside this repository. See
+[STATUS.md](STATUS.md) for the generated capability dashboard and current
+validation evidence.
 
-Two limits are worth knowing before adopting it. There is no editor
-extension yet: the language-service mapping that one would be built on is
-implemented and tested, but nothing ships that connects it to an editor, so
-`.sts` files get no hover, diagnostics, or go-to-definition in an IDE today.
-And renaming a symbol through a macro invocation is declined rather than
-attempted, because a captured reference carries no proof of which binding
-each copy denotes.
+Three limits are worth knowing before adopting it.
+
+**Editor support is highlighting only.** `editors/vscode` contributes a grammar
+for `.sts` and `.stsx`, and it is not on the Marketplace yet — link it from a
+checkout. There is deliberately no language server: registering `.sts` as
+`typescript` would start TypeScript's own service on it and paint every macro
+definition as a syntax error. So `.sts` files get no hover, diagnostics, or
+go-to-definition; `sweetener check` and `watch` do that. Ordinary `.ts` files
+importing a `.sts` do get real completions and errors, through the generated
+declarations described above.
+
+**Renaming through a macro invocation is declined** rather than attempted,
+because a captured reference carries no proof of which binding each copy
+denotes.
+
+**macOS and Linux.** Nothing has been run on Windows.

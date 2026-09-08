@@ -39,6 +39,7 @@ and prints the integration that host needs with the config to paste:
 | Host                                                | Integration                                        |
 | --------------------------------------------------- | -------------------------------------------------- |
 | Vite, Astro, Nuxt, SvelteKit, Solid Start, TanStack | `@sweetener/unplugin`                              |
+| Rsbuild, Farm                                       | `@sweetener/unplugin/rsbuild`, `/farm`             |
 | Bun                                                 | `@sweetener/unplugin/bun`, as a `Bun.build` plugin |
 | Next, webpack                                       | `@sweetener/webpack-loader`                        |
 | Parcel                                              | `@sweetener/parcel-transformer`                    |
