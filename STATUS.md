@@ -3,19 +3,14 @@
 Updated: 2026-08-03  
 Current phase: phase-07  
 Current slice: Alpha release review and publication  
-Health: yellow  
-Repository commit: 6c0973d
+Health: green  
+Repository commit: 9db6289
 
-The default declarative TypeScript macro compiler, CLI, external workflow, and reproducible alpha artifacts are complete and verified locally. npm publication and Git-tag creation are not authorized.
+The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm under the alpha dist-tag at 0.1.0-alpha.0, with provenance signed from the release workflow.
 
 ## Current task
 
-Task: [REL-004](status/tasks/REL-004.md) Produce alpha release  
-Status: blocked  
-Owner: Codex  
-Branch: None
-
-Next action: Keep all release artifacts local. npm publication and Git-tag creation require separate, unambiguous maintainer authorization.
+No task is in progress.
 
 ## Phase tasks
 
@@ -31,7 +26,7 @@ Next action: Keep all release artifacts local. npm publication and Git-tag creat
 | [REL-001](status/tasks/REL-001.md) | Run compatibility matrix | done | TSH-008 | [phase-07-tooling-release.md](docs/tasks/phase-07-tooling-release.md#rel-001-run-compatibility-matrix) |
 | [REL-002](status/tasks/REL-002.md) | Publish language and package specifications | done | CMP-006, REL-001 | [phase-07-tooling-release.md](docs/tasks/phase-07-tooling-release.md#rel-002-publish-language-and-package-specifications) |
 | [REL-003](status/tasks/REL-003.md) | Validate external sample projects | done | TLS-005, PRF-002 | [phase-07-tooling-release.md](docs/tasks/phase-07-tooling-release.md#rel-003-validate-external-sample-projects) |
-| [REL-004](status/tasks/REL-004.md) | Produce alpha release | blocked | REL-002, REL-003 | [phase-07-tooling-release.md](docs/tasks/phase-07-tooling-release.md#rel-004-produce-alpha-release) |
+| [REL-004](status/tasks/REL-004.md) | Produce alpha release | done | REL-002, REL-003 | [phase-07-tooling-release.md](docs/tasks/phase-07-tooling-release.md#rel-004-produce-alpha-release) |
 
 ## Capability status
 
@@ -122,7 +117,7 @@ Next action: Keep all release artifacts local. npm publication and Git-tag creat
 
 | Check | Result | Commit |
 |---|---|---|
-| unit | 1118 passed | 6c0973d |
+| unit | 1118 passed | 9db6289 |
 
 ## Decisions requiring review
 
@@ -130,11 +125,11 @@ None.
 
 ## Blockers
 
-- **RELEASE-AUTHORITY: Publication and tag authority not granted.** Do not publish packages or create a release tag without separate, unambiguous maintainer authorization. Evidence: REL-004 local staging and packed verification are complete, but npm publication and Git-tag creation are explicitly not authorized.
+None.
 
 ## Next tasks
 
-1. [REL-004](status/tasks/REL-004.md) Produce alpha release: Keep all release artifacts local. npm publication and Git-tag creation require separate, unambiguous maintainer authorization.
+1. [REL-004](status/tasks/REL-004.md) Produce alpha release: Published to npm under the alpha dist-tag at v0.1.0-alpha.0, with provenance signed from the release workflow. Verified by installing from the registry into projects created from scratch.
 
 ## Navigation
 

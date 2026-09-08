@@ -4,9 +4,9 @@
   "updatedAt": "2026-08-03",
   "currentPhase": "phase-07",
   "currentSlice": "Alpha release review and publication",
-  "health": "yellow",
-  "summary": "The default declarative TypeScript macro compiler, CLI, external workflow, and reproducible alpha artifacts are complete and verified locally. npm publication and Git-tag creation are not authorized.",
-  "currentTask": "REL-004",
+  "health": "green",
+  "summary": "The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm under the alpha dist-tag at 0.1.0-alpha.0, with provenance signed from the release workflow.",
+  "currentTask": null,
   "tasks": [
     {
       "id": "FND-001",
@@ -1080,7 +1080,7 @@
       "id": "REL-004",
       "title": "Produce alpha release",
       "phase": "phase-07",
-      "status": "blocked",
+      "status": "done",
       "order": 711,
       "owner": "Codex",
       "branch": null,
@@ -1088,7 +1088,7 @@
       "specifications": [
         "docs/tasks/phase-07-tooling-release.md#rel-004-produce-alpha-release"
       ],
-      "nextAction": "Keep all release artifacts local. npm publication and Git-tag creation require separate, unambiguous maintainer authorization."
+      "nextAction": "Published to npm under the alpha dist-tag at v0.1.0-alpha.0, with provenance signed from the release workflow. Verified by installing from the registry into projects created from scratch."
     }
   ],
   "capabilities": [
@@ -1503,13 +1503,6 @@
       "status": "done"
     }
   ],
-  "blockers": [
-    {
-      "id": "RELEASE-AUTHORITY",
-      "title": "Publication and tag authority not granted",
-      "evidence": "REL-004 local staging and packed verification are complete, but npm publication and Git-tag creation are explicitly not authorized.",
-      "requiredAction": "Do not publish packages or create a release tag without separate, unambiguous maintainer authorization."
-    }
-  ],
+  "blockers": [],
   "nextTasks": ["REL-004"]
 }
