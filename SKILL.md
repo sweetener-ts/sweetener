@@ -26,9 +26,9 @@ npm run build   # expand, type-check, and emit into dist/
 npm run watch   # rebuild on change
 ```
 
-If the packages are not published yet, `init` points the project at the
-checkout it was scaffolded from and says so. Build that checkout once before
-installing.
+Run from a clone of the Sweetener repository, `init` points the project at that
+checkout rather than at the registry, and says so. Build the checkout once
+before installing.
 
 ## Add macros to a project you already have
 

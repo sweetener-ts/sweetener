@@ -90,9 +90,11 @@ const tsconfig = `${JSON.stringify(
 /**
  * Where to point a new project's dependency on the command line.
  *
- * Nothing is published yet, so a project outside this repository has to reach
- * the packages through the checkout it is being scaffolded from. Once these
- * are on a registry the version is the right answer and the path is not.
+ * Run from a checkout, a scaffolded project has to reach the packages through
+ * that checkout: the version on the registry is a different build from the one
+ * being worked on, and pointing at it would scaffold a project that does not
+ * exercise the change under way. Anywhere else the version is the right answer
+ * and the path is not.
  */
 function cliSpecifier(): {
   readonly specifier: string;
@@ -117,7 +119,7 @@ function cliSpecifier(): {
   // directory links to nothing at all.
   return {
     specifier: `link:${packaged}`,
-    note: `@sweetener/cli is not published yet, so this project links to the checkout at ${packaged}. Build that checkout once (pnpm build) before installing here, and expect the link to break if it moves.`,
+    note: `Scaffolded from a checkout, so this project links to it at ${packaged} rather than to the published version. Build that checkout once (pnpm build) before installing here, and expect the link to break if it moves.`,
   };
 }
 
@@ -450,7 +452,7 @@ export function scaffoldIntoProject(options: {
   };
   const install =
     cli.specifier.startsWith("link:") && host !== undefined
-      ? `${integration} is not published yet. Add it as a link: dependency pointing into the checkout, the way ${cliSpecifier().specifier} does.`
+      ? `Add ${integration} as a link: dependency pointing into this checkout, the way ${cliSpecifier().specifier} does, so it matches the command line this was scaffolded with.`
       : integration in dependencies
         ? `${integration} is already a dependency here.`
         : `Install ${integration}.`;

@@ -11,9 +11,11 @@ result back to the source.
 [Try the playground](https://sweetener-ts.github.io/sweetener/) — it runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
-> Sweetener is currently an alpha-stage project. The implementation and local
-> release artifacts are complete, but the packages have not yet been published
-> to npm.
+> Sweetener is alpha. The packages are published under the `alpha` dist-tag,
+> and because these are the first versions of their names, a plain
+> `npm install` resolves to one — there is no stable release behind them yet.
+> Public TypeScript signatures may change before `1.0`; the language behaviour
+> is versioned separately and does not.
 
 ## Define your own syntax
 
@@ -162,16 +164,17 @@ bindings from accidentally capturing—or being captured by—user code.
 ## Start a project
 
 ```bash
-sweetener init my-app
+npm install --save-dev @sweetener/cli@alpha
+npx sweetener init my-app
 ```
 
 That writes the `package.json`, `tsconfig.json`, and `src/` a macro needs,
 including a macro definition and a file that uses it. `npm run check` expands
 and type-checks it; `npm run build` emits into `dist/`.
 
-Until these packages are published, `init` points the new project at the
-checkout it was scaffolded from and says so in its output, so build the
-checkout once first.
+Run from a clone of this repository instead, `init` points the new project at
+that checkout with a `link:` dependency rather than at the registry, and says
+so in its output — build the checkout once first.
 
 [SKILL.md](SKILL.md) is a short reference for writing macros: declaring them,
 the pattern forms, and how to read the compiler's diagnostics.

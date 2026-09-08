@@ -55,7 +55,7 @@ describe("sweetener init", () => {
     expect(generated?.replaceAll(/\s+/gu, "")).toContain("constvalues=[total]");
   });
 
-  test("says how to reach a command line that is not published", () => {
+  test("says how to reach the command line it was scaffolded from", () => {
     const { directory, output } = scaffold();
     const manifest = JSON.parse(
       readFileSync(join(directory, "package.json"), "utf8"),
@@ -63,7 +63,7 @@ describe("sweetener init", () => {
     // An absolute link: a relative one resolves somewhere else entirely once
     // the project sits under a symlinked directory.
     expect(manifest.dependencies["@sweetener/cli"]).toMatch(/^link:\//u);
-    expect(output).toContain("not published yet");
+    expect(output).toContain("links to it at");
     expect(manifest.scripts.check).toBe("sweetener check -p tsconfig.json");
   });
 
