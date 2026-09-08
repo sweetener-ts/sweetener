@@ -82,46 +82,66 @@ const ordinary = typeof value;
 
 ### Recursive syntax
 
-Macros can recursively consume syntax while every capture remains a grammatical
-unit—in this case an `expr`, `ident`, or token tree (`tt`):
+A macro can call itself. A base case and an inductive case are enough to build
+a form that takes as many parts as you write:
 
 ```ts
-// threading.sts
-export rec syntax (->):expr {
-  rule { (-> $value:expr) } => {
-    $value
-  }
-
-  rule {
-    (-> $value:expr, $next:ident($($argument:expr),*), $($rest:tt)+)
-  } => {
-    (-> $next($value, $($argument),*), $($rest)+)
-  }
-
-  rule { (-> $value:expr, $next:ident($($argument:expr),*),) } => {
-    $next($value, $($argument),*)
-  }
-
-  rule { (-> $value:expr, $next:ident($($argument:expr),*)) } => {
-    $next($value, $($argument),*)
+// cond.sts
+export rec syntax cond:expr {
+  rule { cond { else => $result:expr } } => { $result }
+  rule { cond { else => $result:expr, } } => { $result }
+  rule { cond { $test:expr => $result:expr, $($rest:tt)+ } } => {
+    $test ? $result : cond { $($rest)+ }
   }
 }
 ```
 
 ```ts
 // main.sts
-import { (->) } from "./threading.sts" for syntax;
+import { cond } from "./cond.sts" for syntax;
 
-const result = (->
-  [1, 2, 3],
-  map((value) => value + 1),
-  filter((value) => value > 2),
-);
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number };
+
+export const area = (shape: Shape): number =>
+  cond {
+    shape.kind === "circle" => Math.PI * shape.radius ** 2,
+    else => shape.side ** 2,
+  };
 ```
 
-The playground also includes threading, do notation, currying, protocols, CSP
-operators, rewritten core forms, generated multi-part methods, and a combined
-mini-language. Every example comes from the executable acceptance suite.
+The recursion is visible in what it produces — each arm nests inside the
+previous one's alternative:
+
+```ts
+export const area = (shape: Shape): number =>
+  shape.kind === "circle" ? Math.PI * shape.radius ** 2 : shape.side ** 2;
+```
+
+Because the result is an ordinary conditional, TypeScript narrows through it:
+`shape.radius` and `shape.side` each type-check in their own arm, and reaching
+for the wrong one is an error reported on the line you wrote it on, not on the
+expansion.
+
+```text
+main.sts:9:38 TS2339: Property 'side' does not exist on type '{ kind: "circle"; radius: number; }'.
+```
+
+And `cond` is total by construction. There is no rule without an `else`, so
+leaving it out is a compile error that points at the rules it tried:
+
+```text
+main.sts:4:3 TS4001: No rule for macro cond accepted this input: expected `else`.
+  cond.sts:2:17 The closest rule was still expecting syntax here
+```
+
+The [playground](https://sweetener-ts.github.io/sweetener/) carries nine more:
+sum types with an exhaustive match, structural pattern matching with no runtime
+behind it, signals, records that generate declarations rather than expressions,
+an operator with its own precedence, a statement macro, JSX, React
+memoization, and capturing a fragment's own source text. Every one of them is
+expanded by the same worker the site ships, checked on each build.
 
 ## A modern relative of Sweet.js
 
@@ -250,8 +270,9 @@ the pattern forms, and how to read the compiler's diagnostics.
 
 ## Project status
 
-The compiler, CLI, browser playground, TypeScript host, language-service
-mapping, integrations, and compatibility checks are implemented and tested.
+The compiler, CLI, [browser playground](https://sweetener-ts.github.io/sweetener/), TypeScript host,
+language-service mapping, integrations, and compatibility checks are
+implemented and tested.
 Every documented host is verified by installing the packed tarballs into a
 project created from scratch, not from inside this repository. See
 [STATUS.md](STATUS.md) for the generated capability dashboard and current
