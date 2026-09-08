@@ -1,6 +1,6 @@
 ---
 name: sweetener
-description: Write hygienic macros for TypeScript with Sweetener — declaring macros in .sts files, running the compiler, and reading its diagnostics.
+description: Write hygienic macros for TypeScript with Sweetener: declaring macros in .sts files, running the compiler, and reading its diagnostics.
 ---
 
 # Sweetener
@@ -59,15 +59,15 @@ expand ahead of time with `emitStandalone` from `@sweetener/cli`.
 ## What it will and will not do
 
 `init` prints every file it would create and then asks. Answer no and nothing
-is written. Where there is no terminal to ask — a script, a pipeline — it says
-so and stops rather than assuming; pass `--yes` to mean it.
+is written. In a script or a pipeline, where there is no terminal to ask, it
+says so and stops rather than assuming. Pass `--yes` to mean it.
 
 It never edits or deletes a file that is already there. Bundler config belongs
 to whoever wrote it, so it is printed for you to paste, not rewritten.
 
 ## Declare a macro
 
-A macro is declared with `syntax`, and named for where it may be written —
+A macro is declared with `syntax`, and named for where it may be written:
 `:expr` for expression position, `:stmt` for statement, `:item` for
 declarations, `:type` for types.
 

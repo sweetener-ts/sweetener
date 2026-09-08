@@ -128,11 +128,11 @@ not use it.
 | `@sweetener/node`               | `node --import @sweetener/node/register`                             |
 | `@sweetener/deno`               | `deno run --import npm:@sweetener/deno/register`                     |
 
-The compiler's layers — opaque IDs and diagnostics, immutable syntax and
-origins, the reader, the pattern IR and matcher, the definition parser,
-hygiene, templates, enforestation, expansion, the printer, and the TypeScript
-host — ship inside `@sweetener/compiler` rather than as packages of their own.
-Four are reachable, because a published package reaches them:
+The compiler's layers ship inside `@sweetener/compiler` rather than as packages
+of their own: opaque IDs and diagnostics, immutable syntax and origins, the
+reader, the pattern IR and matcher, the definition parser, hygiene, templates,
+enforestation, expansion, the printer, and the TypeScript host. Four stay
+reachable, because a published package reaches them:
 
 | Entry point                           | Contract                                                     |
 | ------------------------------------- | ------------------------------------------------------------ |
@@ -164,7 +164,8 @@ not grounds for importing compiler APIs.
 Rename macro-owned `.js`/`.sjs` files to `.sts` or `.stsx`, declare macro/runtime
 dependency kinds, and use project `sweet` configuration. Validate migration with
 `expand`, `explain`, `check`, then `build`. Compare runtime behavior, TypeScript
-diagnostics, binding identities, and declarations—not formatting alone.
+diagnostics, binding identities, and declarations, rather than formatting
+alone.
 
 The accepted playground families are executable migration examples for
 threading, do notation, implicit return, operators, core rewrites, ADTs,

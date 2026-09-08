@@ -8,14 +8,14 @@ official TypeScript compiler. Macro-enabled files expand from `.sts` or `.stsx`
 into ordinary TypeScript, with source maps and expansion traces connecting the
 result back to the source.
 
-[Try the playground](https://sweetener-ts.github.io/sweetener/) — it runs the
+[Try the playground](https://sweetener-ts.github.io/sweetener/). It runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
-> Sweetener is alpha. The packages are published under the `alpha` dist-tag,
-> and because these are the first versions of their names, a plain
-> `npm install` resolves to one — there is no stable release behind them yet.
-> Public TypeScript signatures may change before `1.0`; the language behaviour
-> is versioned separately and does not.
+> Sweetener is alpha. Packages go out under the `alpha` dist-tag. These are the
+> first versions of their names, so a plain `npm install` gives you one of them,
+> with nothing stable behind it. Public TypeScript signatures may change before
+> `1.0`. The language carries its own version, and changing how it behaves
+> requires a new one.
 
 ## Define your own syntax
 
@@ -111,18 +111,17 @@ export const area = (shape: Shape): number =>
   };
 ```
 
-The recursion is visible in what it produces — each arm nests inside the
-previous one's alternative:
+You can see the recursion in what it produces. Each arm nests inside the
+alternative of the one before it:
 
 ```ts
 export const area = (shape: Shape): number =>
   shape.kind === "circle" ? Math.PI * shape.radius ** 2 : shape.side ** 2;
 ```
 
-Because the result is an ordinary conditional, TypeScript narrows through it:
-`shape.radius` and `shape.side` each type-check in their own arm, and reaching
-for the wrong one is an error reported on the line you wrote it on, not on the
-expansion.
+The result is an ordinary conditional, so TypeScript narrows through it.
+`shape.radius` and `shape.side` each type-check in their own arm, and if you
+reach for the wrong one the error lands on the line you wrote:
 
 ```text
 main.sts:9:38 TS2339: Property 'side' does not exist on type '{ kind: "circle"; radius: number; }'.
@@ -146,10 +145,10 @@ expanded by the same worker the site ships, checked on each build.
 ## A modern relative of Sweet.js
 
 Sweetener draws directly from [Sweet.js](https://www.sweetjs.org/), the hygienic
-macro system for JavaScript. It keeps Sweet.js's strongest ideas—concrete
+macro system for JavaScript. It keeps Sweet.js's strongest ideas (concrete
 patterns and templates, syntax classes, lexical macros, explicit compile-time
-imports, and scope-set hygiene—while targeting TypeScript and making the public
-macro language declarative.
+imports, and scope-set hygiene) while targeting TypeScript and making the
+public macro language declarative.
 
 Unlike Sweet.js, Sweetener does not emit JavaScript through its own full parser
 or allow arbitrary JavaScript to execute during expansion. It emits TypeScript
@@ -179,15 +178,15 @@ import { (|>) } from "./operators.sts" for syntax;
 
 Introduced identifiers receive definition and introduction scopes, while
 captured identifiers retain their call-site identity. That keeps generated
-bindings from accidentally capturing—or being captured by—user code.
+bindings from capturing user code, or being captured by it.
 
 ## Use it in a project you already have
 
-Run `init` inside it. It reads what the project already depends on, writes a
-`sweetener.json` listing the files to expand and a starter macro under `src/`,
-and prints the integration that host needs with the config to paste. It shows
-every file it would create before writing anything, and touches nothing that
-is already there.
+Run `init` inside it. It reads what you already depend on and prints the
+integration your host needs, with the config to paste. It writes a
+`sweetener.json` listing the files to expand, plus a starter macro under `src/`.
+You see every file it would create before it writes one, and it leaves alone
+anything already there.
 
 ```bash
 npm install --save-dev @sweetener/cli@alpha
@@ -207,10 +206,10 @@ npx sweetener init
 | anything else                                            | the command line                       |
 
 `@sweetener/unplugin` also has entry points for Rollup, Rolldown, esbuild, and
-Rspack, and `@sweetener/prettier-plugin` formats `.sts` and `.stsx`. Deno and
-Bun are recognised by their own config files, so a project with no
-`package.json` is still read as the project it is. See
-[build-tool integrations](docs/integrations.md) for every host in full.
+Rspack, and `@sweetener/prettier-plugin` formats `.sts` and `.stsx`. `init`
+recognises Deno and Bun from their own config files, so it identifies a project
+that carries no `package.json`. [Build-tool
+integrations](docs/integrations.md) covers each host in full.
 
 ### Starting from nothing
 
@@ -224,9 +223,10 @@ and type-checks it; `npm run build` emits into `dist/`.
 
 ## Importing a macro module from ordinary TypeScript
 
-`tsc` does not know what a `.sts` is, so `import { pair } from "./main.sts"` in
-a `.ts` file is unresolvable — which breaks the `tsc -b && vite build` script a
-Vite app ships with. Turn on source declarations:
+`tsc` does not know what a `.sts` is. In a `.ts` file,
+`import { pair } from "./main.sts"` fails to resolve, which breaks the
+`tsc -b && vite build` script a Vite app ships with. Turn on source
+declarations:
 
 ```json
 {
@@ -237,13 +237,13 @@ Vite app ships with. Turn on source declarations:
 ```
 
 `sweetener build` then writes `src/main.d.sts.ts` beside each source, which is
-the name TypeScript resolves `./main.sts` through. Real types cross the
-boundary: assigning a `readonly number[]` export to a `string` is an error in
-plain `tsc`, and your editor reports it too, because it is running the same
-compiler. Add `*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
+the name TypeScript resolves `./main.sts` through. Types cross the boundary:
+assign a `readonly number[]` export to a `string` and plain `tsc` rejects it.
+Your editor rejects it too, because your editor runs the same compiler. Add
+`*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
 
-This replaces hand-written `declare module "*.sts"` blocks, which have to
-restate every export and go stale silently.
+This replaces hand-written `declare module "*.sts"` blocks, which restate every
+export and then go stale without telling you.
 
 ## The command line
 
@@ -278,19 +278,19 @@ project created from scratch, not from inside this repository. See
 [STATUS.md](STATUS.md) for the generated capability dashboard and current
 validation evidence.
 
-Three limits are worth knowing before adopting it.
+Three limits, before you adopt it.
 
 **Editor support is highlighting only.** `editors/vscode` contributes a grammar
-for `.sts` and `.stsx`, and it is not on the Marketplace yet — link it from a
-checkout. There is deliberately no language server: registering `.sts` as
-`typescript` would start TypeScript's own service on it and paint every macro
-definition as a syntax error. So `.sts` files get no hover, diagnostics, or
-go-to-definition; `sweetener check` and `watch` do that. Ordinary `.ts` files
-importing a `.sts` do get real completions and errors, through the generated
-declarations described above.
+for `.sts` and `.stsx`. It is not on the Marketplace, so link it from a
+checkout. It ships no language server on purpose: registering `.sts` as
+`typescript` starts TypeScript's own service on the file and paints every macro
+definition as a syntax error. So a `.sts` gets no hover, diagnostics, or
+go-to-definition, and `sweetener check` and `watch` cover that instead. A `.ts`
+file importing a `.sts` does get completions and errors, through the
+declarations above.
 
-**Renaming through a macro invocation is declined** rather than attempted,
-because a captured reference carries no proof of which binding each copy
-denotes.
+**Sweetener declines to rename through a macro invocation.** A captured
+reference carries no proof of which binding each copy denotes, so it refuses
+rather than guessing.
 
-**macOS and Linux.** Nothing has been run on Windows.
+**macOS and Linux.** Nobody has run this on Windows.

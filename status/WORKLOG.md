@@ -1566,7 +1566,7 @@ external samples, specification checks, and release-integrity checks.
 Registry upload, annotated Git tagging, and maintainer acceptance of the three
 remaining proposed product ADRs are external release actions and remain open.
 
-## 2026-08-03 — Default compiler integration begins
+## 2026-08-03: Default compiler integration begins
 
 - Completion audit found that public project commands still required an
   application-injected expansion provider and that the CLI package had no
@@ -1584,7 +1584,7 @@ remaining proposed product ADRs are external release actions and remain open.
   build/declarations, runtime, expansion explanations, and both call-site and
   macro-definition watch edits.
 
-# 2026-08-03 — TSH-009 default compiler completion
+# 2026-08-03: TSH-009 default compiler completion
 
 - Completed the public default project compiler and executable path for `.sts`
   and `.stsx` without injected expansion or inspection providers.
@@ -1597,7 +1597,7 @@ remaining proposed product ADRs are external release actions and remain open.
   the clean external default project proves build, declarations, runtime,
   expand/explain, mappings, and both call-site and definition watch edits.
 
-# 2026-08-03 — Production acceptance and runtime-import audit
+# 2026-08-03: Production acceptance and runtime-import audit
 
 - Added a production-frontend matrix that loads all twelve declarative
   playground families, rejects macro diagnostics, parses the generated
@@ -1627,7 +1627,7 @@ remaining proposed product ADRs are external release actions and remain open.
   proportionally while throughput remained effectively stable. A subsequent
   comparison run passed every explicit regression budget.
 
-# 2026-08-03 — Alpha ADR decisions; release authority withheld
+# 2026-08-03: Alpha ADR decisions; release authority withheld
 
 - Accepted ADR-0002, ADR-0004, and ADR-0005 without revision based on the
   production acceptance, external-project, tooling, and packed-release evidence.

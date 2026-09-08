@@ -17,10 +17,10 @@ export default { plugins: [sweetener] };
 
 The formatter reads delimiter structure with `@sweetener/reader`, so it accepts
 user-defined syntax without teaching Prettier every macro invocation. For
-application files, it masks compile-time imports — including bindings named by
-an operator, `(|>)`, or by a core form being shadowed, `typeof` — and imported
-item-macro prefixes, while Prettier formats the surrounding TypeScript and JSX,
-then restores the Sweetener syntax. Files that cannot be represented this way
+application files, it masks compile-time imports, including bindings named by
+an operator, `(|>)`, or by a core form being shadowed, `typeof`. It masks
+imported item-macro prefixes too, lets Prettier format the surrounding
+TypeScript and JSX, then restores the Sweetener syntax. Files that cannot be represented this way
 use a conservative delimiter-based fallback; that fallback preserves template
 and JSX whitespace because it can have runtime meaning.
 
@@ -29,7 +29,7 @@ character are both real tokens to a macro matcher, and a macro can match on one
 not being there: the implicit-return example in the language tour returns a
 function's final expression, and what distinguishes that from an expression
 statement is the absence of a `;`. So `semi` and `singleQuote` are not applied
-to `.sts` and `.stsx` — a file keeps whichever style it is written in, and
+to `.sts` and `.stsx`. A file keeps whichever style it is written in, and
 everything around it is still formatted. Where no printing preserves every
 token, the file is left as it was.
 
@@ -51,7 +51,7 @@ error. For checking, run `sweetener check`, or `sweetener watch` to have it
 report as you edit.
 
 Ordinary `.ts` and `.tsx` files that import a `.sts` module do get completions
-and type errors across the boundary — see source declarations below. The two
+and type errors across the boundary; see source declarations below. The two
 language ids match the ones `@sweetener/prettier-plugin` declares, so with both
 installed, formatting a `.sts` from the editor works as it does elsewhere.
 
@@ -133,9 +133,9 @@ export default defineConfig({
 });
 ```
 
-Farm's config is `process.cwd()`, not `import.meta.dirname`, because Farm
-bundles `farm.config.ts` into `node_modules/.farm` before running it — the
-config resolves relative to where it ends up, not to where it was written.
+Farm's config uses `process.cwd()` rather than `import.meta.dirname`. Farm
+bundles `farm.config.ts` into `node_modules/.farm` before running it, so the
+config resolves relative to where it lands, not to where you wrote it.
 
 ### React and Fast Refresh
 
@@ -182,11 +182,11 @@ Bun.plugin(
 Typed `.sts` and `.stsx` output is handed back through Bun's TypeScript loaders.
 
 **`bun --watch` does not reload for a `.sts` change.** Bun watches the files it
-resolved itself; a module a plugin loaded is not one of them, and a macro module
-imported `for syntax` never enters its graph at all. Editing an ordinary `.ts`
-does restart the process, and the reload that follows re-expands from disk —
-macro dependencies are part of the session's content-aware cache, so a rule
-changed in the meantime takes effect. A `.sts`-only change needs a restart.
+resolved itself. A module the plugin loaded is not one of them, and a macro
+module imported `for syntax` never enters its graph. Editing an ordinary `.ts`
+does restart the process, and the reload re-expands from disk: macro
+dependencies belong to the session's content-aware cache, so a rule you changed
+in the meantime takes effect. Change only a `.sts` and you need a restart.
 
 ## Deno tasks
 
@@ -242,8 +242,8 @@ export default {
 
 The loader emits JavaScript, so that rule stands on its own. Pass
 `options.emit: "typescript"` when a loader after this one should strip the
-types instead — to control its target, or for a host like Turbopack that is
-told to expect TypeScript.
+types instead, either to control its target or for a host like Turbopack that
+is told to expect TypeScript.
 
 For Next/Turbopack, add a `turbopack.rules["*.sts"]` loader rule with
 `as: "*.ts"`. Use a separate Sweetener project configuration if Next's own
@@ -253,7 +253,7 @@ exports imported from `.sts` modules.
 ## Importing a macro module from ordinary TypeScript
 
 `tsc` does not know what a `.sts` is, so `import { pair } from "./main.sts"` in
-a `.ts` or `.tsx` file is unresolvable — which breaks the build script a Vite
+a `.ts` or `.tsx` file does not resolve, which breaks the build script a Vite
 app ships with, `tsc -b && vite build`. Turn on source declarations:
 
 ```json
@@ -292,7 +292,7 @@ The transformer's entry point is CommonJS, and deliberately so. Parcel loads a
 CommonJS plugin through a `require` it has patched, so it sees each dependency
 as the plugin asks for it. An ES module plugin is loaded with `import()`, which
 Parcel cannot intercept, so it parses the plugin's whole module graph up front
-instead — and this plugin's graph reaches the TypeScript compiler, whose bundle
+instead. This plugin's graph reaches the TypeScript compiler, whose bundle
 calls `require` on paths it computes at runtime. Parcel used to report that as
 "contains non-statically analyzable dependencies in its module graph" and throw
 away its cache at every startup. A CommonJS entry is never analyzed, so both

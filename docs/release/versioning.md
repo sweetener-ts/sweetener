@@ -36,7 +36,7 @@ version becomes `latest` whatever `--tag` says, because a package with no
 `npm install @sweetener/cli` gives you, and the README says so.
 
 A prerelease also does not satisfy an ordinary range: `^0.1.0` does not match
-`0.1.0-alpha.0`, and neither does `~0.1.0`. Only an exact version or a range
-carrying its own prerelease — `^0.1.0-alpha.0` — resolves one, which is why
-staged manifests pin internal dependencies to the exact version rather than a
+`0.1.0-alpha.0`, and neither does `~0.1.0`. Only an exact version resolves one,
+or a range carrying its own prerelease such as `^0.1.0-alpha.0`. Staged
+manifests therefore pin internal dependencies to the exact version instead of a
 caret range.

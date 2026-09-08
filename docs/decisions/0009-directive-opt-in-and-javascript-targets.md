@@ -45,7 +45,7 @@ overwritten.
 ## Context
 
 The macro system was built against TypeScript, but nothing in the reader,
-expander, hygiene model, or printer is TypeScript-specific — JavaScript is a
+expander, hygiene model, or printer is TypeScript-specific. JavaScript is a
 subset of the syntax the reader already accepts. Only the final hand-off to
 TypeScript assumed a `.ts` target.
 
