@@ -2,11 +2,10 @@
 
 **Hygienic, declarative macros for TypeScript.**
 
-Sweetener lets a project extend TypeScript syntax while leaving type checking,
-declaration generation, JavaScript emission, and editor semantics to the
-official TypeScript compiler. Macro-enabled files expand from `.sts` or `.stsx`
-into ordinary TypeScript, with source maps and expansion traces connecting the
-result back to the source.
+You extend TypeScript's syntax. The official TypeScript compiler still does the
+type checking, declaration generation, JavaScript emission, and editor
+semantics. Your `.sts` and `.stsx` files expand into ordinary TypeScript, and
+source maps and expansion traces connect the result back to what you wrote.
 
 [Try the playground](https://sweetener-ts.github.io/sweetener/). It runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
@@ -19,9 +18,8 @@ real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
 ## Define your own syntax
 
-Sweetener macros are syntax-aware transformations rather than text
-substitutions. You define them with concrete patterns and templates in `.sts`
-modules, then import them explicitly for syntax.
+Sweetener macros match structure. You write concrete patterns and templates in
+`.sts` modules, then import them explicitly for syntax.
 
 ### A pipeline operator
 
@@ -127,20 +125,19 @@ reach for the wrong one the error lands on the line you wrote:
 main.sts:9:38 TS2339: Property 'side' does not exist on type '{ kind: "circle"; radius: number; }'.
 ```
 
-And `cond` is total by construction. There is no rule without an `else`, so
-leaving it out is a compile error that points at the rules it tried:
+`cond` is total by construction. No rule matches without an `else`, so leaving
+it out fails at compile time, naming the rules it tried:
 
 ```text
 main.sts:4:3 TS4001: No rule for macro cond accepted this input: expected `else`.
   cond.sts:2:17 The closest rule was still expecting syntax here
 ```
 
-The [playground](https://sweetener-ts.github.io/sweetener/) carries nine more:
-sum types with an exhaustive match, structural pattern matching with no runtime
-behind it, signals, records that generate declarations rather than expressions,
-an operator with its own precedence, a statement macro, JSX, React
-memoization, and capturing a fragment's own source text. Every one of them is
-expanded by the same worker the site ships, checked on each build.
+The [playground](https://sweetener-ts.github.io/sweetener/) carries nine more,
+including sum types with an exhaustive match, structural pattern matching with
+no runtime behind it, signals, and records that generate declarations. The same
+worker the site ships expands all of them, and every build checks that it
+still does.
 
 ## A modern relative of Sweet.js
 
@@ -150,11 +147,10 @@ patterns and templates, syntax classes, lexical macros, explicit compile-time
 imports, and scope-set hygiene) while targeting TypeScript and making the
 public macro language declarative.
 
-Unlike Sweet.js, Sweetener does not emit JavaScript through its own full parser
-or allow arbitrary JavaScript to execute during expansion. It emits TypeScript
-for the official compiler, and its finite declarative macro language has no
-filesystem, network, environment, process, clock, randomness, or evaluator
-access. See the [Sweet.js design research](docs/research/sweetjs.md) and
+Sweet.js emits JavaScript through its own full parser and runs arbitrary
+JavaScript during expansion. Sweetener does neither. It emits TypeScript for the
+official compiler, and its finite declarative macro language reaches no
+filesystem, network, environment, process, clock, randomness, or evaluator. See the [Sweet.js design research](docs/research/sweetjs.md) and
 [migration notes](docs/specifications/06-public-release-surface.md#8-migration-from-sweetjs)
 for the detailed lineage.
 
@@ -170,15 +166,15 @@ ordinary TypeScript + origin map + expansion trace
 .js + .d.ts + source maps + TypeScript diagnostics
 ```
 
-Macro imports are explicitly compile-time-only:
+A macro import says that it runs at compile time:
 
 ```ts
 import { (|>) } from "./operators.sts" for syntax;
 ```
 
-Introduced identifiers receive definition and introduction scopes, while
-captured identifiers retain their call-site identity. That keeps generated
-bindings from capturing user code, or being captured by it.
+An identifier a macro introduces carries definition and introduction scopes; one
+it captures keeps its call-site identity. So a generated binding cannot capture
+your code, and your code cannot capture it.
 
 ## Use it in a project you already have
 
