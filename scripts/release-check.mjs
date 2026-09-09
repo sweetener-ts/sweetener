@@ -17,8 +17,6 @@ const release = JSON.parse(
   await readFile(join(releaseRoot, "release.json"), "utf8"),
 );
 const problems = [];
-if (release.release !== "0.1.0-alpha.0")
-  problems.push("unexpected alpha version");
 for (const field of [
   "languageVersion",
   "specificationVersion",
@@ -78,8 +76,11 @@ for (const item of release.packages) {
   )
     problems.push(`workspace dependency in ${item.name}`);
 }
+// Named for the release rather than pinned to one. The version literal used
+// to sit here as well as in the staging script, so cutting a second release
+// meant editing the check that was meant to police it.
 for (const document of [
-  "0.1.0-alpha.0.md",
+  `${release.release}.md`,
   "compatibility-matrix.md",
   "external-samples.md",
   "known-limitations.md",
