@@ -386,9 +386,42 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       protectedExpression.category === "expr"
     ) {
       cursor.advance();
+      // A protected expression is a complete operand, but what stands after it
+      // may still be postfix. A template writing `$value.every(check)` splices
+      // a captured expression here and then reads a member off it, and a
+      // capture of more than one node arrives protected. Returning the operand
+      // on its own left `.every(check)` for a caller with nowhere to put it,
+      // and the expansion was reported as not being one expression.
+      let chained = false;
+      while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
+        const before = cursor.index;
+        const beginsOptional = isPunctuation(cursor.peek(), "?.");
+        const failed = consumePostfix(cursor, context, start, chained);
+        if (failed !== undefined) return failed;
+        if (cursor.index === before) break;
+        if (beginsOptional) chained = true;
+      }
+      if (cursor.index === start + 1)
+        return Object.freeze({
+          matched: true,
+          syntax: protectedExpression,
+          cursor,
+        });
+      const consumed = cursor
+        .fork()
+        .remainingRange()
+        .sequence.slice(start, cursor.index);
       return Object.freeze({
         matched: true,
-        syntax: protectedExpression,
+        syntax: createProtectedSyntax({
+          id: this.options.allocateSyntaxId(),
+          span: spanEnvelope(consumed.map(({ span }) => span)),
+          origin: outputOrigin(this.options.origins, consumed),
+          scopes: protectedExpression.scopes,
+          category: "expr",
+          precedence: primaryExpressionPrecedence,
+          children: consumed,
+        }),
         cursor,
       });
     }

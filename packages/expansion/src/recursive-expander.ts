@@ -480,6 +480,40 @@ export function expandMacroSyntax(
     );
   };
 
+  /**
+   * Tokens after which the rest of the statement is an expression. `=` is
+   * handled by `initializerFollows`, which has to tell an initializer from the
+   * `=` of a type alias.
+   */
+  const expressionRegionHeads = new Set([
+    "return",
+    "throw",
+    "yield",
+    "case",
+    "=>",
+  ]);
+
+  /**
+   * Tokens that end an expression region. A statement keyword closes one the
+   * same way a semicolon does, so a `return` inside a raw run does not leave
+   * every following declaration read as an expression.
+   */
+  const expressionRegionEnds = new Set([
+    ";",
+    "const",
+    "let",
+    "var",
+    "function",
+    "class",
+    "interface",
+    "type",
+    "import",
+    "export",
+    "enum",
+    "namespace",
+    "declare",
+  ]);
+
   /** Whether the next node stands where a declaration names what it binds. */
   const binderFollows = (preceding: readonly Syntax[]): boolean => {
     const previous = preceding.at(-1);
@@ -601,8 +635,30 @@ export function expandMacroSyntax(
     let index = 0;
     let suppressPending = suppressHead;
     let suppressedHeadIndex: number | undefined;
+    /**
+     * Whether the position being walked stands inside an expression. A
+     * replacement is walked before it is parsed, so the category of a position
+     * in it cannot be read from the one token in front of it: `f(inner(2))`,
+     * `1 && inner(2)` and `() => inner(2)` all put an expression several tokens
+     * past the `=` that opened it. Reading only that one token left a macro
+     * written in any of them resolved in the category of the declaration around
+     * it, found nothing, and emitted the invocation verbatim as a call to a
+     * function that does not exist. A region opens where an expression begins
+     * and runs to the end of the statement.
+     */
+    let expressionRegion = false;
     while (index < input.length) {
       const node = input[index]!;
+      const walked = output.at(-1);
+      if (walked?.tag === "token") {
+        if (expressionRegionEnds.has(walked.raw)) expressionRegion = false;
+        else if (
+          expressionRegionHeads.has(walked.raw) ||
+          // The `=` of a type alias opens a type, not an expression.
+          (initializerFollows(output) && !typePositionFollows(output))
+        )
+          expressionRegion = true;
+      }
       const coreKeyword = input[index + 1];
       const separatedCoreBody = input[index + 2];
       const compactCoreBody = input[index + 1];
@@ -780,7 +836,7 @@ export function expandMacroSyntax(
         resolvedMacro === undefined &&
         node.tag === "token" &&
         category !== "expr" &&
-        initializerFollows(output)
+        (initializerFollows(output) || expressionRegion)
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -1458,7 +1514,13 @@ export function expandMacroSyntax(
             ? "expr"
             : node.tag === "group" &&
                 node.delimiter === "brace" &&
-                category === "expr" &&
+                // A function body holds statements wherever the function
+                // itself stands. Asking only in expression category left the
+                // body of a `function` or method emitted by an item template
+                // walked as items, where no expression macro resolves.
+                (category === "expr" ||
+                  category === "stmt" ||
+                  category === "item") &&
                 functionBodyFollows(output)
               ? "stmt"
               : node.tag === "group" &&
@@ -1475,7 +1537,14 @@ export function expandMacroSyntax(
                       category !== "expr" &&
                       ((node.delimiter === "parenthesis" &&
                         conditionFollows(output)) ||
-                        initializerFollows(output))
+                        initializerFollows(output) ||
+                        // An argument list, a parenthesised operand, an index:
+                        // a group reached inside an expression region holds an
+                        // expression however the statement around it is
+                        // categorized.
+                        ((node.delimiter === "parenthesis" ||
+                          node.delimiter === "bracket") &&
+                          expressionRegion))
                     ? "expr"
                     : category;
         const statementBody =
