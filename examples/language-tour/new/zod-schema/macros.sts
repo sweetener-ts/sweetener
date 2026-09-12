@@ -1,0 +1,55 @@
+// One TypeScript type, as the zod schema that validates it.
+export syntax zod:expr {
+  rule { zod(string) } => { z.string() }
+  rule { zod(number) } => { z.number() }
+  rule { zod(boolean) } => { z.boolean() }
+  rule { zod(bigint) } => { z.bigint() }
+  rule { zod(Date) } => { z.date() }
+  rule { zod(null) } => { z.null() }
+  rule { zod(unknown) } => { z.unknown() }
+
+  rule { zod(Array<$element:type>) } => { z.array(zod($element)) }
+  rule { zod($element:ident[]) } => { z.array(zod($element)) }
+
+  // The `|` is written tight so it is matched literally; spaced, it would be
+  // the pattern language's own choice operator. The head is one token tree
+  // rather than a type, because `:type` reads `|` as part of the type and
+  // would swallow the whole union. The tail recurses, so one rule covers a
+  // union of any length.
+  rule { zod($head:tt|$tail:type) } => {
+    z.union([zod($head), zod($tail)])
+  }
+
+  // A name that is not a built-in is another declared schema.
+  rule { zod($named:ident) }
+  expect "a primitive, T[], Array<T>, a union, a literal type, or the bare name of another schema";
+  => { #join($named, suffix: "Schema") }
+
+  // Anything left is a literal type: "draft", 200, true.
+  rule { zod($literal:expr) }
+  expect "a primitive, T[], Array<T>, a union, a literal type, or the name of another schema";
+  => { z.literal($literal) }
+}
+
+export syntax class SchemaField {
+  fields { name: ident; marker: token?; kind: type; }
+  // Two shapes, so `marker` is present exactly when the field is optional.
+  rule { $name:ident $marker:token : $kind:type }
+  rule { $name:ident : $kind:type }
+}
+
+export syntax schema:item {
+  rule { schema $name:binding { $($field:SchemaField);* } }
+  bind $name in following as recursive type;
+  bind #join($name, suffix: "Schema") in following as lexical value;
+  expect "a field name, an optional `?`, a colon, and a type";
+  => {
+    #core(export interface $name {
+        $($field.name #if(present $field.marker) { ? } : $field.kind;)*
+      })
+
+    #core(export const #join($name, suffix: "Schema") = z.object({
+          $($field.name: #if(present $field.marker) { zod($field.kind).optional() } #else { zod($field.kind) }),*
+        }) satisfies z.ZodType<$name>)
+  }
+}

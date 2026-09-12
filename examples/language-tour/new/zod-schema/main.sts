@@ -1,0 +1,16 @@
+import { schema } from "./macros.sts" for syntax;
+import { z } from "zod";
+
+schema Address {
+  city: string;
+  zip: string
+}
+
+schema User {
+  id: string;
+  age: number;
+  tags: string[];
+  home: Address;
+  status: "active"|"banned";
+  nickname?: string
+}
