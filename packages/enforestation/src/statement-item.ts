@@ -29,6 +29,7 @@ import {
 } from "./binding-parameter.js";
 import {
   createClassElementConsumer,
+  consumeBalancedTypeArguments,
   createTypeConsumers,
 } from "./type-class-element.js";
 
@@ -766,6 +767,19 @@ class StatementConsumer implements SyntaxConsumer {
         statementStarts.has(raw(next) ?? "")
       )
         break;
+      // A `<...>` region holds type parameters or type arguments, and a brace
+      // inside one is an object type: `class E extends make()<{ a: string }>`,
+      // or `class C<T extends { a: string }>`. Taking the first brace as the
+      // declaration's body claimed that object type as the body and left the
+      // real one behind, so the declaration did not read as one item.
+      if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
+        const region = consumeBalancedTypeArguments(cursor, context);
+        if (region !== undefined) {
+          for (let taken = 0; taken < region.width; taken += 1)
+            children.push(cursor.consume()!);
+          continue;
+        }
+      }
       cursor.advance();
       if (endsAtBlock && next.tag === "group" && next.delimiter === "brace") {
         children.push(
@@ -825,6 +839,11 @@ class StatementConsumer implements SyntaxConsumer {
       cursor,
     });
   }
+}
+
+/** Whether a token is one or more `<`, which opens a type-argument region. */
+function isAngleOpen(raw: string): boolean {
+  return raw.length > 0 && [...raw].every((character) => character === "<");
 }
 
 class ItemConsumer implements SyntaxConsumer {
@@ -1093,6 +1112,16 @@ class ItemConsumer implements SyntaxConsumer {
           itemStarts.has(raw(next) ?? "")
         ) {
           break;
+        }
+        // A brace inside a `<...>` region is an object type, not the body of
+        // the declaration being read.
+        if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
+          const region = consumeBalancedTypeArguments(cursor, context);
+          if (region !== undefined) {
+            for (let taken = 0; taken < region.width; taken += 1)
+              children.push(cursor.consume()!);
+            continue;
+          }
         }
         children.push(cursor.consume()!);
         if (token(next, ";")) break;

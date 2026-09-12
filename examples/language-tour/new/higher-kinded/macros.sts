@@ -1,0 +1,15 @@
+export syntax kinded:item {
+  rule { kinded $name:binding<$param:binding> $body:tt }
+  => {
+    #syntax {
+      syntax $name:item {
+        rule { $name $target:binding for $container:ident; }
+        bind $target in following as recursive type;
+        => {
+          #core(type $param<Inner> = $container<Inner>)
+          #core(export interface $target $body)
+        }
+      }
+    }
+  }
+}

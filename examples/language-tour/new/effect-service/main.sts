@@ -1,0 +1,10 @@
+import { error, service } from "./macros.sts" for syntax;
+import { Context, Data, Effect, Layer } from "effect";
+
+error DbError { sql: string }
+error NotFound { id: string }
+
+service Database {
+  query(sql: string): Effect<readonly string[], DbError>;
+  lookup(id: string): Effect<string, NotFound>;
+}

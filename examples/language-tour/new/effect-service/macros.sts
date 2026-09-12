@@ -1,0 +1,58 @@
+export syntax class Field {
+  fields { name: ident; kind: type; }
+  rule { $name:ident : $kind:type }
+}
+
+// `Data.TaggedError` needs the name written three times: as the class, as the
+// tag string, and in the payload type. Here it is written once.
+export syntax error:item {
+  rule { error $name:binding { $($field:Field);* } }
+  bind $name in following as recursive type;
+  bind $name in following as recursive value;
+  => {
+    #core(export class $name extends Data.TaggedError(#text($name))<{
+        $(readonly $field.name: $field.kind;)*
+      }> {})
+  }
+}
+
+export syntax class Method {
+  fields { name: ident; parameters: Field*; ok: type; fails: type; }
+  rule {
+    $name:ident($($parameters:Field),*): Effect<$ok:type, $fails:type>;
+  }
+  expect "a method returning Effect<Success, Failure>";
+}
+
+export syntax service:item {
+  rule { service $name:binding { $($method:Method)+ } }
+  bind $name in following as recursive type;
+  bind $name in following as recursive value;
+  bind #join($name, suffix: "Shape") in following as lexical type;
+  bind #join($name, suffix: "Layer") in following as lexical value;
+  bind $method.name in following as lexical value;
+  bind $method.parameters.name in $method.parameters.name as lexical value;
+  => {
+    #core(export interface #join($name, suffix: "Shape") {
+        $(readonly #trim($method.name): (
+            $($method.parameters.name: $method.parameters.kind),*
+          ) => Effect.Effect<$method.ok, $method.fails>;)*
+      })
+
+    #core(export class $name extends Context.Tag(#text($name))<
+      $name,
+      #join($name, suffix: "Shape")
+      >() {})
+
+    // One accessor per method, so a caller never reaches for the tag itself.
+    $(#core(export const $method.name = (
+          $($method.parameters.name: $method.parameters.kind),*
+        ): Effect.Effect<$method.ok, $method.fails, $name> =>
+        Effect.flatMap($name, (service) =>
+          service.$method.name($($method.parameters.name),*));))*
+
+    #core(export const #join($name, suffix: "Layer") = (
+        implementation: #join($name, suffix: "Shape")
+      ) => Layer.succeed($name, implementation);)
+  }
+}

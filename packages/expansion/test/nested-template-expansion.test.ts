@@ -297,3 +297,63 @@ describe("a template operation naming a declaration", () => {
     );
   });
 });
+
+/**
+ * A declaration header is scanned up to the brace that opens its body, and the
+ * first brace found was taken to be it. A `<...>` region may hold an object
+ * type -- `class E extends make()<{ a: string }> {}` is how a tagged error is
+ * declared -- so that object type was claimed as the body and the real body
+ * was left over, and the declaration did not read as one item.
+ */
+describe("a declaration whose type arguments hold an object type", () => {
+  const definitions = `
+    export syntax heritage:item {
+      rule { heritage $name:binding; }
+      bind $name in following as recursive value;
+      => { #core(export class $name extends make()<{ a: string }> {}) }
+    }
+    export syntax parameterized:item {
+      rule { parameterized $name:binding; }
+      bind $name in following as recursive value;
+      => { #core(export class $name<T extends { a: string }> { x: T | undefined; }) }
+    }
+    export syntax extended:item {
+      rule { extended $name:binding; }
+      bind $name in following as recursive type;
+      => { #core(export interface $name extends Base<{ a: string }> { b: number; }) }
+    }
+    export syntax plain:item {
+      rule { plain $name:binding; }
+      bind $name in following as recursive value;
+      => { #core(export class $name extends make()<string> {}) }
+    }
+  `;
+
+  test("reads a class extending a call with an object type argument", () => {
+    const expand = harness(definitions);
+    expect(expand("heritage Tagged;", "item")).toBe(
+      "exportclassTaggedextendsmake()<{a:string}>{}",
+    );
+  });
+
+  test("reads a class whose own type parameter is constrained by one", () => {
+    const expand = harness(definitions);
+    expect(expand("parameterized Box;", "item")).toBe(
+      "exportclassBox<Textends{a:string}>{x:T|undefined;}",
+    );
+  });
+
+  test("reads an interface extending one", () => {
+    const expand = harness(definitions);
+    expect(expand("extended Row;", "item")).toBe(
+      "exportinterfaceRowextendsBase<{a:string}>{b:number;}",
+    );
+  });
+
+  test("still reads the form that already worked", () => {
+    const expand = harness(definitions);
+    expect(expand("plain Simple;", "item")).toBe(
+      "exportclassSimpleextendsmake()<string>{}",
+    );
+  });
+});

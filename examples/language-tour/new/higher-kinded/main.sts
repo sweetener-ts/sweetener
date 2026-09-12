@@ -1,0 +1,9 @@
+import { kinded } from "./macros.sts" for syntax;
+declare class Option<A> { value: A }
+
+kinded Functor<F> {
+  map<A, B>(value: F<A>, transform: (a: A) => B): F<B>;
+}
+
+Functor FunctorArray for Array;
+Functor FunctorOption for Option;
