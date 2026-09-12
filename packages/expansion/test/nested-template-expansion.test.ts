@@ -243,3 +243,57 @@ describe("postfix written after a captured expression", () => {
     );
   });
 });
+
+/**
+ * `#name(arguments) { body }` is how a class declares a private method, so a
+ * template operation in that shape is left alone. A declaration keyword is
+ * followed by the name it declares, though, and `interface #join(...) { ... }`
+ * has the same three parts -- name, arguments, body -- so it was read as a
+ * method and the operation was emitted verbatim, naming the interface
+ * `#join(...)`.
+ */
+describe("a template operation naming a declaration", () => {
+  test("builds an interface name with #join", () => {
+    const expand = harness(`
+      export syntax table:item {
+        rule { table $name:binding; }
+        bind #join($name, suffix: "Table") in following as lexical type;
+        => {
+          #core(export interface #join($name, suffix: "Table") { ok: string; })
+        }
+      }
+    `);
+    expect(expand("table Door;", "item")).toBe(
+      "exportinterfaceDoorTable{ok:string;}",
+    );
+  });
+
+  test("builds a class name with #join", () => {
+    const expand = harness(`
+      export syntax boxed:item {
+        rule { boxed $name:binding; }
+        bind #join($name, suffix: "Box") in following as lexical value;
+        => { #core(export class #join($name, suffix: "Box") { value = 1; }) }
+      }
+    `);
+    expect(expand("boxed Door;", "item")).toBe("exportclassDoorBox{value=1;}");
+  });
+
+  test("still leaves a private method in a template alone", () => {
+    const expand = harness(`
+      export syntax counter:item {
+        rule { counter $name:binding; }
+        bind $name in following as recursive value;
+        => {
+          #core(class $name {
+            #count(value: number) { return value; }
+            read() { return this.#count(1); }
+          })
+        }
+      }
+    `);
+    expect(expand("counter Tally;", "item")).toBe(
+      "classTally{#count(value:number){returnvalue;}read(){returnthis.#count(1);}}",
+    );
+  });
+});

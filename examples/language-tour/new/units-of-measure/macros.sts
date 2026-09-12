@@ -1,0 +1,50 @@
+// A quantity is a number that only combines with the right other quantities.
+// The type and the value share one name, so `Meters` is both the type of a
+// length and the object holding its algebra.
+export syntax quantity:item {
+  // A base quantity: metres, seconds, kilograms.
+  rule { quantity $name:binding; }
+  bind $name in following as recursive type;
+  bind $name in following as recursive value;
+  => {
+    #core(declare const Brand: unique symbol)
+    #core(export type $name = number & { readonly [Brand]: #text($name) })
+    #core(export const $name = {
+        of: (value: number): $name => value as $name,
+        add: (left: $name, right: $name): $name => (left + right) as $name,
+        sub: (left: $name, right: $name): $name => (left - right) as $name,
+        scale: (value: $name, factor: number): $name => (value * factor) as $name,
+      })
+  }
+
+  // A quotient: metres per second is metres divided by seconds. Declaring it
+  // gives the division that produces it and the multiplication that undoes it.
+  rule { quantity $name:binding = $over:ident per $under:ident; }
+  bind $name in following as recursive type;
+  bind $name in following as recursive value;
+  => {
+    #core(declare const Brand: unique symbol)
+    #core(export type $name = number & { readonly [Brand]: #text($name) })
+    #core(export const $name = {
+        of: (value: number): $name => value as $name,
+        add: (left: $name, right: $name): $name => (left + right) as $name,
+        from: (over: $over, under: $under): $name => (over / under) as $name,
+        times: (rate: $name, under: $under): $over => (rate * under) as $over,
+      })
+  }
+
+  // A product: square metres are metres times metres.
+  rule { quantity $name:binding = $left:ident times $right:ident; }
+  bind $name in following as recursive type;
+  bind $name in following as recursive value;
+  => {
+    #core(declare const Brand: unique symbol)
+    #core(export type $name = number & { readonly [Brand]: #text($name) })
+    #core(export const $name = {
+        of: (value: number): $name => value as $name,
+        add: (left: $name, right: $name): $name => (left + right) as $name,
+        from: (left: $left, right: $right): $name => (left * right) as $name,
+        over: (area: $name, side: $left): $right => (area / side) as $right,
+      })
+  }
+}

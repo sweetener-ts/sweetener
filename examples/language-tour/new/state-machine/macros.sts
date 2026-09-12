@@ -1,0 +1,43 @@
+export syntax class Transition {
+  fields { event: ident; target: ident; }
+  rule { $event:ident -> $target:ident }
+}
+
+export syntax class State {
+  fields { name: ident; moves: Transition*; }
+  rule { $name:ident { $($moves:Transition),* } }
+}
+
+export syntax machine:item {
+  rule { machine $name:binding { $($state:State)+ } }
+  bind #join($name, suffix: "State") in following as lexical type;
+  bind #join($name, suffix: "Event") in following as lexical type;
+  bind #join($name, suffix: "Table") in following as lexical type;
+  bind #join($name, suffix: "Moves") in following as lexical value;
+  bind #join($name, prefix: "step") in following as lexical value;
+  => {
+    #core(export type #join($name, suffix: "State") = $(#text($state.name))|*)
+
+    #core(export type #join($name, suffix: "Event") =
+      $($(#text($state.moves.event))|*)|*)
+
+    #core(export interface #join($name, suffix: "Table") {
+        $($state.name: { $($state.moves.event: #text($state.moves.target)),* };)*
+      })
+
+    // The table is also the runtime transition map, so the two cannot drift.
+    #core(export const #join($name, suffix: "Moves") = {
+        $($state.name: { $($state.moves.event: #text($state.moves.target)),* },)*
+      } as const)
+
+    // `event` is keyed on the state, so an event that state does not accept
+    // is not a key, and the result type is the one state it moves to.
+    #core(export const #join($name, prefix: "step") = <
+      S extends keyof #join($name, suffix: "Table"),
+      E extends keyof #join($name, suffix: "Table")[S],
+      >(state: S, event: E): #join($name, suffix: "Table")[S][E] =>
+      #join($name, suffix: "Moves")[state][
+        event as keyof (typeof #join($name, suffix: "Moves"))[S]
+      ] as #join($name, suffix: "Table")[S][E])
+  }
+}

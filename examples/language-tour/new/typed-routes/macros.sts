@@ -1,0 +1,26 @@
+export syntax class Segment {
+  fields { name: ident; marker: token?; }
+  // `:id` binds a parameter; a bare `users` is a literal segment.
+  rule { $marker:token $name:ident }
+  rule { $name:ident }
+}
+
+export syntax route:item {
+  rule { route $name:binding = $($segment:Segment)/+ ; }
+  bind $name in following as recursive type;
+  bind #join($name, prefix: "build") in following as lexical value;
+  bind #join($name, suffix: "Pattern") in following as lexical value;
+  => {
+    #core(export interface $name {
+        $(#if(present $segment.marker) { readonly $segment.name: string; })*
+      })
+
+    #core(export const #join($name, suffix: "Pattern") =
+      "/" + [$(#if(present $segment.marker) { ":" + #text($segment.name) }
+          #else { #text($segment.name) }),*].join("/"))
+
+    #core(export const #join($name, prefix: "build") = (parameters: $name): string =>
+      "/" + [$(#if(present $segment.marker) { parameters[#text($segment.name)] }
+          #else { #text($segment.name) }),*].join("/"))
+  }
+}

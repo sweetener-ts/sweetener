@@ -1,0 +1,6 @@
+import { quantity } from "./macros.sts" for syntax;
+
+quantity Meters;
+quantity Seconds;
+quantity MetersPerSecond = Meters per Seconds;
+quantity SquareMeters = Meters times Meters;

@@ -1,0 +1,4 @@
+import { route } from "./macros.sts" for syntax;
+
+route UserPost = users/:userId/posts/:postId;
+route Health = health;

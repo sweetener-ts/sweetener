@@ -153,6 +153,15 @@ interface FoldParserContext {
  * `#core` is not read here: it is carried through to the expander, which
  * re-reads its contents as core syntax rather than as a macro invocation.
  */
+/** Keywords whose next token names what they declare, never a private member. */
+const declarationNameKeywords: ReadonlySet<string> = new Set([
+  "class",
+  "enum",
+  "interface",
+  "module",
+  "namespace",
+]);
+
 const templateOperations: ReadonlySet<string> = new Set([
   "callsite",
   "capture",
@@ -216,6 +225,13 @@ class TemplateParser {
    */
   #privateIdentifierPosition(nodes: readonly Syntax[], index: number): boolean {
     const previous = nodes[index - 1];
+    // A declaration keyword is followed by the name it declares, never by a
+    // private member. `interface #join($name, suffix: "Table") { ... }` has
+    // the shape a method has -- a name, arguments, a body -- and was read as
+    // one, so the operation was left in the output verbatim and the emitted
+    // interface was named `#join(...)`.
+    if (token(previous) && declarationNameKeywords.has(previous.raw))
+      return false;
     if (token(previous, ".") || token(previous, "?.")) return true;
     // `#name(parameters) { body }` declares a method. No operation is written
     // with a block after its arguments: `#fold` and `#syntax`, the two that

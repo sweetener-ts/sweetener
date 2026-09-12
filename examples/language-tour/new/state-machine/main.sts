@@ -1,0 +1,7 @@
+import { machine } from "./macros.sts" for syntax;
+
+machine Door {
+  Closed { lock -> Locked, open -> Opened }
+  Opened { close -> Closed }
+  Locked { unlock -> Closed }
+}
