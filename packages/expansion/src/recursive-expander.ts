@@ -845,8 +845,24 @@ export function expandMacroSyntax(
       };
       const namesMember =
         category === "typeMember" && beforeMemberType() && memberNameFollows();
+      /**
+       * Whether this position names a member of something rather than heading
+       * an invocation. `xs.map(f)` reads a property called `map`, and
+       * dispatching a macro of that name there rewrote the property access
+       * into whatever the macro produced -- so a file that merely had a macro
+       * named `map` in scope had every `.map(...)` in it silently rewritten.
+       */
+      const namesProperty = ((): boolean => {
+        const previous = output.at(-1);
+        return (
+          previous?.tag === "token" &&
+          (previous.raw === "." ||
+            previous.raw === "?." ||
+            previous.raw === "#")
+        );
+      })();
       let resolvedMacro =
-        node.tag === "token" && !namesMember
+        node.tag === "token" && !namesMember && !namesProperty
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
           : undefined;
       // A type is written in many places the surrounding syntax is not a type:
@@ -1114,7 +1130,7 @@ export function expandMacroSyntax(
       // Applied after every lookup, not only the first: the operator-spelling
       // fallback below matches an identifier-spelled macro too, and would
       // otherwise dispatch the very name the member is declaring.
-      if (namesMember) resolvedMacro = undefined;
+      if (namesMember || namesProperty) resolvedMacro = undefined;
       const macro =
         (suppressPending || suppressedHeadIndex === index) &&
         resolvedMacro !== undefined

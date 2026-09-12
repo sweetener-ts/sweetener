@@ -1,0 +1,54 @@
+export syntax class Field {
+  fields { name: ident; kind: type; }
+  rule { $name:ident : $kind:type }
+}
+
+export syntax class Step {
+  fields { name: binding?; value: expr?; rest: stmt?; }
+  // `rows <- query(...)` runs the effect and binds its success value.
+  rule { $name:binding <- $value:expr; }
+  expect "an effect after <-";
+  // `do flush();` runs one and discards it.
+  rule { do $value:expr; }
+  // Anything else is an ordinary statement.
+  rule { $rest:stmt }
+}
+
+export syntax gen:expr {
+  rule { gen { $($step:Step)+ } } => {
+    Effect.gen(function* () {
+        $(#if(present $step.name) { const $step.name = yield* $step.value; }
+          #else { #if(present $step.value) { yield* $step.value; }
+            #else { $step.rest } })*
+      })
+  }
+}
+
+// `Effect.catchTags` keyed by the tag of each error, which is the class name.
+export syntax class Handler {
+  fields { tag: ident; binder: binding; body: expr; }
+  rule { $tag:ident($binder:binding) => $body:expr }
+  expect "Tag(error) => recovery";
+}
+
+export syntax handle:expr {
+  rule { handle $target:expr { $($handler:Handler),* } }
+  => {
+    Effect.catchTags($target, {
+        $(#trim($handler.tag): ($handler.binder) => $handler.body),*
+      })
+  }
+}
+
+// The same block as a declaration. No `Effect<A, E, R>` is written anywhere:
+// the success type, the errors and the services are all inferred from the
+// binds.
+export syntax effect:item {
+  rule { effect $name:binding($($parameter:Field),*) $body:tt }
+  bind $name in following as recursive value;
+  bind $parameter.name in $body as lexical value;
+  => {
+    #core(export const $name = ($($parameter.name: $parameter.kind),*) =>
+      gen $body;)
+  }
+}

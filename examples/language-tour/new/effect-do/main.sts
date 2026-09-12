@@ -1,0 +1,23 @@
+import { error, service } from "./service.sts" for syntax;
+import { effect, gen, handle } from "./macros.sts" for syntax;
+import { Context, Data, Effect, Layer } from "effect";
+
+error DbError { sql: string }
+error NotFound { id: string }
+
+service Database {
+  query(sql: string): Effect<readonly string[], DbError>;
+  lookup(id: string): Effect<string, NotFound>;
+}
+
+effect report(id: string) {
+  user <- lookup(id);
+  rows <- query(`posts for ${user}`);
+  const count = rows.length;
+  return `${user}: ${count}`;
+}
+
+export const safe = (id: string) => handle report(id) {
+  NotFound(error) => Effect.succeed(`no such user ${error.id}`),
+  DbError(error) => Effect.succeed(`query failed: ${error.sql}`)
+};

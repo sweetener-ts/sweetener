@@ -357,3 +357,48 @@ describe("a declaration whose type arguments hold an object type", () => {
     );
   });
 });
+
+/**
+ * A macro is invoked by its head, and `xs.map(f)` has no head to invoke: `map`
+ * there names a property of `xs`. Dispatching anyway rewrote the property
+ * access into whatever the macro produced, so a file that merely had a macro
+ * named `map` in scope had every `.map(...)` in it turned into something else,
+ * with no diagnostic. A macro's own template is the likeliest victim, since
+ * `Effect.gen(...)` in a template is rewritten by a macro named `gen`.
+ */
+describe("a macro spelled like a property", () => {
+  const definitions = `
+    export syntax map:expr {
+      rule { map($value:expr) } => { [$value] }
+    }
+    export syntax wraps:item {
+      rule { wraps $name:binding; }
+      bind $name in following as recursive value;
+      => { #core(export const $name = host.map(1);) }
+    }
+  `;
+
+  test("is invoked where it heads an expression", () => {
+    const expand = harness(definitions);
+    expect(expand("const a = map(1);", "item")).toBe("consta=[1];");
+  });
+
+  test("is left alone after a dot", () => {
+    const expand = harness(definitions);
+    expect(expand("const b = xs.map((n) => n);", "item")).toBe(
+      "constb=xs.map((n)=>n);",
+    );
+  });
+
+  test("is left alone after an optional chain", () => {
+    const expand = harness(definitions);
+    expect(expand("const c = xs?.map(f);", "item")).toBe("constc=xs?.map(f);");
+  });
+
+  test("is left alone in a property access written in a template", () => {
+    const expand = harness(definitions);
+    expect(expand("wraps value;", "item")).toBe(
+      "exportconstvalue=host.map(1);",
+    );
+  });
+});
