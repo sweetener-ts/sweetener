@@ -45,6 +45,7 @@ export function compileParsedTemplates(
           "type",
           "binding",
           "classElement",
+          "typeMember",
           "jsxChild",
         ].includes(binding.name),
       )

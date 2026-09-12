@@ -1,0 +1,7 @@
+import { overloaded, timestamps } from "./macros.sts" for syntax;
+
+export interface Record {
+  readonly id: string;
+  timestamps
+  overloaded parse over string, number
+}

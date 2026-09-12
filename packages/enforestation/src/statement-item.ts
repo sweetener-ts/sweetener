@@ -29,7 +29,7 @@ import {
 } from "./binding-parameter.js";
 import {
   createClassElementConsumer,
-  createTypeConsumer,
+  createTypeConsumers,
 } from "./type-class-element.js";
 
 export type StatementItemMacroResolver = MacroExtentResolver;
@@ -829,6 +829,7 @@ class StatementConsumer implements SyntaxConsumer {
 
 class ItemConsumer implements SyntaxConsumer {
   readonly #classElement: SyntaxConsumer;
+  readonly #typeMember: SyntaxConsumer;
   readonly #statement: StatementConsumer;
   readonly #expression: SyntaxConsumer;
   readonly #binding: SyntaxConsumer;
@@ -850,12 +851,22 @@ class ItemConsumer implements SyntaxConsumer {
         ? {}
         : { resolveMacro: bindingMacroResolver(options.resolveMacro) }),
     });
-    this.#type = createTypeConsumer(shared);
+    const typeConsumers = createTypeConsumers({
+      ...shared,
+      ...(options.resolveMacro === undefined
+        ? {}
+        : { resolveTypeMemberMacro: options.resolveMacro }),
+    });
+    this.#type = typeConsumers.type;
     this.#classElement = createClassElementConsumer({
       ...shared,
       enforestStatementBlock: (block, blockContext) =>
         this.#statement.enforestBlock(block, blockContext),
     });
+    // Like the class-element consumer, this one is not given a macro
+    // resolver: a member macro is dispatched by the expander when it walks the
+    // protected body, not while the body is first read.
+    this.#typeMember = typeConsumers.typeMember;
     Object.freeze(this);
   }
 
@@ -889,6 +900,40 @@ class ItemConsumer implements SyntaxConsumer {
       ...body,
       id: this.options.allocateSyntaxId(),
       children: createSyntaxSequence(elements),
+    });
+  }
+
+  /**
+   * Enforest an interface body as a list of type members.
+   *
+   * Without this the body stays an opaque token tree and the expander walks
+   * its children under the enclosing item category, where a macro written
+   * among the members resolves as an item, produces members, and is reported
+   * as having expanded to something that is not one item.
+   *
+   * A body that does not enforest is returned unchanged; TypeScript reports
+   * anything genuinely malformed.
+   */
+  #enforestTypeMembers(body: GroupSyntax, context: ConsumerContext): Syntax {
+    if (body.children.length === 0) return body;
+    let inner = createSyntaxCursor(body.children);
+    const members: Syntax[] = [];
+    const memberContext = Object.freeze({
+      ...context,
+      category: "typeMember" as const,
+      stopSet: StopSet.empty,
+    });
+    while (!inner.atEnd) {
+      const before = inner.index;
+      const attempt = this.#typeMember.consume(inner, memberContext);
+      if (!attempt.matched || attempt.cursor.index <= before) return body;
+      members.push(attempt.syntax);
+      inner = attempt.cursor;
+    }
+    return createGroup({
+      ...body,
+      id: this.options.allocateSyntaxId(),
+      children: createSyntaxSequence(members),
     });
   }
 
@@ -1082,11 +1127,13 @@ class ItemConsumer implements SyntaxConsumer {
       if (body?.tag === "group" && body.delimiter === "brace") {
         const bodyCategory = headWords.includes("class")
           ? "classElement"
-          : headWords.includes("function")
-            ? "stmt"
-            : headWords.includes("module") || headWords.includes("namespace")
-              ? "item"
-              : undefined;
+          : headWords.includes("interface")
+            ? "typeMember"
+            : headWords.includes("function")
+              ? "stmt"
+              : headWords.includes("module") || headWords.includes("namespace")
+                ? "item"
+                : undefined;
         if (bodyCategory !== undefined) {
           const bodyIndex = token(children.at(-1), ";")
             ? children.length - 2
@@ -1105,7 +1152,9 @@ class ItemConsumer implements SyntaxConsumer {
                 )
               : bodyCategory === "classElement"
                 ? this.#enforestClassBody(body, context)
-                : body,
+                : bodyCategory === "typeMember"
+                  ? this.#enforestTypeMembers(body, context)
+                  : body,
           ]);
         }
       }

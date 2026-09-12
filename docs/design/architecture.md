@@ -159,6 +159,7 @@ Start with fixed categories:
 - `type`: type nodes;
 - `binding`: binding names and patterns;
 - `classElement`: class members;
+- `typeMember`: members of an interface or object type;
 - `jsxChild`: JSX children;
 - `token` and `tt`: raw leaf and token tree.
 

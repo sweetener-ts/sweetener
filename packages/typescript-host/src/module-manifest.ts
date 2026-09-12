@@ -43,6 +43,7 @@ const categories = new Set<SyntaxCategory>([
   "type",
   "binding",
   "classElement",
+  "typeMember",
   "jsxChild",
   "token",
   "tt",

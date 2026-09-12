@@ -1,0 +1,12 @@
+export syntax timestamps:typeMember {
+  rule { timestamps } => {
+    readonly createdAt: string;
+    readonly updatedAt: string;
+  }
+}
+
+export syntax overloaded:typeMember {
+  rule { overloaded $name:ident over $($kind:type),* } => {
+    $($name(value: $kind): $kind;)*
+  }
+}

@@ -58,6 +58,8 @@ export function syntaxSpaceForCategory(category: SyntaxCategory): SyntaxSpace {
       return "syntax-binding";
     case "classElement":
       return "syntax-class-element";
+    case "typeMember":
+      return "syntax-type-member";
     case "jsxChild":
       return "syntax-jsx-child";
     case "token":

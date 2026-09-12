@@ -29,6 +29,7 @@ import {
 import {
   expansionDiagnosticRegistry,
   uncategorizedExpansionCode,
+  wrongCategoryMacroCode,
 } from "./diagnostics.js";
 import { EnforestationError } from "./enforestation-error.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
@@ -129,6 +130,14 @@ export interface ExpandMacroSyntaxOptions extends Omit<
     | undefined;
   /** Enforests a run of JSX children, for a macro that emits several. */
   readonly enforestJsxChildren?:
+    | ((request: {
+        readonly syntax: SyntaxSequence;
+        readonly contexts: ReadonlySet<MacroContext>;
+        readonly lexicalModule?: CompileParsedMacrosResult | undefined;
+      }) => SyntaxSequence | undefined)
+    | undefined;
+  /** Enforests a run of interface members, for a macro that emits several. */
+  readonly enforestTypeMembers?:
     | ((request: {
         readonly syntax: SyntaxSequence;
         readonly contexts: ReadonlySet<MacroContext>;
@@ -318,7 +327,7 @@ export function expandMacroSyntax(
     // A member list and a run of JSX children are sequences like a statement
     // or item list: a macro filling one may produce more than a single node.
     const run = (
-      runCategory: "classElement" | "jsxChild",
+      runCategory: "classElement" | "jsxChild" | "typeMember",
       members: SyntaxSequence | undefined,
     ): ProtectedSyntax | undefined => {
       if (members === undefined || members.length === 0) return undefined;
@@ -336,11 +345,17 @@ export function expandMacroSyntax(
         children: members,
       });
     };
-    if (category === "classElement" || category === "jsxChild") {
+    if (
+      category === "classElement" ||
+      category === "jsxChild" ||
+      category === "typeMember"
+    ) {
       const members = (
         category === "classElement"
           ? options.enforestClassElements
-          : options.enforestJsxChildren
+          : category === "typeMember"
+            ? options.enforestTypeMembers
+            : options.enforestJsxChildren
       )?.({ syntax, contexts, lexicalModule });
       const wrapped = run(category, members);
       if (wrapped !== undefined) return wrapped;
@@ -795,8 +810,43 @@ export function expandMacroSyntax(
       // child — is invoked as that category, not as the one being walked.
       let resolvedCategory: SyntaxCategory = category;
       let resolvedSpelling = node.tag === "token" ? node.raw : "";
+      /**
+       * Whether this position spells a member's name rather than a macro head.
+       * A property is written `name: T` and a method `name(...)`, and either
+       * may share a macro's spelling without meaning it, so a member list
+       * dispatches only where the name could not be naming a member of its
+       * own. A member macro is therefore written as a bare name or in front of
+       * a brace, never in the shape of a method signature.
+       */
+      const memberNameFollows = (): boolean => {
+        const next = input[index + 1];
+        if (next === undefined) return false;
+        if (next.tag === "group")
+          return (
+            next.delimiter === "parenthesis" || next.delimiter === "bracket"
+          );
+        return next.tag === "token" && [":", "?", "<", "!"].includes(next.raw);
+      };
+      /**
+       * Whether the key of the member being walked is still ahead. A member
+       * list may be walked flat, so this looks back only as far as the
+       * separator that ended the previous member: past the first `:` of this
+       * one comes its type, where a type macro is written the way it is
+       * written anywhere else.
+       */
+      const beforeMemberType = (): boolean => {
+        for (let at = output.length - 1; at >= 0; at -= 1) {
+          const walked = output[at]!;
+          if (walked.tag !== "token") continue;
+          if (walked.raw === ";" || walked.raw === ",") return true;
+          if (walked.raw === ":" || walked.raw === "?") return false;
+        }
+        return true;
+      };
+      const namesMember =
+        category === "typeMember" && beforeMemberType() && memberNameFollows();
       let resolvedMacro =
-        node.tag === "token"
+        node.tag === "token" && !namesMember
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
           : undefined;
       // A type is written in many places the surrounding syntax is not a type:
@@ -883,6 +933,45 @@ export function expandMacroSyntax(
             resolvedMacro = candidate;
             resolvedSpelling = head.raw;
           }
+        }
+      }
+      // A member list is the one place a bare name is ordinary syntax, so a
+      // macro spelled there but declared for another category is left alone
+      // and emitted verbatim -- TypeScript then reports an implicit `any`
+      // member, or nothing at all when it is not asking for one. Report the
+      // mismatch here, where the macro and the category are both known.
+      if (
+        resolvedMacro === undefined &&
+        category === "typeMember" &&
+        node.tag === "token" &&
+        node.kind === "identifier" &&
+        !namesMember
+      ) {
+        const elsewhere = (
+          ["item", "stmt", "expr", "type", "classElement"] as const
+        ).find(
+          (candidate) =>
+            resolveSpelling(
+              node.raw,
+              node.span.start,
+              sourceOf(node),
+              candidate,
+            ) !== undefined,
+        );
+        if (elsewhere !== undefined) {
+          const source = options.origins.selectPrimarySource(node.origin);
+          if (source !== undefined)
+            diagnostics.push(
+              expansionDiagnosticRegistry.create(wrongCategoryMacroCode, {
+                primaryOrigin: {
+                  sourceId: source.sourceId,
+                  start: source.span.start,
+                  end: source.span.end,
+                  originId: node.origin,
+                },
+                messageArguments: [node.raw, elsewhere, category],
+              }),
+            );
         }
       }
       if (
@@ -1022,6 +1111,10 @@ export function expandMacroSyntax(
           break;
         }
       }
+      // Applied after every lookup, not only the first: the operator-spelling
+      // fallback below matches an identifier-spelled macro too, and would
+      // otherwise dispatch the very name the member is declaring.
+      if (namesMember) resolvedMacro = undefined;
       const macro =
         (suppressPending || suppressedHeadIndex === index) &&
         resolvedMacro !== undefined
@@ -1527,26 +1620,33 @@ export function expandMacroSyntax(
                   node.delimiter === "parenthesis" &&
                   catchBinderFollows(output)
                 ? "binding"
-                : node.tag === "group" &&
-                    category !== "type" &&
-                    (node.delimiter === "bracket" ||
-                      node.delimiter === "parenthesis") &&
-                    typePositionFollows(output)
-                  ? "type"
+                : // A brace standing where a type is written is an object
+                  // type, and its contents are a member list rather than one
+                  // more type.
+                  node.tag === "group" &&
+                    node.delimiter === "brace" &&
+                    (category === "type" || typePositionFollows(output))
+                  ? "typeMember"
                   : node.tag === "group" &&
-                      category !== "expr" &&
-                      ((node.delimiter === "parenthesis" &&
-                        conditionFollows(output)) ||
-                        initializerFollows(output) ||
-                        // An argument list, a parenthesised operand, an index:
-                        // a group reached inside an expression region holds an
-                        // expression however the statement around it is
-                        // categorized.
-                        ((node.delimiter === "parenthesis" ||
-                          node.delimiter === "bracket") &&
-                          expressionRegion))
-                    ? "expr"
-                    : category;
+                      category !== "type" &&
+                      (node.delimiter === "bracket" ||
+                        node.delimiter === "parenthesis") &&
+                      typePositionFollows(output)
+                    ? "type"
+                    : node.tag === "group" &&
+                        category !== "expr" &&
+                        ((node.delimiter === "parenthesis" &&
+                          conditionFollows(output)) ||
+                          initializerFollows(output) ||
+                          // An argument list, a parenthesised operand, an index:
+                          // a group reached inside an expression region holds an
+                          // expression however the statement around it is
+                          // categorized.
+                          ((node.delimiter === "parenthesis" ||
+                            node.delimiter === "bracket") &&
+                            expressionRegion))
+                      ? "expr"
+                      : category;
         const statementBody =
           node.tag === "group" &&
           node.delimiter === "brace" &&

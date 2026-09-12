@@ -36,6 +36,7 @@ syntax unless:stmt { ... }
 syntax effect:type { ... }
 syntax derive:item { ... }
 syntax field:classElement { ... }
+syntax accessors:typeMember { ... }
 ```
 
 A definition may list categories if it supplies one rule set per category. The
@@ -66,6 +67,7 @@ Initial syntax classes:
 | `type`         | One type                    |
 | `binding`      | One binding name or pattern |
 | `classElement` | One class member            |
+| `typeMember`   | One interface/object member |
 | `jsxChild`     | One JSX child               |
 
 ### Repetition

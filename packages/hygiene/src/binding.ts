@@ -30,6 +30,7 @@ export type SyntaxSpace =
   | "syntax-type"
   | "syntax-binding"
   | "syntax-class-element"
+  | "syntax-type-member"
   | "syntax-jsx-child"
   | "syntax-token"
   | "syntax-tt";

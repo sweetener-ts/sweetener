@@ -123,6 +123,10 @@ function categoryAllowsSpace(
       return space === "value";
     case "classElement":
       return space === "value" || space === "type";
+    // An interface member names nothing a lexical scope can see, so what a
+    // type-member macro may introduce is type-side only.
+    case "typeMember":
+      return space === "type";
     case "jsxChild":
       return space === "value";
     case "token":

@@ -67,6 +67,7 @@ const categories = new Set<SyntaxCategory>([
   "type",
   "binding",
   "classElement",
+  "typeMember",
   "jsxChild",
   "token",
   "tt",
@@ -136,6 +137,7 @@ class Parser {
       "type",
       "binding",
       "classElement",
+      "typeMember",
       "jsxChild",
     ]) {
       this.#classId(name);

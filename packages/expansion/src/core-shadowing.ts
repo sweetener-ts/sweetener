@@ -111,6 +111,10 @@ const coreSpellingsByCategory = {
     "set",
     "static",
   ],
+  // A member name is written where a reserved word may also stand, so the
+  // words an interface body dispatches on are its modifiers and signature
+  // heads, not every keyword that can spell a property name.
+  typeMember: ["get", "new", "readonly", "set"],
 } as const satisfies Partial<Record<SyntaxCategory, readonly string[]>>;
 
 const declaredCoreForms: CoreFormIdentity[] = Object.entries(

@@ -306,6 +306,7 @@ const builtinClassNames: ReadonlySet<string> = new Set([
   "type",
   "binding",
   "classElement",
+  "typeMember",
   "jsxChild",
 ]);
 

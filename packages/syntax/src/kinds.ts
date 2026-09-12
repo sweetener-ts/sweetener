@@ -41,6 +41,7 @@ export type SyntaxCategory =
   | "type"
   | "binding"
   | "classElement"
+  | "typeMember"
   | "jsxChild"
   | "token"
   | "tt";

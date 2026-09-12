@@ -12,8 +12,19 @@ export const unresolvedBindingLiteralCode = diagnosticCode("SWR4009");
 export const duplicateMacroDefinitionCode = diagnosticCode("SWR4010");
 export const uncategorizedExpansionCode = diagnosticCode("SWR4011");
 export const unreadableItemCode = diagnosticCode("SWR4012");
+export const wrongCategoryMacroCode = diagnosticCode("SWR4013");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
+  {
+    code: wrongCategoryMacroCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A macro is dispatched only in the category it declares. A name written where another category is read is left alone, which emits it verbatim, so the mismatch is reported here rather than as whatever TypeScript makes of the leftover name.",
+    format: (arguments_) =>
+      `Macro ${String(arguments_[0] ?? "unknown")} is declared ${String(arguments_[1] ?? "unknown")} and cannot be written where a ${String(arguments_[2] ?? "node")} is read. Declare it ${String(arguments_[2] ?? "unknown")} to use it here.`,
+  },
   {
     code: unreadableItemCode,
     owner: "expansion-enforestation",

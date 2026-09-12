@@ -18,7 +18,7 @@ import type { InvokeMacroOptions } from "./invocation.js";
 export interface CreateMacroExtentResolverOptions {
   readonly resolve: (
     spelling: string,
-    category: "expr" | "binding" | "stmt" | "item",
+    category: "expr" | "binding" | "stmt" | "item" | "typeMember",
     context: ConsumerContext,
   ) => CompiledMacroBinding | undefined;
   readonly consumeClass: (macro: CompiledMacroBinding) => SyntaxClassConsumer;
@@ -38,7 +38,7 @@ const itemDispatchPrefixes = new Set([
 
 function headSpelling(
   cursor: SyntaxCursor,
-  category: "expr" | "binding" | "stmt" | "item",
+  category: "expr" | "binding" | "stmt" | "item" | "typeMember",
 ): string | undefined {
   let offset = 0;
   if (category === "item") {
@@ -54,7 +54,7 @@ function headSpelling(
 }
 
 function protectedExtent(
-  category: "expr" | "binding" | "stmt" | "item",
+  category: "expr" | "binding" | "stmt" | "item" | "typeMember",
   start: SyntaxCursor,
   end: SyntaxCursor,
   options: CreateMacroExtentResolverOptions,

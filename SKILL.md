@@ -69,7 +69,8 @@ to whoever wrote it, so it is printed for you to paste, not rewritten.
 
 A macro is declared with `syntax`, and named for where it may be written:
 `:expr` for expression position, `:stmt` for statement, `:item` for
-declarations, `:type` for types.
+declarations, `:type` for types, `:typeMember` for the members of an interface
+or object type.
 
 ```ts
 export syntax twice:expr {
@@ -110,6 +111,24 @@ export const pair = twice(21);
     rule { $pattern:tt => $body:expr }
   }
   ```
+
+- **Members of an interface or object type**: declare the macro `:typeMember`.
+  It may expand to several members at once, which is how generated accessor
+  pairs and method overloads are written — neither is expressible as a mapped
+  type.
+
+  ```ts
+  export syntax timestamps:typeMember {
+    rule { timestamps } => {
+      readonly createdAt: string;
+      readonly updatedAt: string;
+    }
+  }
+  ```
+
+  A member may be _named_ like a macro without invoking it: `timestamps: number`
+  declares a property. A member macro is written as a bare name, or with a brace
+  after it, never in the shape of a property or method signature.
 
 - **The source text of a capture**: `#text($value)`, which yields a string
   literal.

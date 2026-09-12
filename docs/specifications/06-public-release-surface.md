@@ -26,7 +26,7 @@ imports do not create macro dependencies.
 ## 3. Categories, operators, and generated definitions
 
 The public categories are `item`, `stmt`, `expr`, `type`, `binding`,
-`classElement`, `jsxChild`, `token`, and `tt`. Operators declare category,
+`classElement`, `typeMember`, `jsxChild`, `token`, and `tt`. Operators declare category,
 fixity/mixfix shape, precedence, and associativity. Longest compound spelling is
 selected before precedence comparison. Equal-band nonassociative chains fail.
 Core-form interception is lexical and explicit.

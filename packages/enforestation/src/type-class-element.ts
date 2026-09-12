@@ -1,6 +1,8 @@
 import type { SyntaxId } from "@sweetener/shared";
 import {
+  createGroup,
   createProtectedSyntax,
+  createSyntaxCursor,
   createSyntaxSequence,
   spanEnvelope,
   type GroupSyntax,
@@ -16,9 +18,22 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
+import { StopSet } from "./stop-set.js";
 
 export type TypeClassMacroResolver = (
-  category: "type" | "classElement",
+  category: "type" | "classElement" | "typeMember",
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+) => ConsumerAttempt | undefined;
+
+/**
+ * What the member consumer needs of a resolver: it only ever asks about the
+ * one category it reads. Keeping this narrower than TypeClassMacroResolver
+ * lets the statement/item extent resolver, which also answers for
+ * `typeMember`, be passed straight through.
+ */
+export type TypeMemberMacroResolver = (
+  category: "typeMember",
   cursor: SyntaxCursor,
   context: ConsumerContext,
 ) => ConsumerAttempt | undefined;
@@ -30,6 +45,12 @@ export interface TypeClassConsumerOptions {
   readonly origins: OriginStore;
   readonly resolveMacro?: TypeClassMacroResolver | undefined;
   /**
+   * Claims a member macro's extent. The member consumer asks this rather than
+   * `resolveMacro` so the statement/item extent resolver, which answers for
+   * `typeMember` too, can be handed straight to it.
+   */
+  readonly resolveTypeMemberMacro?: TypeMemberMacroResolver | undefined;
+  /**
    * Enforests a class element's brace body as a statement list. Without it the
    * body stays an opaque token tree and macros inside a method never expand.
    */
@@ -40,6 +61,14 @@ export interface TypeClassConsumerOptions {
         allowYield: boolean,
       ) => Syntax)
     | undefined;
+  /**
+   * Enforests a brace body as a list of type members. Without it an object
+   * type stays an opaque token tree and a member macro written in one never
+   * expands, the way `interface` bodies behaved before they were read as
+   * member lists.
+   */
+  readonly enforestTypeMemberBody?:
+    ((body: GroupSyntax, context: ConsumerContext) => Syntax) | undefined;
 }
 
 const prefixTypeWords = new Set([
@@ -123,7 +152,7 @@ function originFor(origins: OriginStore, children: readonly Syntax[]) {
 }
 
 function protect(
-  category: "type" | "classElement",
+  category: "type" | "classElement" | "typeMember",
   options: TypeClassConsumerOptions,
   children: readonly Syntax[],
 ): ProtectedSyntax {
@@ -141,7 +170,7 @@ function protect(
 }
 
 function failure(
-  category: "type" | "classElement",
+  category: "type" | "classElement" | "typeMember",
   cursor: SyntaxCursor,
   start: number,
   expectations: readonly string[],
@@ -161,7 +190,7 @@ function failure(
 
 function validateMacro(
   attempt: ConsumerAttempt,
-  category: "type" | "classElement",
+  category: "type" | "classElement" | "typeMember",
   start: number,
 ): ConsumerAttempt {
   if (
@@ -252,7 +281,15 @@ class TypeConsumer implements SyntaxConsumer {
             next.delimiter !== "template"
           )
             break;
-          children.push(cursor.consume()!);
+          cursor.consume();
+          // A brace standing where a type is expected is an object type, and
+          // its contents are a member list.
+          children.push(
+            next.delimiter === "brace" &&
+              this.options.enforestTypeMemberBody !== undefined
+              ? this.options.enforestTypeMemberBody(next, context)
+              : next,
+          );
           expectingOperand = false;
           continue;
         }
@@ -517,10 +554,245 @@ class ClassElementConsumer implements SyntaxConsumer {
   }
 }
 
+/**
+ * Modifiers that may open a type member. A line beginning with one of these
+ * continues the member being read rather than starting the next.
+ */
+const typeMemberModifiers = new Set(["readonly", "new", "get", "set"]);
+
+/**
+ * Whether this node can open the next member of an interface or object type.
+ * A member is named by an identifier, a keyword used as a name, a string or
+ * numeric literal key, or a computed key in brackets; a call signature opens
+ * with its parameter list, and a construct signature with `new`.
+ */
+function likelyNextTypeMember(syntax: Syntax | undefined): boolean {
+  if (token(syntax)) {
+    return (
+      syntax.kind === "identifier" ||
+      syntax.kind === "keyword" ||
+      syntax.kind === "string-literal" ||
+      syntax.kind === "numeric-literal"
+    );
+  }
+  return (
+    syntax?.tag === "group" &&
+    (syntax.delimiter === "bracket" ||
+      syntax.delimiter === "parenthesis" ||
+      syntax.delimiter === "template")
+  );
+}
+
+/**
+ * The nodes of the member beginning at the cursor, bounded the way TypeScript
+ * bounds one without a terminator: at `;`, or at the line break before the
+ * next member.
+ *
+ * A `,` is not a bound here. It separates members only when the member is
+ * ordinary syntax; a macro's invocation may contain one of its own, and where
+ * a macro stands it is the macro's rule that says where the member ends. The
+ * slice exists so the rule is matched against this member alone -- run against
+ * the rest of the body, a trailing `$($kind:type),*` reads the next member's
+ * name as one more type, fails, and silently claims less than was written.
+ */
+function memberSlice(
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): readonly Syntax[] {
+  const scan = cursor.fork();
+  const nodes: Syntax[] = [];
+  while (!scan.atEnd && !context.stopSet.matches(scan)) {
+    checkWork(context);
+    const next = scan.peek()!;
+    const previous = nodes.at(-1);
+    const previousRaw = token(previous) ? previous.raw : "";
+    if (
+      nodes.length > 0 &&
+      leadingLineBreak(next) &&
+      likelyNextTypeMember(next) &&
+      !continuationLineTokens.has(previousRaw) &&
+      !typeMemberModifiers.has(previousRaw)
+    )
+      break;
+    nodes.push(scan.consume()!);
+    if (token(next, ";")) break;
+  }
+  return nodes;
+}
+
+/**
+ * Whether the cursor stands on a member's own key rather than on a macro head.
+ * A property is written `name: T` and a method `name(...)`, and either may be
+ * spelled like a macro without meaning it.
+ */
+function namesTypeMember(cursor: SyntaxCursor): boolean {
+  const head = cursor.peek();
+  if (!token(head) || head.kind !== "identifier") return false;
+  const next = cursor.peek(1);
+  if (next === undefined) return false;
+  if (next.tag === "group")
+    return next.delimiter === "parenthesis" || next.delimiter === "bracket";
+  return token(next) && [":", "?", "<", "!"].includes(next.raw);
+}
+
+/**
+ * Reads one member of an interface or object type.
+ *
+ * A type member carries no body, so unlike a class element it always ends at
+ * its terminator: `;`, `,`, or the line break before the next member. The
+ * separator is kept with the member it follows, so a run of members prints
+ * back exactly as it was written.
+ */
+class TypeMemberConsumer implements SyntaxConsumer {
+  constructor(readonly options: TypeClassConsumerOptions) {
+    Object.freeze(this);
+  }
+
+  consume(cursor: SyntaxCursor, context: ConsumerContext): ConsumerAttempt {
+    const start = cursor.index;
+    checkWork(context);
+    // A member's extent is measured by the macro's own rule when one stands
+    // here, because a member list separates on `,` and a macro's invocation
+    // may contain one: `overloaded parse over string, number` is one member,
+    // not a member ending at the comma.
+    //
+    // A member may also be named like a macro without invoking it, so the
+    // macro is only offered where the name cannot be the member's own key.
+    if (
+      this.options.resolveTypeMemberMacro !== undefined &&
+      !namesTypeMember(cursor)
+    ) {
+      const slice = memberSlice(cursor, context);
+      if (slice.length > 0) {
+        const bounded = createSyntaxCursor(createSyntaxSequence(slice));
+        const macro = this.options.resolveTypeMemberMacro(
+          "typeMember",
+          bounded,
+          context,
+        );
+        if (macro !== undefined) {
+          validateMacro(macro, "typeMember", 0);
+          if (macro.matched) {
+            cursor.advance(macro.cursor.index);
+            return Object.freeze({
+              matched: true,
+              syntax: macro.syntax,
+              cursor,
+            });
+          }
+          return macro;
+        }
+      }
+    }
+    const children: Syntax[] = [];
+    while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
+      checkWork(context);
+      const next = cursor.peek()!;
+      const previous = children.at(-1);
+      const previousRaw = token(previous) ? previous.raw : "";
+      if (
+        children.length > 0 &&
+        leadingLineBreak(next) &&
+        likelyNextTypeMember(next) &&
+        !continuationLineTokens.has(previousRaw) &&
+        !typeMemberModifiers.has(previousRaw)
+      )
+        break;
+      cursor.consume();
+      // A member's type may itself be an object type, whose contents are
+      // another member list.
+      children.push(
+        next.tag === "group" &&
+          next.delimiter === "brace" &&
+          this.options.enforestTypeMemberBody !== undefined
+          ? this.options.enforestTypeMemberBody(next, context)
+          : next,
+      );
+      if (token(next, ";") || token(next, ",")) break;
+    }
+    if (children.length === 0)
+      return failure("typeMember", cursor, start, ["type member"], 1);
+    const last = children.at(-1);
+    const terminated = token(last, ";") || token(last, ",");
+    const automatic = cursor.atEnd || leadingLineBreak(cursor.peek());
+    if (!terminated && !automatic)
+      return failure(
+        "typeMember",
+        cursor,
+        start,
+        ["type-member terminator"],
+        30,
+      );
+    return Object.freeze({
+      matched: true,
+      syntax: protect("typeMember", this.options, children),
+      cursor,
+    });
+  }
+}
+
+/**
+ * Builds the type and type-member consumers as one pair.
+ *
+ * The two are mutually recursive: an object type's body is a member list, and
+ * a member's own type may be another object type. Building them separately
+ * left whichever was built first with no way to reach the other, so a member
+ * macro written one level in was never dispatched.
+ */
+export function createTypeConsumers(options: TypeClassConsumerOptions): {
+  readonly type: SyntaxConsumer;
+  readonly typeMember: SyntaxConsumer;
+} {
+  // The member consumer does not exist yet when the type consumer is built, so
+  // the two meet through this holder rather than through a forward reference.
+  const pair: { typeMember?: SyntaxConsumer } = {};
+  const enforestTypeMemberBody = (
+    body: GroupSyntax,
+    context: ConsumerContext,
+  ): Syntax => {
+    const members = pair.typeMember;
+    if (members === undefined || body.children.length === 0) return body;
+    let inner = createSyntaxCursor(body.children);
+    const consumed: Syntax[] = [];
+    const memberContext = Object.freeze({
+      ...context,
+      category: "typeMember" as const,
+      stopSet: StopSet.empty,
+    });
+    while (!inner.atEnd) {
+      const before = inner.index;
+      const attempt = members.consume(inner, memberContext);
+      // A body that does not read as a member list is left exactly as it was;
+      // TypeScript reports anything genuinely malformed.
+      if (!attempt.matched || attempt.cursor.index <= before) return body;
+      consumed.push(attempt.syntax);
+      inner = attempt.cursor;
+    }
+    return createGroup({
+      ...body,
+      id: options.allocateSyntaxId(),
+      children: createSyntaxSequence(consumed),
+    });
+  };
+  const linked: TypeClassConsumerOptions = {
+    ...options,
+    enforestTypeMemberBody,
+  };
+  const type = Object.freeze(new TypeConsumer(linked));
+  pair.typeMember = Object.freeze(new TypeMemberConsumer(linked));
+  return Object.freeze({ type, typeMember: pair.typeMember });
+}
+
 export function createTypeConsumer(
   options: TypeClassConsumerOptions,
 ): SyntaxConsumer {
-  return Object.freeze(new TypeConsumer(options));
+  return createTypeConsumers(options).type;
+}
+
+export function createTypeMemberConsumer(
+  options: TypeClassConsumerOptions,
+): SyntaxConsumer {
+  return createTypeConsumers(options).typeMember;
 }
 
 export function createClassElementConsumer(

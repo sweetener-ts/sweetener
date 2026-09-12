@@ -11,7 +11,7 @@ import {
   createItemConsumer,
   createPrattExpressionConsumer,
   createStatementConsumer,
-  createTypeConsumer,
+  createTypeConsumers,
   StopSet,
   type ConsumerContext,
   type SyntaxConsumer,
@@ -480,7 +480,14 @@ export function createExpansionFrontendSession(
   // expression consumers of their own, so it has to reach all of them. Passing
   // it only to the expression consumer left `const value = 1 as number;`
   // unparseable inside a function body while working at the top level.
-  const type = createTypeConsumer(shared);
+  // The member consumer is given the extent resolver so a member macro's own
+  // rule decides where its invocation ends; a member list separates on `,`,
+  // which would otherwise cut an invocation that contains one in half.
+  const typeConsumers = createTypeConsumers({
+    ...shared,
+    resolveTypeMemberMacro: extentResolver,
+  });
+  const type = typeConsumers.type;
   const consumerShared = {
     ...shared,
     resolveMacroOperator: operatorResolver,
@@ -530,6 +537,7 @@ export function createExpansionFrontendSession(
     enforestStatementBlock: (block, blockContext) =>
       statement.enforestBlock(block, blockContext),
   });
+  const typeMember = typeConsumers.typeMember;
   const context = (
     category: SyntaxCategory,
     contexts: ReadonlySet<MacroContext> = new Set(),
@@ -563,6 +571,7 @@ export function createExpansionFrontendSession(
     register("item", item);
     register("type", type);
     register("classElement", classElement);
+    register("typeMember", typeMember);
     register("jsxChild", jsxChild);
     const consumeClass = createSyntaxClassConsumer(module.syntaxClasses, {
       builtins: {
@@ -586,9 +595,11 @@ export function createExpansionFrontendSession(
                   ? "type"
                   : classId === module.classId("classElement")
                     ? "classElement"
-                    : classId === module.classId("jsxChild")
-                      ? "jsxChild"
-                      : "item";
+                    : classId === module.classId("typeMember")
+                      ? "typeMember"
+                      : classId === module.classId("jsxChild")
+                        ? "jsxChild"
+                        : "item";
         const base = context(category);
         const start = cursor.index;
         const attempted = consumer.consume(cursor, {
@@ -647,9 +658,11 @@ export function createExpansionFrontendSession(
                 ? type
                 : category === "classElement"
                   ? classElement
-                  : category === "jsxChild"
-                    ? jsxChild
-                    : undefined;
+                  : category === "typeMember"
+                    ? typeMember
+                    : category === "jsxChild"
+                      ? jsxChild
+                      : undefined;
     if (consumer === undefined) return protect(syntax, category);
     const previousOperatorModule = activeOperatorModule;
     activeOperatorModule = lexicalModule;
@@ -685,7 +698,13 @@ export function createExpansionFrontendSession(
   const normalizeProtectedInput = (node: ProtectedSyntax): ProtectedSyntax => {
     const normalizeChildren = (
       children: SyntaxSequence,
-      category: SyntaxCategory,
+      // Undefined inside a group: nesting is only redundant when the protected
+      // node sits directly in a protected node of its own category. A group
+      // delimits, so what it holds is a list of its own -- an interface body
+      // is protected as a `typeMember` run and holds one protected member per
+      // member, and carrying the category through the brace flattened every
+      // member back into loose tokens.
+      category: SyntaxCategory | undefined,
     ): SyntaxSequence =>
       createSyntaxSequence(
         children.flatMap((child): readonly Syntax[] => {
@@ -700,7 +719,7 @@ export function createExpansionFrontendSession(
               createGroup({
                 ...child,
                 id: options.allocateSyntaxId(),
-                children: normalizeChildren(child.children, category),
+                children: normalizeChildren(child.children, undefined),
               }),
             ];
           return [child];
@@ -1033,6 +1052,28 @@ export function createExpansionFrontendSession(
               cursor = attempted.cursor;
             }
             return createSyntaxSequence(children);
+          } finally {
+            enforestingModule = restore;
+          }
+        },
+        enforestTypeMembers: ({ syntax, contexts, lexicalModule }) => {
+          const restore = enforestingModule;
+          enforestingModule = lexicalModule ?? restore;
+          try {
+            let cursor = createSyntaxCursor(syntax);
+            const members: Syntax[] = [];
+            while (!cursor.atEnd) {
+              const before = cursor.index;
+              const attempted = typeMember.consume(cursor, {
+                ...context("typeMember", contexts),
+                stopSet: StopSet.empty,
+              });
+              if (!attempted.matched || attempted.cursor.index <= before)
+                return undefined;
+              members.push(attempted.syntax);
+              cursor = attempted.cursor;
+            }
+            return createSyntaxSequence(members);
           } finally {
             enforestingModule = restore;
           }

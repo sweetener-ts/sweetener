@@ -263,6 +263,7 @@ export function compileParsedSyntaxClasses(
         "type",
         "binding",
         "classElement",
+        "typeMember",
         "jsxChild",
       ].flatMap((name) => {
         const classId = bindings.get(name);

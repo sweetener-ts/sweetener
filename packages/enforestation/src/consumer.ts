@@ -271,7 +271,7 @@ export class ConsumerRegistry {
  * before committing.
  */
 export type MacroExtentResolver = (
-  category: "expr" | "binding" | "stmt" | "item",
+  category: "expr" | "binding" | "stmt" | "item" | "typeMember",
   cursor: SyntaxCursor,
   context: ConsumerContext,
 ) => ConsumerAttempt | undefined;

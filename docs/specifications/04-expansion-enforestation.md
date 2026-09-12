@@ -49,6 +49,7 @@ type SyntaxCategory =
   | "type"
   | "binding"
   | "classElement"
+  | "typeMember"
   | "jsxChild"
   | "token"
   | "tt";
@@ -56,6 +57,17 @@ type SyntaxCategory =
 
 Macro lookup uses the syntax space paired with the requested category. The same
 spelling may bind macros in different categories.
+
+An interface body and an object type are read as `typeMember` runs, and a
+member may be spelled like a macro without invoking one: `name: T` and
+`name(...)` declare a member called `name`. A `typeMember` macro is therefore
+dispatched only where the key of the member being read cannot be the name
+itself — a bare name, or a name in front of a brace. Past the member's first
+`:` the member's type is read the way a type is read anywhere else, so a `type`
+macro in an annotation still applies. A name standing in a member position that
+resolves to no `typeMember` macro but does resolve in another category is
+reported rather than emitted verbatim, because a leftover name there becomes an
+implicitly-typed member rather than a syntax error.
 
 ## 4. `expandOne` algorithm
 
