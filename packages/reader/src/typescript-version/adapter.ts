@@ -162,6 +162,20 @@ interface JsxContainer {
   depth: number;
 }
 
+/** How many `>` a merged closing-angle token spells, or zero if it is not one. */
+function closingAngleWidth(kind: ts.SyntaxKind): number {
+  switch (kind) {
+    case ts.SyntaxKind.GreaterThanToken:
+      return 1;
+    case ts.SyntaxKind.GreaterThanGreaterThanToken:
+      return 2;
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      return 3;
+    default:
+      return 0;
+  }
+}
+
 function tokenLexicalMode(kind: ts.SyntaxKind, jsxMode: JsxMode): LexicalMode {
   if (kind === ts.SyntaxKind.RegularExpressionLiteral)
     return "regular-expression";
@@ -287,6 +301,14 @@ export function scanWithSupportedTypeScript(
   let jsxMode: JsxMode = "standard";
   let closingTag = false;
   let selfClosingTag = false;
+  /**
+   * How many `<` of the current tag's type arguments are still open.
+   * `<Comp<string> value={x} />` is a generic element, and the `>` that closes
+   * its type arguments is not the one that ends the tag. Counting the tag's own
+   * `>` there moved the scanner into text mode, so the attributes after it were
+   * scanned as JSX text and a `>` among them was reported as needing escaping.
+   */
+  let typeArgumentDepth = 0;
   let regularExpressionAllowed = true;
   while (true) {
     beforeToken();
@@ -363,6 +385,7 @@ export function scanWithSupportedTypeScript(
       jsxMode = "tag";
       closingTag = false;
       selfClosingTag = false;
+      typeArgumentDepth = 0;
       modeForToken = "tag";
     } else if (jsxMode === "text") {
       if (
@@ -371,6 +394,7 @@ export function scanWithSupportedTypeScript(
       ) {
         closingTag = kind === ts.SyntaxKind.LessThanSlashToken;
         selfClosingTag = false;
+        typeArgumentDepth = 0;
         jsxMode = "tag";
         modeForToken = "tag";
       } else if (kind === ts.SyntaxKind.OpenBraceToken) {
@@ -387,6 +411,15 @@ export function scanWithSupportedTypeScript(
         jsxExpressionReturns.push("tag");
         jsxExpressionBraceDepth.push(0);
         jsxMode = "expression";
+      } else if (kind === ts.SyntaxKind.LessThanToken) {
+        typeArgumentDepth += 1;
+      } else if (typeArgumentDepth > 0 && closingAngleWidth(kind) > 0) {
+        // `Array<Set<string>>` closes two at once: outside JSX text the
+        // scanner merges the run of `>` into one token.
+        typeArgumentDepth = Math.max(
+          0,
+          typeArgumentDepth - closingAngleWidth(kind),
+        );
       } else if (kind === ts.SyntaxKind.GreaterThanToken) {
         const container = jsxContainers.at(-1);
         if (container !== undefined) {

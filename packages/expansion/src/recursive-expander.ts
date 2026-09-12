@@ -466,7 +466,15 @@ export function expandMacroSyntax(
         "[",
         "(",
         "=>",
+        // Words that exist only in a type. Without these a type macro after
+        // one of them was not looked up at all, so `keyof list<string>` kept
+        // the macro's own spelling and no diagnostic said why.
         "readonly",
+        "keyof",
+        "infer",
+        "unique",
+        "asserts",
+        "is",
       ].includes(previous.raw)
     )
       return true;
@@ -528,6 +536,31 @@ export function expandMacroSyntax(
     "namespace",
     "declare",
   ]);
+
+  /**
+   * Whether the next node stands in a class heritage clause. What a class
+   * extends is an expression -- `class E extends make()<T> {}` -- while what an
+   * interface extends, or a type parameter is constrained by, is a type. All
+   * three are written after `extends`, so the class is found by looking back
+   * for the keyword, stopping at the `<` that would make this a constraint.
+   */
+  const classHeritageFollows = (preceding: readonly Syntax[]): boolean => {
+    const previous = preceding.at(-1);
+    if (previous?.tag !== "token" || previous.raw !== "extends") return false;
+    for (let at = preceding.length - 2; at >= 0; at -= 1) {
+      const node = preceding[at]!;
+      if (node.tag !== "token") continue;
+      if (node.raw === "class") return true;
+      if (
+        node.raw === "<" ||
+        node.raw === "interface" ||
+        node.raw === ";" ||
+        node.raw === "}"
+      )
+        return false;
+    }
+    return false;
+  };
 
   /** Whether the next node stands where a declaration names what it binds. */
   const binderFollows = (preceding: readonly Syntax[]): boolean => {
@@ -902,7 +935,9 @@ export function expandMacroSyntax(
         resolvedMacro === undefined &&
         node.tag === "token" &&
         category !== "expr" &&
-        (initializerFollows(output) || expressionRegion)
+        (initializerFollows(output) ||
+          expressionRegion ||
+          classHeritageFollows(output))
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -1401,18 +1436,28 @@ export function expandMacroSyntax(
         if (node.tag === "group" && node.delimiter === "template") {
           const children: Syntax[] = [];
           let substitution: Syntax[] = [];
+          // A template literal holds expressions, and a template literal *type*
+          // holds types: `` `get${string & K}` `` is a type, not an expression.
+          // Reading every substitution as an expression made an ordinary
+          // template literal type unreadable -- and at a use site it escaped as
+          // a thrown error rather than a diagnostic, so one of them anywhere in
+          // a file ended the whole compilation.
+          const substitutionCategory: SyntaxCategory =
+            category === "type" || typePositionFollows(output)
+              ? "type"
+              : "expr";
           const expandSubstitution = () => {
             if (substitution.length === 0) return;
             const enforested = enforestSequence(
               createSyntaxSequence(substitution),
-              "expr",
+              substitutionCategory,
               lexicalModule,
               contexts,
             );
             const nested = visit(
               createSyntaxSequence([enforested]),
               currentEnvironment,
-              "expr",
+              substitutionCategory,
               parentInvocation,
               lexicalModule,
               contexts,
@@ -1636,33 +1681,42 @@ export function expandMacroSyntax(
                   node.delimiter === "parenthesis" &&
                   catchBinderFollows(output)
                 ? "binding"
-                : // A brace standing where a type is written is an object
-                  // type, and its contents are a member list rather than one
-                  // more type.
+                : // A bracket inside a member list holds a type, not another
+                  // member: a mapped type's key, an index signature's, a
+                  // computed one. Walking it as a member list made
+                  // `{ [K in keyof list<string>]: 1 }` read `list` as the name
+                  // of a member rather than as the type macro it is.
                   node.tag === "group" &&
-                    node.delimiter === "brace" &&
-                    (category === "type" || typePositionFollows(output))
-                  ? "typeMember"
-                  : node.tag === "group" &&
-                      category !== "type" &&
-                      (node.delimiter === "bracket" ||
-                        node.delimiter === "parenthesis") &&
-                      typePositionFollows(output)
-                    ? "type"
+                    node.delimiter === "bracket" &&
+                    category === "typeMember"
+                  ? "type"
+                  : // A brace standing where a type is written is an object
+                    // type, and its contents are a member list rather than one
+                    // more type.
+                    node.tag === "group" &&
+                      node.delimiter === "brace" &&
+                      (category === "type" || typePositionFollows(output))
+                    ? "typeMember"
                     : node.tag === "group" &&
-                        category !== "expr" &&
-                        ((node.delimiter === "parenthesis" &&
-                          conditionFollows(output)) ||
-                          initializerFollows(output) ||
-                          // An argument list, a parenthesised operand, an index:
-                          // a group reached inside an expression region holds an
-                          // expression however the statement around it is
-                          // categorized.
-                          ((node.delimiter === "parenthesis" ||
-                            node.delimiter === "bracket") &&
-                            expressionRegion))
-                      ? "expr"
-                      : category;
+                        category !== "type" &&
+                        (node.delimiter === "bracket" ||
+                          node.delimiter === "parenthesis") &&
+                        typePositionFollows(output)
+                      ? "type"
+                      : node.tag === "group" &&
+                          category !== "expr" &&
+                          ((node.delimiter === "parenthesis" &&
+                            conditionFollows(output)) ||
+                            initializerFollows(output) ||
+                            // An argument list, a parenthesised operand, an index:
+                            // a group reached inside an expression region holds an
+                            // expression however the statement around it is
+                            // categorized.
+                            ((node.delimiter === "parenthesis" ||
+                              node.delimiter === "bracket") &&
+                              expressionRegion))
+                        ? "expr"
+                        : category;
         const statementBody =
           node.tag === "group" &&
           node.delimiter === "brace" &&

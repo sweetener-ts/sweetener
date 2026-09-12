@@ -11,6 +11,44 @@ import { printLossless, readSyntax } from "../src/index.js";
 const sourceId = 7 as SourceId;
 const scopes = 0 as ScopeSetId;
 
+describe("generic JSX elements", () => {
+  /**
+   * A generic element's type arguments are scanned in tag mode, like the tag's
+   * own name. Counting the `>` that closes them as the one that ends the tag
+   * moved the scanner into JSX text mode, so the attributes after it were
+   * scanned as text and a `>` among them was reported as needing escaping.
+   */
+  it.each([
+    ["one type argument", "const x = <Comp<string> value={1} />;\n"],
+    [
+      "nested type arguments",
+      "const x = <Comp<Map<string, number>> value={1} />;\n",
+    ],
+    [
+      "children rather than self-closing",
+      "const x = <Comp<string>>{v}</Comp>;\n",
+    ],
+    ["a type argument and a spread", "const x = <Comp<string> {...rest} />;\n"],
+  ])("reads %s without a diagnostic", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+  });
+
+  it("still reads an ordinary element and a comparison", () => {
+    for (const source of [
+      "const x = <div className='a'>{v}</div>;\n",
+      "const x = 1 < 2;\n",
+      "const x = 8 >> 2;\n",
+      "const x = new Map<string, Array<number>>();\n",
+    ]) {
+      const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      expect(result.diagnostics).toEqual([]);
+      expect(printLossless(result.root)).toBe(source);
+    }
+  });
+});
+
 describe("delimiter reader", () => {
   it("builds an immutable file root with source origins", () => {
     const source = "const answer = call(1, [2, { value: 3 }]);\n";

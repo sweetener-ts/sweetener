@@ -402,3 +402,101 @@ describe("a macro spelled like a property", () => {
     );
   });
 });
+
+/**
+ * Positions a macro is written in, found by putting one in each of them. Every
+ * failure here was silent: the invocation kept its own spelling and the output
+ * named a macro that expansion removes.
+ */
+describe("positions a macro is dispatched in", () => {
+  const definitions = `
+    export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }
+    export syntax list:type { rule { list<$e:type> } => { ReadonlyArray<$e> } }
+  `;
+
+  /**
+   * A template literal holds expressions; a template literal *type* holds
+   * types. Reading every substitution as an expression made an ordinary
+   * `` `a${string}` `` unreadable, and at a use site it escaped as a thrown
+   * error rather than a diagnostic, ending the whole compilation.
+   */
+  test("reads a template literal type", () => {
+    const expand = harness(definitions);
+    expect(expand("export type A = `x${string}`;", "item")).toBe(
+      "exporttypeA=`x${string}`;",
+    );
+  });
+
+  test("reads a template literal type in a mapped key", () => {
+    const expand = harness(definitions);
+    expect(
+      expand(
+        "export type A<B> = { [K in keyof B as `g${string & K}`]: 1 };",
+        "item",
+      ),
+    ).toBe("exporttypeA<B>={[KinkeyofBas`g${string&K}`]:1};");
+  });
+
+  test("still reads a template literal expression", () => {
+    const expand = harness(definitions);
+    expect(expand("export const a = `v${twice(1)}`;", "item")).toBe(
+      "exportconsta=`v${[1,1]}`;",
+    );
+  });
+
+  /** `keyof`, `infer`, `unique`, `asserts` and `is` only ever precede a type. */
+  test("dispatches a type macro after keyof", () => {
+    const expand = harness(definitions);
+    expect(expand("export type A = keyof list<string>;", "item")).toBe(
+      "exporttypeA=keyofReadonlyArray<string>;",
+    );
+  });
+
+  test("dispatches a type macro after infer", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("export type A<T> = T extends list<infer U> ? U : never;", "item"),
+    ).toBe("exporttypeA<T>=TextendsReadonlyArray<inferU>?U:never;");
+  });
+
+  /**
+   * What a class extends is an expression; what an interface extends, or a type
+   * parameter is constrained by, is a type. All three are written after
+   * `extends`.
+   */
+  test("dispatches an expression macro in a class heritage clause", () => {
+    const expand = harness(definitions);
+    expect(expand("export class C extends twice(1) {}", "item")).toBe(
+      "exportclassCextends[1,1]{}",
+    );
+  });
+
+  test("still dispatches a type macro in an interface heritage clause", () => {
+    const expand = harness(definitions);
+    expect(expand("export interface I extends list<string> {}", "item")).toBe(
+      "exportinterfaceIextendsReadonlyArray<string>{}",
+    );
+  });
+
+  test("still dispatches a type macro in a type-parameter constraint", () => {
+    const expand = harness(definitions);
+    expect(expand("export type A<T extends list<string>> = T;", "item")).toBe(
+      "exporttypeA<TextendsReadonlyArray<string>>=T;",
+    );
+  });
+
+  /** A bracket inside a member list holds a type, not another member. */
+  test("dispatches a type macro in a mapped type's key", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("export type A = { [K in keyof list<string>]: 1 };", "item"),
+    ).toBe("exporttypeA={[KinkeyofReadonlyArray<string>]:1};");
+  });
+
+  test("dispatches a type macro in an index signature", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("export interface I { [k: string]: list<string>; }", "item"),
+    ).toBe("exportinterfaceI{[k:string]:ReadonlyArray<string>;}");
+  });
+});

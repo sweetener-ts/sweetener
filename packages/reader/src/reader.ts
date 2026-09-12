@@ -53,6 +53,13 @@ interface GroupFrame {
   readonly children: Syntax[];
   jsxOpeningComplete: boolean;
   jsxClosing: boolean;
+  /**
+   * How many `<` of a tag's type arguments are still open. `<Comp<string> />`
+   * is a generic element, and its inner `<` is scanned in tag mode like the
+   * tag's own, so pushing an element frame for it read the type argument as a
+   * nested element and the tag never closed.
+   */
+  jsxTypeArguments: number;
 }
 
 const ordinaryOpen = new Map<string, DelimiterKind>([
@@ -214,6 +221,7 @@ export function readSyntax(
         children: [],
         jsxOpeningComplete: false,
         jsxClosing: false,
+        jsxTypeArguments: 0,
       });
       continue;
     }
@@ -223,12 +231,27 @@ export function readSyntax(
     }
 
     if (token.lexicalMode === "jsx-tag" && token.raw === "<") {
+      const enclosing = stack.at(-1);
+      // Inside a tag that has already been named, a `<` opens that tag's type
+      // arguments rather than a nested element.
+      if (
+        enclosing !== undefined &&
+        isJsx(enclosing.delimiter) &&
+        !enclosing.jsxOpeningComplete &&
+        !enclosing.jsxClosing &&
+        enclosing.children.length > 0
+      ) {
+        enclosing.jsxTypeArguments += 1;
+        enclosing.children.push(token);
+        continue;
+      }
       pushFrame({
         delimiter: "jsx-element",
         open: token,
         children: [],
         jsxOpeningComplete: false,
         jsxClosing: false,
+        jsxTypeArguments: 0,
       });
       continue;
     }
@@ -241,6 +264,11 @@ export function readSyntax(
         continue;
       }
       if (token.lexicalMode === "jsx-tag" && token.raw === ">") {
+        if (top.jsxTypeArguments > 0) {
+          top.jsxTypeArguments -= 1;
+          top.children.push(token);
+          continue;
+        }
         if (!top.jsxOpeningComplete) {
           if (top.children.length === 0) top.delimiter = "jsx-fragment";
           const previous = top.children.at(-1);
@@ -270,6 +298,7 @@ export function readSyntax(
         children: [],
         jsxOpeningComplete: false,
         jsxClosing: false,
+        jsxTypeArguments: 0,
       });
       continue;
     }
