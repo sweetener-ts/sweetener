@@ -32,12 +32,14 @@ Source filenames must be flat, safe names ending in `.sts`, `.stsx`, `.ts`,
 512 KiB for the project. It rejects truncated files and never executes Gist
 JavaScript; sources are only passed to the sandboxed browser compiler.
 
-The example selector loads the same twelve macro families used by the
-production acceptance suite. Both `macros.sts` and `main.sts` are editable;
+The example selector loads eleven macro families: eight from the production
+acceptance suite, and three written against `effect` and `zod` that are read
+from `examples/library-macros`, where CI type-checks them against the real
+libraries. Both `macros.sts` and `main.sts` are editable;
 every edit recompiles the complete virtual project and updates the generated
 TypeScript or real compiler diagnostics.
 
-Build and exercise all twelve examples through the generated browser worker:
+Build and exercise every example through the generated browser worker:
 
 ```bash
 pnpm playground:build

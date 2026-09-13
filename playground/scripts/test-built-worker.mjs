@@ -25,15 +25,25 @@ if (!messageHandler) throw new Error("Compiler worker did not register");
 
 // Every example the site ships, expanded by the worker the site ships. An
 // example that stopped compiling would otherwise greet whoever opened it.
-const examplesRoot = path.join(import.meta.dirname, "../examples");
-const names = (await readdir(examplesRoot, { withFileTypes: true }))
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .sort();
-if (names.length === 0) throw new Error("No playground examples were found");
+// The library examples are read from their own package, as src/examples.ts
+// reads them, so the copy tested here is the copy CI type-checks.
+const exampleRoots = [
+  path.join(import.meta.dirname, "../examples"),
+  path.join(import.meta.dirname, "../../examples/library-macros"),
+];
+const directories = [];
+for (const examplesRoot of exampleRoots)
+  for (const entry of await readdir(examplesRoot, { withFileTypes: true }))
+    if (entry.isDirectory() && entry.name !== "node_modules")
+      directories.push({
+        name: entry.name,
+        directory: path.join(examplesRoot, entry.name),
+      });
+directories.sort((left, right) => left.name.localeCompare(right.name));
+if (directories.length === 0)
+  throw new Error("No playground examples were found");
 
-for (const [index, name] of names.entries()) {
-  const directory = path.join(examplesRoot, name);
+for (const [index, { name, directory }] of directories.entries()) {
   // Whatever the example is made of: some carry a runtime module beside the
   // macros, and main.sts goes last so it can import the rest.
   const all = await readdir(directory);
@@ -63,5 +73,5 @@ for (const [index, name] of names.entries()) {
 }
 
 nodeProcess.stdout.write(
-  `Built browser worker expanded all ${names.length} playground examples.\n`,
+  `Built browser worker expanded all ${directories.length} playground examples.\n`,
 );

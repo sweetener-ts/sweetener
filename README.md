@@ -133,9 +133,10 @@ main.sts:4:3 TS4001: No rule for macro cond accepted this input: expected `else`
   cond.sts:2:17 The closest rule was still expecting syntax here
 ```
 
-The [playground](https://sweetener-ts.github.io/sweetener/) carries nine more,
+The [playground](https://sweetener-ts.github.io/sweetener/) carries eleven more,
 including sum types with an exhaustive match, structural pattern matching with
-no runtime behind it, signals, and records that generate declarations. The same
+no runtime behind it, signals, records that generate declarations, and macros
+written against Effect and zod. The same
 worker the site ships expands all of them, and every build checks that it
 still does.
 
