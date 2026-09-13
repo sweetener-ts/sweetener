@@ -1,0 +1,42 @@
+import { query } from "./macros.sts" for syntax;
+import { and, asc, desc, eq, gt, gte, lt, lte, ne } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { boolean, integer, pgTable, serial, text } from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+    id: serial().primaryKey(),
+    name: text().notNull(),
+    age: integer().notNull(),
+  });
+
+export const posts = pgTable("posts", {
+    id: serial().primaryKey(),
+    authorId: integer().notNull(),
+    title: text().notNull(),
+    published: boolean().notNull(),
+  });
+
+export const feed = (db: NodePgDatabase, minAge: number) =>
+query(db) {
+  select { author: users.name, title: posts.title }
+  from users
+  join posts on posts.authorId == users.id
+  where users.age >= minAge and posts.published == true
+  order by users.name, posts.id desc
+  limit 20
+};
+
+export const everyone = (db: NodePgDatabase) =>
+query(db) {
+  select { id: users.id, name: users.name }
+  from users
+};
+
+export const quiet = (db: NodePgDatabase, name: string) =>
+query(db) {
+  select { name: users.name, title: posts.title }
+  from users
+  left join posts on posts.authorId == users.id and posts.id > 0
+  where users.name != name and users.age < 65 and users.age <= 64
+  order by users.age desc
+};

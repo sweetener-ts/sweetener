@@ -16,7 +16,7 @@ import jsxMain from "../examples/jsx/main.stsx?raw";
 import signalsRuntime from "../examples/signals/runtime.ts?raw";
 import signalsMacros from "../examples/signals/macros.sts?raw";
 import signalsMain from "../examples/signals/main.sts?raw";
-// These three are written against `effect` and `zod`, so they live in their
+// These are written against `effect`, `zod` and `drizzle-orm`, so they live in their
 // own package where CI type-checks them against the real libraries; the
 // playground reads them from there rather than keeping a copy that could
 // drift. The browser only expands them, so the libraries are not needed here.
@@ -27,6 +27,10 @@ import effectServiceMain from "../../examples/library-macros/effect-service/main
 import effectDoService from "../../examples/library-macros/effect-do/service.sts?raw";
 import effectDoMacros from "../../examples/library-macros/effect-do/macros.sts?raw";
 import effectDoMain from "../../examples/library-macros/effect-do/main.sts?raw";
+import drizzleSchemaMacros from "../../examples/library-macros/drizzle-schema/macros.sts?raw";
+import drizzleSchemaMain from "../../examples/library-macros/drizzle-schema/main.sts?raw";
+import drizzleQueryMacros from "../../examples/library-macros/drizzle-query/macros.sts?raw";
+import drizzleQueryMain from "../../examples/library-macros/drizzle-query/main.sts?raw";
 
 export type PlaygroundFile = { fileName: string; source: string };
 export type PlaygroundExample = {
@@ -147,5 +151,19 @@ export const examples: PlaygroundExample[] = [
     effectDoMacros,
     effectDoMain,
     [{ fileName: "service.sts", source: effectDoService }],
+  ),
+  example(
+    "drizzle-schema",
+    "Drizzle tables",
+    "One `table` declaration is the Drizzle table, its row type, and its insert type.",
+    drizzleSchemaMacros,
+    drizzleSchemaMain,
+  ),
+  example(
+    "drizzle-query",
+    "Drizzle queries",
+    "Queries written in the order SQL reads, as the Drizzle builder chain.",
+    drizzleQueryMacros,
+    drizzleQueryMain,
   ),
 ];

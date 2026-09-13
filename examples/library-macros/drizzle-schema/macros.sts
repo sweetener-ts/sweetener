@@ -1,0 +1,55 @@
+// What can follow a column's type. Each shape fills exactly one field, so the
+// template asks which one is present rather than which rule matched.
+export syntax class Modifier {
+  fields { primary: ident?; unique: ident?; now: ident?; value: expr?; }
+  rule { $primary:ident key }
+  refine $primary spelling equals "primary";
+  rule { $unique:ident }
+  refine $unique spelling equals "unique";
+  rule { default $now:ident }
+  refine $now spelling equals "now";
+  rule { default $value:expr }
+  expect "`primary key`, `unique`, or `default` and a value";
+}
+
+// `varchar({ length: 255 })`, or `text` with nothing to pass.
+export syntax class ColumnType {
+  fields { builder: ident; arguments: tt?; }
+  rule { $builder:ident $arguments:tt }
+  refine $arguments delimiter parenthesis;
+  rule { $builder:ident }
+  expect "a column type such as `text` or `varchar({ length: 255 })`";
+}
+
+export syntax class Column {
+  fields { name: ident; nullable: token?; kind: ColumnType; modifiers: Modifier*; }
+  // `name?: text` is nullable; `name: text` is not. The reverse of Drizzle,
+  // where a column is nullable until `.notNull()` says otherwise, and the same
+  // as TypeScript, where a property is required until `?` says otherwise.
+  rule { $name:ident $nullable:token : $kind:ColumnType $($modifiers:Modifier)* }
+  rule { $name:ident : $kind:ColumnType $($modifiers:Modifier)* }
+  expect "a column name, an optional `?`, a colon, and a column type";
+}
+
+// `table users as User { ... }` is the table, its row type, and the type of
+// what inserting a row takes. Column names in the database come from the
+// `casing` Drizzle is configured with, so none is written here.
+export syntax table:item {
+  rule { table $name:binding as $row:binding { $($column:Column);* } }
+  bind $name in following as recursive value;
+  bind $row in following as lexical type;
+  bind #join($row, prefix: "New") in following as lexical type;
+  => {
+    #core(export const $name = pgTable(#text($name), {
+          $($column.name: $column.kind.builder #if(present $column.kind.arguments) { $column.kind.arguments } #else { () }
+            #if(present $column.nullable) {} #else { .notNull() }
+            $(#if(present $column.modifiers.primary) { .primaryKey() }
+              #else { #if(present $column.modifiers.unique) { .unique() }
+                #else { #if(present $column.modifiers.now) { .defaultNow() }
+                  #else { .default($column.modifiers.value) } } })*),*
+        }))
+
+    #core(export type $row = InferSelectModel<typeof $name>;)
+    #core(export type #join($row, prefix: "New") = InferInsertModel<typeof $name>;)
+  }
+}

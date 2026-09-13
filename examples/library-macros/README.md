@@ -10,3 +10,9 @@ because the tour is self-contained and these need real packages to type-check.
   shape interface, one accessor per method, and the layer helper.
 - `effect-do` — `gen`, `effect` and `handle`: binds written `name <- effect`,
   with no `Effect<A, E, R>` written anywhere.
+- `drizzle-schema` — `table users as User { ... }` emits the `pgTable`, its row
+  type and its insert type. A column is required unless written `name?:`, as a
+  TypeScript property is.
+- `drizzle-query` — `query(db) { select ... from ... join ... where ... order by
+... limit ... }` as the Drizzle builder chain, with `==`, `>=` and the rest
+  as `eq`, `gte` and the rest. The row types are Drizzle's own inference.

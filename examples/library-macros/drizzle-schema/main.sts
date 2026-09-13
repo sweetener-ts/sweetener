@@ -1,0 +1,30 @@
+import { table } from "./macros.sts" for syntax;
+import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
+import {
+  boolean,
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  varchar,
+} from "drizzle-orm/pg-core";
+
+table users as User {
+  id: serial primary key;
+  email: varchar({ length: 255 }) unique;
+  name: text;
+  bio?: text;
+  createdAt: timestamp default now
+}
+
+table posts as Post {
+  id: serial primary key;
+  authorId: integer;
+  title: text;
+  published: boolean default false
+}
+
+// Both types are ordinary Drizzle inference, so they track the columns.
+export const draft: NewPost = { authorId: 1, title: "Hello" };
+export const byline = (user: User): string => user.bio ?? user.name;

@@ -1,0 +1,99 @@
+// `users.age`: a column, named through its table.
+export syntax class Column {
+  fields { table: ident; name: ident; }
+  rule { $table:ident.$name:ident }
+  expect "a column written `table.column`";
+}
+
+// One comparison, as the Drizzle operator it means. Each operator is its own
+// rule filling its own field, so the template asks which field is present.
+export syntax class Comparison {
+  fields {
+    left: Column;
+    eq: expr?; ne: expr?; lt: expr?; lte: expr?; gt: expr?; gte: expr?;
+  }
+  rule { $left:Column == $eq:expr }
+  rule { $left:Column != $ne:expr }
+  rule { $left:Column <= $lte:expr }
+  rule { $left:Column < $lt:expr }
+  rule { $left:Column >= $gte:expr }
+  rule { $left:Column > $gt:expr }
+  expect "a comparison: ==, !=, <, <=, > or >=";
+}
+
+// `and` is a word rather than `&&`, so each side stays a whole comparison:
+// `&&` binds looser than `==` but tighter than `? :`, and a value written after
+// `==` would otherwise read the rest of the condition as part of itself.
+export syntax class Condition {
+  fields { comparisons: Comparison*; }
+  rule { $($comparisons:Comparison) and + }
+  expect "comparisons joined by `and`";
+}
+
+export syntax compare:expr {
+  rule { compare($comparison:Comparison) } => {
+    #if(present $comparison.eq) { eq($comparison.left, $comparison.eq) }
+    #else { #if(present $comparison.ne) { ne($comparison.left, $comparison.ne) }
+      #else { #if(present $comparison.lt) { lt($comparison.left, $comparison.lt) }
+        #else { #if(present $comparison.lte) { lte($comparison.left, $comparison.lte) }
+          #else { #if(present $comparison.gt) { gt($comparison.left, $comparison.gt) }
+            #else { gte($comparison.left, $comparison.gte) } } } } }
+  }
+}
+
+export syntax class Join {
+  fields { left: ident?; table: ident; on: Condition; }
+  rule { $left:ident join $table:ident on $on:Condition }
+  refine $left spelling equals "left";
+  rule { join $table:ident on $on:Condition }
+  expect "`join table on condition`, or `left join`";
+}
+
+export syntax class Order {
+  fields { column: Column; descending: ident?; }
+  rule { $column:Column $descending:ident }
+  refine $descending spelling equals "desc";
+  rule { $column:Column asc }
+  rule { $column:Column }
+}
+
+export syntax class Ordering {
+  fields { orders: Order*; }
+  rule { order by $($orders:Order),+ }
+}
+
+export syntax class Filter {
+  fields { condition: Condition; }
+  rule { where $condition:Condition }
+}
+
+export syntax class Limit {
+  fields { count: expr; }
+  rule { limit $count:expr }
+}
+
+// A query in the order SQL reads, as the Drizzle builder chain that runs it.
+// `select { ... }` is the shape of each row, exactly as Drizzle takes it.
+export syntax query:expr {
+  rule {
+    query($database:expr) {
+      select $shape:tt
+      from $table:ident
+      $($joins:Join)*
+      $($filter:Filter)?
+      $($ordering:Ordering)?
+      $($limit:Limit)?
+    }
+  }
+  expect "select, from, then any of join, where, order by and limit, in that order";
+  => {
+    $database.select($shape).from($table)
+    $(#if(present $joins.left) { .leftJoin } #else { .innerJoin }
+      ($joins.table, and($(compare($joins.on.comparisons)),*)))*
+    $(.where(and($(compare($filter.condition.comparisons)),*)))*
+    $(.orderBy($(#if(present $ordering.orders.descending) {
+            desc($ordering.orders.column)
+          } #else { asc($ordering.orders.column) }),*))*
+    $(.limit($limit.count))*
+  }
+}
