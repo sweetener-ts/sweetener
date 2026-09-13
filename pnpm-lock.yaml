@@ -78,9 +78,6 @@ importers:
       effect:
         specifier: ^3.22.2
         version: 3.22.2
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
 
   examples/next:
     dependencies:
@@ -13077,7 +13074,7 @@ snapshots:
 
   '@types/http-proxy@1.17.17':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.20.2
 
   '@types/istanbul-lib-coverage@2.0.6': {}
 
@@ -15953,7 +15950,7 @@ snapshots:
 
   jest-worker@27.5.1:
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.20.2
       merge-stream: 2.0.0
       supports-color: 8.1.1
 

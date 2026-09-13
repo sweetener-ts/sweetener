@@ -16,12 +16,10 @@ import jsxMain from "../examples/jsx/main.stsx?raw";
 import signalsRuntime from "../examples/signals/runtime.ts?raw";
 import signalsMacros from "../examples/signals/macros.sts?raw";
 import signalsMain from "../examples/signals/main.sts?raw";
-// These are written against `effect`, `zod` and `drizzle-orm`, so they live in their
+// These are written against `effect` and `drizzle-orm`, so they live in their
 // own package where CI type-checks them against the real libraries; the
 // playground reads them from there rather than keeping a copy that could
 // drift. The browser only expands them, so the libraries are not needed here.
-import zodMacros from "../../examples/library-macros/zod-schema/macros.sts?raw";
-import zodMain from "../../examples/library-macros/zod-schema/main.sts?raw";
 import effectServiceMacros from "../../examples/library-macros/effect-service/macros.sts?raw";
 import effectServiceMain from "../../examples/library-macros/effect-service/main.sts?raw";
 import effectDoService from "../../examples/library-macros/effect-do/service.sts?raw";
@@ -129,13 +127,6 @@ export const examples: PlaygroundExample[] = [
     signalsMacros,
     signalsMain,
     [{ fileName: "runtime.ts", source: signalsRuntime }],
-  ),
-  example(
-    "zod-schema",
-    "Zod schemas from types",
-    "One declaration emits the interface and the zod schema that validates it.",
-    zodMacros,
-    zodMain,
   ),
   example(
     "effect-service",

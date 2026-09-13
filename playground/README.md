@@ -32,8 +32,8 @@ Source filenames must be flat, safe names ending in `.sts`, `.stsx`, `.ts`,
 512 KiB for the project. It rejects truncated files and never executes Gist
 JavaScript; sources are only passed to the sandboxed browser compiler.
 
-The example selector loads thirteen macro families: eight from the production
-acceptance suite, and five written against `effect`, `zod` and `drizzle-orm`
+The example selector loads twelve macro families: eight from the production
+acceptance suite, and four written against `effect` and `drizzle-orm`
 that are read
 from `examples/library-macros`, where CI type-checks them against the real
 libraries. Both `macros.sts` and `main.sts` are editable;
