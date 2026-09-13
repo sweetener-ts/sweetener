@@ -1,0 +1,13 @@
+{
+  "name": "@sweetener-example/library-macros",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "sweetener build -p sweetener.json"
+  },
+  "dependencies": {
+    "@sweetener/cli": "workspace:*",
+    "effect": "^3.22.2",
+    "zod": "^4.4.3"
+  }
+}
