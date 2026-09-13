@@ -211,8 +211,12 @@ integrations](docs/integrations.md) covers each host in full.
 ### Starting from nothing
 
 ```bash
-npx sweetener init my-app
+npx @sweetener/cli@alpha init my-app
 ```
+
+Run through `npx` before it is installed, the command is named by its package:
+`npx sweetener` on its own fetches an unrelated package that happens to be
+called `sweetener`.
 
 That writes the `package.json`, `tsconfig.json`, and `src/` a macro needs,
 including a macro definition and a file that uses it. `npm run check` expands
@@ -250,10 +254,13 @@ sweetener build -p tsconfig.json    # expand and emit
 sweetener watch -p tsconfig.json    # rebuild on change
 sweetener expand src/main.sts       # show the expanded TypeScript
 sweetener explain src/main.sts:12:8 # explain what expanded at a position
+sweetener guide                     # print the guide to writing macros
 ```
 
 [SKILL.md](SKILL.md) is a short reference for writing macros: declaring them,
-the pattern forms, and how to read the compiler's diagnostics.
+the pattern forms, and how to read the compiler's diagnostics. `sweetener guide`
+prints it, and `npx @sweetener/cli@alpha guide` does without installing
+anything.
 
 ## Documentation
 

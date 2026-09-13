@@ -6,6 +6,24 @@ import { fileURLToPath } from "node:url";
 export const guideFileName = "SKILL.md";
 
 /**
+ * The directory of the package this module belongs to. Found by looking up
+ * rather than by counting, because the module runs from `dist/src` once built
+ * and from `src` under the test runner.
+ */
+function cliPackageRoot(start: string): string | undefined {
+  for (let directory = start; ; directory = dirname(directory)) {
+    const manifest = join(directory, "package.json");
+    if (existsSync(manifest)) {
+      const { name } = JSON.parse(readFileSync(manifest, "utf8")) as {
+        readonly name?: unknown;
+      };
+      if (name === "@sweetener/cli") return directory;
+    }
+    if (dirname(directory) === directory) return undefined;
+  }
+}
+
+/**
  * Where the guide is, from where this module was loaded.
  *
  * The published package carries a copy of the repository's `SKILL.md` at its
@@ -16,8 +34,8 @@ export const guideFileName = "SKILL.md";
 export function guidePath(
   moduleUrl: string = import.meta.url,
 ): string | undefined {
-  // This module is dist/src/guide.js, two directories below the package root.
-  const packageRoot = join(dirname(fileURLToPath(moduleUrl)), "..", "..");
+  const packageRoot = cliPackageRoot(dirname(fileURLToPath(moduleUrl)));
+  if (packageRoot === undefined) return undefined;
   const packaged = join(packageRoot, guideFileName);
   if (existsSync(packaged)) return packaged;
   const repositoryRoot = join(packageRoot, "..", "..");

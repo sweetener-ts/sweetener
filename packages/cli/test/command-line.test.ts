@@ -40,7 +40,7 @@ describe("sweet-ts command line", () => {
     expect(result.exitCode).toBe(1);
     expect(stdout).toEqual([]);
     expect(stderr.join("")).toContain(
-      "Expected init, check, build, watch, expand, explain, or emit",
+      "Expected init, check, build, watch, expand, explain, emit, or guide",
     );
   });
 
@@ -180,6 +180,27 @@ test("expand and explain accept a project path", () => {
     position: "a.sts:1:1",
     configPath: "sweetener.json",
   });
+});
+
+test("prints the guide, without the front matter meant for agents", () => {
+  expect(parseCliInvocation(["guide"])).toEqual({ command: "guide" });
+  expect(() => parseCliInvocation(["guide", "extra"])).toThrow(
+    /takes no arguments/u,
+  );
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const result = runCli({
+    argv: ["guide"],
+    expansionProvider: { expandProject: () => [] },
+    io: {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    },
+  });
+  expect(stderr).toEqual([]);
+  expect(result.exitCode).toBe(0);
+  expect(stdout.join("")).toMatch(/^# Sweetener\n/u);
+  expect(stdout.join("")).toContain("syntax parameter");
 });
 
 test("asks for help rather than reporting an unknown command", () => {
