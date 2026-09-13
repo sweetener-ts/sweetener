@@ -500,3 +500,149 @@ describe("positions a macro is dispatched in", () => {
     ).toBe("exportinterfaceI{[k:string]:ReadonlyArray<string>;}");
   });
 });
+
+/**
+ * A macro's name is not reserved.
+ *
+ * Racket resolves an identifier and only then asks whether the binding it found
+ * is a transformer, so a nearer ordinary binding shadows a macro rather than
+ * sitting in a space where the two never compete: `(let ([or 5]) or)` is `5`,
+ * and the same holds for core forms. Rhombus says it of its expression space --
+ * a binding there "hides any binding for another space in an enclosing scope".
+ *
+ * Here every binding form failed instead: `const map = 5; return map;` was
+ * dispatched as the macro and reported against the macro's own definition.
+ *
+ * Value and type stay apart because TypeScript keeps them apart, which is the
+ * one place this cannot follow Rhombus: `const list` and `type list` are both
+ * legal and neither shadows the other's macro.
+ */
+describe("an ordinary binding shadows a macro", () => {
+  const definitions = `
+    export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }
+    export syntax list:type { rule { list<$e:type> } => { ReadonlyArray<$e> } }
+  `;
+
+  test("expands where nothing binds the name", () => {
+    const expand = harness(definitions);
+    expect(expand("export const a = twice(1);", "item")).toBe(
+      "exportconsta=[1,1];",
+    );
+  });
+
+  test.each([
+    [
+      "a const in the same block",
+      "export function f() { const twice = 2; return twice; }",
+      "exportfunctionf(){consttwice=2;returntwice;}",
+    ],
+    [
+      "a let",
+      "export function f() { let twice = 2; return twice; }",
+      "exportfunctionf(){lettwice=2;returntwice;}",
+    ],
+    [
+      "a module-level const",
+      "const twice = 2; export const a = twice;",
+      "consttwice=2;exportconsta=twice;",
+    ],
+    [
+      "a parameter",
+      "export const h = (twice: number) => twice;",
+      "exportconsth=(twice:number)=>twice;",
+    ],
+    [
+      "an arrow's bare parameter",
+      "export const h = twice => twice;",
+      "exportconsth=twice=>twice;",
+    ],
+    [
+      "a destructured parameter",
+      "export function f({ twice }: { twice: number }) { return twice; }",
+      "exportfunctionf({twice}:{twice:number}){returntwice;}",
+    ],
+    [
+      "an array-destructured parameter",
+      "export function f([twice]: number[]) { return twice; }",
+      "exportfunctionf([twice]:number[]){returntwice;}",
+    ],
+    [
+      "a method parameter",
+      "export class C { m(twice: number) { return twice; } }",
+      "exportclassC{m(twice:number){returntwice;}}",
+    ],
+    [
+      "a catch binder",
+      "export function f() { try {} catch (twice) { return twice; } }",
+      "exportfunctionf(){try{}catch(twice){returntwice;}}",
+    ],
+    [
+      "a for-of binding",
+      "export function f() { for (const twice of [1]) { return twice; } }",
+      "exportfunctionf(){for(consttwiceof[1]){returntwice;}}",
+    ],
+    [
+      "a shorthand property's name",
+      "export function f() { const twice = 2; return { twice }; }",
+      "exportfunctionf(){consttwice=2;return{twice};}",
+    ],
+    [
+      "an import specifier",
+      'import { twice } from "./other.js"; export const a = twice;',
+      'import{twice}from"./other.js";exportconsta=twice;',
+    ],
+  ])("is shadowed by %s", (_, source, expected) => {
+    const expand = harness(definitions);
+    expect(expand(source, "item")).toBe(expected);
+  });
+
+  /** A parameter belongs to the region its function opens, not the one around it. */
+  test("a parameter does not reach the rest of the file", () => {
+    const expand = harness(definitions);
+    expect(
+      expand(
+        "export const h = (twice: number) => twice;\nexport const a = twice(1);",
+        "item",
+      ),
+    ).toBe("exportconsth=(twice:number)=>twice;exportconsta=[1,1];");
+  });
+
+  test("a binding in one block does not reach a sibling", () => {
+    const expand = harness(definitions);
+    expect(
+      expand(
+        "export function f() { const twice = 2; return twice; }\nexport function g() { return twice(1); }",
+        "item",
+      ),
+    ).toBe(
+      "exportfunctionf(){consttwice=2;returntwice;}exportfunctiong(){return[1,1];}",
+    );
+  });
+
+  test("a value binding does not shadow a type macro", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("const list = 1; export type A = list<string>;", "item"),
+    ).toBe("constlist=1;exporttypeA=ReadonlyArray<string>;");
+  });
+
+  test("a type binding does not shadow an expression macro", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("type twice = number; export const a = twice(1);", "item"),
+    ).toBe("typetwice=number;exportconsta=[1,1];");
+  });
+
+  test("a type binding shadows a type macro", () => {
+    const expand = harness(definitions);
+    expect(expand("type list = number; export type A = list;", "item")).toBe(
+      "typelist=number;exporttypeA=list;",
+    );
+  });
+
+  /** `type A = name;` reads a type, so no expression macro is looked up there. */
+  test("does not dispatch an expression macro in a type alias", () => {
+    const expand = harness(definitions);
+    expect(expand("export type A = twice;", "item")).toBe("exporttypeA=twice;");
+  });
+});

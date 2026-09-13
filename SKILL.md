@@ -165,3 +165,8 @@ Other commands:
   than guessing.
 - Macros run at compile time only, and cannot call host functions or inspect
   runtime values.
+- **An ordinary binding shadows a macro**, as it does in Racket. A `const`, a
+  parameter, a `catch` binder or a `for`-`of` binding of a macro's name means
+  that name is the binding, not the macro, for as long as the binding is in
+  scope. Value and type stay apart: a `const list` does not shadow a `:type`
+  macro named `list`.

@@ -479,7 +479,19 @@ export function expandMacroSyntax(
     )
       return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
-    if (previous.raw !== "=") return false;
+    return typeAliasInitializerFollows(preceding);
+  };
+
+  /**
+   * Whether the next node stands after the `=` of a type alias. Only that `=`
+   * introduces a type; `=>` does so in a function type and opens an arrow's
+   * body in an expression, so the two cannot share one test.
+   */
+  const typeAliasInitializerFollows = (
+    preceding: readonly Syntax[],
+  ): boolean => {
+    const previous = preceding.at(-1);
+    if (previous?.tag !== "token" || previous.raw !== "=") return false;
     for (let at = preceding.length - 2; at >= 0; at -= 1) {
       const node = preceding[at]!;
       if (node.tag !== "token") return false;
@@ -664,6 +676,179 @@ export function expandMacroSyntax(
       : inherited;
   };
 
+  /**
+   * What a region of source binds, by namespace.
+   *
+   * A macro's name is not reserved. Racket resolves an identifier and only then
+   * asks whether the binding it found is a transformer, so a nearer ordinary
+   * binding shadows a macro rather than sitting in a space of its own where the
+   * two can never compete -- `(let ([or 5]) or)` is `5`, and shadowing reaches
+   * core forms too. Rhombus says the same of its expression space: a binding
+   * there "hides any binding for another space in an enclosing scope".
+   *
+   * Resolution here is a module-table lookup rather than a scope-set walk, so
+   * the equivalent rule is applied by recording what each region binds and
+   * asking before a macro is dispatched. Value and type are kept apart because
+   * TypeScript keeps them apart: `const map` and `type map` are both legal and
+   * neither shadows the other's macro.
+   */
+  interface RegionBindings {
+    readonly values: ReadonlySet<string>;
+    readonly types: ReadonlySet<string>;
+  }
+
+  /** Splits a binding list on the commas that separate its entries. */
+  const bindingSegments = (
+    sequence: readonly Syntax[],
+  ): readonly SyntaxSequence[] => {
+    const segments: SyntaxSequence[] = [];
+    let segment: Syntax[] = [];
+    for (const node of sequence) {
+      if (node.tag === "token" && node.raw === ",") {
+        if (segment.length > 0) segments.push(createSyntaxSequence(segment));
+        segment = [];
+        continue;
+      }
+      segment.push(node);
+    }
+    if (segment.length > 0) segments.push(createSyntaxSequence(segment));
+    return segments;
+  };
+
+  const valueDeclarationKeywords = new Set(["const", "let", "var", "using"]);
+  /** Declares a name in the value namespace, the type namespace, or both. */
+  const namedDeclarations = new Map<string, "value" | "type" | "both">([
+    ["function", "value"],
+    ["class", "both"],
+    ["enum", "both"],
+    ["interface", "type"],
+    ["type", "type"],
+    ["namespace", "both"],
+    ["module", "both"],
+  ]);
+
+  const regionBindings = (sequence: SyntaxSequence): RegionBindings => {
+    const extract = options.extractBindings;
+    const values = new Set<string>();
+    const types = new Set<string>();
+    if (extract === undefined) return Object.freeze({ values, types });
+    const addBinders = (
+      entries: readonly SyntaxSequence[],
+      into: Set<string>,
+    ): void => {
+      for (const entry of entries) {
+        for (const name of extract(entry)) into.add(name.spelling);
+      }
+    };
+    /**
+     * A statement list's entries arrive protected, so the declarations in them
+     * are one level down. A brace is never entered: what it binds belongs to
+     * the region it opens, not to this one.
+     */
+    const collect = (
+      nodes: readonly Syntax[],
+      inImport: boolean,
+      // True once a statement or item node has been entered. What a
+      // declaration binds belongs to the region around it, but what its
+      // parameters and loop head bind belongs to the region it opens, and that
+      // region is walked separately. Without this a parameter leaked into the
+      // module and shadowed the macro for the whole file.
+      nested: boolean,
+    ): void => {
+      for (let at = 0; at < nodes.length; at += 1) {
+        const node = nodes[at]!;
+        if (node.tag === "protected") {
+          collect(node.children, inImport, true);
+          continue;
+        }
+        if (node.tag === "group") {
+          if (nested && node.delimiter === "parenthesis") continue;
+          if (inImport && node.delimiter === "brace") {
+            // `import { a, b as c }` binds the local name of each specifier.
+            for (const segment of bindingSegments(node.children)) {
+              const local = segment.at(-1);
+              if (local?.tag === "token" && local.kind === "identifier")
+                values.add(local.raw);
+            }
+            continue;
+          }
+          if (node.delimiter !== "parenthesis") continue;
+          if (bindsParameters(node, nodes[at + 1], nodes.slice(0, at)))
+            addBinders(bindingSegments(node.children), values);
+          else collect(node.children, false, nested);
+          continue;
+        }
+        if (node.tag !== "token") continue;
+        if (valueDeclarationKeywords.has(node.raw)) {
+          addBinders(bindingSegments(nodes.slice(at + 1)), values);
+          continue;
+        }
+        const named = namedDeclarations.get(node.raw);
+        if (named !== undefined) {
+          const name = nodes[at + 1];
+          if (name?.tag === "token" && name.kind === "identifier") {
+            if (named !== "type") values.add(name.raw);
+            if (named !== "value") types.add(name.raw);
+          }
+          continue;
+        }
+        if (node.raw === "import") {
+          collect(nodes.slice(at + 1), true, nested);
+          return;
+        }
+        // An arrow's single parameter is written without parentheses.
+        const following = nodes[at + 1];
+        if (
+          node.kind === "identifier" &&
+          following?.tag === "token" &&
+          following.raw === "=>"
+        )
+          values.add(node.raw);
+      }
+    };
+    collect(sequence, false, false);
+    return Object.freeze({ values, types });
+  };
+
+  /**
+   * Whether a parenthesis group holds names being bound rather than an
+   * expression: a parameter list, or what a `catch` binds.
+   */
+  const bindsParameters = (
+    node: Syntax,
+    following: Syntax | undefined,
+    preceding: readonly Syntax[],
+  ): boolean => {
+    if (node.tag !== "group" || node.delimiter !== "parenthesis") return false;
+    if (catchBinderFollows(preceding)) return true;
+    // A control-flow header is not a parameter list, though it is followed by a
+    // body like one. What a `for` binds is written with a keyword inside it, so
+    // it is found by reading the header rather than by reading its entries.
+    const previous = preceding.at(-1);
+    if (
+      previous?.tag === "token" &&
+      ["for", "while", "if", "switch", "with"].includes(previous.raw)
+    )
+      return false;
+    // The body may already have been enforested, in which case it arrives
+    // protected rather than as the brace it was read from.
+    if (following?.tag === "group" && following.delimiter === "brace")
+      return true;
+    if (following?.tag === "protected") return true;
+    if (following?.tag !== "token") return false;
+    return following.raw === "=>" || following.raw === ":";
+  };
+
+  /** Regions enclosing the position being walked, outermost first. */
+  const regions: RegionBindings[] = [];
+
+  const shadowsMacro = (spelling: string, category: SyntaxCategory): boolean =>
+    regions.some((region) =>
+      category === "type"
+        ? region.types.has(spelling)
+        : region.values.has(spelling),
+    );
+
   const visit = (
     initialInput: SyntaxSequence,
     environment: BindingEnvironment,
@@ -678,6 +863,7 @@ export function expandMacroSyntax(
     readonly environment: BindingEnvironment;
   } => {
     let input = initialInput;
+    regions.push(regionBindings(initialInput));
     const output: Syntax[] = [];
     let currentEnvironment = environment;
     let index = 0;
@@ -791,6 +977,7 @@ export function expandMacroSyntax(
         // which it was written. Without this, a captured function body inside
         // `#core(function ... $body)` can only see macros imported by the
         // function-shadow definition, not macros imported at its call site.
+        if (shadowsMacro(spelling, category)) return undefined;
         const lookupModule =
           positionSourceId !== undefined &&
           positionSourceId === options.sourceId &&
@@ -935,9 +1122,14 @@ export function expandMacroSyntax(
         resolvedMacro === undefined &&
         node.tag === "token" &&
         category !== "expr" &&
-        (initializerFollows(output) ||
-          expressionRegion ||
-          classHeritageFollows(output))
+        // What a class extends is an expression even though `extends` also
+        // introduces a type elsewhere. Otherwise the `=` of a type alias
+        // introduces a type, so an expression macro is not looked up after it:
+        // without that, `type A = name;` dispatched an expression macro
+        // spelled `name`.
+        (classHeritageFollows(output) ||
+          (!typeAliasInitializerFollows(output) &&
+            (initializerFollows(output) || expressionRegion)))
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -1764,6 +1956,7 @@ export function expandMacroSyntax(
       }
       index += 1;
     }
+    regions.pop();
     return Object.freeze({
       syntax: createSyntaxSequence(output),
       environment: currentEnvironment,

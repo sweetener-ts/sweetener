@@ -142,6 +142,21 @@ Given identifier `i`, environment `E`, phase `p`, and space `s`:
 Environment lexical position filters candidates before this algorithm. A binding
 outside its declaration region cannot participate even if scopes match.
 
+A macro's name is not reserved. Racket resolves an identifier and only then asks
+whether the binding it found denotes a transformer, so an ordinary binding
+shadows a macro rather than sitting in a space where the two never compete:
+`(let ([or 5]) or)` is `5`, and shadowing reaches core forms. Rhombus states the
+same of its expression space -- a binding there "hides any binding for another
+space in an enclosing scope".
+
+Macro resolution here is a module-table lookup rather than a walk of this
+algorithm, so the equivalent rule is applied separately: the expander records
+what each region of source binds, and a macro is not dispatched for a spelling
+an enclosing region binds. Value and type are kept apart, because TypeScript
+keeps them apart -- `const list` and `type list` are both legal, and neither
+shadows the other's macro. That is the one point where this cannot follow
+Rhombus, whose expression space hides every other space.
+
 Resolution MUST produce the same result regardless of insertion order.
 
 ## 7. Macro invocation scopes
