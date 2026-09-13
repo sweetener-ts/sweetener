@@ -1,10 +1,17 @@
-name: Deploy playground
+name: Deploy site
+
+# The homepage and playground are built here and published to the root of
+# https://sweetener-ts.github.io, which is served from the
+# sweetener-ts/sweetener-ts.github.io repository. PAGES_DEPLOY_KEY is a deploy
+# key with write access to that repository and nothing else.
 
 on:
   push:
     branches: [main]
     paths:
+      - ".github/pages/**"
       - ".github/workflows/pages.yml"
+      - "examples/library-macros/**"
       - "fixtures/acceptance/playground/**"
       - "packages/**"
       - "playground/**"
@@ -15,8 +22,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -26,7 +31,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: https://sweetener-ts.github.io/
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,17 +42,34 @@ jobs:
         with:
           node-version: 24.18.1
           cache: pnpm
-      - uses: actions/configure-pages@v5
       - run: pnpm install --frozen-lockfile
       - name: Build workspace packages
         run: pnpm build
       - name: Build playground
         run: pnpm playground:build
         env:
-          PLAYGROUND_BASE_PATH: /sweetener/
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: playground/dist
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          PLAYGROUND_BASE_PATH: /
+      - name: Assemble the site
+        run: |
+          cp -R .github/pages/. playground/dist/
+          # Serve the files as built rather than through Jekyll.
+          touch playground/dist/.nojekyll
+      - name: Publish to sweetener-ts.github.io
+        env:
+          PAGES_DEPLOY_KEY: ${{ secrets.PAGES_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PAGES_DEPLOY_KEY" > ~/.ssh/pages_deploy_key
+          chmod 600 ~/.ssh/pages_deploy_key
+          # GitHub's published host key, pinned rather than trusted on first use.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/pages_deploy_key -o IdentitiesOnly=yes"
+          cd playground/dist
+          # The site repository holds only the latest build, one commit that
+          # names the source commit it was built from.
+          git init -q -b main
+          git add -A
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Publish sweetener-ts/sweetener@${GITHUB_SHA}"
+          git push --force git@github.com:sweetener-ts/sweetener-ts.github.io.git main

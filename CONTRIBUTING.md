@@ -8,7 +8,7 @@ pnpm build
 pnpm test
 ```
 
-Run the [browser playground](https://sweetener-ts.github.io/sweetener/) locally:
+Run the [browser playground](https://sweetener-ts.github.io/) locally:
 
 ```bash
 pnpm playground
@@ -26,7 +26,7 @@ It formats, lints, type-checks, runs the unit suite, enforces the package
 boundaries and the declarative acceptance boundary, validates the acceptance
 ledger and the release specification, scaffolds a project and builds it, runs
 the external sample projects, builds every example and the
-[playground](https://sweetener-ts.github.io/sweetener/), stages
+[playground](https://sweetener-ts.github.io/), stages
 and verifies the alpha release, and regenerates the status snapshot.
 
 Check two things before you trust a red result:

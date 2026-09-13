@@ -7,7 +7,7 @@ type checking, declaration generation, JavaScript emission, and editor
 semantics. Your `.sts` and `.stsx` files expand into ordinary TypeScript, and
 source maps and expansion traces connect the result back to what you wrote.
 
-[Try the playground](https://sweetener-ts.github.io/sweetener/). It runs the
+[Try the playground](https://sweetener-ts.github.io/). It runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
 > Sweetener is alpha. Packages go out under the `alpha` dist-tag. These are the
@@ -133,7 +133,7 @@ main.sts:4:3 TS4001: No rule for macro cond accepted this input: expected `else`
   cond.sts:2:17 The closest rule was still expecting syntax here
 ```
 
-The [playground](https://sweetener-ts.github.io/sweetener/) carries eleven more,
+The [playground](https://sweetener-ts.github.io/) carries eleven more,
 including sum types with an exhaustive match, structural pattern matching with
 no runtime behind it, signals, records that generate declarations, and macros
 written against Effect and zod. The same
@@ -267,7 +267,7 @@ the pattern forms, and how to read the compiler's diagnostics.
 
 ## Project status
 
-The compiler, CLI, [browser playground](https://sweetener-ts.github.io/sweetener/), TypeScript host,
+The compiler, CLI, [browser playground](https://sweetener-ts.github.io/), TypeScript host,
 language-service mapping, integrations, and compatibility checks are
 implemented and tested.
 Every documented host is verified by installing the packed tarballs into a
