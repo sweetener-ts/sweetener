@@ -257,6 +257,13 @@ try {
           problems.push(
             `the packed command printed unexpected expansion: ${JSON.stringify(printed)}`,
           );
+        // The guide is copied in when the release is staged, so only the
+        // packed command shows whether it arrived.
+        const guide = run(["guide"]);
+        if (!guide.includes("# Sweetener"))
+          problems.push(
+            `the packed command printed no guide: ${JSON.stringify(guide.slice(0, 200))}`,
+          );
         run(["emit", "macros.sts", "main.sts", "--out-dir", ".sweetener"]);
         const emitted = await readFile(
           join(directory, ".sweetener", "main.ts"),

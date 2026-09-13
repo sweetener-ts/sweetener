@@ -261,6 +261,12 @@ class Parser {
         next: index + 3,
       };
     }
+    // `syntax parameter name:category` declares a syntax parameter. A macro may
+    // itself be named `parameter`, which is written `syntax parameter:category`,
+    // so the word only introduces a parameter when a name follows it.
+    const parameter =
+      token(nodes[index], "parameter") && !token(nodes[index + 1], ":");
+    if (parameter) index += 1;
     const nameSyntax = nodes[index];
     const nameGroup = group(nameSyntax, "parenthesis") ? nameSyntax : undefined;
     const nameIsWord = word(nameSyntax);
@@ -291,6 +297,29 @@ class Parser {
       token(nodes[index], "shadows") && token(nodes[index + 1], "core");
     if (shadowsCore) index += 2;
     const body = nodes[index];
+    // A syntax parameter needs no rules: without them it means nothing outside
+    // a `#parameterize`, and using it there is reported.
+    if (parameter && !group(body, "brace")) {
+      const terminated = token(body, ";");
+      return {
+        definition: frozen({
+          kind: "syntax",
+          id: this.#definitionIds.allocate(),
+          origin: nodes[start - 1]?.origin ?? (nameSyntax as Syntax).origin,
+          exported,
+          recursive,
+          parameter,
+          name,
+          category,
+          shadowsCore,
+          rules: Object.freeze([]),
+          clauses: Object.freeze([]),
+          body: undefined,
+          end: terminated ? body : categoryNode,
+        }),
+        next: terminated ? index + 1 : index,
+      };
+    }
     if (!group(body, "brace")) {
       this.#expected(body ?? categoryNode, "macro definition body");
       return undefined;
@@ -303,12 +332,14 @@ class Parser {
         origin: nodes[start - 1]?.origin ?? (nameSyntax as Syntax).origin,
         exported,
         recursive,
+        parameter,
         name,
         category,
         shadowsCore,
         rules: parsed.rules,
         clauses: parsed.clauses,
         body,
+        end: body,
       }),
       next: index + 1,
     };
@@ -644,6 +675,24 @@ class Parser {
               });
         alternatives.at(-1)?.push(repeated);
         index = quantifierIndex + 1;
+        continue;
+      }
+      // `$$name` matches the identifier `$name`, as it writes one in a
+      // template: a leading `$$` stands for one `$`.
+      if (
+        token(current) &&
+        (current.kind === "identifier" || current.kind === "jsx-identifier") &&
+        current.raw.startsWith("$$")
+      ) {
+        alternatives
+          .at(-1)
+          ?.push(
+            createLiteralPattern(
+              current.origin,
+              createTokenLiteralKey(current.kind, current.raw.slice(1)),
+            ),
+          );
+        index += 1;
         continue;
       }
       if (

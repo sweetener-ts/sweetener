@@ -1,10 +1,12 @@
 import { EnforestationError } from "./enforestation-error.js";
 import {
   expansionDiagnosticRegistry,
+  unexpandedOperatorCode,
   unreadableItemCode,
 } from "./diagnostics.js";
 import {
   bindingMacroResolver,
+  coreExpressionOperators,
   createBindingConsumer,
   createJsxChildConsumer,
   createClassElementConsumer,
@@ -69,7 +71,7 @@ import {
   type ExpandMacroSyntaxResult,
 } from "./recursive-expander.js";
 import type { ExpansionGuard } from "./progress.js";
-import { isCoreForm } from "./core-shadowing.js";
+import { coreFormKind, isCoreForm } from "./core-shadowing.js";
 import type { CoreDispatchTrace } from "./core-shadowing.js";
 
 export interface CreateExpansionFrontendSessionOptions {
@@ -118,20 +120,28 @@ export interface CreateExpansionFrontendSessionOptions {
   readonly allocateInvocationId: () => InvocationId;
 }
 
+/**
+ * The text of syntax for a diagnostic, spaced where the source spaced it. The
+ * scanner splits punctuation it does not know, so joining every token with a
+ * space reported an operator written `|>` as `| >`.
+ */
 function diagnosticSyntaxText(syntax: readonly Syntax[]): string {
-  const parts: string[] = [];
+  let text = "";
+  const write = (token: Syntax & { readonly tag: "token" }): void => {
+    if (text.length > 0 && token.leadingTrivia.length > 0) text += " ";
+    text += token.raw;
+  };
   const visit = (node: Syntax): void => {
     if (node.tag === "token") {
-      parts.push(node.raw);
+      write(node);
       return;
     }
-    if (node.tag === "group") parts.push(node.open.raw);
+    if (node.tag === "group") write(node.open);
     for (const child of node.children) visit(child);
-    if (node.tag === "group" && node.close.tag === "token")
-      parts.push(node.close.raw);
+    if (node.tag === "group" && node.close.tag === "token") write(node.close);
   };
   for (const node of syntax) visit(node);
-  return parts.join(" ");
+  return text;
 }
 
 export interface ExpansionFrontendSession {
@@ -156,6 +166,8 @@ export function createExpansionFrontendSession(
     throw new RangeError("Expansion frontend requires at least one module");
   const expansionStore = new ExpansionEnvironmentStore();
   const operatorTraces: MacroTraceEvent[] = [];
+  /** Operator tokens offered to their rules while an expression was read. */
+  const offeredOperatorTokens = new Set<OriginId>();
   const operatorDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
     [];
   /**
@@ -258,7 +270,8 @@ export function createExpansionFrontendSession(
       }) === false
     )
       return undefined;
-    if (!isCoreForm(spelling, category)) return selected;
+    if (!isCoreForm(spelling, category, coreFormKind(selected.binding)))
+      return selected;
     const local = lexicalModule.macros.some(
       ({ binding }) => binding.id === selected.binding.id,
     );
@@ -267,7 +280,7 @@ export function createExpansionFrontendSession(
         ({ definition, macro }) =>
           macro.binding.id === selected.binding.id &&
           definition.shadowsCore &&
-          isCoreForm(spelling, category),
+          isCoreForm(spelling, category, coreFormKind(selected.binding)),
       )
         ? selected
         : undefined;
@@ -282,7 +295,8 @@ export function createExpansionFrontendSession(
     lexicalModule: CompileParsedMacrosResult,
     spelling: string,
   ): CoreDispatchTrace | undefined => {
-    if (!isCoreForm(spelling, macro.category)) return undefined;
+    if (!isCoreForm(spelling, macro.category, coreFormKind(macro.binding)))
+      return undefined;
     const local = lexicalModule.macros.some(
       ({ binding }) => binding.id === macro.binding.id,
     );
@@ -327,7 +341,11 @@ export function createExpansionFrontendSession(
     for (const { definition, macro } of lexicalModule.definitions)
       if (
         definition.shadowsCore &&
-        isCoreForm(macro.binding.spelling, macro.category)
+        isCoreForm(
+          macro.binding.spelling,
+          macro.category,
+          coreFormKind(macro.binding),
+        )
       )
         visibleOperatorBindings.add(macro.binding.id);
     const authorizedImportedCore =
@@ -356,19 +374,35 @@ export function createExpansionFrontendSession(
           ({ definition, macro }) =>
             macro.binding.id === operatorBinding &&
             definition.shadowsCore &&
-            isCoreForm(macro.binding.spelling, macro.category),
+            isCoreForm(
+              macro.binding.spelling,
+              macro.category,
+              coreFormKind(macro.binding),
+            ),
         ),
       visible: (operator, cursor) => {
         const macro = modules
           .flatMap(({ macros }) => macros)
           .find(({ binding }) => binding.id === operator.binding);
+        const written = cursor.peek();
+        // Definition order is a comparison of offsets in one file. Without the
+        // source of the operator's token, an operator a template writes was
+        // compared at its call-site offset against its definition's offset in
+        // the module that defines it, and read as used above its definition --
+        // so a macro could not expand to an operator its call site had not
+        // imported.
+        const positionSourceId =
+          written === undefined
+            ? undefined
+            : options.origins.selectPrimarySource(written.origin)?.sourceId;
         return (
           macro !== undefined &&
           options.isMacroVisible?.({
             lexicalModule,
             spelling: operator.spelling,
             macro,
-            position: cursor.peek()?.span.start ?? Number.POSITIVE_INFINITY,
+            position: written?.span.start ?? Number.POSITIVE_INFINITY,
+            ...(positionSourceId === undefined ? {} : { positionSourceId }),
           }) !== false
         );
       },
@@ -378,6 +412,8 @@ export function createExpansionFrontendSession(
           operator.fixity,
           true,
         );
+        for (const token of input.operator)
+          offeredOperatorTokens.add(token.origin);
         const consumeClass = classConsumerByBinding.get(macro.binding.id);
         if (consumeClass === undefined)
           throw new Error("operator syntax-class consumer is not initialized");
@@ -485,6 +521,13 @@ export function createExpansionFrontendSession(
   // which would otherwise cut an invocation that contains one in half.
   const typeConsumers = createTypeConsumers({
     ...shared,
+    // A type macro standing in a typed capture is measured by its own rule.
+    // Without this, only one shaped like a generic type (`list<string>`) read
+    // through; `wrap { string }` stopped at its brace.
+    resolveMacro: (category, cursor, context) =>
+      category === "classElement"
+        ? undefined
+        : extentResolver(category, cursor, context),
     resolveTypeMemberMacro: extentResolver,
   });
   const type = typeConsumers.type;
@@ -791,17 +834,8 @@ export function createExpansionFrontendSession(
     // An invocation that failed to expand for a reason expansion already
     // described — no rule matched, say — is not a silent miscompile, and
     // saying so twice helps nobody. Only speak where nothing else did.
-    const described = ({
-      sourceId,
-      start,
-      end,
-    }: ReturnType<typeof originOfSyntax>) =>
-      reportedAlready.some(
-        (diagnostic) =>
-          diagnostic.primaryOrigin.sourceId === sourceId &&
-          diagnostic.primaryOrigin.start <= end &&
-          diagnostic.primaryOrigin.end >= start,
-      );
+    const described = (origin: ReturnType<typeof originOfSyntax>) =>
+      reportedAlready.some((diagnostic) => mentions(diagnostic, origin));
     const visit = (node: Syntax): void => {
       if (node.tag === "token") {
         if (recoveredMacroNames.get(node.origin) !== node.raw) return;
@@ -821,6 +855,91 @@ export function createExpansionFrontendSession(
     };
     for (const node of syntax) visit(node);
   };
+
+  /**
+   * A custom operator is expanded while the expression around it is read, so
+   * an expression that cannot be read never offers it its operands, and the
+   * statement holding it is passed through as written. Its spelling is not
+   * TypeScript's, and nothing said so: `1 |> ;` reached the host compiler as
+   * `1 | > ;`, which reported an expression expected rather than anything about
+   * the operator. Any operator of this file's still standing in the output is
+   * reported where it was written, unless expansion already said why.
+   */
+  const reportUnexpandedOperators = (
+    syntax: SyntaxSequence,
+    offered: ReadonlySet<Syntax["origin"]>,
+    reportedAlready: readonly ExpandMacroSyntaxResult["diagnostics"][number][],
+  ): void => {
+    const visible = new Set([
+      ...options.module.macros.map(({ binding }) => binding.id),
+      ...[...(options.importedBindings?.values() ?? [])].map(
+        ({ binding }) => binding.id,
+      ),
+    ]);
+    const coreSpellings = new Set(
+      coreExpressionOperators.map(({ spelling }) => spelling),
+    );
+    const spellings = [
+      ...new Set(
+        modules
+          .flatMap(({ operators }) => operators)
+          .filter(
+            ({ binding, spelling }) =>
+              visible.has(binding) && !coreSpellings.has(spelling),
+          )
+          .map(({ spelling }) => spelling),
+      ),
+    ].sort((left, right) => right.length - left.length);
+    if (spellings.length === 0) return;
+    const described = (origin: ReturnType<typeof originOfSyntax>) =>
+      reportedAlready.some((diagnostic) => mentions(diagnostic, origin));
+    const visitRun = (children: readonly Syntax[]): void => {
+      for (let at = 0; at < children.length; at += 1) {
+        const node = children[at]!;
+        if (node.tag !== "token") {
+          if ("children" in node) visitRun(node.children as readonly Syntax[]);
+          continue;
+        }
+        const spelling = spellings.find(
+          (candidate) => operatorWidthAt(children, at, candidate) !== undefined,
+        );
+        if (spelling === undefined) continue;
+        const width = operatorWidthAt(children, at, spelling)!;
+        const origin = originOfSyntax(node);
+        // An operator that was offered its input and taken by no rule has a
+        // diagnostic saying so already, reported from wherever its invocation
+        // began -- a statement operator's is the head of its statement.
+        if (!offered.has(node.origin) && !described(origin))
+          recoveryDiagnostics.push(
+            expansionDiagnosticRegistry.create(unexpandedOperatorCode, {
+              primaryOrigin: origin,
+              messageArguments: [spelling],
+            }),
+          );
+        at += width - 1;
+      }
+    };
+    visitRun(syntax);
+  };
+
+  /**
+   * Whether a diagnostic already speaks about a position. A macro no rule
+   * accepted is reported where its closest rule stopped, which may be well
+   * past the name, and names the invocation itself as a related location.
+   */
+  const mentions = (
+    diagnostic: ExpandMacroSyntaxResult["diagnostics"][number],
+    { sourceId, start, end }: ReturnType<typeof originOfSyntax>,
+  ): boolean =>
+    [
+      diagnostic.primaryOrigin,
+      ...(diagnostic.relatedOrigins ?? []).map(({ origin }) => origin),
+    ].some(
+      (origin) =>
+        origin.sourceId === sourceId &&
+        origin.start <= end &&
+        origin.end >= start,
+    );
 
   const originOfSyntax = (node: Syntax) => {
     const selected = options.origins.selectPrimarySource(node.origin);
@@ -954,6 +1073,7 @@ export function createExpansionFrontendSession(
       category: SyntaxCategory = "item",
     ): ExpandMacroSyntaxResult => {
       operatorTraces.length = 0;
+      offeredOperatorTokens.clear();
       operatorDiagnostics.length = 0;
       recoveryDiagnostics.length = 0;
       recoveredMacroNames.clear();
@@ -1168,6 +1288,11 @@ export function createExpansionFrontendSession(
         ...operatorDiagnostics,
         ...result.diagnostics,
       ]);
+      reportUnexpandedOperators(
+        result.syntax,
+        new Set([...result.offeredOperators, ...offeredOperatorTokens]),
+        [...operatorDiagnostics, ...recoveryDiagnostics, ...result.diagnostics],
+      );
       const diagnosticKeys = new Set<string>();
       const uniqueDiagnostics = [
         ...operatorDiagnostics,

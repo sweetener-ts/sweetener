@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import {
   compileParsedMacros,
+  coreFormKind,
   createExpansionFrontendSession,
   ExpansionGuard,
   expansionDiagnosticRegistry,
@@ -238,7 +239,8 @@ function definitionRanges(
 ) {
   const ranges: { start: number; end: number }[] = [];
   for (const definition of parsed.definitions) {
-    const bodyIndex = root.children.indexOf(definition.body);
+    const end = definition.kind === "syntax" ? definition.end : definition.body;
+    const bodyIndex = root.children.indexOf(end);
     if (bodyIndex < 0) continue;
     const definitionStart = origins.selectPrimarySource(definition.origin)?.span
       .start;
@@ -257,7 +259,7 @@ function definitionRanges(
     }
     ranges.push({
       start: root.children[startIndex]!.span.start,
-      end: definition.body.span.end,
+      end: end.span.end,
     });
   }
   return ranges;
@@ -1150,8 +1152,10 @@ export class DefaultProjectExpansionProvider
         new Map(
           moduleFile.compiled.definitions.map(({ definition, macro }) => [
             `${macro.binding.spelling}|${String(macro.binding.id)}`,
-            definition.kind === "syntax" && definition.recursive
-              ? definition.body.span.start
+            definition.kind === "syntax"
+              ? definition.recursive && definition.body !== undefined
+                ? definition.body.span.start
+                : definition.end.span.end
               : definition.body.span.end,
           ]),
         ),
@@ -1276,11 +1280,19 @@ export class DefaultProjectExpansionProvider
             )?.definition;
             if (
               sourceImport?.shadowsCore &&
-              isCoreForm(binding.local, macro.category)
+              isCoreForm(
+                binding.local,
+                macro.category,
+                coreFormKind(macro.binding),
+              )
             ) {
               const definitionAuthorized =
                 definition?.shadowsCore === true &&
-                isCoreForm(macro.binding.spelling, macro.category);
+                isCoreForm(
+                  macro.binding.spelling,
+                  macro.category,
+                  coreFormKind(macro.binding),
+                );
               if (!definitionAuthorized)
                 diagnostics.push(
                   expansionDiagnosticRegistry.create(

@@ -21,13 +21,26 @@ export syntax class Comparison {
   expect "a comparison: ==, !=, <, <=, > or >=";
 }
 
-// `and` is a word rather than `&&`, so each side stays a whole comparison:
-// `&&` binds looser than `==` but tighter than `? :`, and a value written after
-// `==` would otherwise read the rest of the condition as part of itself.
+// A comparison, or a condition in parentheses.
+export syntax class Term {
+  fields { comparison: Comparison?; group: Condition?; }
+  rule { $comparison:Comparison }
+  rule { ($group:Condition) }
+}
+
+// `and` and `or` are words rather than `&&` and `||`, so each side stays a
+// whole comparison: `&&` binds looser than `==` but tighter than `? :`, and a
+// value written after `==` would otherwise read the rest of the condition as
+// part of itself. `and` binds tighter than `or`, as it does in SQL.
+export syntax class Conjunction {
+  fields { terms: Term*; }
+  rule { $($terms:Term) and + }
+}
+
 export syntax class Condition {
-  fields { comparisons: Comparison*; }
-  rule { $($comparisons:Comparison) and + }
-  expect "comparisons joined by `and`";
+  fields { conjunctions: Conjunction*; }
+  rule { $($conjunctions:Conjunction) or + }
+  expect "comparisons joined by `and` and `or`";
 }
 
 export syntax compare:expr {
@@ -38,6 +51,31 @@ export syntax compare:expr {
         #else { #if(present $comparison.lte) { lte($comparison.left, $comparison.lte) }
           #else { #if(present $comparison.gt) { gt($comparison.left, $comparison.gt) }
             #else { gte($comparison.left, $comparison.gte) } } } } }
+  }
+}
+
+// A condition as Drizzle's `or` of `and`s. One side on its own needs neither.
+export syntax condition:expr {
+  rule { condition($($conjunctions:Conjunction) or +) }
+  refine $conjunctions length equal 1
+  => { $(conjunction($conjunctions))* }
+  rule { condition($($conjunctions:Conjunction) or +) } => {
+    or($(conjunction($conjunctions)),*)
+  }
+}
+
+export syntax conjunction:expr {
+  rule { conjunction($($terms:Term) and +) }
+  refine $terms length equal 1
+  => { $(term($terms))* }
+  rule { conjunction($($terms:Term) and +) } => { and($(term($terms)),*) }
+}
+
+// A comparison, or a parenthesized condition in its place.
+export syntax term:expr {
+  rule { term($term:Term) } => {
+    #if(present $term.comparison) { compare($term.comparison) }
+    #else { condition($term.group) }
   }
 }
 
@@ -89,8 +127,8 @@ export syntax query:expr {
   => {
     $database.select($shape).from($table)
     $(#if(present $joins.left) { .leftJoin } #else { .innerJoin }
-      ($joins.table, and($(compare($joins.on.comparisons)),*)))*
-    $(.where(and($(compare($filter.condition.comparisons)),*)))*
+      ($joins.table, condition($joins.on)))*
+    $(.where(condition($filter.condition)))*
     $(.orderBy($(#if(present $ordering.orders.descending) {
             desc($ordering.orders.column)
           } #else { asc($ordering.orders.column) }),*))*

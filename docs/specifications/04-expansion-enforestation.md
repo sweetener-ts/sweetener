@@ -87,7 +87,17 @@ expandOne(cursor, category, context):
 Core-form shadowing changes lookup priority for a binding marked `shadows core`.
 Without that marker, reserved built-in forms dispatch before ordinary macro
 bindings. Punctuation operators use the operator table rather than core-form
-dispatch.
+dispatch. Which core forms a binding meets depends on where it is dispatched:
+an operator stands beside or between operands, where every core operator of its
+spelling does; a macro heads an operand, so in an expression it meets only the
+core forms that head one. A macro named `%` therefore needs no authorization,
+since remainder is never written where an operand begins.
+
+Syntax resolves macros against the module it was written in, identified by the
+module scope its tokens carry. A template's tokens keep the scope of the module
+defining the template, so a helper macro or operator a template uses expands
+whether or not the call site imports it, including in the replacement of an
+operator, which is produced while the call site is read.
 
 `#core(...)` suppresses macro dispatch only for the first syntactic head in its
 body (after item prefixes such as `export`). It does not make the resulting form
@@ -286,3 +296,47 @@ Write full token-to-output traces for:
 - ADT declaration followed by a match expression;
 - a `method` declaration that generates an invocation macro;
 - a local core-shadowing `function` macro.
+
+## 15. Syntax parameters
+
+A syntax parameter is a macro binding whose meaning a template adjusts for the
+syntax it wraps, after Racket's `define-syntax-parameter` and
+`syntax-parameterize`. It is declared with `syntax parameter` and imported like
+any macro.
+
+```text
+export syntax parameter (%):expr;
+
+export operator (|>):expr {
+  fixity infix; associativity left; precedence 40;
+  rule { $value:expr |> $body:expr } => {
+    ((topic) => #parameterize(% = topic) { $body })($value)
+  }
+}
+```
+
+`#parameterize(name = replacement) { body }` resolves `name` where the template
+wrote it. A name that is not a syntax parameter in scope reports `SWR4019`, and
+the body expands without the parameterization. Otherwise the parameterization
+is in effect for the expansion of the body, which follows expansion rather than
+the text: a parameter written in a capture the body splices, or produced by a
+macro the body invokes, refers to it too.
+
+Where a parameter is dispatched:
+
+- under a parameterization naming it, its head is replaced by a fresh copy of
+  the nearest one's replacement, which is expanded in the parameter's category
+  under the parameterizations that were in effect where the replacement was
+  written -- so `#parameterize(it = [it, it])` means the enclosing `it`. A
+  replacement of more than one node in an expression or type keeps the node
+  that bounds it;
+- with none in effect, a parameter with rules expands by them;
+- with none in effect, a parameter without rules reports `SWR4018` at its head.
+
+A parameter is measured by its head alone. What is written after it -- a call's
+arguments, a member access -- is read around it as around any operand, so it
+may stand wherever an operand may, however it is spelled. A punctuation-spelled
+macro that is not an operator is dispatched only where an operand begins: after
+something that ends an operand it is the TypeScript operator of the same
+spelling, decided the way a scanner tells a regular expression from a division.
+In `7 |> % % 4`, the first `%` is the parameter and the second is remainder.

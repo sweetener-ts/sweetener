@@ -16,8 +16,9 @@ export const hygieneResult = [
         return value_1 + 1;
       }
       if (this.value.tag === "None") return 0;
+      const unmatched: never = this.value;
       throw new globalThis.Error(
-        "No match for " + globalThis.JSON.stringify(this.value),
+        "No match for " + globalThis.JSON.stringify(unmatched),
       );
     },
   }.run(),

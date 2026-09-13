@@ -288,6 +288,25 @@ describe("adt acceptance", () => {
     ).toEqual(["value"]);
   });
 
+  test("rejects a match that leaves a constructor unhandled", () => {
+    const harness = createHarness();
+    const declaration = harness.expand(
+      "data Option<T> = None() | Some(value: T);",
+      "item",
+    );
+    const expand = (arms: string) => {
+      const match = harness.expand(`match (Some(3)) { ${arms} }`, "expr");
+      expect(match.diagnostics).toEqual([]);
+      return semanticDiagnostics(
+        `${printLosslessSequence(declaration.syntax)}\nconst result = ${printLosslessSequence(match.syntax)};`,
+      );
+    };
+    expect(expand("Some(value) => value + 1; None() => 0;")).toEqual([]);
+    expect(expand("Some(value) => value + 1;")).toEqual([
+      `Type '{ readonly tag: "None"; }' is not assignable to type 'never'.`,
+    ]);
+  });
+
   test("reports the declared malformed-field diagnostic", () => {
     const result = createHarness().expand(
       "data Option<T> = None() | Some(value:);",

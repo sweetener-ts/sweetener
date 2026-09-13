@@ -10,11 +10,12 @@ import {
   type ScopeStore,
 } from "@sweetener/hygiene";
 import {
+  describeFailureAs,
   describeRefinement,
   evaluateRefinement,
   evaluateRefinements,
-  expectationKey,
   executeMatcher,
+  farthestFailure,
   type BindingLiteralKey,
   type CaptureRecord,
   type CaptureRefinement,
@@ -83,6 +84,12 @@ export interface CompiledMacroBinding {
   readonly category: SyntaxCategory;
   readonly definitionScopes: ScopeSetId;
   readonly rules: readonly CompiledMacroRule[];
+  /**
+   * Whether the binding is a syntax parameter. A `#parameterize` naming it
+   * gives it another meaning for the syntax it wraps; elsewhere it expands by
+   * its rules, and a parameter declared without rules has no meaning there.
+   */
+  readonly parameter: boolean;
 }
 
 export interface RuleAttemptTrace {
@@ -215,44 +222,6 @@ function captureSummaries(
   );
 }
 
-function mergedFailure(
-  failures: readonly MatchFailure[],
-): MatchFailure | undefined {
-  if (failures.length === 0) return undefined;
-  const farthest = Math.max(...failures.map((failure) => failure.offset));
-  const atOffset = failures.filter((failure) => failure.offset === farthest);
-  const specificity = Math.max(
-    ...atOffset.map((failure) => failure.specificity),
-  );
-  const best = atOffset.filter(
-    (failure) => failure.specificity === specificity,
-  );
-  const expectations = new Map(
-    best.flatMap((failure) =>
-      failure.expectations.map(
-        (expectation) => [expectationKey(expectation), expectation] as const,
-      ),
-    ),
-  );
-  return Object.freeze({
-    offset: farthest,
-    cursor: [...best].sort((left, right) =>
-      left.cursor.localeCompare(right.cursor),
-    )[0]!.cursor,
-    specificity,
-    expectations: Object.freeze(
-      [...expectations]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([, value]) => value),
-    ),
-    origins: Object.freeze(
-      [...new Set(best.flatMap((failure) => failure.origins))].sort(
-        (left, right) => left - right,
-      ),
-    ),
-  });
-}
-
 function orderedRules(rules: readonly CompiledMacroRule[]) {
   return [
     ...rules.filter((rule) => !rule.fallback),
@@ -349,16 +318,7 @@ export function invokeMacro(
       const failure =
         matched.failure === undefined || rule.failureDescription === undefined
           ? matched.failure
-          : Object.freeze({
-              ...matched.failure,
-              specificity: Math.max(matched.failure.specificity, 7),
-              expectations: Object.freeze([
-                Object.freeze({
-                  kind: "description" as const,
-                  description: rule.failureDescription,
-                }),
-              ]),
-            });
+          : describeFailureAs(matched.failure, rule.failureDescription);
       if (failure !== undefined) failures.push(failure);
       attempts.push(
         Object.freeze({
@@ -384,6 +344,7 @@ export function invokeMacro(
           options.cursor.peek()?.span.start ??
           0,
         cursor: matched.cursor.identity,
+        at: matched.cursor.peek()?.origin ?? invocationHead.origin,
         specificity: 7,
         expectations: Object.freeze([
           Object.freeze({
@@ -423,6 +384,7 @@ export function invokeMacro(
           consumed.at(consumed.length - 1)?.span.end ??
           0,
         cursor: matched.cursor.identity,
+        at: matched.cursor.peek()?.origin ?? invocationHead.origin,
         specificity: 8,
         expectations: Object.freeze([
           Object.freeze({
@@ -616,7 +578,7 @@ export function invokeMacro(
     });
   }
 
-  const failure = mergedFailure(failures);
+  const failure = farthestFailure(failures);
   // What the closest rule was still waiting for, rather than how many rules
   // were tried. A count says only that something is wrong; this says what
   // could have been written there.
@@ -656,19 +618,33 @@ export function invokeMacro(
   return Object.freeze({
     expanded: false,
     cursor: options.cursor.fork(),
+    // Reported where the closest rule stopped, which is where the mistake is:
+    // a `=` written for `==` deep in a clause was reported at the macro's name,
+    // which said only that something in the whole invocation was wrong.
     diagnostic: expansionDiagnosticRegistry.create(noMatchingMacroRuleCode, {
-      primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
+      primaryOrigin: options.diagnosticOrigin(
+        failure?.at ?? invocationHead.origin,
+      ),
       messageArguments: [
         options.macro.binding.spelling,
         expected ?? `${String(attempts.length)} rule attempt(s)`,
       ],
-      relatedOrigins:
-        failure === undefined
+      relatedOrigins: [
+        ...(failure?.at === undefined || failure.at === invocationHead.origin
+          ? []
+          : [
+              {
+                message: `In this use of ${options.macro.binding.spelling}`,
+                origin: options.diagnosticOrigin(invocationHead.origin),
+              },
+            ]),
+        ...(failure === undefined
           ? []
           : failure.origins.map((origin) => ({
               message: "The closest rule was still expecting syntax here",
               origin: options.diagnosticOrigin(origin),
-            })),
+            }))),
+      ],
     }),
     trace,
   });

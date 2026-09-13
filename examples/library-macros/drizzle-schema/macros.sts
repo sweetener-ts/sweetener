@@ -49,7 +49,7 @@ export syntax table:item {
                   #else { .default($column.modifiers.value) } } })*),*
         }))
 
-    #core(export type $row = InferSelectModel<typeof $name>;)
-    #core(export type #join($row, prefix: "New") = InferInsertModel<typeof $name>;)
+    #core(export type $row = typeof $name.$$inferSelect;)
+    #core(export type #join($row, prefix: "New") = typeof $name.$$inferInsert;)
   }
 }

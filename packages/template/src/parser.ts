@@ -17,7 +17,13 @@ import type {
   SourceId,
   SyntaxClassId,
 } from "@sweetener/shared";
-import type { GroupSyntax, Span, Syntax, TokenSyntax } from "@sweetener/syntax";
+import {
+  createToken,
+  type GroupSyntax,
+  type Span,
+  type Syntax,
+  type TokenSyntax,
+} from "@sweetener/syntax";
 import {
   createCaptureTemplate,
   createConditionalTemplate,
@@ -43,6 +49,7 @@ import {
   unknownTemplateFieldCode,
   unknownTemplateOperationCode,
 } from "./diagnostics.js";
+import { readParameterization } from "./parameterize.js";
 
 export interface TemplateField {
   readonly name: string;
@@ -76,6 +83,16 @@ function group(
     node?.tag === "group" &&
     (delimiter === undefined || node.delimiter === delimiter)
   );
+}
+
+/** An identifier written `$$name`, as the `$name` it stands for. */
+export function unescapeDollar(escaped: TokenSyntax): TokenSyntax {
+  const raw = escaped.raw.slice(1);
+  return createToken({
+    ...escaped,
+    raw,
+    value: typeof escaped.value === "string" ? raw : escaped.value,
+  });
 }
 
 function baseLeaf(shape: CaptureShape): LeafShape {
@@ -175,6 +192,7 @@ const templateOperations: ReadonlySet<string> = new Set([
   "index",
   "join",
   "metavar",
+  "parameterize",
   "syntax",
   "text",
   "trim",
@@ -282,6 +300,43 @@ class TemplateParser {
           ),
         );
         index += compactSyntaxQuote ? 2 : 3;
+        continue;
+      }
+      // `#parameterize(name = replacement) { body }` is carried through to the
+      // expander, like `#core`, because what it changes is how the body's
+      // syntax parameters expand -- which happens after this template has been
+      // instantiated. Its groups are still read as template syntax, so a
+      // capture may stand in the replacement or the body.
+      const compactParameterize =
+        !memberAccess && token(current, "#parameterize");
+      const splitParameterize =
+        !memberAccess &&
+        token(current, "#") &&
+        token(nodes[index + 1], "parameterize");
+      if (compactParameterize || splitParameterize) {
+        const argumentsIndex = index + (compactParameterize ? 1 : 2);
+        const argumentsGroup = nodes[argumentsIndex];
+        const bodyGroup = nodes[argumentsIndex + 1];
+        if (
+          !group(argumentsGroup, "parenthesis") ||
+          !group(bodyGroup, "brace") ||
+          readParameterization(argumentsGroup.children) === undefined
+        ) {
+          this.#diagnostic(
+            malformedTemplateCode,
+            current.origin,
+            "#parameterize is written #parameterize(name = replacement) { body }, naming one syntax parameter and giving a replacement that is not empty",
+          );
+          elements.push(createLiteralTemplate(current));
+          index += 1;
+          continue;
+        }
+        elements.push(createLiteralTemplate(current));
+        if (splitParameterize)
+          elements.push(createLiteralTemplate(nodes[index + 1]!));
+        elements.push(this.#atom(argumentsGroup, depth, fold, quoted));
+        elements.push(this.#atom(bodyGroup, depth, fold, quoted));
+        index = argumentsIndex + 2;
         continue;
       }
       if (
@@ -771,6 +826,20 @@ class TemplateParser {
           );
           index += 1;
         }
+        continue;
+      }
+      // `$$name` writes the identifier `$name`: a leading `$$` stands for one
+      // `$`. Without it a template could not emit a name that begins with `$`
+      // -- `$inferSelect`, `$state` -- because `$name` is a capture. A quoted
+      // body is another definition's template, which reads the escape itself.
+      if (
+        !quoted &&
+        token(current) &&
+        (current.kind === "identifier" || current.kind === "jsx-identifier") &&
+        current.raw.startsWith("$$")
+      ) {
+        elements.push(createLiteralTemplate(unescapeDollar(current)));
+        index += 1;
         continue;
       }
       if (

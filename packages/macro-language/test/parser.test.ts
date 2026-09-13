@@ -53,6 +53,22 @@ describe("macro-definition parser", () => {
     });
   });
 
+  it("parses syntax parameters with and without rules", () => {
+    const result = parse(`
+      export syntax parameter (%):expr;
+      syntax parameter it:expr { rule { it } => { 1 } }
+      syntax parameter:expr { rule { parameter } => { 2 } }
+    `);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.unparsed).toEqual([]);
+    expect(result.definitions).toMatchObject([
+      { kind: "syntax", parameter: true, name: "%", exported: true, rules: [] },
+      { kind: "syntax", parameter: true, name: "it", rules: [{}] },
+      { kind: "syntax", parameter: false, name: "parameter", rules: [{}] },
+    ]);
+    expect(result.definitions[0]).toMatchObject({ body: undefined });
+  });
+
   it("parses syntax classes, fields, recursive macros, clauses, and templates", () => {
     const result = parse(`
       export syntax class BindClause {

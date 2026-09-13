@@ -1,5 +1,10 @@
 import type { CaptureId } from "@sweetener/shared";
-import type { DelimiterKind, TokenKind, TokenSyntax } from "@sweetener/syntax";
+import {
+  greaterThanTokenWidth,
+  type DelimiterKind,
+  type TokenKind,
+  type TokenSyntax,
+} from "@sweetener/syntax";
 import type { LiteralKey } from "./ast.js";
 import type { CaptureRecord, CaptureValue } from "./capture-record.js";
 
@@ -127,8 +132,21 @@ function leaves(
 function soleToken(
   leaf: Extract<CaptureValue, { kind: "leaf" }>,
 ): TokenSyntax | undefined {
-  const only = leaf.syntax[0];
-  return leaf.syntax.length === 1 && only?.tag === "token" ? only : undefined;
+  const first = leaf.syntax[0];
+  if (first?.tag !== "token") return undefined;
+  if (leaf.syntax.length === 1) return first;
+  // `>=` is one operator that the scanner leaves as `>` then `=`, and a
+  // `token` capture takes both. It is still the one token the author wrote,
+  // so a refinement reads its spelling whole.
+  if (
+    greaterThanTokenWidth((offset) => leaf.syntax[offset]) ===
+    leaf.syntax.length
+  )
+    return Object.freeze({
+      ...first,
+      raw: leaf.syntax.map((piece) => (piece as TokenSyntax).raw).join(""),
+    });
+  return undefined;
 }
 
 /**

@@ -18,7 +18,7 @@ import type { InvokeMacroOptions } from "./invocation.js";
 export interface CreateMacroExtentResolverOptions {
   readonly resolve: (
     spelling: string,
-    category: "expr" | "binding" | "stmt" | "item" | "typeMember",
+    category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
     context: ConsumerContext,
   ) => CompiledMacroBinding | undefined;
   readonly consumeClass: (macro: CompiledMacroBinding) => SyntaxClassConsumer;
@@ -36,10 +36,10 @@ const itemDispatchPrefixes = new Set([
   "abstract",
 ]);
 
-function headSpelling(
+function headOffset(
   cursor: SyntaxCursor,
-  category: "expr" | "binding" | "stmt" | "item" | "typeMember",
-): string | undefined {
+  category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
+): number {
   let offset = 0;
   if (category === "item") {
     while (true) {
@@ -49,12 +49,58 @@ function headSpelling(
       offset += 1;
     }
   }
+  return offset;
+}
+
+/** A cursor just past the tokens that name the macro. */
+function pastHead(
+  cursor: SyntaxCursor,
+  category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
+  width: number,
+): SyntaxCursor {
+  const end = cursor.fork();
+  end.advance(headOffset(cursor, category) + width);
+  return end;
+}
+
+/** The longest spelling a punctuation-named macro is looked up under. */
+const longestPunctuationHead = 4;
+
+/**
+ * The spellings a macro standing here could be named, longest first, with how
+ * many tokens each takes.
+ *
+ * The scanner splits punctuation it does not know -- `^^` is `^` then `^` --
+ * so a macro named that way is only found by joining the tokens. They are
+ * joined only when written together, as an operator's are, so `^ ^` is not
+ * read as `^^`.
+ */
+function headSpellings(
+  cursor: SyntaxCursor,
+  category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
+): readonly { readonly spelling: string; readonly width: number }[] {
+  const offset = headOffset(cursor, category);
   const head = cursor.peek(offset);
-  return head?.tag === "token" ? head.raw : undefined;
+  if (head?.tag !== "token") return [];
+  if (head.kind !== "punctuation") return [{ spelling: head.raw, width: 1 }];
+  const spellings: { spelling: string; width: number }[] = [];
+  let spelling = "";
+  for (let width = 1; width <= longestPunctuationHead; width += 1) {
+    const next = cursor.peek(offset + width - 1);
+    if (
+      next?.tag !== "token" ||
+      next.kind !== "punctuation" ||
+      (width > 1 && next.leadingTrivia.length > 0)
+    )
+      break;
+    spelling += next.raw;
+    spellings.push({ spelling, width });
+  }
+  return spellings.reverse();
 }
 
 function protectedExtent(
-  category: "expr" | "binding" | "stmt" | "item" | "typeMember",
+  category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
   start: SyntaxCursor,
   end: SyntaxCursor,
   options: CreateMacroExtentResolverOptions,
@@ -88,18 +134,34 @@ function fallbackExtent(cursor: SyntaxCursor): SyntaxCursor {
 }
 
 /**
- * Recognizes the source extent of a non-expression macro without expanding it.
- * This lets typed `item` and `stmt` captures contain nested macro invocations;
+ * Recognizes the source extent of a macro without expanding it. This lets
+ * typed captures -- an `item`, a `stmt`, a `type` -- contain nested macro
+ * invocations;
  * recursive expansion still owns template execution and diagnostics.
  */
 export function createMacroExtentResolver(
   options: CreateMacroExtentResolverOptions,
 ): StatementItemMacroResolver {
   return (category, cursor, context) => {
-    const spelling = headSpelling(cursor, category);
-    if (spelling === undefined) return undefined;
-    const macro = options.resolve(spelling, category, context);
+    let macro: CompiledMacroBinding | undefined;
+    let headWidth = 1;
+    for (const candidate of headSpellings(cursor, category)) {
+      macro = options.resolve(candidate.spelling, category, context);
+      headWidth = candidate.width;
+      if (macro !== undefined) break;
+    }
     if (macro === undefined) return undefined;
+    // A syntax parameter is measured by its head alone. What it stands for is
+    // decided when it expands, under whatever `#parameterize` encloses it, and
+    // what is written after it -- a call's arguments, a member -- is read
+    // around it the way it is read around any other operand.
+    if (macro.parameter)
+      return protectedExtent(
+        category,
+        cursor,
+        pastHead(cursor, category, headWidth),
+        options,
+      );
     const ordered = [
       ...macro.rules.filter(({ fallback }) => !fallback),
       ...macro.rules.filter(({ fallback }) => fallback),
@@ -121,11 +183,13 @@ export function createMacroExtentResolver(
       )
         return protectedExtent(category, cursor, matched.cursor, options);
     }
-    // An expression is claimed only by a rule that matched. A statement or item
-    // has nowhere else to go, so a malformed invocation is preserved as one
-    // typed extent and the recursive expander reports the ranked diagnostic;
-    // an expression can simply decline and let the ordinary parse continue.
-    if (category === "expr" || category === "binding") return undefined;
+    // An expression or type is claimed only by a rule that matched. A statement
+    // or item has nowhere else to go, so a malformed invocation is preserved as
+    // one typed extent and the recursive expander reports the ranked
+    // diagnostic; an expression or type can simply decline and let the
+    // ordinary parse continue.
+    if (category === "expr" || category === "binding" || category === "type")
+      return undefined;
     return protectedExtent(category, cursor, fallbackExtent(cursor), options);
   };
 }

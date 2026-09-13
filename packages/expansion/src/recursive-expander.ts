@@ -32,14 +32,22 @@ import {
   expansionDiagnosticRegistry,
   expansionLimitCode,
   macroNotYetVisibleCode,
+  notSyntaxParameterCode,
   uncategorizedExpansionCode,
+  unparameterizedSyntaxParameterCode,
   unprocessedDefinitionCode,
+  unreadableSyntaxCode,
   wrongCategoryMacroCode,
 } from "./diagnostics.js";
+import { readParameterization } from "@sweetener/template";
 import { EnforestationError } from "./enforestation-error.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
-import { isCoreForm, type CoreDispatchTrace } from "./core-shadowing.js";
+import {
+  coreFormKind,
+  isCoreForm,
+  type CoreDispatchTrace,
+} from "./core-shadowing.js";
 import type {
   ExpansionEnvironment,
   ExpansionEnvironmentStore,
@@ -177,6 +185,12 @@ export interface ExpandMacroSyntaxResult {
   readonly generatedDefinitionTraces: readonly GeneratedDefinitionsTrace[];
   readonly generatedModules: readonly CompileParsedMacrosResult[];
   readonly expansionEnvironment: ExpansionEnvironment | undefined;
+  /**
+   * The operator tokens this expansion offered to their operator's rules,
+   * whether or not a rule took them. An operator standing in the output that
+   * was never offered is one whose expression could not be read.
+   */
+  readonly offeredOperators: ReadonlySet<Syntax["origin"]>;
 }
 
 const itemDispatchPrefixes = new Set([
@@ -225,6 +239,7 @@ export function expandMacroSyntax(
 ): ExpandMacroSyntaxResult {
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
+  const offeredOperators = new Set<Syntax["origin"]>();
   const generatedDefinitionTraces: GeneratedDefinitionsTrace[] = [];
   const activeModules: CompileParsedMacrosResult[] = [
     ...(options.modules ?? [options.module]),
@@ -416,6 +431,49 @@ export function expandMacroSyntax(
   };
 
   /**
+   * Enforests syntax the walk has to read before it can descend into it, or
+   * reports why it could not and answers undefined.
+   *
+   * A template literal's substitution and a group holding a custom operator
+   * are read here rather than by a macro, so a failure is a fact about the
+   * source. Left to escape it ended the whole project's expansion with a
+   * stack trace naming no file -- `` `${%}` `` in one file was enough.
+   */
+  const enforestOrReport = (
+    syntax: SyntaxSequence,
+    category: SyntaxCategory,
+    lexicalModule: CompileParsedMacrosResult,
+    contexts: ReadonlySet<MacroContext>,
+  ): ProtectedSyntax | undefined => {
+    try {
+      return enforestSequence(syntax, category, lexicalModule, contexts);
+    } catch (error) {
+      if (!(error instanceof EnforestationError)) throw error;
+      const at = syntax[0];
+      const source =
+        at === undefined
+          ? undefined
+          : options.origins.selectPrimarySource(at.origin);
+      if (at === undefined || source === undefined) throw error;
+      diagnostics.push(
+        expansionDiagnosticRegistry.create(unreadableSyntaxCode, {
+          primaryOrigin: {
+            sourceId: source.sourceId,
+            start: source.span.start,
+            end: source.span.end,
+            originId: at.origin,
+          },
+          messageArguments: [
+            category === "expr" ? "an expression" : `a ${category}`,
+            error.syntaxText,
+          ],
+        }),
+      );
+      return undefined;
+    }
+  };
+
+  /**
    * Whether a brace group in expression position opens a function body rather
    * than an object literal. A macro template commonly wraps statements in an
    * arrow or function expression, and the statements inside are statements
@@ -486,6 +544,23 @@ export function expandMacroSyntax(
       return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
     return typeAliasInitializerFollows(preceding);
+  };
+
+  /**
+   * Whether the next node stands where a type is written, when what is being
+   * walked is an expression.
+   *
+   * Every token `typePositionFollows` accepts other than `as` and `satisfies`
+   * is an expression's too -- `[1, (x)]`, `c ? (x) : (y)`, `a | (b)`,
+   * `(v) => (x)` -- so reading a group after one of them as a type looked the
+   * macros in it up among type macros, found none, and emitted them verbatim.
+   */
+  const typeFollowsInExpression = (preceding: readonly Syntax[]): boolean => {
+    const previous = preceding.at(-1);
+    return (
+      previous?.tag === "token" &&
+      (previous.raw === "as" || previous.raw === "satisfies")
+    );
   };
 
   /**
@@ -769,6 +844,20 @@ export function expandMacroSyntax(
         }
         if (node.tag === "group") {
           if (nested && node.delimiter === "parenthesis") continue;
+          // `#parameterize(name = replacement) { body }` has the shape of a
+          // parameter list and a body, but names a syntax parameter rather
+          // than binding anything. Read as parameters, it shadowed the very
+          // macro it was parameterizing.
+          const previous = nodes[at - 1];
+          if (
+            node.delimiter === "parenthesis" &&
+            previous?.tag === "token" &&
+            (previous.raw === "#parameterize" ||
+              (previous.raw === "parameterize" &&
+                nodes[at - 2]?.tag === "token" &&
+                (nodes[at - 2] as TokenSyntax).raw === "#"))
+          )
+            continue;
           if (inImport && node.delimiter === "brace") {
             // `import { a, b as c }` binds the local name of each specifier.
             for (const segment of bindingSegments(node.children)) {
@@ -779,7 +868,7 @@ export function expandMacroSyntax(
             continue;
           }
           if (node.delimiter !== "parenthesis") continue;
-          if (bindsParameters(node, nodes[at + 1], nodes.slice(0, at)))
+          if (bindsParameters(node, nodes.slice(at + 1), nodes.slice(0, at)))
             addBinders(bindingSegments(node.children), values);
           else collect(node.children, false, nested);
           continue;
@@ -822,9 +911,10 @@ export function expandMacroSyntax(
    */
   const bindsParameters = (
     node: Syntax,
-    following: Syntax | undefined,
+    after: readonly Syntax[],
     preceding: readonly Syntax[],
   ): boolean => {
+    const following = after[0];
     if (node.tag !== "group" || node.delimiter !== "parenthesis") return false;
     if (catchBinderFollows(preceding)) return true;
     // A control-flow header is not a parameter list, though it is followed by a
@@ -842,7 +932,18 @@ export function expandMacroSyntax(
       return true;
     if (following?.tag === "protected") return true;
     if (following?.tag !== "token") return false;
-    return following.raw === "=>" || following.raw === ":";
+    if (following.raw === "=>") return true;
+    if (following.raw !== ":") return false;
+    // `(x): T => body` annotates an arrow's return type, but `c ? (x) : y` is a
+    // conditional, and reading its consequent as parameters bound whatever
+    // names it held -- which then shadowed a macro written there. Only an
+    // arrow follows its annotation with `=>`.
+    for (const node of after.slice(1)) {
+      if (node.tag !== "token") continue;
+      if (node.raw === "=>") return true;
+      if (node.raw === "," || node.raw === ";") return false;
+    }
+    return false;
   };
 
   /**
@@ -864,17 +965,38 @@ export function expandMacroSyntax(
     // `syntax class Name { ... }` or `syntax name:category { ... }`.
     if (next.raw === "class") return true;
     const colon = sequence[at + 2];
-    return colon?.tag === "token" && colon.raw === ":";
+    if (colon?.tag === "token" && colon.raw === ":") return true;
+    // `syntax parameter name:category` and `syntax parameter (%):category`.
+    const parameterColon = sequence[at + 3];
+    return (
+      next.raw === "parameter" &&
+      sequence[at + 2] !== undefined &&
+      parameterColon?.tag === "token" &&
+      parameterColon.raw === ":"
+    );
   };
 
   /** The name a definition declares, for the diagnostic that reports it. */
   const definitionSpelling = (sequence: SyntaxSequence, at: number): string => {
     const first = sequence[at + 1];
-    if (first?.tag === "token" && first.raw === "class") {
-      const name = sequence[at + 2];
-      return name?.tag === "token" ? name.raw : "this definition";
-    }
-    return first?.tag === "token" ? first.raw : "this definition";
+    const named = (node: Syntax | undefined): string =>
+      node?.tag === "token"
+        ? node.raw
+        : node?.tag === "group" &&
+            node.children.every((child) => child.tag === "token")
+          ? node.children.map((child) => (child as TokenSyntax).raw).join("")
+          : "this definition";
+    if (first?.tag === "token" && first.raw === "class")
+      return named(sequence[at + 2]);
+    const parameterColon = sequence[at + 3];
+    if (
+      first?.tag === "token" &&
+      first.raw === "parameter" &&
+      parameterColon?.tag === "token" &&
+      parameterColon.raw === ":"
+    )
+      return named(sequence[at + 2]);
+    return named(first);
   };
 
   /** Regions enclosing the position being walked, outermost first. */
@@ -886,6 +1008,146 @@ export function expandMacroSyntax(
    * would reach it again and report the same thing.
    */
   let abortedSpelling: string | undefined;
+
+  /**
+   * The `#parameterize` forms enclosing the syntax being walked, innermost
+   * last. A syntax parameter found in a body stands for the replacement of the
+   * nearest one that names it, and the stack follows expansion rather than the
+   * text, so a macro expanded inside a body sees it too -- which is what makes
+   * a parameter useful to a template, whose own syntax is written elsewhere.
+   */
+  interface Parameterization {
+    readonly binding: BindingId;
+    readonly replacement: SyntaxSequence;
+    /** Module whose macros are in scope where the replacement was written. */
+    readonly lexicalModule: CompileParsedMacrosResult;
+  }
+  const parameterizations: Parameterization[] = [];
+
+  /**
+   * The module a node was written in, read from the module scope every token
+   * written in a file carries. A template's tokens keep the scope of the module
+   * defining the template, so this answers for them too -- their origin names
+   * the call site they were expanded at, which is not where they were written.
+   */
+  const moduleWrittenIn = (
+    syntax: Syntax,
+  ): CompileParsedMacrosResult | undefined =>
+    (options.modules ?? [options.module]).find(
+      (module) =>
+        options.scopeStore.size(module.definitionScopes) > 0 &&
+        options.scopeStore.subset(module.definitionScopes, syntax.scopes),
+    );
+
+  const primaryOrigin = (syntax: Syntax) => {
+    const source = options.origins.selectPrimarySource(syntax.origin);
+    return source === undefined
+      ? undefined
+      : {
+          sourceId: source.sourceId,
+          start: source.span.start,
+          end: source.span.end,
+          originId: syntax.origin,
+        };
+  };
+
+  /**
+   * A copy of syntax under new identities. A replacement is spliced in once
+   * for every use of its parameter, and a node standing twice in one file is
+   * two tokens as far as renaming is concerned -- each occurrence of a name is
+   * rewritten by its own identity.
+   */
+  const freshCopy = (syntax: Syntax): Syntax => {
+    switch (syntax.tag) {
+      case "token":
+        return createToken({ ...syntax, id: options.allocateSyntaxId() });
+      case "group":
+        return createGroup({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          open: freshCopy(syntax.open) as TokenSyntax,
+          children: syntax.children.map(freshCopy),
+          close:
+            syntax.close.tag === "token"
+              ? (freshCopy(syntax.close) as TokenSyntax)
+              : createMissingToken({
+                  ...syntax.close,
+                  id: options.allocateSyntaxId(),
+                }),
+        });
+      case "protected":
+        return createProtectedSyntax({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          children: syntax.children.map(freshCopy),
+        });
+      case "root":
+        return createRootSyntax({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          children: syntax.children.map(freshCopy),
+        });
+    }
+  };
+
+  /** Words that stand in front of an operand rather than ending one. */
+  const operandIntroducingWords = new Set([
+    "await",
+    "yield",
+    "of",
+    "as",
+    "satisfies",
+  ]);
+  const operandKeywords = new Set(["this", "super", "null", "true", "false"]);
+
+  /**
+   * Whether what was just walked ends an operand, so that punctuation after it
+   * is an operator between two operands rather than the start of a new one.
+   *
+   * A macro spelled with punctuation -- a syntax parameter written `%` -- is
+   * only that macro where an operand begins. `% * 10` begins with one, and
+   * `7 % 3` has the remainder operator in the same place a scanner decides
+   * between a regular expression and a division: by what stands before it.
+   * Dispatching wherever the spelling appeared rewrote every remainder in a
+   * file that merely imported the macro.
+   */
+  const endsOperand = (
+    preceding: readonly Syntax[],
+    inExpression: boolean,
+  ): boolean => {
+    const previous = preceding.at(-1);
+    if (previous === undefined) return false;
+    if (previous.tag === "protected") return previous.category === "expr";
+    if (previous.tag === "group") {
+      if (previous.delimiter !== "brace") return true;
+      // A brace ends an operand when it is an object literal. Where a statement
+      // is read it is a block, and after an arrow or a function head it is a
+      // body -- neither of which anything is applied to.
+      return inExpression && !functionBodyFollows(preceding.slice(0, -1));
+    }
+    if (previous.tag !== "token") return false;
+    switch (previous.kind) {
+      case "identifier":
+        return !operandIntroducingWords.has(previous.raw);
+      case "keyword":
+        return operandKeywords.has(previous.raw);
+      case "private-identifier":
+      case "numeric-literal":
+      case "bigint-literal":
+      case "string-literal":
+      case "regular-expression-literal":
+      case "no-substitution-template":
+        return true;
+      case "punctuation":
+        // Postfix after an operand, prefix before one: `x! % 2` against `!%`.
+        return (
+          ["++", "--", "!"].includes(previous.raw) &&
+          endsOperand(preceding.slice(0, -1), inExpression)
+        );
+      default:
+        return false;
+    }
+  };
 
   const shadowsMacro = (spelling: string, category: SyntaxCategory): boolean =>
     regions.some((region) =>
@@ -1015,6 +1277,7 @@ export function expandMacroSyntax(
         position: number,
         positionSourceId?: SourceId | undefined,
         lookupCategory: SyntaxCategory = category,
+        written: Syntax = node,
       ) => {
         const category = lookupCategory;
         // Template literals use the defining module, but a capture spliced
@@ -1023,12 +1286,19 @@ export function expandMacroSyntax(
         // `#core(function ... $body)` can only see macros imported by the
         // function-shadow definition, not macros imported at its call site.
         if (shadowsMacro(spelling, category)) return undefined;
+        // Syntax resolves against the macros in scope where it was written. A
+        // template's tokens were written in the module defining the template,
+        // whichever file's expansion walks them: an operator's replacement is
+        // produced while the call site is read and walked under the call
+        // site's module, and resolving there left a helper macro the template
+        // calls unexpanded unless the call site happened to import it too.
         const lookupModule =
-          positionSourceId !== undefined &&
+          moduleWrittenIn(written) ??
+          (positionSourceId !== undefined &&
           positionSourceId === options.sourceId &&
-          !options.scopeStore.hasUnmatchedIntroduction(node.scopes)
+          !options.scopeStore.hasUnmatchedIntroduction(written.scopes)
             ? options.module
-            : lexicalModule;
+            : lexicalModule);
         const recursiveMacro = lookupModule.get(spelling, category);
         if (
           recursiveBinding !== undefined &&
@@ -1070,6 +1340,121 @@ export function expandMacroSyntax(
               .map((module) => module.get(spelling, category))
               .find((macro) => macro !== undefined);
       };
+      const compactParameterize =
+        node.tag === "token" &&
+        node.raw === "#parameterize" &&
+        input[index + 1]?.tag === "group" &&
+        input[index + 2]?.tag === "group";
+      const splitParameterize =
+        node.tag === "token" &&
+        node.raw === "#" &&
+        input[index + 1]?.tag === "token" &&
+        (input[index + 1] as TokenSyntax).raw === "parameterize" &&
+        input[index + 2]?.tag === "group" &&
+        input[index + 3]?.tag === "group";
+      if (compactParameterize || splitParameterize) {
+        const argumentsIndex = index + (compactParameterize ? 1 : 2);
+        const argumentsGroup = input[argumentsIndex] as Extract<
+          Syntax,
+          { readonly tag: "group" }
+        >;
+        const body = input[argumentsIndex + 1] as Extract<
+          Syntax,
+          { readonly tag: "group" }
+        >;
+        const read =
+          argumentsGroup.delimiter === "parenthesis" &&
+          body.delimiter === "brace"
+            ? readParameterization(argumentsGroup.children)
+            : undefined;
+        if (read !== undefined) {
+          const nameNode = read.name[0]!;
+          const parameter = (
+            [
+              "expr",
+              "type",
+              "stmt",
+              "item",
+              "binding",
+              "classElement",
+              "typeMember",
+              "jsxChild",
+            ] as const
+          )
+            .map((candidate) =>
+              resolveSpelling(
+                read.spelling,
+                nameNode.span.start,
+                sourceOf(nameNode),
+                candidate,
+                nameNode,
+              ),
+            )
+            .find((candidate) => candidate?.parameter === true);
+          if (parameter === undefined) {
+            const origin = primaryOrigin(nameNode);
+            if (origin !== undefined)
+              diagnostics.push(
+                expansionDiagnosticRegistry.create(notSyntaxParameterCode, {
+                  primaryOrigin: origin,
+                  messageArguments: [read.spelling],
+                }),
+              );
+          } else
+            parameterizations.push(
+              Object.freeze({
+                binding: parameter.binding.id,
+                replacement: createSyntaxSequence(read.replacement),
+                lexicalModule: moduleWrittenIn(nameNode) ?? lexicalModule,
+              }),
+            );
+          let nested;
+          try {
+            nested = visit(
+              body.children,
+              currentEnvironment,
+              category,
+              parentInvocation,
+              lexicalModule,
+              contexts,
+              false,
+              recursiveBinding,
+            );
+          } finally {
+            if (parameter !== undefined) parameterizations.pop();
+          }
+          currentEnvironment = nested.environment;
+          index = argumentsIndex + 2;
+          if (nested.syntax.length === 0) continue;
+          // Erasing the marker keeps the layout that stood in front of it.
+          const spaced = withLeadingTrivia(
+            nested.syntax,
+            node.tag === "token" ? node.leadingTrivia : [],
+          );
+          const origins = [...new Set(spaced.map(({ origin }) => origin))];
+          const categorized =
+            category === "item"
+              ? enforestSequence(spaced, category, lexicalModule, contexts)
+              : undefined;
+          output.push(
+            createProtectedSyntax({
+              id: options.allocateSyntaxId(),
+              span: spanEnvelope(spaced.map(({ span }) => span)),
+              origin:
+                origins.length === 1
+                  ? origins[0]!
+                  : options.origins.composed(origins),
+              scopes: spaced[0]?.scopes ?? node.scopes,
+              category,
+              children:
+                categorized === undefined
+                  ? spaced
+                  : createSyntaxSequence([categorized]),
+            }),
+          );
+          continue;
+        }
+      }
       let resolvedHeadIndex = index;
       // A macro found in a nested category — a declaration's binder, a JSX
       // child — is invoked as that category, not as the one being walked.
@@ -1216,6 +1601,8 @@ export function expandMacroSyntax(
             head.raw,
             head.span.start,
             sourceOf(head),
+            category,
+            head,
           );
           if (candidate !== undefined) {
             resolvedMacro = candidate;
@@ -1280,8 +1667,12 @@ export function expandMacroSyntax(
         node.tag === "token" &&
         node.kind === "identifier" &&
         !shadowsMacro(node.raw, category) &&
-        !isCoreForm(node.raw, category) &&
-        lexicalModule.get(node.raw, category) !== undefined
+        lexicalModule.get(node.raw, category) !== undefined &&
+        !isCoreForm(
+          node.raw,
+          category,
+          coreFormKind(lexicalModule.get(node.raw, category)!.binding),
+        )
       ) {
         const source = options.origins.selectPrimarySource(node.origin);
         if (source !== undefined)
@@ -1332,6 +1723,9 @@ export function expandMacroSyntax(
             (candidate) =>
               candidate.category === category &&
               candidate.binding.kind === "macro" &&
+              // A syntax parameter stands for its replacement by its spelling
+              // alone, so a group that begins with it is an ordinary group.
+              !candidate.parameter &&
               // Only a punctuation-spelled macro turns its enclosing
               // parentheses into the invocation. An identifier-spelled macro
               // in this position is just the head of a parenthesized
@@ -1402,6 +1796,8 @@ export function expandMacroSyntax(
             candidate.raw,
             candidate.span.start,
             sourceOf(candidate),
+            category,
+            candidate,
           );
           resolvedHeadIndex = candidateIndex;
           resolvedSpelling = candidate.raw;
@@ -1444,6 +1840,8 @@ export function expandMacroSyntax(
                       operator.spelling,
                       candidate.span.start,
                       sourceOf(candidate),
+                      category,
+                      candidate,
                     );
               return candidateMacro === undefined ||
                 candidateMacro.binding.id !== operator.binding
@@ -1462,6 +1860,14 @@ export function expandMacroSyntax(
       // fallback below matches an identifier-spelled macro too, and would
       // otherwise dispatch the very name the member is declaring.
       if (namesMember || namesProperty) resolvedMacro = undefined;
+      if (
+        resolvedMacro !== undefined &&
+        resolvedMacro.binding.kind === "macro" &&
+        resolvedCategory === "expr" &&
+        punctuationSpelled(resolvedMacro.binding.spelling) &&
+        endsOperand(output, category === "expr" || expressionRegion)
+      )
+        resolvedMacro = undefined;
       const macro =
         (suppressPending || suppressedHeadIndex === index) &&
         resolvedMacro !== undefined
@@ -1490,7 +1896,103 @@ export function expandMacroSyntax(
       // ended the build with a stack trace naming no file, no line and no
       // macro -- and it escaped the compiler session too, so every host
       // integration crashed the same way.
+      if (
+        macro !== undefined &&
+        macro.parameter &&
+        abortedSpelling === undefined
+      ) {
+        const head = input[resolvedHeadIndex] ?? node;
+        const headWidth = punctuationSpelled(macro.binding.spelling)
+          ? (operatorWidthAt(
+              input,
+              resolvedHeadIndex,
+              macro.binding.spelling,
+            ) ?? 1)
+          : 1;
+        output.push(...input.slice(index, resolvedHeadIndex));
+        let depth = parameterizations.length - 1;
+        while (
+          depth >= 0 &&
+          parameterizations[depth]!.binding !== macro.binding.id
+        )
+          depth -= 1;
+        if (depth >= 0) {
+          const parameterization = parameterizations[depth]!;
+          // The replacement is expanded under the parameterizations that were
+          // in effect where it was written, not under this one and those inside
+          // it: `#parameterize(% = f(%)) { ... }` means the enclosing `%`.
+          const inner = parameterizations.splice(depth);
+          let nested;
+          try {
+            nested = visit(
+              createSyntaxSequence(parameterization.replacement.map(freshCopy)),
+              currentEnvironment,
+              macro.category,
+              parentInvocation,
+              parameterization.lexicalModule,
+              contexts,
+              false,
+              recursiveBinding,
+            );
+          } finally {
+            parameterizations.push(...inner);
+          }
+          currentEnvironment = nested.environment;
+          const trivia = head.tag === "token" ? head.leadingTrivia : [];
+          const replaced = nested.syntax;
+          // An expression keeps the node that bounds it, or the operators
+          // around the use would re-bind against the replacement's own.
+          if (
+            (macro.category === "expr" || macro.category === "type") &&
+            replaced.length > 1
+          ) {
+            const origins = [...new Set(replaced.map(({ origin }) => origin))];
+            output.push(
+              ...withLeadingTrivia(
+                [
+                  createProtectedSyntax({
+                    id: options.allocateSyntaxId(),
+                    span: spanEnvelope(replaced.map(({ span }) => span)),
+                    origin:
+                      origins.length === 1
+                        ? origins[0]!
+                        : options.origins.composed(origins),
+                    scopes: replaced[0]!.scopes,
+                    category: macro.category,
+                    children: replaced,
+                  }),
+                ],
+                trivia,
+              ),
+            );
+          } else output.push(...withLeadingTrivia(replaced, trivia));
+          index = resolvedHeadIndex + headWidth;
+          continue;
+        }
+        if (macro.rules.length === 0) {
+          const origin = primaryOrigin(head);
+          if (origin !== undefined)
+            diagnostics.push(
+              expansionDiagnosticRegistry.create(
+                unparameterizedSyntaxParameterCode,
+                {
+                  primaryOrigin: origin,
+                  messageArguments: [macro.binding.spelling],
+                },
+              ),
+            );
+          output.push(
+            ...input.slice(resolvedHeadIndex, resolvedHeadIndex + headWidth),
+          );
+          index = resolvedHeadIndex + headWidth;
+          continue;
+        }
+        // With no parameterization in effect, a parameter with rules expands
+        // by them like any other macro.
+      }
       if (macro !== undefined && abortedSpelling === undefined) {
+        if (macro.binding.kind === "operator")
+          offeredOperators.add((input[resolvedHeadIndex] ?? node).origin);
         const macroModule =
           activeModules.find(
             (candidate) =>
@@ -1780,19 +2282,24 @@ export function expandMacroSyntax(
           // a thrown error rather than a diagnostic, so one of them anywhere in
           // a file ended the whole compilation.
           const substitutionCategory: SyntaxCategory =
-            category === "type" || typePositionFollows(output)
+            category === "type" ||
+            (category === "expr" || expressionRegion
+              ? typeFollowsInExpression(output)
+              : typePositionFollows(output))
               ? "type"
               : "expr";
           const expandSubstitution = () => {
             if (substitution.length === 0) return;
-            const enforested = enforestSequence(
+            const enforested = enforestOrReport(
               createSyntaxSequence(substitution),
               substitutionCategory,
               lexicalModule,
               contexts,
             );
             const nested = visit(
-              createSyntaxSequence([enforested]),
+              createSyntaxSequence(
+                enforested === undefined ? substitution : [enforested],
+              ),
               currentEnvironment,
               substitutionCategory,
               parentInvocation,
@@ -1858,14 +2365,16 @@ export function expandMacroSyntax(
           let segment: Syntax[] = [];
           const expandSegment = () => {
             if (segment.length === 0) return;
-            const enforested = enforestSequence(
+            const enforested = enforestOrReport(
               createSyntaxSequence(segment),
               "expr",
               lexicalModule,
               contexts,
             );
             const nested = visit(
-              createSyntaxSequence([enforested]),
+              createSyntaxSequence(
+                enforested === undefined ? segment : [enforested],
+              ),
               currentEnvironment,
               "expr",
               parentInvocation,
@@ -1998,6 +2507,10 @@ export function expandMacroSyntax(
         // Statements inside a function body are statements however the
         // expression around it is categorized, so a statement macro written in
         // a template's arrow or function body resolves in the statement space.
+        const typeGroupFollows =
+          category === "expr" || expressionRegion
+            ? typeFollowsInExpression(output)
+            : typePositionFollows(output);
         const bodyCategory: SyntaxCategory =
           // A group sitting among JSX children holds an expression: a braced
           // container, or a nested element.
@@ -2032,13 +2545,13 @@ export function expandMacroSyntax(
                     // more type.
                     node.tag === "group" &&
                       node.delimiter === "brace" &&
-                      (category === "type" || typePositionFollows(output))
+                      (category === "type" || typeGroupFollows)
                     ? "typeMember"
                     : node.tag === "group" &&
                         category !== "type" &&
                         (node.delimiter === "bracket" ||
                           node.delimiter === "parenthesis") &&
-                        typePositionFollows(output)
+                        typeGroupFollows
                       ? "type"
                       : node.tag === "group" &&
                           category !== "expr" &&
@@ -2193,5 +2706,6 @@ export function expandMacroSyntax(
     generatedDefinitionTraces: Object.freeze(generatedDefinitionTraces),
     generatedModules: Object.freeze(activeModules.slice(1)),
     expansionEnvironment: activeExpansionEnvironment,
+    offeredOperators,
   });
 }

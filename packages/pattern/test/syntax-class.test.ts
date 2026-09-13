@@ -119,6 +119,66 @@ describe("syntax classes", () => {
     expect(consume([], ttClass, [token("+")]).matched).toBe(true);
   });
 
+  it("reports the farthest failure inside a class, in its innermost description", () => {
+    // `Pair` is `ident , ident`, described; `Wrapper` is `[ Pair ]`-shaped as
+    // `< Pair >`, described too. `< a , + >` fails at `+`, two tokens into the
+    // pair, and that is where the failure is reported -- in `Pair`'s words,
+    // the class that was reading when it happened.
+    const pair: SyntaxClassInput = {
+      classId: pairClass,
+      name: "Pair",
+      origin,
+      fields: [],
+      rules: [
+        {
+          ...rule(
+            createSequencePattern(origin, [
+              capture(30 as CaptureId, "left", identClass),
+              literal(","),
+              capture(31 as CaptureId, "right", identClass),
+            ]),
+          ),
+          failureDescription: "two names separated by a comma",
+        },
+      ],
+    };
+    const wrapper: SyntaxClassInput = {
+      classId: wrapperClass,
+      name: "Wrapper",
+      origin,
+      fields: [],
+      rules: [
+        {
+          ...rule(
+            createSequencePattern(origin, [
+              literal("<"),
+              createClassCallPattern(origin, pairClass),
+              literal(">"),
+            ]),
+          ),
+          failureDescription: "a pair in angle brackets",
+        },
+      ],
+    };
+    // Spans follow creation order, so the tokens are made in reading order.
+    const input = [
+      token("<"),
+      token("a", "identifier"),
+      token(","),
+      token("+"),
+      token(">"),
+    ];
+    const plus = input[3]!;
+    const result = consume([pair, wrapper], wrapperClass, input);
+    expect(result.matched).toBe(false);
+    if (result.matched) throw new Error("expected a failure");
+    expect(result.failure?.offset).toBe(plus.span.start);
+    expect(result.failure?.at).toBe(plus.origin);
+    expect(result.failure?.expectations).toEqual([
+      { kind: "description", description: "two names separated by a comma" },
+    ]);
+  });
+
   it("matches ordered user rules and exports named field records", () => {
     const pair: SyntaxClassInput = {
       classId: pairClass,

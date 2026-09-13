@@ -48,6 +48,7 @@ const summaries = {
       "npx sweetener check         # type-check through the official compiler",
       "npx sweetener build         # expand and emit",
       "npx sweetener watch",
+      "npx sweetener guide         # how to write macros",
       "```",
     ].join("\n"),
   },
@@ -279,6 +280,13 @@ for (const directory of packageDirectories) {
   // command lives outside `dist` was staged without it, so the tarball
   // declared a command it did not contain.
   for (const entry of layers.length > 0 ? [] : (manifest.files ?? ["dist"])) {
+    // `sweetener guide` prints the repository's guide, which is kept at the
+    // root where the README links to it rather than copied into the package
+    // and left to drift. The release is where the package gets its copy.
+    if (directory === "cli" && entry === "SKILL.md") {
+      await cp(join(root, "SKILL.md"), join(targetDirectory, entry));
+      continue;
+    }
     await cp(join(sourceDirectory, entry), join(targetDirectory, entry), {
       // Compiled tests and the incremental build log are not part of the
       // package. `files: ["dist"]` swept them in: 128 test artifacts in the

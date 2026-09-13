@@ -1,4 +1,5 @@
 export * from "./cursor.js";
+export * from "./greater-than.js";
 export * from "./hash.js";
 export * from "./identifier-tokens.js";
 export * from "./kinds.js";

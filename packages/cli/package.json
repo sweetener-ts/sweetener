@@ -14,7 +14,8 @@
   },
   "files": [
     "bin",
-    "dist"
+    "dist",
+    "SKILL.md"
   ],
   "dependencies": {
     "@sweetener/compiler": "workspace:*",

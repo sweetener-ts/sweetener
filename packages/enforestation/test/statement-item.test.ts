@@ -139,6 +139,17 @@ describe("statement and item consumers", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe(source);
   });
 
+  test.each(["return 1 + ;", "break 1 + ;", "continue 1 + ;"])(
+    "does not drop what a restricted statement could not read: %s",
+    (source) => {
+      // The failed expression attempt had already read `1 +`, and the `;`
+      // after it then satisfied the terminator, so the statement matched as
+      // the keyword alone and the rest of what was written vanished.
+      const { result } = parse(source, "stmt");
+      expect(result.matched).toBe(false);
+    },
+  );
+
   test("implements restricted-production and automatic-semicolon rules", () => {
     const returned = parse("return\nnext();", "stmt").result;
     expect(returned.matched).toBe(true);

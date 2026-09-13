@@ -149,11 +149,43 @@ const coreFormKeys = new Set(
   coreFormIdentities.map(({ spelling, category }) => `${category}|${spelling}`),
 );
 
+/**
+ * Expression forms that begin an operand: the declared words, and the core
+ * operators written in front of what they apply to.
+ */
+const coreOperandKeys = new Set(
+  [
+    ...declaredCoreForms,
+    ...coreExpressionOperators
+      .filter(({ fixity }) => fixity === "prefix")
+      .map(({ spelling }) => ({ spelling, category: "expr" as const })),
+  ].map(({ spelling, category }) => `${category}|${spelling}`),
+);
+
+/**
+ * Whether a binding of this kind, spelled this way, would stand where a core
+ * form does, and so has to be authorized to intercept it.
+ *
+ * A macro heads an operand, so in an expression it meets only the core forms
+ * that head one. An operator is dispatched beside or between operands, where
+ * every core operator of its spelling stands. Treating the two alike made a
+ * macro named `%` read as intercepting remainder, which it never can: `%` is
+ * written between operands, and the macro stands where an operand begins.
+ */
 export function isCoreForm(
   spelling: string,
   category: SyntaxCategory,
+  kind: "macro" | "operator",
 ): boolean {
-  return coreFormKeys.has(`${category}|${spelling}`);
+  const key = `${category}|${spelling}`;
+  return kind === "macro" ? coreOperandKeys.has(key) : coreFormKeys.has(key);
+}
+
+/** The kind `isCoreForm` asks about, for a binding that may be neither. */
+export function coreFormKind(
+  binding: Pick<Binding, "kind">,
+): "macro" | "operator" {
+  return binding.kind === "operator" ? "operator" : "macro";
 }
 
 export interface CoreShadowMetadata {
@@ -234,7 +266,13 @@ export class CoreShadowRegistry {
     const spelling = definitionSpelling(options.definition);
     validateBinding(options.binding, spelling, category);
     const requested = definitionOptIn(options.definition);
-    const valid = !requested || isCoreForm(spelling, category);
+    const valid =
+      !requested ||
+      isCoreForm(
+        spelling,
+        category,
+        options.definition.kind === "operator" ? "operator" : "macro",
+      );
     const diagnostics = valid
       ? []
       : [
@@ -373,7 +411,16 @@ export function resolveCoreDispatch(options: {
   const authorized = candidates.filter(
     ({ id }) => options.shadows.get(id)?.authorized === true,
   );
-  const core = isCoreForm(options.spelling, options.category);
+  // Which core forms a name meets depends on where its binding is dispatched.
+  // With no binding to say, every core form of the spelling counts.
+  const core = isCoreForm(
+    options.spelling,
+    options.category,
+    candidates.length > 0 &&
+      candidates.every((candidate) => coreFormKind(candidate) === "macro")
+      ? "macro"
+      : "operator",
+  );
   const decision =
     authorized.length > 1 || (!core && candidates.length > 1)
       ? "ambiguous"

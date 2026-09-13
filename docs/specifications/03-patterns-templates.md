@@ -8,6 +8,9 @@ will fix token details before implementation.
 ```text
 macro-definition  ::= export? recursion? "syntax" macro-name ":" category
                       shadow-clause? "{" macro-rule+ "}"
+parameter-definition
+                  ::= export? "syntax" "parameter" macro-name ":" category
+                      ( "{" macro-rule+ "}" | ";"? )
 recursion         ::= "rec"
 shadow-clause     ::= "shadows" "core"
 macro-rule        ::= "rule" pattern binding-clause* "=>" template
@@ -24,6 +27,12 @@ template          ::= "{" template-sequence "}"
 
 Macro names may use one identifier or one explicitly grouped punctuation
 sequence. Categories come from the fixed syntax-consumer registry.
+
+A parameter definition declares a syntax parameter (section 11, and the
+expansion specification, section 15). Its rules, which are optional, give its
+meaning where no `#parameterize` names it. A macro may itself be named
+`parameter`: `syntax parameter:expr { ... }` is an ordinary definition, and the
+word introduces a parameter only when a name follows it.
 
 ## 2. Pattern nodes
 
@@ -54,10 +63,18 @@ syntax.
 - A declared binding literal compares resolved binding identity. Macro imports
   use this form for keywords owned by a macro library.
 - Trivia does not participate.
+- `$$name` matches the identifier `$name`. A leading `$$` stands for one `$`,
+  because `$name` is a capture; `$$$name` matches `$$name`.
 
 ## 4. Captures and syntax classes
 
-`$x:expr` calls class `expr` at the current cursor. A successful capture stores:
+`$x:expr` calls class `expr` at the current cursor. The `token` and `tt` classes
+take one token, except that an operator of the `>` family -- `>=`, `>>`, `>>=`,
+`>>>`, `>>>=` -- is taken whole when its pieces are written together. The
+scanner leaves those as single-character tokens because a `>` may close a list
+of type arguments, and a capture that took only the `>` left the rest for the
+pattern after it. A spelling refinement reads such a capture as the one token
+it is. A successful capture stores:
 
 ```ts
 interface CaptureLeaf {
@@ -83,6 +100,12 @@ dimensions: `$methods.name` has the same outer dimension as `$methods`.
 - The matcher commits after one rule consumes a complete invocation accepted by
   the surrounding syntax consumer.
 - A failed rule restores the cursor and capture state.
+- When no rule matches, the failure that reached farthest into the input is
+  reported, at the syntax where it stopped. A syntax class that fails passes its
+  own farthest failure to the pattern that called it, so a mistake deep inside
+  a clause is not reduced to the class not matching where it began. The words
+  used are those of the innermost class or rule with an `expect` clause that
+  was reading at that position.
 - A syntax-class rule follows the same ordered policy.
 - The definition compiler warns when it proves a later rule unreachable.
 - Authors MUST mark low-priority catch-all behavior with `fallback rule`.
@@ -177,6 +200,12 @@ type TemplateNode =
   | GeneratedDefinitionTemplate;
 ```
 
+An identifier written `$$name` in a template is the literal identifier
+`$name`: a leading `$$` stands for one `$`, since `$name` refers to a capture.
+A template cannot otherwise emit a name such as `$inferSelect` or `$state`. In
+the quoted body of `#syntax { ... }` the escape is left for the generated
+definition's own template to read.
+
 Literal template syntax receives the invocation introduction scope. Capture
 templates copy syntax and scopes, then attach a copied origin. Group templates
 construct balanced syntax groups before printing.
@@ -234,6 +263,20 @@ previous evaluated accumulator, `$item` selects the current capture element and
 its declared fields, and `$index` emits the zero-based compile-time index. The
 body becomes the complete next accumulator. Empty input returns the initial
 template unchanged.
+
+A parameterization gives a syntax parameter a meaning for the syntax it wraps:
+
+```text
+#parameterize(parameter-name = replacement syntax) { body syntax }
+```
+
+The parameter is named as a definition names it: a word, punctuation written
+together, or a spelling in parentheses when it contains `=`. The first `=`
+separates the name from the replacement, which MUST NOT be empty. Captures may
+stand in the replacement and the body. A malformed parameterization reports
+`SWR2016` where the template is defined. The template language does not apply
+it: it is carried into the replacement and applied during expansion, because
+what it changes is how the body's own macros expand.
 
 ## 12. Binding clauses
 

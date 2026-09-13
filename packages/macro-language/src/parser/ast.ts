@@ -48,12 +48,22 @@ export interface SyntaxDefinition extends MacroLanguageNode {
   readonly id: DefinitionId;
   readonly exported: boolean;
   readonly recursive: boolean;
+  /**
+   * Whether this is a syntax parameter: a macro binding whose meaning a
+   * template can adjust, with `#parameterize`, for the syntax it wraps. Its
+   * rules, if it has any, say what it means where no parameterization is in
+   * effect.
+   */
+  readonly parameter: boolean;
   readonly name: string;
   readonly category: SyntaxCategory;
   readonly shadowsCore: boolean;
   readonly rules: readonly MacroRule[];
   readonly clauses: readonly DefinitionClause[];
-  readonly body: GroupSyntax;
+  /** Absent only for a syntax parameter declared without rules. */
+  readonly body: GroupSyntax | undefined;
+  /** The last node of the definition: its body, or what ends a bodiless one. */
+  readonly end: Syntax;
 }
 
 export interface SyntaxClassDefinition extends MacroLanguageNode {

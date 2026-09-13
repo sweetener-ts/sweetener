@@ -97,6 +97,13 @@ export interface CompileParsedMacrosOptions {
 }
 
 export interface CompileParsedMacrosResult {
+  /**
+   * The scopes of syntax written in this module. Syntax carrying them resolves
+   * macros against this module's own definitions and imports wherever it ends
+   * up -- a template's tokens are spliced into another file's expansion, and
+   * keep the scopes of the module that wrote them.
+   */
+  readonly definitionScopes: ScopeSetId;
   readonly macros: readonly CompiledMacroBinding[];
   readonly definitions: readonly {
     readonly definition: Exclude<
@@ -365,7 +372,14 @@ export function compileParsedMacros(
     if (definition.kind === "syntax-class") continue;
     const spelling =
       definition.kind === "operator" ? definition.spelling : definition.name;
-    if (definition.shadowsCore && !isCoreForm(spelling, definition.category)) {
+    if (
+      definition.shadowsCore &&
+      !isCoreForm(
+        spelling,
+        definition.category,
+        definition.kind === "operator" ? "operator" : "macro",
+      )
+    ) {
       const span = options.spanForOrigin(definition.origin);
       diagnostics.push(
         expansionDiagnosticRegistry.create(invalidCoreShadowCode, {
@@ -482,10 +496,14 @@ export function compileParsedMacros(
         }),
       );
     }
+    const parameter = definition.kind === "syntax" && definition.parameter;
     // Every rule failed to compile, and its diagnostics are already reported.
     // Registering the name anyway would offer callers a macro that cannot
-    // expand, so the definition contributes nothing instead.
-    if (rules.length === 0) continue;
+    // expand, so the definition contributes nothing instead. A syntax
+    // parameter declared without rules is the exception: it has meaning only
+    // where a `#parameterize` gives it one.
+    if (rules.length === 0 && !(parameter && definition.rules.length === 0))
+      continue;
     const macro = Object.freeze({
       binding: createBinding({
         id: options.allocateBindingId(),
@@ -502,6 +520,7 @@ export function compileParsedMacros(
       category: definition.category,
       definitionScopes: options.definitionScopes,
       rules: Object.freeze(rules),
+      parameter,
     });
     const operator =
       definition.kind === "operator"
@@ -555,6 +574,7 @@ export function compileParsedMacros(
     parsed.classBindings.map(({ name, classId }) => [name, classId]),
   );
   return Object.freeze({
+    definitionScopes: options.definitionScopes,
     macros: frozenMacros,
     definitions: frozenDefinitions,
     operators: Object.freeze(operators),

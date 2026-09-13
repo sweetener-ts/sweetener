@@ -435,10 +435,24 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
     const functionWidth = functionExpressionWidth(cursor);
     const classWidth = classExpressionWidth(cursor);
     const arrow = arrowWidth(cursor, context);
+    // A macro may be named by punctuation that begins no ordinary operand --
+    // a syntax parameter spelled `%` stands where an operand does. Only the
+    // macro's own extent says it is one; the tokens it takes are left for the
+    // expander, and what follows is read as postfix as it is for any operand.
+    const macroOperand =
+      functionWidth === undefined &&
+      classWidth === undefined &&
+      arrow === undefined &&
+      !isPrimaryAtom(cursor.peek()) &&
+      macroAttempt?.matched === true &&
+      macroAttempt.cursor.index > cursor.index
+        ? macroAttempt.cursor.index - cursor.index
+        : undefined;
     if (
       functionWidth === undefined &&
       classWidth === undefined &&
       arrow === undefined &&
+      macroOperand === undefined &&
       !isPrimaryAtom(cursor.peek())
     ) {
       return failure(
@@ -450,7 +464,9 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         1,
       );
     }
-    cursor.advance(functionWidth ?? classWidth ?? arrow?.width ?? 1);
+    cursor.advance(
+      functionWidth ?? classWidth ?? arrow?.width ?? macroOperand ?? 1,
+    );
     // Postfix parsing runs first so the macro extent is compared against the
     // whole expression, not just its head.
     let optionalChain = false;

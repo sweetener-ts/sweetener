@@ -1,5 +1,5 @@
 import { query } from "./macros.sts" for syntax;
-import { and, asc, desc, eq, gt, gte, lt, lte, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, lt, lte, ne, or } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { boolean, integer, pgTable, serial, text } from "drizzle-orm/pg-core";
 
@@ -39,4 +39,11 @@ query(db) {
   left join posts on posts.authorId == users.id and posts.id > 0
   where users.name != name and users.age < 65 and users.age <= 64
   order by users.age desc
+};
+
+export const either = (db: NodePgDatabase, name: string) =>
+query(db) {
+  select { name: users.name }
+  from users
+  where users.name == name or users.age > 65 and (users.id < 10 or users.id > 100)
 };

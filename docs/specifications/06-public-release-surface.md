@@ -35,6 +35,11 @@ Core-form interception is lexical and explicit.
 validation, hygiene, and resource checks. Generated definitions enter only the
 following source-ordered environment and MUST NOT execute host code.
 
+`syntax parameter name:category` declares a syntax parameter, and
+`#parameterize(name = replacement) { body }` gives it a meaning for the
+expansion of `body`. A parameter used where none is in effect expands by its own
+rules, or reports `SWR4018` when it has none.
+
 ## 4. Macro-module format
 
 Source files import named macro exports with
@@ -157,7 +162,7 @@ Legacy `syntax`/`syntaxrec` definitions become declarative `macro` rules.
 Postfix ellipses become grouped `$()` repetition. Syntax-class concatenated
 fields become dot fields. `withSyntax`, host functions, and arbitrary transformer
 code must be replaced with templates, binding clauses, finite refinements,
-`#fresh`, `#datum`, `#if`, `#join`, `#fold`, or `#metavar`. A transformation that
+`#fresh`, `#datum`, `#if`, `#join`, `#fold`, `#metavar`, or `#parameterize`. A transformation that
 cannot be expressed by those operations is unsupported in version `1`; it is
 not grounds for importing compiler APIs.
 

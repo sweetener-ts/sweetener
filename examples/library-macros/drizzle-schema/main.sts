@@ -1,5 +1,4 @@
 import { table } from "./macros.sts" for syntax;
-import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
 import {
   boolean,
   integer,

@@ -23,6 +23,7 @@ import {
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
 import { loadSweetProject } from "./configuration.js";
 import { emitStandalone } from "./standalone-emit.js";
+import { guideFileName, guidePath, readGuide } from "./guide.js";
 
 export interface CliIo {
   readonly stdout: (text: string) => void;
@@ -57,6 +58,7 @@ export type CliInvocation =
       readonly json?: boolean | undefined;
     }
   | { readonly command: "help" }
+  | { readonly command: "guide" }
   | {
       readonly command: "emit";
       readonly fileNames: readonly string[];
@@ -115,6 +117,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     command === "help"
   )
     return Object.freeze({ command: "help" });
+  if (command === "guide") {
+    if (argv.length > 1) throw new TypeError("guide takes no arguments");
+    return Object.freeze({ command });
+  }
   if (command === "expand") {
     const { positional, configPath } = splitProjectOption(argv.slice(1));
     if (positional.length !== 1)
@@ -168,7 +174,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   if (command !== "check" && command !== "build" && command !== "watch")
     throw new TypeError(
-      "Expected init, check, build, watch, expand, explain, or emit command",
+      "Expected init, check, build, watch, expand, explain, emit, or guide command",
     );
   let configPath = "tsconfig.json";
   let debug = false;
@@ -222,6 +228,8 @@ Commands:
   explain <file:line:col> Report where a position came from, and through which
                           macros.
   emit <files...>         Expand named files into a directory, without checking.
+  guide                   Print the guide to writing macros: declaring them,
+                          running the compiler, and reading its diagnostics.
 
 Options:
   -p, --project <path>    Project config to use. Defaults to the nearest
@@ -357,6 +365,17 @@ export function runCli(options: {
   }
   if (invocation.command === "help") {
     options.io.stdout(usage);
+    return Object.freeze({ exitCode: 0 });
+  }
+  if (invocation.command === "guide") {
+    const path = guidePath();
+    if (path === undefined) {
+      options.io.stderr(
+        `The guide is missing from this installation: no ${guideFileName} beside @sweetener/cli. Reinstall the package, or read it at https://github.com/sweetener-ts/sweetener/blob/main/${guideFileName}\n`,
+      );
+      return Object.freeze({ exitCode: 1 });
+    }
+    options.io.stdout(readGuide(path));
     return Object.freeze({ exitCode: 0 });
   }
   const report = (result: ReturnType<typeof runConfiguredProjectCommand>) => {

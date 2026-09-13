@@ -391,6 +391,7 @@ describe("definition contexts", () => {
       category: "expr" as const,
       definitionScopes: localBinding.scopes,
       rules: Object.freeze([]),
+      parameter: false,
     });
     const module = Object.freeze({
       macros: Object.freeze([compiledLocal]),
@@ -442,12 +443,14 @@ describe("definition contexts", () => {
       category: "expr" as const,
       definitionScopes: outerItem.binding.scopes,
       rules: Object.freeze([]),
+      parameter: false,
     });
     const localMacro = Object.freeze({
       binding: localItem.binding,
       category: "expr" as const,
       definitionScopes: localItem.binding.scopes,
       rules: Object.freeze([]),
+      parameter: false,
     });
     const module = Object.freeze({
       macros: Object.freeze([outerMacro, localMacro]),

@@ -55,6 +55,13 @@ export interface SyntaxClassConsumer {
     classId: SyntaxClassId,
     cursor: SyntaxCursor,
     boundary?: SyntaxClassBoundary,
+    /**
+     * Told how far a class that did not match got before it failed. Without
+     * it a class that read most of its input and then failed is recorded only
+     * as not matching where it began, and the mistake inside it is never
+     * reported.
+     */
+    onFailure?: (failure: MatchFailure) => void,
   ): SyntaxClassMatch | undefined;
   readonly describeFailure?:
     ((classId: SyntaxClassId) => string | undefined) | undefined;
@@ -235,6 +242,15 @@ function cursorOffset(cursor: SyntaxCursor): number {
   return sequence.at(-1)?.span.end ?? 0;
 }
 
+/** The syntax a cursor stands at, for reporting a failure there. */
+function cursorOrigin(cursor: SyntaxCursor): OriginId | undefined {
+  const syntax = cursor.peek();
+  if (syntax !== undefined) return syntax.origin;
+  const parent = cursor.parentLocation;
+  if (parent !== undefined) return parent.group.close.origin;
+  return cursor.remainingRange().sequence.at(-1)?.origin;
+}
+
 function repetitionShape(frames: readonly RepeatFrame[]): string {
   return frames
     .map((frame) => {
@@ -286,36 +302,57 @@ export function executeMatcher(
     | {
         offset: number;
         cursor: CursorIdentity;
+        at: OriginId | undefined;
         specificity: number;
         expectations: Map<string, MatcherExpectation>;
         origins: Set<OriginId>;
       }
     | undefined;
 
+  const record = (failure: MatchFailure): void => {
+    if (bestFailure === undefined || failure.offset > bestFailure.offset) {
+      bestFailure = {
+        offset: failure.offset,
+        cursor: failure.cursor,
+        at: failure.at,
+        specificity: failure.specificity,
+        expectations: new Map(
+          failure.expectations.map((expectation) => [
+            expectationKey(expectation),
+            expectation,
+          ]),
+        ),
+        origins: new Set(failure.origins),
+      };
+      return;
+    }
+    if (failure.offset < bestFailure.offset) return;
+    bestFailure.specificity = Math.max(
+      bestFailure.specificity,
+      failure.specificity,
+    );
+    for (const expectation of failure.expectations)
+      bestFailure.expectations.set(expectationKey(expectation), expectation);
+    for (const origin of failure.origins) bestFailure.origins.add(origin);
+    if (failure.cursor < bestFailure.cursor) {
+      bestFailure.cursor = failure.cursor;
+      bestFailure.at = failure.at ?? bestFailure.at;
+    }
+  };
+
   const recordFailure = (
     cursor: SyntaxCursor,
     expectation: MatcherExpectation,
     origin: OriginId,
-  ): void => {
-    const offset = cursorOffset(cursor);
-    const specificity = expectationSpecificity(expectation);
-    if (bestFailure === undefined || offset > bestFailure.offset) {
-      bestFailure = {
-        offset,
-        cursor: cursor.identity,
-        specificity,
-        expectations: new Map([[expectationKey(expectation), expectation]]),
-        origins: new Set([origin]),
-      };
-      return;
-    }
-    if (offset < bestFailure.offset) return;
-    bestFailure.specificity = Math.max(bestFailure.specificity, specificity);
-    bestFailure.expectations.set(expectationKey(expectation), expectation);
-    bestFailure.origins.add(origin);
-    if (cursor.identity < bestFailure.cursor)
-      bestFailure.cursor = cursor.identity;
-  };
+  ): void =>
+    record({
+      offset: cursorOffset(cursor),
+      cursor: cursor.identity,
+      at: cursorOrigin(cursor),
+      specificity: expectationSpecificity(expectation),
+      expectations: [expectation],
+      origins: [origin],
+    });
 
   while (pending.length > 0) {
     const state = pending.pop();
@@ -350,16 +387,29 @@ export function executeMatcher(
           state.pc = instruction.next;
           break;
         case "class": {
+          let inner: MatchFailure | undefined;
           const matched = options.consumeClass(
             instruction.classId,
             state.cursor.fork(),
             classBoundary(program, instruction.next),
+            (failure) => {
+              inner = failure;
+            },
           );
           if (matched === undefined) {
             failedMemo.add(memoKey);
             const description = options.consumeClass.describeFailure?.(
               instruction.classId,
             );
+            // A class that got past where it began failed at a mistake inside
+            // it, and that is the failure to report. One that failed where it
+            // began is described as the class.
+            const reached = inner as MatchFailure | undefined;
+            if (
+              reached !== undefined &&
+              reached.offset > cursorOffset(state.cursor)
+            )
+              record(reached);
             recordFailure(
               state.cursor,
               description === undefined
@@ -577,6 +627,7 @@ export function executeMatcher(
       : Object.freeze({
           offset: bestFailure.offset,
           cursor: bestFailure.cursor,
+          at: bestFailure.at,
           specificity: bestFailure.specificity,
           expectations: Object.freeze(
             [...bestFailure.expectations.entries()]

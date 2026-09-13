@@ -149,6 +149,7 @@ function compileMacro(source: string, scopeStore: ScopeStore) {
     category: definition.category,
     definitionScopes,
     rules: Object.freeze(rules),
+    parameter: false,
   });
   return { origins, macro, consumeClass };
 }

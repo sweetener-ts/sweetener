@@ -670,16 +670,24 @@ class StatementConsumer implements SyntaxConsumer {
         ),
       });
       const expression = this.#expression.consume(cursor, expressionContext);
-      if (!expression.matched) {
-        if (keyword === "throw")
-          return failure(
-            "stmt",
-            cursor,
-            start,
-            ["expression after 'throw'"],
-            50,
-          );
-      } else children.push(expression.syntax);
+      // What follows the keyword on its line belongs to the statement. Only
+      // `throw` reported a failure to read it: `return 1 + ;` carried on past
+      // the tokens the failed attempt had already read, found the `;`, and
+      // succeeded as `return ;` -- dropping `1 +` from the program without a
+      // word, where TypeScript would have rejected what was written.
+      if (!expression.matched)
+        return failure(
+          "stmt",
+          cursor,
+          start,
+          [
+            keyword === "throw" || keyword === "return"
+              ? `expression after '${keyword}'`
+              : `label after '${keyword}'`,
+          ],
+          50,
+        );
+      children.push(expression.syntax);
     } else if (keyword === "throw") {
       return failure("stmt", cursor, start, ["expression after 'throw'"], 50);
     }

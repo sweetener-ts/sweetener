@@ -126,6 +126,34 @@ an origin and a template-operation trace event. `#index()` is valid only inside
 a template repetition. Folds use the fixed form documented in the template
 specification and cannot introduce host callbacks.
 
+## Syntax parameters
+
+Some names are written by the macro's user but mean something only the macro
+knows: the placeholder of a Hack-style pipe, `it` in an anaphoric conditional.
+Hygiene keeps those apart from a template's bindings on purpose, so the
+language provides Racket's answer, a syntax parameter.
+
+```ts
+export syntax parameter (%):expr;
+
+export operator (|>):expr {
+  fixity infix;
+  associativity left;
+  precedence 40;
+  rule { $value:expr |> $body:expr } => {
+    ((topic) => #parameterize(% = topic) { $body })($value)
+  }
+}
+```
+
+`#parameterize(% = topic) { ... }` makes each `%` in the expansion of its body
+stand for `topic`, the template's own binding, so hygiene still keeps `topic`
+from capturing a call-site variable of the same name. A parameter may declare
+rules for where no parameterization is in effect; one declared without rules is
+reported there. A parameter stands wherever an operand may, and a
+punctuation-spelled one is dispatched only where an operand begins, so the pipe
+above leaves `a % b` meaning remainder.
+
 ## Operators
 
 ```ts

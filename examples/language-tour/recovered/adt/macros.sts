@@ -76,8 +76,9 @@ export syntax match:expr {
               }
               return $result;
             })*
+          const unmatched: never = this.value;
           throw new globalThis.Error(
-            "No match for " + globalThis.JSON.stringify(this.value),
+            "No match for " + globalThis.JSON.stringify(unmatched),
           );
         },
       }).run()

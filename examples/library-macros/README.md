@@ -12,4 +12,5 @@ because the tour is self-contained and these need real packages to type-check.
   TypeScript property is.
 - `drizzle-query` — `query(db) { select ... from ... join ... where ... order by
 ... limit ... }` as the Drizzle builder chain, with `==`, `>=` and the rest
-  as `eq`, `gte` and the rest. The row types are Drizzle's own inference.
+  as `eq`, `gte` and the rest, and conditions joined by `and` and `or` and
+  grouped in parentheses. The row types are Drizzle's own inference.

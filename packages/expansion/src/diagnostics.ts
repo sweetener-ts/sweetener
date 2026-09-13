@@ -17,8 +17,52 @@ export const expansionCycleCode = diagnosticCode("SWR4014");
 export const expansionLimitCode = diagnosticCode("SWR4015");
 export const unprocessedDefinitionCode = diagnosticCode("SWR4016");
 export const macroNotYetVisibleCode = diagnosticCode("SWR4017");
+export const unparameterizedSyntaxParameterCode = diagnosticCode("SWR4018");
+export const notSyntaxParameterCode = diagnosticCode("SWR4019");
+export const unreadableSyntaxCode = diagnosticCode("SWR4020");
+export const unexpandedOperatorCode = diagnosticCode("SWR4021");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
+  {
+    code: unparameterizedSyntaxParameterCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A syntax parameter declared without rules means something only inside a `#parameterize` that names it. Written anywhere else it has no expansion, and passing it through would leave macro syntax in the emitted TypeScript.",
+    format: (arguments_) =>
+      `Syntax parameter ${String(arguments_[0] ?? "unknown")} is used outside any #parameterize that gives it a meaning. It is declared without rules, so it means nothing here.`,
+  },
+  {
+    code: notSyntaxParameterCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "`#parameterize` adjusts a syntax parameter, which is declared with `syntax parameter`. Naming an ordinary macro, or a name no macro in scope has, would silently change nothing.",
+    format: (arguments_) =>
+      `#parameterize names ${String(arguments_[0] ?? "unknown")}, which is not a syntax parameter in scope here. Declare it with \`syntax parameter\`, and import it for syntax where the template is defined.`,
+  },
+  {
+    code: unreadableSyntaxCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Syntax the enforester has to read before it can expand what is inside -- a template literal's substitution, a group holding a custom operator -- is reported where it could not be read, rather than thrown past every caller.",
+    format: (arguments_) =>
+      `Sweetener could not read this as ${String(arguments_[0] ?? "syntax")}: ${String(arguments_[1] ?? "")}`,
+  },
+  {
+    code: unexpandedOperatorCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A custom operator is expanded while the expression around it is read. When that expression cannot be read, the operator's rules are never tried, and its spelling -- which TypeScript does not have -- would reach the emitted code.",
+    format: (arguments_) =>
+      `Operator ${String(arguments_[0] ?? "unknown")} was left unexpanded: the expression it is written in could not be read, so none of its rules were tried.`,
+  },
   {
     code: expansionCycleCode,
     owner: "expansion-enforestation",

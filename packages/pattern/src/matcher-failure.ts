@@ -13,9 +13,91 @@ export type MatcherExpectation =
 export interface MatchFailure {
   readonly offset: number;
   readonly cursor: CursorIdentity;
+  /**
+   * The syntax the failure stood at, for reporting it there. Absent only when
+   * the input was empty and there was nothing to point at.
+   */
+  readonly at: OriginId | undefined;
   readonly specificity: number;
   readonly expectations: readonly MatcherExpectation[];
   readonly origins: readonly OriginId[];
+}
+
+/**
+ * The farthest of several failures, with what each wanted there merged.
+ *
+ * Failures rank by how far into the input they reached: the attempt that got
+ * furthest is the one that says most about what was meant. At the same offset
+ * the expectations are merged and the most specific one sets the rank.
+ */
+export function farthestFailure(
+  failures: readonly MatchFailure[],
+): MatchFailure | undefined {
+  if (failures.length === 0) return undefined;
+  const farthest = Math.max(...failures.map((failure) => failure.offset));
+  const atOffset = failures.filter((failure) => failure.offset === farthest);
+  const specificity = Math.max(
+    ...atOffset.map((failure) => failure.specificity),
+  );
+  const best = atOffset.filter(
+    (failure) => failure.specificity === specificity,
+  );
+  const expectations = new Map(
+    best.flatMap((failure) =>
+      failure.expectations.map(
+        (expectation) => [expectationKey(expectation), expectation] as const,
+      ),
+    ),
+  );
+  const first = [...best].sort((left, right) =>
+    left.cursor.localeCompare(right.cursor),
+  )[0]!;
+  return Object.freeze({
+    offset: farthest,
+    cursor: first.cursor,
+    at: first.at ?? best.find((failure) => failure.at !== undefined)?.at,
+    specificity,
+    expectations: Object.freeze(
+      [...expectations]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([, value]) => value),
+    ),
+    origins: Object.freeze(
+      [...new Set(best.flatMap((failure) => failure.origins))].sort(
+        (left, right) => left - right,
+      ),
+    ),
+  });
+}
+
+/**
+ * A failure put in the words of what was being read when it happened.
+ *
+ * A syntax class or a rule with an `expect` names what belongs where it
+ * failed. The innermost description is the most exact one, so a failure that
+ * already carries a description -- a class inside this one said what it
+ * wanted -- keeps it, and only a failure described by nothing but the tokens
+ * and classes it wanted takes this one.
+ */
+export function describeFailureAs(
+  failure: MatchFailure,
+  description: string,
+): MatchFailure {
+  const described = failure.expectations.filter(
+    (expectation) => expectation.kind === "description",
+  );
+  return Object.freeze({
+    ...failure,
+    specificity: Math.max(
+      failure.specificity,
+      expectationSpecificity({ kind: "description", description }),
+    ),
+    expectations: Object.freeze(
+      described.length > 0
+        ? described
+        : [Object.freeze({ kind: "description" as const, description })],
+    ),
+  });
 }
 
 export function expectationSpecificity(

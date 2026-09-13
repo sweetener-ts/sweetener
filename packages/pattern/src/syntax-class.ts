@@ -8,7 +8,11 @@ import type {
   SyntaxClassId,
 } from "@sweetener/shared";
 import type { Span, Syntax, SyntaxCursor } from "@sweetener/syntax";
-import { createSyntaxSequence, isIdentifierToken } from "@sweetener/syntax";
+import {
+  createSyntaxSequence,
+  greaterThanTokenWidth,
+  isIdentifierToken,
+} from "@sweetener/syntax";
 import type { PatternNode } from "./ast.js";
 import {
   CaptureRecord,
@@ -28,6 +32,11 @@ import {
   unresolvedSyntaxClassCode,
 } from "./diagnostics.js";
 import { compileMatcherProgram } from "./matcher-compiler.js";
+import {
+  describeFailureAs,
+  farthestFailure,
+  type MatchFailure,
+} from "./matcher-failure.js";
 import type { MatcherProgram } from "./matcher-program.js";
 import {
   executeMatcher,
@@ -571,10 +580,21 @@ function builtinMatch(
       syntax.tag === "token" &&
       isIdentifierToken(syntax));
   if (!matches) return undefined;
-  cursor.advance();
+  // `>=` is scanned as `>` then `=`. A token is what the author wrote, so a
+  // `token` or `tt` capture takes the whole operator; taking `>` alone left
+  // the `=` for the rest of the rule, which then failed on it.
+  const width =
+    classId === builtins.ident
+      ? 1
+      : Math.max(
+          1,
+          greaterThanTokenWidth((offset) => cursor.peek(offset)),
+        );
+  const taken: Syntax[] = [];
+  for (let index = 0; index < width; index += 1) taken.push(cursor.consume()!);
   return Object.freeze({
     cursor,
-    syntax: createSyntaxSequence([syntax]),
+    syntax: createSyntaxSequence(taken),
     origin: syntax.origin,
   });
 }
@@ -587,17 +607,36 @@ export interface CreateSyntaxClassConsumerOptions extends Omit<
   readonly externalConsumer?: SyntaxClassConsumer | undefined;
 }
 
+/** The one description a class's `expect` gives, when it gives one. */
+function describeClass(
+  syntaxClass: Pick<CompiledSyntaxClass, "rules">,
+): string | undefined {
+  const descriptions = [
+    ...new Set(
+      syntaxClass.rules.flatMap(({ failureDescription }) =>
+        failureDescription === undefined ? [] : [failureDescription],
+      ),
+    ),
+  ];
+  return descriptions.length === 1 ? descriptions[0] : undefined;
+}
+
 export function createSyntaxClassConsumer(
   registry: SyntaxClassRegistry,
   options: CreateSyntaxClassConsumerOptions,
 ): SyntaxClassConsumer {
   const active = new Set<string>();
-  const consume: SyntaxClassConsumer = (classId, cursor, boundary) => {
+  const consume: SyntaxClassConsumer = (
+    classId,
+    cursor,
+    boundary,
+    onFailure,
+  ) => {
     const builtin = builtinMatch(classId, cursor, options.builtins);
     if (builtin !== undefined) return builtin;
     const syntaxClass = registry.get(classId);
     if (syntaxClass === undefined) {
-      return options.externalConsumer?.(classId, cursor, boundary);
+      return options.externalConsumer?.(classId, cursor, boundary, onFailure);
     }
     // A recursive class may revisit its class identity only after input or the
     // lexical environment changes. This is the syntax-class recursion
@@ -605,13 +644,17 @@ export function createSyntaxClassConsumer(
     const activeKey = `${String(classId)}:${cursor.identity}:${String(options.environmentEpoch ?? 0)}`;
     if (active.has(activeKey)) return undefined;
     active.add(activeKey);
+    const failures: MatchFailure[] = [];
     try {
       for (const rule of syntaxClass.rules) {
         const result = executeMatcher(rule.program, cursor, {
           ...options,
           consumeClass: consume,
         });
-        if (!result.matched) continue;
+        if (!result.matched) {
+          if (result.failure !== undefined) failures.push(result.failure);
+          continue;
+        }
         if (!evaluateRefinements(rule.refinements, result.captures)) continue;
         let fields = CaptureRecord.empty;
         for (const mapping of rule.fieldSources) {
@@ -642,6 +685,15 @@ export function createSyntaxClassConsumer(
           origin: syntax[0]?.origin ?? syntaxClass.origin,
         });
       }
+      const failure = farthestFailure(failures);
+      if (failure !== undefined && onFailure !== undefined) {
+        const description = describeClass(syntaxClass);
+        onFailure(
+          description === undefined
+            ? failure
+            : describeFailureAs(failure, description),
+        );
+      }
       return undefined;
     } finally {
       active.delete(activeKey);
@@ -663,14 +715,7 @@ export function createSyntaxClassConsumer(
         const syntaxClass = registry.get(classId);
         if (syntaxClass === undefined)
           return options.externalConsumer?.describeFailure?.(classId);
-        const descriptions = [
-          ...new Set(
-            syntaxClass.rules.flatMap(({ failureDescription }) =>
-              failureDescription === undefined ? [] : [failureDescription],
-            ),
-          ),
-        ];
-        return descriptions.length === 1 ? descriptions[0] : undefined;
+        return describeClass(syntaxClass);
       },
     }),
   );

@@ -298,6 +298,32 @@ describe("template parser", () => {
     ]);
   });
 
+  test("carries #parameterize through with captures read in both groups", () => {
+    const result = parse("{ #parameterize(% = $value) { f($body) } }", [
+      binding("value", 1, createLeafShape(id<SyntaxClassId>(1))),
+      binding("body", 2, createLeafShape(id<SyntaxClassId>(1))),
+    ]);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.template.elements.map((element) => element.kind)).toEqual([
+      "literal",
+      "group",
+      "group",
+    ]);
+  });
+
+  test.each([
+    "{ #parameterize(%) { body } }",
+    "{ #parameterize(% =) { body } }",
+    "{ #parameterize(= topic) { body } }",
+    "{ #parameterize(% = topic) }",
+    "{ #parameterize(a b = topic) { body } }",
+  ])("reports a malformed #parameterize: %s", (source) => {
+    const result = parse(source, []);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "SWR2016",
+    ]);
+  });
+
   test("reports malformed declarative conditionals", () => {
     const result = parse("{ #if(unknown $missing) { value } }", []);
     expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([

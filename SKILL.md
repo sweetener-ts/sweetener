@@ -130,6 +130,36 @@ export const pair = twice(21);
   declares a property. A member macro is written as a bare name, or with a brace
   after it, never in the shape of a property or method signature.
 
+- **A name the user writes that your template gives a meaning**: declare a
+  syntax parameter, and give it a meaning for the syntax a template wraps with
+  `#parameterize`. A Hack-style pipe's `%` is one:
+
+  ```ts
+  export syntax parameter (%):expr;
+
+  export operator (|>):expr {
+    fixity infix;
+    associativity left;
+    precedence 40;
+    rule { $value:expr |> $body:expr } => {
+      ((topic) => #parameterize(% = topic) { $body })($value)
+    }
+  }
+  ```
+
+  The user imports both, `import { (|>), (%) } from "./pipe.sts" for syntax;`,
+  and writes `value |> add(1, %) |> % * 10`. Every `%` in the body stands for
+  `topic`, including one inside a macro the body uses; a `%` between two
+  operands is still remainder. Hygiene alone cannot do this, because the `%`
+  was written by the user and `topic` by the template. A parameter may have
+  rules, used where no `#parameterize` names it; one without rules is reported
+  there.
+
+- **A name that begins with `$`** (`$inferSelect`, `$state`): write `$$` for
+  the `$`, as in `typeof $table.$$inferSelect`. `$name` alone is a capture, in
+  a pattern as in a template.
+- **An operator as a capture**: `$op:token` takes `>=`, `>>` and the rest of
+  the `>` family whole, and `refine $op spelling in (==, >=)` reads it whole.
 - **The source text of a capture**: `#text($value)`, which yields a string
   literal.
 - **A name no call site can collide with**: just introduce it. Hygiene renames
@@ -137,10 +167,11 @@ export const pair = twice(21);
 
 ## Read the diagnostics
 
-`No rule for macro X accepted this input: expected ...` names what the closest
-rule was still waiting for, and the line under it points at the rule in the
-macro definition that wanted it. When a macro will not match, compare the
-input against that rule rather than guessing.
+`No rule for macro X accepted this input: expected ...` is reported where the
+closest rule stopped, which is where the input went wrong, and names what it
+was still waiting for. The lines under it point at the use of the macro and at
+the rule in the macro definition that wanted it. When a macro will not match,
+compare the input against that rule rather than guessing.
 
 To describe a rule's intent in that message, give the rule an `expect` clause:
 
