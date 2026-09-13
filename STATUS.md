@@ -4,7 +4,7 @@ Updated: 2026-08-03
 Current phase: phase-07  
 Current slice: Alpha release review and publication  
 Health: green  
-Repository commit: 1e665b4
+Repository commit: 3aea0d4
 
 The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm under the alpha dist-tag at 0.1.0-alpha.0, with provenance signed from the release workflow.
 
@@ -117,7 +117,7 @@ No task is in progress.
 
 | Check | Result | Commit |
 |---|---|---|
-| unit | 1215 passed | 1e665b4 |
+| unit | 1 failed (stale) | 59cc967 |
 
 ## Decisions requiring review
 
