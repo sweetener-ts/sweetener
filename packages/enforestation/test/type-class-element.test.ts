@@ -22,6 +22,7 @@ import {
   ConsumerRegistry,
   createClassElementConsumer,
   createTypeConsumer,
+  StopSet,
   type TypeClassElementMacroResolver,
 } from "../src/index.js";
 
@@ -43,6 +44,7 @@ function consume(
   source: string,
   category: "type" | "classElement",
   resolveMacro?: TypeClassElementMacroResolver,
+  stopSet?: StopSet,
 ) {
   const origins = new OriginStore();
   const ids = createIdAllocator<SyntaxId>(60_000);
@@ -72,6 +74,7 @@ function consume(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
+    stopSet,
   });
   return { result, cursor, syntax, ids };
 }
@@ -118,6 +121,90 @@ describe("type and class-element consumers", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe("Promise<T>");
     expect(result.cursor.remainingRange().toArray()).toEqual(syntax.slice(4));
     expect(result.cursor.peek()).toMatchObject({ raw: "," });
+  });
+
+  test.each([
+    "(...args: any[]) => infer R",
+    "() => void",
+    "(value) => value",
+    "({ id }: Entity) => string",
+    "(this: Window, event: Event) => void",
+    "(value?: string) => void",
+    "abstract new () => Instance",
+    "(value: unknown) => value is string",
+    "(string | number)[]",
+    "(Result)",
+  ])("reads parameter lists and parenthesized types in %s", (source) => {
+    const { result } = consume(source, "type");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.cursor.atEnd).toBe(true);
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    expect(parseDiagnostics(`type Fragment = ${source};`)).toEqual([]);
+  });
+
+  // A parameter list is only the head of a function type, and `=>` only ever
+  // follows one. Accepting either alone emitted code TypeScript cannot parse.
+  test.each([
+    "(...args: any[])",
+    "(value: T)",
+    "()",
+    "<T>(value: T)",
+    "infer R => X",
+    "string => number",
+    "(string | number) => X",
+    "(...args: any[]) | undefined",
+    "(value: T)[]",
+  ])("rejects %s, which is not a complete type", (source) => {
+    const { result } = consume(source, "type");
+    if (result.matched) {
+      expect(result.cursor.atEnd).toBe(false);
+      expect(
+        parseDiagnostics(
+          `type Fragment = ${printLosslessSequence(result.syntax.children)};`,
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  test("reads a function type through a caller-owned => separator", () => {
+    const { result } = consume(
+      "(...args: any[]) => infer R => X",
+      "type",
+      undefined,
+      new StopSet([{ kind: "token", raw: "=>" }]),
+    );
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected type");
+    expect(printLosslessSequence(result.syntax.children)).toBe(
+      "(...args: any[]) => infer R",
+    );
+    expect(result.cursor.peek()).toMatchObject({ raw: "=>" });
+  });
+
+  test("does not end a parameter list at a caller-owned stop", () => {
+    const { result, cursor } = consume(
+      "(...args: any[])>",
+      "type",
+      undefined,
+      new StopSet([{ kind: "token", raw: ">" }]),
+    );
+    expect(result.matched).toBe(false);
+    expect(cursor.index).toBe(0);
+  });
+
+  test("lets a caller-owned => end a parenthesized type", () => {
+    const { result } = consume(
+      "(Result) => X",
+      "type",
+      undefined,
+      new StopSet([{ kind: "token", raw: "=>" }]),
+    );
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected type");
+    expect(printLosslessSequence(result.syntax.children)).toBe("(Result)");
+    expect(result.cursor.peek()).toMatchObject({ raw: "=>" });
   });
 
   test.each(["keyof", "T extends U X : Y", "Promise<T"])(

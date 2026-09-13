@@ -101,7 +101,8 @@ const typeAtoms = new Set([
   "void",
 ]);
 
-const continuationOperators = new Set(["&", "=>", "extends", "is", "|"]);
+const continuationOperators = new Set(["&", "extends", "is", "|"]);
+const parameterFollowers = new Set([":", ",", "?", "?:", "="]);
 const hardTypeStops = new Set([",", ";", "="]);
 const continuationLineTokens = new Set([
   ".",
@@ -247,6 +248,28 @@ function consumeAngles(
   return false;
 }
 
+/**
+ * A parenthesis standing where a type is expected is either a parenthesized
+ * type or the parameter list of a function type, and only a parameter list may
+ * be followed by `=>`. This follows TypeScript's own reading: an empty list, a
+ * rest parameter, or a name followed by `:`, `,`, `?`, or `=` can only be
+ * parameters; a lone name is either one, decided by whether `=>` follows.
+ */
+function readParenthesis(group: GroupSyntax): "parameters" | "either" | "type" {
+  const [first, second] = group.children;
+  if (first === undefined) return "parameters";
+  if (first.tag === "token" && first.raw === "...") return "parameters";
+  const startsParameter = token(first)
+    ? /^[A-Za-z_$][\w$]*$/u.test(first.raw)
+    : first.tag === "group" &&
+      (first.delimiter === "brace" || first.delimiter === "bracket");
+  if (!startsParameter) return "type";
+  if (second === undefined) return "either";
+  return token(second) && parameterFollowers.has(second.raw)
+    ? "parameters"
+    : "type";
+}
+
 class TypeConsumer implements SyntaxConsumer {
   constructor(readonly options: TypeClassConsumerOptions) {
     Object.freeze(this);
@@ -262,16 +285,30 @@ class TypeConsumer implements SyntaxConsumer {
     let conditionalDepth = 0;
     let genericFunctionHead = false;
     let invalidAdjacency = false;
+    // Whether the parameter list just read must, or may, be followed by `=>`.
+    // One that must is not yet a type, so a caller's stop cannot end it there.
+    let arrow: "none" | "allowed" | "required" = "none";
 
     while (!cursor.atEnd) {
       checkWork(context);
       if (
         children.length > 0 &&
         conditionalDepth === 0 &&
+        arrow !== "required" &&
         context.stopSet.matches(cursor)
       )
         break;
       const next = cursor.peek()!;
+      if (arrow !== "none") {
+        if (token(next, "=>")) {
+          children.push(cursor.consume()!);
+          arrow = "none";
+          expectingOperand = true;
+          continue;
+        }
+        if (arrow === "required") break;
+        arrow = "none";
+      }
       if (next.tag === "group") {
         if (expectingOperand) {
           if (
@@ -282,6 +319,15 @@ class TypeConsumer implements SyntaxConsumer {
           )
             break;
           cursor.consume();
+          if (next.delimiter === "parenthesis") {
+            const reading = readParenthesis(next);
+            arrow =
+              reading === "parameters"
+                ? "required"
+                : reading === "either"
+                  ? "allowed"
+                  : "none";
+          }
           // A brace standing where a type is expected is an object type, and
           // its contents are a member list.
           children.push(
@@ -303,6 +349,7 @@ class TypeConsumer implements SyntaxConsumer {
           (lastWord?.raw === "import" || genericFunctionHead)
         ) {
           children.push(cursor.consume()!);
+          if (genericFunctionHead) arrow = "required";
           genericFunctionHead = false;
           continue;
         }
@@ -403,6 +450,7 @@ class TypeConsumer implements SyntaxConsumer {
     if (
       children.length === 0 ||
       expectingOperand ||
+      arrow === "required" ||
       conditionalDepth !== 0 ||
       invalidAdjacency
     ) {
