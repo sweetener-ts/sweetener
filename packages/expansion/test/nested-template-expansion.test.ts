@@ -768,3 +768,96 @@ describe("a macro that does not terminate", () => {
     expect(result.diagnostics[0]?.messageArguments[0]).toBe("grow");
   });
 });
+
+/**
+ * Definition contexts are read at module level. One written inside a block is
+ * not processed, and was carried through into the emitted TypeScript, where the
+ * host compiler reported `Unexpected keyword or identifier` on a line of macro
+ * language. Local macro scope is a milestone deliverable whose machinery exists
+ * but is not wired in; until it is, saying so is better than emitting it.
+ */
+describe("a definition written inside a block", () => {
+  test.each([
+    [
+      "a syntax definition",
+      "export function f() { syntax double:expr { rule { double($v:expr) } => { [$v, $v] } } return 1; }",
+      "double",
+    ],
+    [
+      "a syntax class",
+      "export function f() { syntax class A { fields { n: ident; } rule { $n:ident } } return 1; }",
+      "A",
+    ],
+  ])("reports %s", (_, source, named) => {
+    const origins = new OriginStore();
+    const scopes = new ScopeStore();
+    const definitionScopes = scopes.singleton(
+      scopes.freshScope("module", "unprocessed-definitions"),
+    );
+    const definitions = readSyntax(
+      "export syntax noop:expr { rule { noop } => { 0 } }",
+      {
+        sourceId: definitionSource,
+        scopes: definitionScopes,
+        originStore: origins,
+      },
+    );
+    const parsed = parseMacroDefinitions(definitions.root, {
+      sourceId: definitionSource,
+    });
+    const syntaxIds = createIdAllocator<SyntaxId>(50_000);
+    const bindingIds = createIdAllocator<BindingId>(50_000);
+    const invocationIds = createIdAllocator<InvocationId>(1);
+    const phase = createPhase(1);
+    const module = compileParsedMacros(parsed, {
+      sourceId: definitionSource,
+      phase,
+      definitionScopes,
+      allocateBindingId: bindingIds.allocate,
+      spanForOrigin: (origin) =>
+        origins.selectPrimarySource(origin)?.span ?? { start: 0, end: 0 },
+    });
+    const tracker = new ResourceTracker(createResourceBudget());
+    const session = createExpansionFrontendSession({
+      module,
+      sourceId: invocationSource,
+      phase,
+      scopeStore: scopes,
+      origins,
+      environments: new EnvironmentStore(),
+      tracker,
+      guard: new ExpansionGuard({ tracker }),
+      allocateSyntaxId: syntaxIds.allocate,
+      allocateBindingId: bindingIds.allocate,
+      allocateInvocationId: invocationIds.allocate,
+    });
+    const read = readSyntax(source, {
+      sourceId: invocationSource,
+      scopes: scopes.singleton(scopes.freshScope("lexical", "unprocessed")),
+      originStore: origins,
+    });
+    const result = session.expand(withoutEof(read.root.children), "item");
+    expect(result.diagnostics.map(({ code }) => code)).toContain("SWR4016");
+    expect(
+      result.diagnostics.find(({ code }) => code === "SWR4016")
+        ?.messageArguments,
+    ).toEqual([named]);
+  });
+
+  test.each([
+    [
+      "a const named syntax",
+      "export function f() { const syntax = 1; return syntax; }",
+    ],
+    ["a property named syntax", "export const a = { syntax: 1 };"],
+    [
+      "a const named operator",
+      "export function f() { const operator = 2; return operator; }",
+    ],
+  ])("does not report %s", (_, source) => {
+    const expandOne = harness(
+      "export syntax noop:expr { rule { noop } => { 0 } }",
+    );
+    expect(() => expandOne(source, "item")).not.toThrow();
+  });
+});

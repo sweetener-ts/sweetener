@@ -15,6 +15,7 @@ export const unreadableItemCode = diagnosticCode("SWR4012");
 export const wrongCategoryMacroCode = diagnosticCode("SWR4013");
 export const expansionCycleCode = diagnosticCode("SWR4014");
 export const expansionLimitCode = diagnosticCode("SWR4015");
+export const unprocessedDefinitionCode = diagnosticCode("SWR4016");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -26,6 +27,16 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "A macro whose expansion reaches the same state again would expand forever. The cycle is reported against the invocation that began it, because the macro itself is usually correct and the input is what does not reduce.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} expanded to itself and would not terminate. A rule has to reduce its input, so one of them must match without reaching this macro again.`,
+  },
+  {
+    code: unprocessedDefinitionCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Definition contexts are read at module level. A definition written inside a block is not processed, and passing it through would leave macro-language syntax in the emitted TypeScript for the host compiler to reject.",
+    format: (arguments_) =>
+      `Macro definitions are read at module level, so ${String(arguments_[0] ?? "this definition")} written inside a block was not processed. Move it to a module and import it for syntax.`,
   },
   {
     code: expansionLimitCode,

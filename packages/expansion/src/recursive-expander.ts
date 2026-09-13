@@ -32,6 +32,7 @@ import {
   expansionDiagnosticRegistry,
   expansionLimitCode,
   uncategorizedExpansionCode,
+  unprocessedDefinitionCode,
   wrongCategoryMacroCode,
 } from "./diagnostics.js";
 import { EnforestationError } from "./enforestation-error.js";
@@ -843,6 +844,38 @@ export function expandMacroSyntax(
     return following.raw === "=>" || following.raw === ":";
   };
 
+  /**
+   * Whether a `syntax` or `operator` token begins a definition rather than
+   * naming something ordinary -- `const syntax = 1` is legal TypeScript, so the
+   * shape has to be read, not just the keyword.
+   */
+  const definitionShapeFollows = (
+    sequence: SyntaxSequence,
+    at: number,
+  ): boolean => {
+    const head = sequence[at];
+    if (head?.tag !== "token") return false;
+    const next = sequence[at + 1];
+    if (head.raw === "operator")
+      return next?.tag === "group" && next.delimiter === "parenthesis";
+    if (next?.tag === "group") return false;
+    if (next?.tag !== "token") return false;
+    // `syntax class Name { ... }` or `syntax name:category { ... }`.
+    if (next.raw === "class") return true;
+    const colon = sequence[at + 2];
+    return colon?.tag === "token" && colon.raw === ":";
+  };
+
+  /** The name a definition declares, for the diagnostic that reports it. */
+  const definitionSpelling = (sequence: SyntaxSequence, at: number): string => {
+    const first = sequence[at + 1];
+    if (first?.tag === "token" && first.raw === "class") {
+      const name = sequence[at + 2];
+      return name?.tag === "token" ? name.raw : "this definition";
+    }
+    return first?.tag === "token" ? first.raw : "this definition";
+  };
+
   /** Regions enclosing the position being walked, outermost first. */
   const regions: RegionBindings[] = [];
 
@@ -1227,6 +1260,30 @@ export function expandMacroSyntax(
               }),
             );
         }
+      }
+      // A definition context is read at module level. One written inside a
+      // block is not processed, and was carried through into the emitted
+      // TypeScript, where the host compiler reported an unexpected identifier
+      // on a line of macro language. Reporting it here names what happened.
+      if (
+        category !== "item" &&
+        node.tag === "token" &&
+        (node.raw === "syntax" || node.raw === "operator") &&
+        definitionShapeFollows(input, index)
+      ) {
+        const source = options.origins.selectPrimarySource(node.origin);
+        if (source !== undefined)
+          diagnostics.push(
+            expansionDiagnosticRegistry.create(unprocessedDefinitionCode, {
+              primaryOrigin: {
+                sourceId: source.sourceId,
+                start: source.span.start,
+                end: source.span.end,
+                originId: node.origin,
+              },
+              messageArguments: [definitionSpelling(input, index)],
+            }),
+          );
       }
       if (
         resolvedMacro === undefined &&
