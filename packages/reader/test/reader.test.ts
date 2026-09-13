@@ -35,6 +35,40 @@ describe("generic JSX elements", () => {
     expect(printLossless(result.root)).toBe(source);
   });
 
+  /**
+   * `<T>(v: T) => T` is how a generic function type is written, and in a `.tsx`
+   * file its `<` sits exactly where a JSX element's does. The element reading
+   * won, so no `.stsx` file could annotate one. An element with children can be
+   * followed by a `(` too -- `<div>(text)</div>` -- but its parentheses are text
+   * and no `=>` follows them, which is what tells the two apart.
+   */
+  it.each([
+    ["an annotation", "declare const g: <T>(v: T) => T;\n"],
+    ["a type alias", "type F = <T>(v: T) => T;\n"],
+    ["a member's type", "declare const o: { m: <T>(v: T) => T };\n"],
+    ["a parameter's type", "declare function h(f: <T>(v: T) => T): void;\n"],
+  ])("reads a generic function type in %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+  });
+
+  it("still reads an element whose text begins with a parenthesis", () => {
+    for (const source of [
+      "const x = <div>(text)</div>;\n",
+      "const x = <Comp>(1)</Comp>;\n",
+    ]) {
+      const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      expect(result.diagnostics).toEqual([]);
+      // Read as an element: the tag is one group, not a comparison chain.
+      expect(
+        result.root.children.some(
+          (child) => child.tag === "group" && child.delimiter === "jsx-element",
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("still reads an ordinary element and a comparison", () => {
     for (const source of [
       "const x = <div className='a'>{v}</div>;\n",

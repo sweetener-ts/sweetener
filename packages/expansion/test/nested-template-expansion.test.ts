@@ -619,6 +619,53 @@ describe("an ordinary binding shadows a macro", () => {
     );
   });
 
+  /**
+   * Rhombus's rule reaches across spaces: a binding in the expression space
+   * "hides any binding for another space in an enclosing scope". A statement,
+   * item or member macro is hidden by a value binding for the same reason an
+   * expression macro is.
+   */
+  test.each([
+    [
+      "a statement macro",
+      "export function f(c: boolean) { guard(c); return 1; }",
+      "exportfunctionf(c:boolean){if(!c){return;}return1;}",
+      "export function f(c: boolean) { const guard = 1; return guard; }",
+      "exportfunctionf(c:boolean){constguard=1;returnguard;}",
+    ],
+    [
+      "an item macro",
+      "mkconst x;",
+      "exportconstx=1;",
+      "const mkconst = 1; export const y = mkconst;",
+      "constmkconst=1;exportconsty=mkconst;",
+    ],
+    [
+      "a type-member macro",
+      "export interface I { a: string; fields }",
+      "exportinterfaceI{a:string;extra:string;}",
+      "const fields = 1; export interface I { a: string; fields }",
+      "constfields=1;exportinterfaceI{a:string;fields}",
+    ],
+  ])(
+    "hides %s from an enclosing value binding",
+    (_, open, openExpected, shadowed, shadowedExpected) => {
+      const expand = harness(`
+        export syntax guard:stmt {
+          rule { guard($c:expr); } => { if (!$c) { return; } }
+        }
+        export syntax fields:typeMember { rule { fields } => { extra: string; } }
+        export syntax mkconst:item {
+          rule { mkconst $n:binding; }
+          bind $n in following as recursive value;
+          => { #core(export const $n = 1;) }
+        }
+      `);
+      expect(expand(open, "item")).toBe(openExpected);
+      expect(expand(shadowed, "item")).toBe(shadowedExpected);
+    },
+  );
+
   test("a value binding does not shadow a type macro", () => {
     const expand = harness(definitions);
     expect(

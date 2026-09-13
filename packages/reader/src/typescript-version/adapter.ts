@@ -197,6 +197,7 @@ function tokenLexicalMode(kind: ts.SyntaxKind, jsxMode: JsxMode): LexicalMode {
   return "standard";
 }
 
+const whitespace = /\s/u;
 const identifierStart = /[\p{ID_Start}_$]/u;
 const identifierPart = /[\p{ID_Continue}.$:-]/u;
 
@@ -209,6 +210,37 @@ const identifierPart = /[\p{ID_Continue}.$:-]/u;
  * in expression position, and doing it without allocating is about twice as
  * fast on element-dense source.
  */
+/**
+ * Whether a `>` closes the type parameters of a function type rather than a JSX
+ * opening tag: `<T>(v: T) => T`, which is how a generic function type is
+ * written in an annotation or a type alias. An element with children can have a
+ * `(` next too -- `<div>(text)</div>` -- but its parentheses are text and no
+ * `=>` follows them, so the arrow is what tells the two apart.
+ *
+ * TypeScript decides this from the parser's position rather than by lookahead,
+ * knowing whether a type or an expression is expected. A token-level scanner
+ * does not know, and after `:` or `=` either one may begin.
+ */
+function functionTypeFollows(source: string, from: number): boolean {
+  let index = from;
+  while (index < source.length && whitespace.test(source[index]!)) index += 1;
+  if (source[index] !== "(") return false;
+  let depth = 0;
+  for (; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        index += 1;
+        break;
+      }
+    }
+  }
+  while (index < source.length && whitespace.test(source[index]!)) index += 1;
+  return source.startsWith("=>", index);
+}
+
 function looksLikeJsxStart(source: string, start: number): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
   const nameStart = start + 1;
@@ -219,7 +251,7 @@ function looksLikeJsxStart(source: string, start: number): boolean {
   // TSX, and neither is an element.
   for (let index = nameStart + 1; index < source.length; index += 1) {
     const character = source[index]!;
-    if (character === ">") return true;
+    if (character === ">") return !functionTypeFollows(source, index + 1);
     if (character === ",") return false;
     if (
       character === "e" &&
