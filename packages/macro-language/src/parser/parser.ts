@@ -21,12 +21,13 @@ import {
   type SourceId,
   type SyntaxClassId,
 } from "@sweetener/shared";
-import type {
-  GroupSyntax,
-  RootSyntax,
-  Syntax,
-  SyntaxCategory,
-  TokenSyntax,
+import {
+  isIdentifierToken,
+  type GroupSyntax,
+  type RootSyntax,
+  type Syntax,
+  type SyntaxCategory,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import type {
   DefinitionClause,
@@ -466,9 +467,11 @@ class Parser {
       const name = nodes[index];
       const colon = nodes[index + 1];
       const className = nodes[index + 2];
+      // A field is named by any word TypeScript accepts as an identifier, so
+      // a contextual keyword such as `unique`, `type` or `from` names one too.
       if (
         !token(name) ||
-        name.kind !== "identifier" ||
+        !isIdentifierToken(name) ||
         !token(colon, ":") ||
         !token(className)
       ) {
