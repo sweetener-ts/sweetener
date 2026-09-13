@@ -1251,9 +1251,25 @@ export class DefaultProjectExpansionProvider
             pending.push(target);
           }
           if (macro !== undefined) {
-            const sourceImport = importer.imports.imports.find(
-              ({ specifier }) => specifier === binding.specifier,
-            );
+            // The statement that declares this name, not merely the first one
+            // naming the same module. A file may import one module twice --
+            // once plainly and once `for syntax shadows core` -- and reading
+            // `shadowsCore` off the first statement silently dropped the
+            // authorization, so the core form kept its built-in meaning and
+            // which import came first decided it.
+            const sourceImport =
+              importer.imports.imports.find(
+                (candidate) =>
+                  candidate.specifier === binding.specifier &&
+                  candidate.bindings.some(
+                    (declared) =>
+                      declared.local === binding.local &&
+                      declared.imported === binding.imported,
+                  ),
+              ) ??
+              importer.imports.imports.find(
+                ({ specifier }) => specifier === binding.specifier,
+              );
             const definition = target?.compiled.definitions.find(
               ({ macro: candidate }) =>
                 candidate.binding.id === macro.binding.id,

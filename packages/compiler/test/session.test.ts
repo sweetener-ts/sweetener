@@ -37,6 +37,94 @@ function project(): {
   return { directory, config, main, macros };
 }
 
+/**
+ * A file may import one macro module twice: once plainly, and once
+ * `for syntax shadows core` for a name that intercepts a core form. The
+ * authorization was read off the first import statement naming the module
+ * rather than the one declaring the name, so a plain import written above a
+ * shadowing one silently cancelled it -- `typeof NaN` kept its built-in
+ * meaning, and which import came first decided the program's meaning.
+ */
+describe("core shadowing across several imports of one module", () => {
+  function shadowProject(mainSource: string): {
+    directory: string;
+    config: string;
+    main: string;
+  } {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-shadow-"));
+    writeFileSync(
+      join(directory, "macros.sts"),
+      [
+        "export syntax keepit:expr { rule { keepit($v:expr) } => { [$v] } }",
+        "export syntax typeof:expr shadows core {",
+        "  literal globalThis.NaN as NaN;",
+        '  rule { typeof NaN } => { "NaN" }',
+        "  fallback rule { typeof $value:expr } => { #core(typeof $value) }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(directory, "main.sts"), mainSource);
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts"],
+      }),
+    );
+    return {
+      directory,
+      config: join(directory, "tsconfig.json"),
+      main: join(directory, "main.sts"),
+    };
+  }
+
+  test.each([
+    [
+      "a plain import written first",
+      'import { keepit } from "./macros.sts" for syntax;\nimport { typeof } from "./macros.sts" for syntax shadows core;\nexport const kind = typeof NaN;\nexport const kept = keepit(1);\n',
+    ],
+    [
+      "a plain import written second",
+      'import { typeof } from "./macros.sts" for syntax shadows core;\nimport { keepit } from "./macros.sts" for syntax;\nexport const kind = typeof NaN;\nexport const kept = keepit(1);\n',
+    ],
+    [
+      "one import naming both",
+      'import { keepit, typeof } from "./macros.sts" for syntax shadows core;\nexport const kind = typeof NaN;\nexport const kept = keepit(1);\n',
+    ],
+  ])("intercepts the core form with %s", async (_, mainSource) => {
+    const fixture = shadowProject(mainSource);
+    const session = createSweetenerSession();
+    const result = await session.transform({
+      code: mainSource,
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.code).toContain('"NaN"');
+    expect(result.code).toContain("[1]");
+    await session.close();
+  });
+
+  test("still leaves the core form alone without the shadowing import", async () => {
+    const mainSource =
+      'import { keepit } from "./macros.sts" for syntax;\nexport const kind = typeof NaN;\nexport const kept = keepit(1);\n';
+    const fixture = shadowProject(mainSource);
+    const session = createSweetenerSession();
+    const result = await session.transform({
+      code: mainSource,
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.code).not.toContain('"NaN"');
+    expect(result.code).toContain("typeof NaN");
+    await session.close();
+  });
+});
+
 describe("public compiler session", () => {
   test("expands a project file and reports its complete watch set", async () => {
     const fixture = project();
