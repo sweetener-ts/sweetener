@@ -12,6 +12,15 @@ pnpm playground
 
 Open `http://localhost:4173`.
 
+## Sharing a link
+
+**Share** puts the whole project in the address and copies it: `#/code/<payload>`,
+where the payload is the files and entry name as JSON, compressed with the
+browser's `deflate-raw` and base64url-encoded. Nothing is uploaded. The fragment
+is never sent to the host, so the link's only length limit is whatever it is
+pasted into; the toolbar shows its size. Opening a link applies the same file
+rules as a Gist, and a link cut short reports that it is not valid.
+
 ## Loading a GitHub Gist
 
 Open `#/gist/<gist-id>` directly, or paste a public Gist URL or ID into the

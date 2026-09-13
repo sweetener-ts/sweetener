@@ -247,6 +247,11 @@ ul.examples span {
   background: var(--paper);
 }
 
+.share-status {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
 .gist-error {
   padding: 0.65rem 1rem;
   border-bottom: 1px solid #f2b8b5;

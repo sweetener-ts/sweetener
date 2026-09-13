@@ -1,13 +1,12 @@
 import type { PlaygroundFile } from "./examples";
+import {
+  checkProjectFiles,
+  checkSourceFileName,
+  manifestName,
+} from "./project-files";
 
-const manifestName = "sweetener-playground.json";
-const allowedFileName = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:d\.ts|stsx?|tsx?)$/u;
 const ignoredFileNames = new Set(["README.md"]);
-const safeFileName = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const gistId = /^[0-9a-f]{5,64}$/iu;
-const maximumFiles = 32;
-const maximumFileBytes = 256 * 1024;
-const maximumProjectBytes = 512 * 1024;
 
 type GistFile = {
   filename?: string;
@@ -106,33 +105,20 @@ export function projectFromGist(id: string, gist: GistResponse): GistProject {
   const sourceFiles = gist.files ?? {};
   const manifest = parseManifest(sourceFiles[manifestName]);
   const files: PlaygroundFile[] = [];
-  let projectBytes = 0;
 
   for (const [key, file] of Object.entries(sourceFiles)) {
     if (key === manifestName) continue;
     const fileName = file.filename ?? key;
-    if (!safeFileName.test(fileName))
-      throw new Error(`Unsafe Gist filename: ${fileName}`);
     if (ignoredFileNames.has(fileName)) continue;
-    if (!allowedFileName.test(fileName))
-      throw new Error(`Unsupported Gist source filename: ${fileName}`);
+    checkSourceFileName("Gist", fileName);
     if (file.truncated || file.content === undefined)
       throw new Error(`${fileName} is truncated or unavailable.`);
-    const bytes = new TextEncoder().encode(file.content).byteLength;
-    if (bytes > maximumFileBytes)
-      throw new Error(`${fileName} exceeds the 256 KiB file limit.`);
-    projectBytes += bytes;
     files.push({ fileName, source: file.content });
   }
 
   if (files.length === 0) throw new Error("Gist contains no source files.");
-  if (files.length > maximumFiles)
-    throw new Error(`Gist exceeds the ${maximumFiles}-file limit.`);
-  if (projectBytes > maximumProjectBytes)
-    throw new Error("Gist exceeds the 512 KiB project limit.");
   const entryFileName = manifest?.entryFileName ?? inferEntryFileName(files);
-  if (!files.some((file) => file.fileName === entryFileName))
-    throw new Error(`Entry file ${entryFileName} is missing.`);
+  checkProjectFiles("Gist", files, entryFileName);
 
   return {
     id,

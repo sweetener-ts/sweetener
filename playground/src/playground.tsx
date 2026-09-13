@@ -7,8 +7,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import CompilerWorker from "./compiler-worker?worker";
 import type { CompileResponse } from "./compiler-worker";
 import { examples, type PlaygroundFile } from "./examples";
-import { loadGistProject, resolveGistLoad, type GistProject } from "./gist";
+import { loadGistProject, resolveGistLoad } from "./gist";
 import { formatPlaygroundFile } from "./format";
+import { decodeSharedProject, encodeSharedProject } from "./share";
 import { sweetHighlighting } from "./sweet-syntax";
 
 const worker = new CompilerWorker();
@@ -86,15 +87,30 @@ function copyFiles(files: PlaygroundFile[]) {
   return files.map((file) => ({ ...file }));
 }
 
+/** A project opened from outside the shipped examples: a Gist or a link. */
+type LoadedProject = {
+  source: "gist" | "shared";
+  name: string;
+  summary: string;
+  entryFileName: string;
+  files: PlaygroundFile[];
+};
+
+function formatBytes(count: number): string {
+  return count < 1024 ? `${count} B` : `${(count / 1024).toFixed(1)} KB`;
+}
+
 export function Playground({
   exampleId: requested,
   gistId,
+  sharedCode,
   onExample,
   onGist,
   onHome,
 }: {
   exampleId: string;
   gistId: string;
+  sharedCode: string;
   onExample: (id: string) => void;
   onGist: (id: string) => void;
   onHome: () => void;
@@ -110,18 +126,17 @@ export function Playground({
   );
   const [diagnostics, setDiagnostics] = useState<string[]>(["Compiling…"]);
   const [compiling, setCompiling] = useState(true);
-  const [gistName, setGistName] = useState("");
-  const [gistSummary, setGistSummary] = useState("");
-  const [gistProject, setGistProject] = useState<GistProject>();
+  const [loaded, setLoaded] = useState<LoadedProject>();
   const [gistReference, setGistReference] = useState("");
-  const [gistLoading, setGistLoading] = useState(Boolean(gistId));
-  const [gistError, setGistError] = useState("");
+  const [loading, setLoading] = useState(Boolean(gistId || sharedCode));
+  const [loadError, setLoadError] = useState("");
   const [gistReload, setGistReload] = useState(0);
   const [formatError, setFormatError] = useState("");
+  const [shareStatus, setShareStatus] = useState("");
 
   const summary =
-    exampleId === "gist"
-      ? gistSummary
+    loaded !== undefined
+      ? loaded.summary
       : (examples.find((item) => item.id === exampleId)?.summary ?? "");
   const source =
     files.find((file) => file.fileName === sourceTab)?.source ?? "";
@@ -173,42 +188,61 @@ export function Playground({
     [compile, entryFileName, files],
   );
 
-  useEffect(() => {
-    if (!gistId) return;
+  const openProject = (project: LoadedProject) => {
+    setFormatError("");
+    setShareStatus("");
+    setLoaded(project);
+    setExampleId(project.source);
+    setEntryFileName(project.entryFileName);
+    setFiles(copyFiles(project.files));
+    setSourceTab(project.entryFileName);
+    setOutputTab(project.entryFileName.endsWith("x") ? "main.tsx" : "main.ts");
+  };
+
+  const load = (
+    request: (signal: AbortSignal) => Promise<LoadedProject>,
+  ): (() => void) => {
     const controller = new AbortController();
-    setGistLoading(true);
-    setGistError("");
-    loadGistProject(gistId, controller.signal)
+    setLoading(true);
+    setLoadError("");
+    request(controller.signal)
       .then((project) => {
-        setFormatError("");
-        setGistProject(project);
-        setExampleId("gist");
-        setGistName(project.name);
-        setGistSummary(project.summary);
-        setEntryFileName(project.entryFileName);
-        setFiles(copyFiles(project.files));
-        setSourceTab(project.entryFileName);
-        setOutputTab(
-          project.entryFileName.endsWith("x") ? "main.tsx" : "main.ts",
-        );
+        if (!controller.signal.aborted) openProject(project);
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted)
-          setGistError(error instanceof Error ? error.message : String(error));
+          setLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setGistLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
+  };
+
+  useEffect(() => {
+    if (!gistId) return;
+    return load(async (signal) => ({
+      source: "gist",
+      ...(await loadGistProject(gistId, signal)),
+    }));
   }, [gistId, gistReload]);
+
+  useEffect(() => {
+    if (!sharedCode) return;
+    return load(async () => ({
+      source: "shared",
+      name: "Shared code",
+      summary: "Opened from a shared link.",
+      ...(await decodeSharedProject(sharedCode)),
+    }));
+  }, [sharedCode]);
 
   const selectExample = (id: string) => {
     const next = examples.find((item) => item.id === id)!;
     setFormatError("");
+    setShareStatus("");
     setExampleId(id);
-    setGistName("");
-    setGistSummary("");
-    setGistProject(undefined);
+    setLoaded(undefined);
     onExample(id);
     setEntryFileName(next.entryFileName);
     setFiles(copyFiles(next.files));
@@ -220,25 +254,33 @@ export function Playground({
     event.preventDefault();
     const request = resolveGistLoad(gistReference, gistId);
     if (request === undefined) {
-      setGistError("Enter a GitHub Gist URL or ID.");
+      setLoadError("Enter a GitHub Gist URL or ID.");
       return;
     }
-    setGistError("");
+    setLoadError("");
     if (request.reload) setGistReload((current) => current + 1);
     else onGist(request.id);
   };
 
   const resetCurrent = () => {
-    if (exampleId !== "gist" || gistProject === undefined) {
-      selectExample(exampleId);
-      return;
+    if (loaded === undefined) selectExample(exampleId);
+    else openProject(loaded);
+  };
+
+  // The link replaces the address rather than navigating to it: the project
+  // is already open, and reloading it would throw away the undo history.
+  const share = async () => {
+    const payload = await encodeSharedProject({ entryFileName, files });
+    const url = new URL(window.location.href);
+    url.hash = `#/code/${payload}`;
+    window.history.replaceState(null, "", url);
+    const size = formatBytes(url.href.length);
+    try {
+      await navigator.clipboard.writeText(url.href);
+      setShareStatus(`Link copied (${size})`);
+    } catch {
+      setShareStatus(`Link is in the address bar (${size})`);
     }
-    setEntryFileName(gistProject.entryFileName);
-    setFiles(copyFiles(gistProject.files));
-    setSourceTab(gistProject.entryFileName);
-    setOutputTab(
-      gistProject.entryFileName.endsWith("x") ? "main.tsx" : "main.ts",
-    );
   };
 
   const updateSource = (nextSource: string) => {
@@ -285,8 +327,8 @@ export function Playground({
             value={exampleId}
             onChange={(event) => selectExample(event.target.value)}
           >
-            {exampleId === "gist" ? (
-              <option value="gist">{gistName}</option>
+            {loaded !== undefined ? (
+              <option value={loaded.source}>{loaded.name}</option>
             ) : null}
             {examples.map((item) => (
               <option value={item.id} key={item.id}>
@@ -294,6 +336,12 @@ export function Playground({
               </option>
             ))}
           </select>
+          <button onClick={() => void share()}>Share</button>
+          {shareStatus ? (
+            <span className="share-status" role="status">
+              {shareStatus}
+            </span>
+          ) : null}
           <form className="gist-loader" onSubmit={submitGist}>
             <input
               aria-label="GitHub Gist URL or ID"
@@ -301,24 +349,28 @@ export function Playground({
               value={gistReference}
               onChange={(event) => {
                 setGistReference(event.target.value);
-                setGistError("");
+                setLoadError("");
               }}
             />
             <button type="submit">Load Gist</button>
           </form>
           <span
             className={
-              gistLoading || compiling
+              loading || compiling
                 ? "state working"
-                : gistError || formatError || diagnostics.length
+                : loadError || formatError || diagnostics.length
                   ? "state error"
                   : "state ok"
             }
           >
-            {gistLoading
-              ? "Loading Gist…"
-              : gistError
-                ? "Gist error"
+            {loading
+              ? sharedCode
+                ? "Opening link…"
+                : "Loading Gist…"
+              : loadError
+                ? sharedCode
+                  ? "Link error"
+                  : "Gist error"
                 : formatError
                   ? "Format error"
                   : compiling
@@ -329,9 +381,14 @@ export function Playground({
           </span>
           <button onClick={resetCurrent}>Reset</button>
         </header>
-        {gistError ? (
+        {loadError ? (
           <div className="gist-error" role="alert">
-            <b>Could not load Gist.</b> {gistError}
+            <b>
+              {sharedCode
+                ? "Could not open shared link."
+                : "Could not load Gist."}
+            </b>{" "}
+            {loadError}
           </div>
         ) : null}
       </div>
@@ -361,19 +418,21 @@ export function Playground({
           <Editor value={source} onChange={updateSource} />
           <footer
             className={
-              gistError || formatError || diagnostics.length
+              loadError || formatError || diagnostics.length
                 ? "details errors"
                 : "details"
             }
           >
             <b>Diagnostics</b>
             <pre>
-              {gistLoading
-                ? "Loading Gist…"
+              {loading
+                ? sharedCode
+                  ? "Opening link…"
+                  : "Loading Gist…"
                 : formatError
                   ? formatError
-                  : gistError
-                    ? gistError
+                  : loadError
+                    ? loadError
                     : compiling
                       ? "Compiling…"
                       : diagnostics.length
