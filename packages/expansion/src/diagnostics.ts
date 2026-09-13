@@ -16,6 +16,7 @@ export const wrongCategoryMacroCode = diagnosticCode("SWR4013");
 export const expansionCycleCode = diagnosticCode("SWR4014");
 export const expansionLimitCode = diagnosticCode("SWR4015");
 export const unprocessedDefinitionCode = diagnosticCode("SWR4016");
+export const macroNotYetVisibleCode = diagnosticCode("SWR4017");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -27,6 +28,16 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "A macro whose expansion reaches the same state again would expand forever. The cycle is reported against the invocation that began it, because the macro itself is usually correct and the input is what does not reduce.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} expanded to itself and would not terminate. A rule has to reduce its input, so one of them must match without reaching this macro again.`,
+  },
+  {
+    code: macroNotYetVisibleCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A macro is visible to what follows its definition, the way a `const` is. A name used above its definition is therefore not a macro there, and the invocation would be emitted as a call to a name the output does not define.",
+    format: (arguments_) =>
+      `Macro ${String(arguments_[0] ?? "unknown")} is defined below this point, and a macro is visible only to what follows its definition. Move the definition above this use, or into a module imported for syntax.`,
   },
   {
     code: unprocessedDefinitionCode,

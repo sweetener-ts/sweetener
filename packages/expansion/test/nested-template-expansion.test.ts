@@ -861,3 +861,134 @@ describe("a definition written inside a block", () => {
     expect(() => expandOne(source, "item")).not.toThrow();
   });
 });
+
+/**
+ * A block is a definition context of its own, so a macro generated inside one
+ * is visible for the rest of that block and no further. Generated definitions
+ * live in expansion-wide state and nothing restored it when the block ended, so
+ * a macro a statement macro installed for one body stayed visible afterwards,
+ * and where two bodies installed the same name whichever ran last was the one
+ * in scope after them -- the opposite of the hygiene the language promises.
+ */
+describe("a macro generated inside a block", () => {
+  const definitions = `
+    export syntax setupWith:stmt {
+      rule { setupWith $tag:expr; } => {
+        #syntax {
+          syntax helper:expr { rule { helper($v:expr) } => { [$tag, $v] } }
+        }
+      }
+    }
+    export syntax setupItem:item {
+      rule { setupItem; } => {
+        #syntax {
+          syntax outer:expr { rule { outer($v:expr) } => { [$v] } }
+        }
+      }
+    }
+  `;
+
+  test("is visible for the rest of that block", () => {
+    const expand = harness(definitions);
+    expect(
+      expand(
+        'export function a() { setupWith "A"; return helper(1); }',
+        "item",
+      ),
+    ).toBe('exportfunctiona(){return["A",1];}');
+  });
+
+  test("does not reach past the block", () => {
+    const expand = harness(definitions);
+    const result = expand(
+      'export function a() { setupWith "A"; return helper(1); }\nexport const outside = helper(2);',
+      "item",
+    );
+    expect(result).toContain('return["A",1];');
+    // Out of scope afterwards, so the name is left for TypeScript to reject.
+    expect(result).toContain("constoutside=helper(2);");
+  });
+
+  test("does not reach a sibling block", () => {
+    const expand = harness(definitions);
+    const result = expand(
+      'export function a() { setupWith "A"; return helper(1); }\nexport function b() { setupWith "B"; return helper(2); }',
+      "item",
+    );
+    expect(result).toContain('return["A",1];');
+    expect(result).toContain('return["B",2];');
+  });
+
+  test("still reaches the items that follow when generated at module level", () => {
+    const expand = harness(definitions);
+    expect(expand("setupItem;\nexport const a = outer(1);", "item")).toBe(
+      "exportconsta=[1];",
+    );
+  });
+});
+
+/**
+ * A macro is visible to what follows its definition, the way a `const` is, so a
+ * name used above its definition is not a macro there. The invocation was
+ * emitted as a call to a name the output does not define, and only TypeScript
+ * reported it -- as a missing name, saying nothing about the definition below.
+ */
+describe("a macro used above its definition", () => {
+  const definitions = "export syntax noop:expr { rule { noop } => { 0 } }";
+
+  test("is reported against the use", () => {
+    const origins = new OriginStore();
+    const scopes = new ScopeStore();
+    const definitionScopes = scopes.singleton(
+      scopes.freshScope("module", "order-definitions"),
+    );
+    const read = readSyntax(definitions, {
+      sourceId: definitionSource,
+      scopes: definitionScopes,
+      originStore: origins,
+    });
+    const parsed = parseMacroDefinitions(read.root, {
+      sourceId: definitionSource,
+    });
+    const phase = createPhase(1);
+    const bindingIds = createIdAllocator<BindingId>(40_000);
+    const module = compileParsedMacros(parsed, {
+      sourceId: definitionSource,
+      phase,
+      definitionScopes,
+      allocateBindingId: bindingIds.allocate,
+      spanForOrigin: (origin) =>
+        origins.selectPrimarySource(origin)?.span ?? { start: 0, end: 0 },
+    });
+    const tracker = new ResourceTracker(createResourceBudget());
+    const session = createExpansionFrontendSession({
+      module,
+      sourceId: invocationSource,
+      phase,
+      scopeStore: scopes,
+      origins,
+      environments: new EnvironmentStore(),
+      tracker,
+      guard: new ExpansionGuard({ tracker }),
+      allocateSyntaxId: createIdAllocator<SyntaxId>(40_000).allocate,
+      allocateBindingId: bindingIds.allocate,
+      allocateInvocationId: createIdAllocator<InvocationId>(1).allocate,
+      isMacroVisible: () => false,
+    });
+    const use = readSyntax("export const a = noop;", {
+      sourceId: invocationSource,
+      scopes: scopes.singleton(scopes.freshScope("lexical", "order-use")),
+      originStore: origins,
+    });
+    const result = session.expand(withoutEof(use.root.children), "item");
+    expect(result.diagnostics.map(({ code }) => code)).toEqual(["SWR4017"]);
+    expect(result.diagnostics[0]?.messageArguments).toEqual(["noop"]);
+  });
+
+  test("is not reported where an ordinary binding means the name instead", () => {
+    const expand = harness(definitions);
+    expect(
+      expand("export function f() { const noop = 1; return noop; }", "item"),
+    ).toBe("exportfunctionf(){constnoop=1;returnnoop;}");
+  });
+});

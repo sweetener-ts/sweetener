@@ -224,14 +224,20 @@ reparsing printed text.
 
 ## 11. Local and generated macro behavior
 
-- A local macro lives in the lexical definition context that contains it.
+- A local macro lives in the lexical definition context that contains it. A
+  macro emitted into a block is visible for the rest of that block and no
+  further; a macro emitted at module level is visible to the items that follow
+  it. A definition written by hand inside a block is not yet processed and is
+  reported rather than emitted.
 - A macro template can emit a macro definition in item or statement definition
   context.
 - Generated definitions pass through macro-language parsing and validation.
 - A generated macro captures definition-site syntax scopes from the template
   that generated it.
-- A generated macro cannot become visible before its generated declaration.
-- A macro cannot generate a compile-time import except at module item level.
+- A generated macro cannot become visible before its generated declaration. A
+  name used above the definition that would give it meaning is reported, because
+  the invocation would otherwise be emitted as a call to a name the output does
+  not define.
 
 ## 12. Expansion trace
 

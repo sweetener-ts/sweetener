@@ -165,6 +165,11 @@ Other commands:
   than guessing.
 - Macros run at compile time only, and cannot call host functions or inspect
   runtime values.
+- **A macro is visible to what follows its definition**, the way a `const` is,
+  and a macro a macro emits inside a block is visible for the rest of that block
+  only. Using a name above the definition that would give it meaning is
+  reported. Writing a definition by hand inside a block is not supported yet;
+  put it in a module and import it for syntax.
 - **An ordinary binding shadows a macro**, as it does in Racket. A `const`, a
   parameter, a `catch` binder or a `for`-`of` binding of a macro's name means
   that name is the binding, not the macro, for as long as the binding is in

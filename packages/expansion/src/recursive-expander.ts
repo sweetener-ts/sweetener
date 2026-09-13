@@ -31,6 +31,7 @@ import {
   expansionCycleCode,
   expansionDiagnosticRegistry,
   expansionLimitCode,
+  macroNotYetVisibleCode,
   uncategorizedExpansionCode,
   unprocessedDefinitionCode,
   wrongCategoryMacroCode,
@@ -38,7 +39,7 @@ import {
 import { EnforestationError } from "./enforestation-error.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
-import type { CoreDispatchTrace } from "./core-shadowing.js";
+import { isCoreForm, type CoreDispatchTrace } from "./core-shadowing.js";
 import type {
   ExpansionEnvironment,
   ExpansionEnvironmentStore,
@@ -1261,6 +1262,41 @@ export function expandMacroSyntax(
             );
         }
       }
+      /**
+       * A macro is visible to what follows its definition, the way a `const`
+       * is, so a name used above its definition is not a macro there. The
+       * invocation was left alone and emitted as a call to a name the output
+       * does not define, and the only report came from TypeScript, which said
+       * the name was missing and nothing about the macro below it.
+       *
+       * Not reported where the name is deliberately something else: shadowed
+       * by an ordinary binding, naming a property or a member, or spelling a
+       * core form whose interception was never authorized.
+       */
+      if (
+        resolvedMacro === undefined &&
+        !namesMember &&
+        !namesProperty &&
+        node.tag === "token" &&
+        node.kind === "identifier" &&
+        !shadowsMacro(node.raw, category) &&
+        !isCoreForm(node.raw, category) &&
+        lexicalModule.get(node.raw, category) !== undefined
+      ) {
+        const source = options.origins.selectPrimarySource(node.origin);
+        if (source !== undefined)
+          diagnostics.push(
+            expansionDiagnosticRegistry.create(macroNotYetVisibleCode, {
+              primaryOrigin: {
+                sourceId: source.sourceId,
+                start: source.span.start,
+                end: source.span.end,
+                originId: node.origin,
+              },
+              messageArguments: [node.raw],
+            }),
+          );
+      }
       // A definition context is read at module level. One written inside a
       // block is not processed, and was carried through into the emitted
       // TypeScript, where the host compiler reported an unexpected identifier
@@ -2030,6 +2066,25 @@ export function expandMacroSyntax(
                 lexicalModule,
               })
             : undefined;
+        /**
+         * A block is a definition context of its own, so a macro generated
+         * inside one is visible for the rest of that block and no further.
+         * Generated definitions are recorded in expansion-wide state, and
+         * nothing restored it when the block ended, so a macro a statement
+         * macro installed for one body stayed visible afterwards -- and where
+         * two bodies installed the same name, whichever ran last was the one
+         * in scope after them. That is what the hygiene the language promises
+         * rules out, and what `processLocalDefinitionContext` exists for.
+         *
+         * An item's definitions are deliberately not restored: a macro
+         * generated at module level is visible to the items that follow it.
+         */
+        const opensBlock =
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          bodyCategory === "stmt";
+        const enclosingModules = activeModules.length;
+        const enclosingExpansionEnvironment = activeExpansionEnvironment;
         const nested = visit(
           createSyntaxSequence(statementBody ?? node.children),
           currentEnvironment,
@@ -2042,6 +2097,10 @@ export function expandMacroSyntax(
           false,
           recursiveBinding,
         );
+        if (opensBlock) {
+          activeModules.length = enclosingModules;
+          activeExpansionEnvironment = enclosingExpansionEnvironment;
+        }
         currentEnvironment = nested.environment;
         if (node.tag === "protected" && nested.syntax.length === 0) {
           index += 1;

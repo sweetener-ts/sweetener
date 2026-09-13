@@ -215,7 +215,10 @@ describe("project commands", () => {
     expect(generated).toContain("after = 42");
     expect(generated).toContain("beforeOperator = 1 %% 2");
     expect(generated).toMatch(/afterOperator\s*=\s*\(?\s*1\)?\s*\+\s*2/u);
-    expect(result.diagnostics.map(({ code }) => code)).toContain(2552);
+    // The use above the definition is reported by expansion, which knows the
+    // macro is defined below. It used to reach TypeScript as 2552, a missing
+    // name, which said nothing about the definition underneath it.
+    expect(result.diagnostics.map(({ code }) => code)).toContain(4017);
   });
 
   test("recursively expands every template substitution without rewriting literal segments", () => {
