@@ -1,10 +1,11 @@
 import type { BindingEnvironment } from "@sweetener/hygiene";
 import type { SyntaxClassConsumer } from "@sweetener/pattern";
-import type {
-  BindingId,
-  Diagnostic,
-  InvocationId,
-  SourceId,
+import {
+  ResourceLimitError,
+  type BindingId,
+  type Diagnostic,
+  type InvocationId,
+  type SourceId,
 } from "@sweetener/shared";
 import {
   createGroup,
@@ -27,11 +28,14 @@ import {
   type CompileParsedMacrosResult,
 } from "./compile-macros.js";
 import {
+  expansionCycleCode,
   expansionDiagnosticRegistry,
+  expansionLimitCode,
   uncategorizedExpansionCode,
   wrongCategoryMacroCode,
 } from "./diagnostics.js";
 import { EnforestationError } from "./enforestation-error.js";
+import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
 import type { CoreDispatchTrace } from "./core-shadowing.js";
 import type {
@@ -842,6 +846,13 @@ export function expandMacroSyntax(
   /** Regions enclosing the position being walked, outermost first. */
   const regions: RegionBindings[] = [];
 
+  /**
+   * The macro whose expansion hit a bound, once one has. Expansion stops
+   * dispatching after that: the bound is global, so every later invocation
+   * would reach it again and report the same thing.
+   */
+  let abortedSpelling: string | undefined;
+
   const shadowsMacro = (spelling: string, category: SyntaxCategory): boolean =>
     regions.some((region) =>
       category === "type"
@@ -1380,7 +1391,13 @@ export function expandMacroSyntax(
         suppressPending = false;
       }
       if (suppressedHeadIndex === index) suppressedHeadIndex = undefined;
-      if (macro !== undefined) {
+      // A bound reached during expansion is a fact about this file, so it is
+      // reported against the invocation that reached it rather than thrown
+      // past every caller. Left to escape, a macro that does not terminate
+      // ended the build with a stack trace naming no file, no line and no
+      // macro -- and it escaped the compiler session too, so every host
+      // integration crashed the same way.
+      if (macro !== undefined && abortedSpelling === undefined) {
         const macroModule =
           activeModules.find(
             (candidate) =>
@@ -1394,122 +1411,157 @@ export function expandMacroSyntax(
         cursor.advance(index);
         let replacementEnvironment: BindingEnvironment | undefined;
         let eraseReplacement = false;
-        const result = invokeMacro({
-          ...options,
-          macro,
-          cursor,
-          category: resolvedCategory,
-          contexts,
-          coreInterception:
-            options.coreInterceptionForMacro?.({
-              macro,
-              lexicalModule,
-              spelling: resolvedSpelling,
-              origin: input[resolvedHeadIndex]?.origin ?? node.origin,
-            }) ?? options.coreInterception,
-          consumeClass:
-            options.consumeClassForMacro?.(macro) ?? options.consumeClass,
-          environment: currentEnvironment,
-          parentInvocation,
-          expandReplacement: (request) => {
-            // A replacement may declare macros and ordinary syntax together,
-            // so every `#syntax { ... }` in it is processed and removed and
-            // whatever surrounds them carries on as the replacement.
-            const remaining: Syntax[] = [];
-            let declaredMacros = false;
-            for (let cursor = 0; cursor < request.syntax.length; cursor += 1) {
-              const marker = request.syntax[cursor]!;
-              const body = request.syntax[cursor + 1];
-              if (
-                options.generatedDefinitions === undefined ||
-                options.expansionStore === undefined ||
-                activeExpansionEnvironment === undefined ||
-                marker.tag !== "token" ||
-                marker.raw !== "#syntax" ||
-                body?.tag !== "group" ||
-                body.delimiter !== "brace"
+        let result;
+        try {
+          result = invokeMacro({
+            ...options,
+            macro,
+            cursor,
+            category: resolvedCategory,
+            contexts,
+            coreInterception:
+              options.coreInterceptionForMacro?.({
+                macro,
+                lexicalModule,
+                spelling: resolvedSpelling,
+                origin: input[resolvedHeadIndex]?.origin ?? node.origin,
+              }) ?? options.coreInterception,
+            consumeClass:
+              options.consumeClassForMacro?.(macro) ?? options.consumeClass,
+            environment: currentEnvironment,
+            parentInvocation,
+            expandReplacement: (request) => {
+              // A replacement may declare macros and ordinary syntax together,
+              // so every `#syntax { ... }` in it is processed and removed and
+              // whatever surrounds them carries on as the replacement.
+              const remaining: Syntax[] = [];
+              let declaredMacros = false;
+              for (
+                let cursor = 0;
+                cursor < request.syntax.length;
+                cursor += 1
               ) {
-                remaining.push(marker);
-                continue;
+                const marker = request.syntax[cursor]!;
+                const body = request.syntax[cursor + 1];
+                if (
+                  options.generatedDefinitions === undefined ||
+                  options.expansionStore === undefined ||
+                  activeExpansionEnvironment === undefined ||
+                  marker.tag !== "token" ||
+                  marker.raw !== "#syntax" ||
+                  body?.tag !== "group" ||
+                  body.delimiter !== "brace"
+                ) {
+                  remaining.push(marker);
+                  continue;
+                }
+                const generated = processGeneratedDefinitions({
+                  syntax: createSyntaxSequence([marker, body]),
+                  sourceId: options.generatedDefinitions.sourceId,
+                  phase: options.phase,
+                  definitionScopes: marker.scopes,
+                  origins: options.origins,
+                  store: options.expansionStore,
+                  environment: activeExpansionEnvironment,
+                  allocateSyntaxId: options.allocateSyntaxId,
+                  allocateBindingId: options.allocateBindingId,
+                  diagnosticOrigin: options.diagnosticOrigin,
+                });
+                generatedDefinitionTraces.push(generated.trace);
+                diagnostics.push(...generated.diagnostics);
+                if (generated.accepted && generated.compiled !== undefined) {
+                  activeExpansionEnvironment = generated.environment;
+                  activeModules.push(generated.compiled);
+                }
+                declaredMacros = true;
+                cursor += 1;
               }
-              const generated = processGeneratedDefinitions({
-                syntax: createSyntaxSequence([marker, body]),
-                sourceId: options.generatedDefinitions.sourceId,
-                phase: options.phase,
-                definitionScopes: marker.scopes,
-                origins: options.origins,
-                store: options.expansionStore,
-                environment: activeExpansionEnvironment,
-                allocateSyntaxId: options.allocateSyntaxId,
-                allocateBindingId: options.allocateBindingId,
-                diagnosticOrigin: options.diagnosticOrigin,
-              });
-              generatedDefinitionTraces.push(generated.trace);
-              diagnostics.push(...generated.diagnostics);
-              if (generated.accepted && generated.compiled !== undefined) {
-                activeExpansionEnvironment = generated.environment;
-                activeModules.push(generated.compiled);
+              if (declaredMacros && remaining.length === 0) {
+                const marker = request.syntax[0]!;
+                eraseReplacement = true;
+                return createProtectedSyntax({
+                  id: options.allocateSyntaxId(),
+                  span: spanEnvelope(request.syntax.map(({ span }) => span)),
+                  origin: marker.origin,
+                  scopes: marker.scopes,
+                  category: request.category,
+                  children: createSyntaxSequence(request.syntax),
+                });
               }
-              declaredMacros = true;
-              cursor += 1;
-            }
-            if (declaredMacros && remaining.length === 0) {
-              const marker = request.syntax[0]!;
-              eraseReplacement = true;
-              return createProtectedSyntax({
-                id: options.allocateSyntaxId(),
-                span: spanEnvelope(request.syntax.map(({ span }) => span)),
-                origin: marker.origin,
-                scopes: marker.scopes,
-                category: request.category,
-                children: createSyntaxSequence(request.syntax),
-              });
-            }
-            if (declaredMacros) {
-              request = { ...request, syntax: createSyntaxSequence(remaining) };
-            }
-            // Give a statement replacement its interior categories before it
-            // is walked, so that a macro spliced into an expression position
-            // inside it is recognized as an expression. A replacement that
-            // does not yet parse as a statement list — because it still holds
-            // an unexpanded invocation the parser cannot place — is walked raw
-            // exactly as before.
-            const preEnforested =
-              request.category === "stmt" &&
-              !holdsStatementOperator(request.syntax)
-                ? options.enforestStatements?.({
-                    syntax: request.syntax,
-                    contexts,
-                    lexicalModule: macroModule,
-                  })
-                : undefined;
-            const nested = visit(
-              createSyntaxSequence(preEnforested ?? request.syntax),
-              request.environment,
-              request.category,
-              request.invocationId,
-              macroModule,
-              contexts,
-              false,
-              macroModule.definitions.some(
-                ({ definition, macro: candidate }) =>
-                  candidate === macro &&
-                  definition.kind === "syntax" &&
-                  definition.recursive,
-              )
-                ? macro.binding.id
-                : recursiveBinding,
-            );
-            replacementEnvironment = nested.environment;
-            return enforestSequence(
-              nested.syntax,
-              request.category,
-              macroModule,
-              contexts,
-              node,
-            );
-          },
-        });
+              if (declaredMacros) {
+                request = {
+                  ...request,
+                  syntax: createSyntaxSequence(remaining),
+                };
+              }
+              // Give a statement replacement its interior categories before it
+              // is walked, so that a macro spliced into an expression position
+              // inside it is recognized as an expression. A replacement that
+              // does not yet parse as a statement list — because it still holds
+              // an unexpanded invocation the parser cannot place — is walked raw
+              // exactly as before.
+              const preEnforested =
+                request.category === "stmt" &&
+                !holdsStatementOperator(request.syntax)
+                  ? options.enforestStatements?.({
+                      syntax: request.syntax,
+                      contexts,
+                      lexicalModule: macroModule,
+                    })
+                  : undefined;
+              const nested = visit(
+                createSyntaxSequence(preEnforested ?? request.syntax),
+                request.environment,
+                request.category,
+                request.invocationId,
+                macroModule,
+                contexts,
+                false,
+                macroModule.definitions.some(
+                  ({ definition, macro: candidate }) =>
+                    candidate === macro &&
+                    definition.kind === "syntax" &&
+                    definition.recursive,
+                )
+                  ? macro.binding.id
+                  : recursiveBinding,
+              );
+              replacementEnvironment = nested.environment;
+              return enforestSequence(
+                nested.syntax,
+                request.category,
+                macroModule,
+                contexts,
+                node,
+              );
+            },
+          });
+        } catch (error) {
+          const cycle = error instanceof ExpansionCycleError;
+          if (!cycle && !(error instanceof ResourceLimitError)) throw error;
+          const source = options.origins.selectPrimarySource(node.origin);
+          if (source === undefined) throw error;
+          abortedSpelling = resolvedSpelling;
+          diagnostics.push(
+            expansionDiagnosticRegistry.create(
+              cycle ? expansionCycleCode : expansionLimitCode,
+              {
+                primaryOrigin: {
+                  sourceId: source.sourceId,
+                  start: source.span.start,
+                  end: source.span.end,
+                  originId: node.origin,
+                },
+                messageArguments: cycle
+                  ? [resolvedSpelling]
+                  : [resolvedSpelling, (error as ResourceLimitError).kind],
+              },
+            ),
+          );
+          output.push(node);
+          index += 1;
+          continue;
+        }
         // Replacement expansion completes before its enclosing invocation.
         // Prepending retains invocation/preorder order: parent, then descendants.
         traces.unshift(result.trace);

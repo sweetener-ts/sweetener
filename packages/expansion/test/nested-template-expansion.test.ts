@@ -693,3 +693,78 @@ describe("an ordinary binding shadows a macro", () => {
     expect(expand("export type A = twice;", "item")).toBe("exporttypeA=twice;");
   });
 });
+
+/**
+ * Expansion is bounded so a macro cannot consume the build. Reaching a bound
+ * threw past every caller, so a macro that did not terminate ended the run with
+ * a stack trace naming no file, no line and no macro -- and it escaped the
+ * compiler session too, so every host integration failed the same way.
+ */
+describe("a macro that does not terminate", () => {
+  const run = (definitionText: string, source: string) => {
+    const origins = new OriginStore();
+    const scopes = new ScopeStore();
+    const definitionScopes = scopes.singleton(
+      scopes.freshScope("module", "nonterminating-definitions"),
+    );
+    const definitions = readSyntax(definitionText, {
+      sourceId: definitionSource,
+      scopes: definitionScopes,
+      originStore: origins,
+    });
+    const parsed = parseMacroDefinitions(definitions.root, {
+      sourceId: definitionSource,
+    });
+    const syntaxIds = createIdAllocator<SyntaxId>(60_000);
+    const bindingIds = createIdAllocator<BindingId>(60_000);
+    const invocationIds = createIdAllocator<InvocationId>(1);
+    const phase = createPhase(1);
+    const module = compileParsedMacros(parsed, {
+      sourceId: definitionSource,
+      phase,
+      definitionScopes,
+      allocateBindingId: bindingIds.allocate,
+      spanForOrigin: (origin) =>
+        origins.selectPrimarySource(origin)?.span ?? { start: 0, end: 0 },
+    });
+    expect(module.diagnostics).toEqual([]);
+    const tracker = new ResourceTracker(createResourceBudget());
+    const session = createExpansionFrontendSession({
+      module,
+      sourceId: invocationSource,
+      phase,
+      scopeStore: scopes,
+      origins,
+      environments: new EnvironmentStore(),
+      tracker,
+      guard: new ExpansionGuard({ tracker }),
+      allocateSyntaxId: syntaxIds.allocate,
+      allocateBindingId: bindingIds.allocate,
+      allocateInvocationId: invocationIds.allocate,
+    });
+    const read = readSyntax(source, {
+      sourceId: invocationSource,
+      scopes: scopes.singleton(scopes.freshScope("lexical", "nonterminating")),
+      originStore: origins,
+    });
+    return session.expand(withoutEof(read.root.children), "item");
+  };
+
+  test("reports a macro that expands to itself", () => {
+    const result = run(
+      "export rec syntax loop:expr { rule { loop($v:expr) } => { loop($v) } }",
+      "export const a = loop(1);",
+    );
+    expect(result.diagnostics.map(({ code }) => code)).toEqual(["SWR4014"]);
+    expect(result.diagnostics[0]?.messageArguments).toEqual(["loop"]);
+  });
+
+  test("reports a macro whose expansion grows without end", () => {
+    const result = run(
+      "export rec syntax grow:expr { rule { grow($v:expr) } => { grow([$v, $v]) } }",
+      "export const a = grow(1);",
+    );
+    expect(result.diagnostics.map(({ code }) => code)).toEqual(["SWR4015"]);
+    expect(result.diagnostics[0]?.messageArguments[0]).toBe("grow");
+  });
+});

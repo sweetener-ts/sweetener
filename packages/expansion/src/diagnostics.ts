@@ -13,8 +13,30 @@ export const duplicateMacroDefinitionCode = diagnosticCode("SWR4010");
 export const uncategorizedExpansionCode = diagnosticCode("SWR4011");
 export const unreadableItemCode = diagnosticCode("SWR4012");
 export const wrongCategoryMacroCode = diagnosticCode("SWR4013");
+export const expansionCycleCode = diagnosticCode("SWR4014");
+export const expansionLimitCode = diagnosticCode("SWR4015");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
+  {
+    code: expansionCycleCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A macro whose expansion reaches the same state again would expand forever. The cycle is reported against the invocation that began it, because the macro itself is usually correct and the input is what does not reduce.",
+    format: (arguments_) =>
+      `Macro ${String(arguments_[0] ?? "unknown")} expanded to itself and would not terminate. A rule has to reduce its input, so one of them must match without reaching this macro again.`,
+  },
+  {
+    code: expansionLimitCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Expansion is bounded so that a macro cannot consume the build. Reaching a bound is reported where it was reached rather than thrown, so the file and the macro are named.",
+    format: (arguments_) =>
+      `Expanding ${String(arguments_[0] ?? "this file")} reached the ${String(arguments_[1] ?? "expansion")} limit. No further macros in it were expanded.`,
+  },
   {
     code: wrongCategoryMacroCode,
     owner: "expansion-enforestation",
