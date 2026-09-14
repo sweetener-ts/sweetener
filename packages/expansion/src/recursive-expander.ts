@@ -15,6 +15,7 @@ import {
   createSyntaxCursor,
   createSyntaxSequence,
   createToken,
+  createTrivia,
   spanEnvelope,
   type ProtectedSyntax,
   type Syntax,
@@ -1590,7 +1591,9 @@ export function expandMacroSyntax(
     createToken({
       id: options.allocateSyntaxId(),
       span: { start: anchor.span.start, end: anchor.span.start },
-      origin: anchor.origin,
+      // Written by the expansion rather than by a template, so no layout of
+      // a template's is read from it.
+      origin: options.origins.synthesized(anchor.origin, "generated-binding"),
       scopes: anchor.scopes,
       kind,
       raw,
@@ -1647,7 +1650,15 @@ export function expandMacroSyntax(
       createToken({
         ...name,
         id: options.allocateSyntaxId(),
-        leadingTrivia: [],
+        // The name is the template's own token, whose layout would be kept;
+        // the space in front of it here is the declaration's.
+        leadingTrivia: [
+          createTrivia({
+            kind: "whitespace",
+            raw: " ",
+            span: { start: name.span.start, end: name.span.start },
+          }),
+        ],
       }),
     ]),
     writtenToken(anchor, ";", "punctuation"),

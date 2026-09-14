@@ -334,6 +334,19 @@ export function printExpandedFile<Trace>(
    */
   const wholeArrowBodies = new Set<Syntax>();
   /**
+   * The first tokens of statements and items that follow something else in
+   * the same list. Where an expansion puts one after what came before, it
+   * begins a line: two items a template writes in separate `#core` forms
+   * printed as `type F<T> = Array<T> export interface Functor`.
+   */
+  const statementStarts = new Set<Syntax>();
+  const firstToken = (node: Syntax): Syntax | undefined => {
+    let current: Syntax | undefined = node;
+    while (current !== undefined && current.tag !== "token")
+      current = current.tag === "group" ? current.open : current.children[0];
+    return current;
+  };
+  /**
    * Operands that already bind tighter than the operator the parser read them
    * under, so they hold together without parentheses: `value * 2` in
    * `value * 2 + 1`.
@@ -438,6 +451,20 @@ export function printExpandedFile<Trace>(
       // could run into the next element.
       const comma = (node: Syntax | undefined) =>
         node?.tag === "token" && node.raw === ",";
+      // A control statement's body follows its header on the same line.
+      const heads =
+        previous === undefined ||
+        (previous.tag === "group" && previous.delimiter === "parenthesis") ||
+        (previous.tag === "token" &&
+          ["else", "do", ":", "=>"].includes(previous.raw));
+      if (
+        child.tag === "protected" &&
+        (child.category === "stmt" || child.category === "item") &&
+        !heads
+      ) {
+        const first = firstToken(child);
+        if (first !== undefined) statementStarts.add(first);
+      }
       if (
         child.tag === "protected" &&
         child.category === "expr" &&
@@ -558,6 +585,13 @@ export function printExpandedFile<Trace>(
     const kind = kindFor(token.origin);
     const text = replacements.get(token.id) ?? token.raw;
     const written = writtenAt(token.origin);
+    // After `{`, `}` or `;` the statement is already separated.
+    const startsStatement =
+      statementStarts.has(token) &&
+      lastPrinted !== undefined &&
+      lastPrinted !== "{" &&
+      lastPrinted !== "}" &&
+      lastPrinted !== ";";
     const trivia = token.leadingTrivia.map(({ raw }) => raw).join("");
     // The trivia a token was written with is its gap from the token before
     // it there. It is kept where that token is still the one printed before
@@ -581,16 +615,28 @@ export function printExpandedFile<Trace>(
       // A template's own token written directly against a placeholder stays
       // against the capture that took its place: `$name<$parameter>` keeps
       // `Result<T>` together.
-      (kind === "introduced" && previousKind === "copied" && trivia === "");
+      (kind === "introduced" &&
+        previousKind === "copied" &&
+        trivia === "" &&
+        !startsStatement) ||
+      // A `<` a template wrote directly after a name opens its type
+      // arguments, whatever took the name's place.
+      (kind === "introduced" &&
+        text === "<" &&
+        trivia === "" &&
+        lastPrinted !== undefined &&
+        applies(lastPrinted));
     const leading = keep
       ? trivia
-      : // Code a JSX child's or attribute's braces open on holds to them.
-        jsxCodeOpened
-        ? ""
-        : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
-            ...brackets.at(-1)!,
-            prefix,
-          });
+      : startsStatement
+        ? "\n"
+        : // Code a JSX child's or attribute's braces open on holds to them.
+          jsxCodeOpened
+          ? ""
+          : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
+              ...brackets.at(-1)!,
+              prefix,
+            });
     jsxCodeOpened = false;
     // Trivia gets a region of its own so the token's region is exactly the
     // token. A region carries the token's whole source span, and a position
