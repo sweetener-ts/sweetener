@@ -14,7 +14,7 @@ export const list = (items: readonly Item[], loading: boolean) => (
      :
       <li>ready</li>
     }
-    {((items.length === 0)) ?
+    {(items.length === 0) ?
       <li>nothing here</li>
      : null}
     {(items).map(( item, index) =>

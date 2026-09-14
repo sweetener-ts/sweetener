@@ -21,6 +21,8 @@ export const unparameterizedSyntaxParameterCode = diagnosticCode("SWR4018");
 export const notSyntaxParameterCode = diagnosticCode("SWR4019");
 export const unreadableSyntaxCode = diagnosticCode("SWR4020");
 export const unexpandedOperatorCode = diagnosticCode("SWR4021");
+export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
+export const uncopiableClosureCode = diagnosticCode("SWR4023");
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -32,6 +34,26 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "A syntax parameter declared without rules means something only inside a `#parameterize` that names it. Written anywhere else it has no expansion, and passing it through would leave macro syntax in the emitted TypeScript.",
     format: (arguments_) =>
       `Syntax parameter ${String(arguments_[0] ?? "unknown")} is used outside any #parameterize that gives it a meaning. It is declared without rules, so it means nothing here.`,
+  },
+  {
+    code: uncopiableClosureCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A `#let` whose body waits, with `await` or `yield`, keeps its value in a variable of the enclosing function, and each function in the body that reads it takes a copy when it is created. A method or accessor cannot be taken out of its object literal to be given one, so the object literal is -- which it cannot be when the literal itself waits, since the wait would move into a function of its own.",
+    format: () =>
+      "This object literal waits, with `await` or `yield`, and has a method that reads a value a macro evaluated once for it. The method cannot be given its own copy of that value; move the `await` or `yield` out of the object literal.",
+  },
+  {
+    code: unusedRequiredParameterCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "`#parameterize(required name = replacement) { body }` gives a syntax parameter a meaning that the body is expected to use -- the topic of a Hack pipe, which a pipe body must mention. A body that never uses it almost always lost the placeholder by mistake, so it is reported rather than expanded with the replacement unused.",
+    format: (arguments_) =>
+      `This must use ${String(arguments_[0] ?? "unknown")}, and does not. The macro gives ${String(arguments_[0] ?? "unknown")} a meaning here only for syntax that uses it.`,
   },
   {
     code: notSyntaxParameterCode,

@@ -21,6 +21,17 @@ export interface OperatorBinding {
   readonly associativity: OperatorAssociativity;
   readonly precedence: number;
   readonly origin: OriginId;
+  /**
+   * The token runs an infix rule accepts as its whole right operand, as a
+   * rule written `$value:expr |> await` accepts `await`. The parser takes
+   * one of them as the operand only where nothing after it continues one.
+   */
+  readonly literalRightOperands?: readonly (readonly string[])[] | undefined;
+  /**
+   * Whether the right operand may be an unparenthesized arrow function, whose
+   * body then ends at the next use of this operator: `operand arrow;`.
+   */
+  readonly arrowOperand?: boolean | undefined;
 }
 
 export interface ExpansionEnvironment {

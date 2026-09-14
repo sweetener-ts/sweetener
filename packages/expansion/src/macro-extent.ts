@@ -151,6 +151,12 @@ export function createMacroExtentResolver(
       if (macro !== undefined) break;
     }
     if (macro === undefined) return undefined;
+    // An operator is dispatched by the expression parser, which reads its
+    // operands around it. Measured here it recursed without end: an infix
+    // rule begins with its left operand, and reading that operand at the
+    // operator's own spelling asked this again, so `p |> await |> f`
+    // overflowed the stack.
+    if (macro.binding.kind === "operator") return undefined;
     // A syntax parameter is measured by its head alone. What it stands for is
     // decided when it expands, under whatever `#parameterize` encloses it, and
     // what is written after it -- a call's arguments, a member -- is read

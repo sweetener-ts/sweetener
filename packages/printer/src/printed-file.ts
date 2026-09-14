@@ -3,6 +3,7 @@ import type {
   MissingToken,
   Origin,
   OriginStore,
+  ProtectedSyntax,
   Syntax,
   TokenSyntax,
 } from "@sweetener/syntax";
@@ -113,6 +114,9 @@ function wordCharacter(value: string | undefined): boolean {
 }
 
 /** Tokens that bind against neighbours, and so need the grouping kept. */
+/** What ends an arrow's body where it stands in a sequence of nodes. */
+const arrowBodyEnds: ReadonlySet<string> = new Set([";", ",", ":"]);
+
 const nonBinding = new Set([".", "?.", "!", ",", ";", ":", "=>", "...", "?"]);
 
 function bindingOperator(token: TokenSyntax): boolean {
@@ -185,14 +189,82 @@ export function printExpandedFile<Trace>(
   let offset = 0;
   let lastCharacter: string | undefined;
   /**
-   * The last token printed, which says whether a grouping is needed after it.
-   * An arrow's body is parsed as an expression, so it arrives here as one
-   * protected node; wrapping that in parentheses printed
-   * `(value: number) => (value + 1)`, which is the same function spelled
-   * worse. Nothing to either side of a body can re-associate into it -- it
-   * runs to the end of the arrow -- so nothing has to hold it together.
+   * The nodes that are the whole body of an arrow. An arrow's body is parsed
+   * as an expression, so it arrives here as one protected node; wrapping that
+   * in parentheses printed `(value: number) => (value + 1)`, which is the same
+   * function spelled worse. Nothing to either side of a body can re-associate
+   * into it -- it runs to the end of the arrow -- so nothing has to hold it
+   * together.
+   *
+   * Only a node that ends where the body does. Exempting whatever was printed
+   * first after `=>` also exempted the callee of a call that was the body:
+   * `(x) => $f(x)` with `$f` an arrow printed `(x) => (n) => n * 2(x)`.
    */
-  let lastToken: string | undefined;
+  const wholeArrowBodies = new Set<Syntax>();
+  /**
+   * Operands that already bind tighter than the operator the parser read them
+   * under, so they hold together without parentheses: `value * 2` in
+   * `value * 2 + 1`.
+   */
+  const boundOperands = new Set<Syntax>();
+  const markBoundOperands = (parent: ProtectedSyntax) => {
+    const precedence = parent.precedence;
+    if (parent.category !== "expr" || precedence === undefined) return;
+    const children = parent.children;
+    const operand = (node: Syntax | undefined) =>
+      node?.tag === "protected" &&
+      node.category === "expr" &&
+      node.precedence !== undefined
+        ? node
+        : undefined;
+    const bind = (node: Syntax | undefined, minimum: number) => {
+      const found = operand(node);
+      if (found !== undefined && found.precedence! >= minimum)
+        boundOperands.add(found);
+    };
+    if (parent.form === "conditional") {
+      // `test ? consequent : alternate`: the test is a short-circuit
+      // expression, and the alternate an assignment-level one.
+      bind(children[0], 40);
+      bind(children[2], 11);
+      bind(children[4], 20);
+      return;
+    }
+    const first = children[0];
+    const last = children.at(-1);
+    const operator = children
+      .slice(1, -1)
+      .map((child) => (child.tag === "token" ? child.raw : undefined));
+    const operandAt = (node: Syntax | undefined) =>
+      node !== undefined &&
+      (node.tag !== "token" || node.kind !== "punctuation");
+    if (
+      children.length >= 3 &&
+      operandAt(first) &&
+      operandAt(last) &&
+      operator.every((raw) => raw !== undefined)
+    ) {
+      const spelling = operator.join("");
+      const rightAssociative =
+        spelling === "**" || parent.form === "assignment";
+      const left = operand(first);
+      const right = operand(last);
+      const logical = (node: ProtectedSyntax | undefined) =>
+        node?.precedence === 50 || node?.precedence === 60;
+      // `??` cannot sit beside `||` or `&&` unparenthesized, and a unary
+      // operand of `**` must keep its parentheses.
+      const unaryBase = spelling === "**" && left?.children[0]?.tag === "token";
+      if (!(spelling === "??" && logical(left)) && !unaryBase)
+        bind(first, rightAssociative ? precedence + 1 : precedence);
+      if (!(spelling === "??" && logical(right)))
+        bind(last, rightAssociative ? precedence : precedence + 1);
+      return;
+    }
+    // A prefix operator other than `new`, whose operand's parentheses decide
+    // what is constructed.
+    if (first?.tag === "token" && first.raw !== "new" && children.length === 2)
+      bind(last, precedence + 1);
+  };
   const emit = (text: string, origin: OriginId, kind: GeneratedRegionKind) => {
     if (text.length === 0) return;
     const start = offset;
@@ -215,9 +287,35 @@ export function printExpandedFile<Trace>(
     return value.kind;
   };
   const pending: PrintItem[] = [...options.syntax].reverse();
-  const pushChildren = (children: readonly Syntax[]) => {
-    for (let index = children.length - 1; index >= 0; index -= 1)
-      pending.push(children[index]!);
+  const pushChildren = (children: readonly Syntax[], list = false) => {
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index]!;
+      const previous = children[index - 1];
+      const next = children[index + 1];
+      if (
+        previous?.tag === "token" &&
+        previous.raw === "=>" &&
+        (next === undefined ||
+          (next.tag === "token" && arrowBodyEnds.has(next.raw)))
+      )
+        wholeArrowBodies.add(child);
+      // An argument or an array element is a whole assignment expression, so
+      // an arrow, a conditional or an operator expression written as one
+      // needs no parentheses of its own: `map(values, (n) => n * 10)`. Only a
+      // comma expression, or an expression whose precedence is unknown,
+      // could run into the next element.
+      const comma = (node: Syntax | undefined) =>
+        node?.tag === "token" && node.raw === ",";
+      if (
+        child.tag === "protected" &&
+        child.category === "expr" &&
+        (child.form !== undefined || (child.precedence ?? 0) > 10) &&
+        (previous === undefined ? list : comma(previous)) &&
+        (next === undefined ? list : comma(next))
+      )
+        boundOperands.add(child);
+      pending.push(child);
+    }
   };
   // A grouping parenthesis stands outside the layout that separates the
   // expansion from whatever precedes it. Emitted the moment it was reached, it
@@ -260,7 +358,6 @@ export function printExpandedFile<Trace>(
     }
     const start = offset;
     emit(text, token.origin, kind);
-    lastToken = text;
     const trailing = token.trailingTrivia.map(({ raw }) => raw).join("");
     emit(trailing, token.origin, "synthesized");
     tokenSpans.push(
@@ -286,7 +383,10 @@ export function printExpandedFile<Trace>(
         break;
       case "group":
         pending.push(item.close);
-        pushChildren(item.children);
+        pushChildren(
+          item.children,
+          item.delimiter === "parenthesis" || item.delimiter === "bracket",
+        );
         pending.push(item.open);
         break;
       case "root":
@@ -303,16 +403,26 @@ export function printExpandedFile<Trace>(
         // of redundant parentheses.
         const binds =
           item.category === "type" ? typeBindingOperator : bindingOperator;
+        // A conditional or an arrow is spelled with `?`, `:` and `=>`, which
+        // bind nothing elsewhere, so reading its tokens called it atomic:
+        // `$v * 2` with `$v` bound to `c ? 1 : 2` printed `c ? 1 : 2 * 2`, and
+        // `$f(1)` with an arrow printed a call on the arrow's body. The form
+        // the parser recorded says it has an operator of its own.
         const atomic =
-          (item.children.length === 1 && item.children[0]!.tag === "token") ||
-          !item.children.some((child) => child.tag === "token" && binds(child));
+          item.form === undefined &&
+          ((item.children.length === 1 && item.children[0]!.tag === "token") ||
+            !item.children.some(
+              (child) => child.tag === "token" && binds(child),
+            ));
         const group =
           (item.category === "expr" || item.category === "type") &&
           !atomic &&
-          lastToken !== "=>" &&
+          !wholeArrowBodies.has(item) &&
+          !boundOperands.has(item) &&
           (options.groupProtectedExpression?.(item) ?? true);
         if (group)
           pending.push({ text: ")", origin: item.origin, grouping: true });
+        markBoundOperands(item);
         pushChildren(item.children);
         if (group)
           pending.push({ text: "(", origin: item.origin, grouping: true });

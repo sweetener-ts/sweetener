@@ -21,19 +21,26 @@ real expansion pipeline locally in a Web Worker, with no server-side compiler.
 Sweetener macros match structure. You write concrete patterns and templates in
 `.sts` modules, then import them explicitly for syntax.
 
-### A pipeline operator
+### A pipe operator
 
-Define an infix operator, including its precedence and associativity:
+Define an infix operator, including its precedence and associativity. This is
+Elixir's pipe, which makes the value on its left the first argument of the call
+on its right; the playground has it beside TC39's Hack pipe, where `%` stands
+for the piped value.
 
 ```ts
 // operators.sts
 export operator (|>):expr {
   fixity infix;
   associativity left;
-  precedence 40;
+  precedence 35;
 
-  rule { $value:expr |> $callee:ident } => {
-    $callee($value)
+  rule { $value:expr |> $function:ident $(. $member:ident)* ($($argument:expr),*) } => {
+    $function $(. $member)*($value #if(present $argument) { , $($argument),* })
+  }
+
+  rule { $value:expr |> $function:ident $(. $member:ident)* } => {
+    $function $(. $member)*($value)
   }
 }
 ```
@@ -44,8 +51,9 @@ Then import and use it:
 // main.sts
 import { (|>) } from "./operators.sts" for syntax;
 
+const map = (values: number[], f: (n: number) => number) => values.map(f);
 const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
-const result = [1, 2, 3] |> sum;
+const result = [1, 2, 3] |> map((n) => n * 2) |> sum;
 ```
 
 ### Rewriting a core form

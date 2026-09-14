@@ -138,17 +138,22 @@ export syntax parameter (%):expr;
 
 export operator (|>):expr {
   fixity infix;
-  associativity left;
-  precedence 40;
-  rule { $value:expr |> $body:expr } => {
-    ((topic) => #parameterize(% = topic) { $body })($value)
+  associativity right;
+  precedence 20;
+  rule { $value:expr |> $body:expr }
+  refine $body form not in (conditional, arrow, assignment, yield);
+  => {
+    #let(topic = $value) { #parameterize(required % = topic) { $body } }
   }
 }
 ```
 
-`#parameterize(% = topic) { ... }` makes each `%` in the expansion of its body
-stand for `topic`, the template's own binding, so hygiene still keeps `topic`
-from capturing a call-site variable of the same name. A parameter may declare
+`#parameterize(required % = topic) { ... }` makes each `%` in the expansion of
+its body stand for `topic`, the template's own binding, so hygiene still keeps
+`topic` from capturing a call-site variable of the same name, and reports a body
+that never uses `%`. `#let(topic = $value) { ... }` evaluates the value once;
+where the body holds an `await` or `yield`, it declares `topic` in the enclosing
+function rather than moving the body into a function of its own. A parameter may declare
 rules for where no parameterization is in effect; one declared without rules is
 reported there. A parameter stands wherever an operand may, and a
 punctuation-spelled one is dispatched only where an operand begins, so the pipe
@@ -165,6 +170,10 @@ export operator (<|>):expr {
   }
 }
 ```
+
+A rule may spell its right operand as literal tokens, as
+`rule { $value:expr |> await }` does, and `operand arrow;` lets the right operand
+be an unparenthesized arrow whose body ends at the next use of the operator.
 
 Precedence belongs to the macro binding, not a global mutable table. Imports
 that make two operators with the same spelling visible in one category create a

@@ -109,6 +109,7 @@ const clauseKeywords: ReadonlySet<string> = new Set([
   "fixity",
   "associativity",
   "precedence",
+  "operand",
   "literal",
   "context",
 ]);
@@ -576,6 +577,7 @@ class Parser {
                       "fixity",
                       "associativity",
                       "precedence",
+                      "operand",
                       "literal",
                       "context",
                     ].includes(keyword)

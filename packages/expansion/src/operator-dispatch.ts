@@ -224,6 +224,8 @@ export function createLexicalOperatorResolver(
       associativity: selected.operator.associativity,
       width: selected.width,
       shadowsCore: options.shadowsCore?.(selected.operator) ?? false,
+      literalRightOperands: selected.operator.literalRightOperands,
+      arrowOperand: selected.operator.arrowOperand,
       expand: (input: MacroOperatorExpansionInput) => {
         const result = options.expand({
           macro,

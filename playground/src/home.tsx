@@ -60,15 +60,19 @@ export function Home({ onOpen }: { onOpen: (id?: string) => void }) {
         <Code file="operators.sts">{`export operator (|>):expr {
   fixity infix;
   associativity left;
-  precedence 40;
+  precedence 35;
 
-  rule { $value:expr |> $callee:ident } => {
-    $callee($value)
+  rule { $value:expr |> $function:ident $(. $member:ident)* ($($argument:expr),*) } => {
+    $function $(. $member)*($value #if(present $argument) { , $($argument),* })
+  }
+
+  rule { $value:expr |> $function:ident $(. $member:ident)* } => {
+    $function $(. $member)*($value)
   }
 }`}</Code>
         <Code file="main.sts">{`import { (|>) } from "./operators.sts" for syntax;
 
-const result = [1, 2, 3] |> sum;`}</Code>
+const result = [1, 2, 3] |> map((n) => n * 2) |> sum;`}</Code>
         <p>
           The import says <code>for syntax</code>, so it runs at compile time
           and never appears in the emitted TypeScript.

@@ -8,13 +8,15 @@ import {
   type SyntaxClassRefinementInput,
 } from "@sweetener/pattern";
 import type { Diagnostic, OriginId, SourceId } from "@sweetener/shared";
-import type {
-  DelimiterKind,
-  GroupSyntax,
-  Span,
-  Syntax,
-  TokenKind,
-  TokenSyntax,
+import {
+  expressionForms,
+  type DelimiterKind,
+  type ExpressionForm,
+  type GroupSyntax,
+  type Span,
+  type Syntax,
+  type TokenKind,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import type { ParseMacroDefinitionsResult } from "./parser/index.js";
 
@@ -136,6 +138,17 @@ function parseRefinementPredicate(
     return comparison === undefined || !Number.isSafeInteger(length)
       ? undefined
       : { kind: "repetition-length", comparison, length };
+  }
+  if ((name === "formin" || name === "formnotin") && group !== undefined) {
+    const forms = listEntries(group);
+    return forms.length > 0 &&
+      forms.every((form) => expressionForms.includes(form as ExpressionForm))
+      ? {
+          kind: "expression-form",
+          forms: forms as readonly ExpressionForm[],
+          excluded: name === "formnotin",
+        }
+      : undefined;
   }
   // `boundary` and `selected-alternative` are deliberately absent. The matcher
   // evaluates both against context it never fills in, so a rule written with

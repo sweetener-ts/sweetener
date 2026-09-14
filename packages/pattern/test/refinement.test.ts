@@ -6,7 +6,12 @@ import type {
   SyntaxClassId,
   SyntaxId,
 } from "@sweetener/shared";
-import { createGroup, createSpan, createToken } from "@sweetener/syntax";
+import {
+  createGroup,
+  createProtectedSyntax,
+  createSpan,
+  createToken,
+} from "@sweetener/syntax";
 import { describe, expect, it } from "vitest";
 import {
   CaptureRecord,
@@ -14,6 +19,7 @@ import {
   createCaptureSequence,
   createRefinement,
   createTokenLiteralKey,
+  describeRefinement,
   evaluateRefinement,
   evaluateRefinements,
 } from "../src/index.js";
@@ -184,5 +190,48 @@ describe("declarative refinements", () => {
         alternative: -1,
       }),
     ).toThrow(/non-negative/);
+  });
+  it("tells apart the forms of a captured expression", () => {
+    const expression = (form?: "conditional" | "arrow") =>
+      new CaptureRecord([
+        [
+          capture,
+          createCaptureLeaf({
+            id: capture,
+            classId,
+            syntax: Object.freeze([
+              createProtectedSyntax({
+                id: syntaxId++ as SyntaxId,
+                span: createSpan(0, 1),
+                origin,
+                scopes,
+                category: "expr",
+                form,
+                children: [token("a"), token("?", "punctuation"), token("b")],
+              }),
+            ]),
+            origin,
+          }),
+        ],
+      ]);
+    const excluded = createRefinement(capture, {
+      kind: "expression-form",
+      forms: ["conditional", "arrow"],
+      excluded: true,
+    });
+    const included = createRefinement(capture, {
+      kind: "expression-form",
+      forms: ["conditional"],
+      excluded: false,
+    });
+    expect(evaluateRefinement(excluded, expression())).toBe(true);
+    expect(evaluateRefinement(excluded, expression("conditional"))).toBe(false);
+    expect(evaluateRefinement(included, expression("conditional"))).toBe(true);
+    expect(evaluateRefinement(included, expression("arrow"))).toBe(false);
+    // A token capture is no expression, and has no form to exclude.
+    expect(evaluateRefinement(excluded, record("alpha"))).toBe(true);
+    expect(describeRefinement(excluded.predicate)).toBe(
+      "an expression that is not an unparenthesized arrow function or an unparenthesized conditional",
+    );
   });
 });

@@ -1,0 +1,21 @@
+// Elixir's pipe. `value |> f(a, b)` calls `f(value, a, b)`: the value on the
+// left becomes the first argument of the call on the right. A function named
+// without a call, `value |> f`, is called with the value alone.
+export operator (|>):expr {
+  fixity infix;
+  associativity left;
+  // Looser than `||` and `??`, tighter than `? :` and `=`.
+  precedence 35;
+
+  rule { $value:expr |> $function:ident $(. $member:ident)* ($($argument:expr),*) }
+  expect "a function call, like `f(a)`, or a function name";
+  => {
+    $function $(. $member)*($value #if(present $argument) { , $($argument),* })
+  }
+
+  rule { $value:expr |> $function:ident $(. $member:ident)* }
+  expect "a function call, like `f(a)`, or a function name";
+  => {
+    $function $(. $member)*($value)
+  }
+}

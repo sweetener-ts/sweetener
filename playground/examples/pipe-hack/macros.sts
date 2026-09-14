@@ -1,0 +1,23 @@
+// The Hack pipe, from the TC39 pipe operator proposal. The right side is any
+// expression, and `%` stands for the value piped into it.
+export syntax parameter (%):expr;
+
+export operator (|>):expr {
+  fixity infix;
+  // A pipe binds as loosely as `=` and `? :`, and its body may be another
+  // pipe, so `x |> f(%) |> g(%)` hands each result to the next body.
+  associativity right;
+  precedence 20;
+
+  rule { $value:expr |> $body:expr }
+  // The proposal makes these bodies errors unless they are parenthesized.
+  refine $body form not in (conditional, arrow, assignment, yield);
+  => {
+    // `#let` evaluates the value once, even where the body uses `%` twice.
+    // `required` makes a body that never uses `%` an error, as the proposal
+    // does: `value |> foo + 1` is almost always a forgotten placeholder.
+    #let(topic = $value) {
+      #parameterize(required % = topic) { $body }
+    }
+  }
+}

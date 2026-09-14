@@ -2,6 +2,7 @@ import { EnforestationError } from "./enforestation-error.js";
 import {
   expansionDiagnosticRegistry,
   unexpandedOperatorCode,
+  unparameterizedSyntaxParameterCode,
   unreadableItemCode,
 } from "./diagnostics.js";
 import {
@@ -168,6 +169,16 @@ export function createExpansionFrontendSession(
   const operatorTraces: MacroTraceEvent[] = [];
   /** Operator tokens offered to their rules while an expression was read. */
   const offeredOperatorTokens = new Set<OriginId>();
+  /**
+   * Where operators no rule accepted were written. What stands in their
+   * operands was never given a meaning by the rule that would have given it
+   * one -- a pipe's `%` -- so a use reported there repeats the one error.
+   */
+  const refusedOperatorSpans: {
+    readonly sourceId: SourceId;
+    readonly start: number;
+    readonly end: number;
+  }[] = [];
   const operatorDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
     [];
   /**
@@ -423,7 +434,12 @@ export function createExpansionFrontendSession(
           category: "expr",
           phase: options.phase,
           environmentEpoch: expansionEnvironment.epoch,
-          consumeClass,
+          consumeClass: inContexts(
+            consumeClass,
+            // The operator was read where its operands were; a `yield` among
+            // them is refused only where that reading refused one.
+            input.context.allowYield === false ? noContexts : generatorContexts,
+          ),
           scopeStore: options.scopeStore,
           origins: options.origins,
           environments: options.environments,
@@ -439,7 +455,11 @@ export function createExpansionFrontendSession(
           allocateBindingId: options.allocateBindingId,
           allocateInvocationId: options.allocateInvocationId,
           position: 0,
-          admit: () => true,
+          // The parser has already decided what the operands are, so a rule
+          // must account for all of them. Admitting a rule that matched a
+          // prefix dropped the rest: with rules for `$v |> await` and
+          // `$v |> $callee:expr`, `1 |> await g` expanded to `await 1`.
+          admit: ({ cursor }) => cursor.atEnd,
           diagnosticOrigin: (origin) => {
             const selected = options.origins.selectPrimarySource(origin);
             return {
@@ -467,6 +487,20 @@ export function createExpansionFrontendSession(
         operatorTraces.push(result.trace);
         if (!result.expanded) {
           operatorDiagnostics.push(result.diagnostic);
+          const sources = invocation
+            .map(({ origin }) => options.origins.selectPrimarySource(origin))
+            .filter((source) => source !== undefined);
+          const first = sources[0];
+          if (first !== undefined) {
+            const written = sources.filter(
+              ({ sourceId }) => sourceId === first.sourceId,
+            );
+            refusedOperatorSpans.push({
+              sourceId: first.sourceId,
+              start: Math.min(...written.map(({ span }) => span.start)),
+              end: Math.max(...written.map(({ span }) => span.end)),
+            });
+          }
           return createProtectedSyntax({
             id: options.allocateSyntaxId(),
             span: spanEnvelope(invocation.map(({ span }) => span)),
@@ -581,6 +615,34 @@ export function createExpansionFrontendSession(
       statement.enforestBlock(block, blockContext),
   });
   const typeMember = typeConsumers.typeMember;
+  /**
+   * The contexts a capture being matched stands in. A capture is read by the
+   * class consumer a module shares across every invocation, so the invocation
+   * sets these around its match; without them a capture of `yield value`
+   * inside a generator was refused as a `yield` outside one.
+   */
+  let captureContexts: ReadonlySet<MacroContext> = new Set();
+  const inContexts = (
+    consumer: SyntaxClassConsumer,
+    contexts: ReadonlySet<MacroContext>,
+  ): SyntaxClassConsumer =>
+    Object.assign(
+      (...request: Parameters<SyntaxClassConsumer>) => {
+        const enclosing = captureContexts;
+        captureContexts = contexts;
+        try {
+          return consumer(...request);
+        } finally {
+          captureContexts = enclosing;
+        }
+      },
+      {
+        describeFailure: consumer.describeFailure,
+        nameOfClass: consumer.nameOfClass,
+      },
+    );
+  const generatorContexts: ReadonlySet<MacroContext> = new Set(["generator"]);
+  const noContexts: ReadonlySet<MacroContext> = new Set();
   const context = (
     category: SyntaxCategory,
     contexts: ReadonlySet<MacroContext> = new Set(),
@@ -643,7 +705,7 @@ export function createExpansionFrontendSession(
                       : classId === module.classId("jsxChild")
                         ? "jsxChild"
                         : "item";
-        const base = context(category);
+        const base = context(category, captureContexts);
         const start = cursor.index;
         const attempted = consumer.consume(cursor, {
           ...base,
@@ -738,6 +800,17 @@ export function createExpansionFrontendSession(
       children: syntax,
     });
 
+  /** Whether syntax came from source text alone, with no expansion in it. */
+  const writtenInSource = (origin: OriginId): boolean => {
+    const record = options.origins.get(origin);
+    if (record === undefined) return false;
+    if (record.kind === "source") return true;
+    return (
+      record.kind === "composed" &&
+      record.parts.every((part) => writtenInSource(part))
+    );
+  };
+
   const normalizeProtectedInput = (node: ProtectedSyntax): ProtectedSyntax => {
     const normalizeChildren = (
       children: SyntaxSequence,
@@ -753,7 +826,16 @@ export function createExpansionFrontendSession(
         children.flatMap((child): readonly Syntax[] => {
           if (child.tag === "protected") {
             const normalized = normalizeProtectedInput(child);
-            return normalized.category === category
+            // An expression or type an expansion built inside another is not
+            // redundant: it is the boundary its operators bind within, and
+            // nothing in the text says so. An operator's expansion arrives
+            // here holding its operands that way, and flattening them printed
+            // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
+            // the parser built over source text is redundant with that text.
+            const bounds =
+              (category === "expr" || category === "type") &&
+              !writtenInSource(normalized.origin);
+            return normalized.category === category && !bounds
               ? normalized.children
               : [normalized];
           }
@@ -1074,6 +1156,7 @@ export function createExpansionFrontendSession(
     ): ExpandMacroSyntaxResult => {
       operatorTraces.length = 0;
       offeredOperatorTokens.clear();
+      refusedOperatorSpans.length = 0;
       operatorDiagnostics.length = 0;
       recoveryDiagnostics.length = 0;
       recoveredMacroNames.clear();
@@ -1084,8 +1167,11 @@ export function createExpansionFrontendSession(
         syntax: prepareInput(syntax, category),
         category,
         consumeClass,
-        consumeClassForMacro: (macro) =>
-          classConsumerByBinding.get(macro.binding.id) ?? consumeClass,
+        consumeClassForMacro: (macro, contexts) =>
+          inContexts(
+            classConsumerByBinding.get(macro.binding.id) ?? consumeClass,
+            contexts,
+          ),
         resolveMacro: ({
           spelling,
           category,
@@ -1299,6 +1385,16 @@ export function createExpansionFrontendSession(
         ...recoveryDiagnostics,
         ...result.diagnostics,
       ].filter((diagnostic) => {
+        if (
+          diagnostic.code === unparameterizedSyntaxParameterCode &&
+          refusedOperatorSpans.some(
+            (span) =>
+              span.sourceId === diagnostic.primaryOrigin.sourceId &&
+              span.start <= diagnostic.primaryOrigin.start &&
+              diagnostic.primaryOrigin.end <= span.end,
+          )
+        )
+          return false;
         const key = JSON.stringify([
           diagnostic.code,
           diagnostic.primaryOrigin.sourceId,

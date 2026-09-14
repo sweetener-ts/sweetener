@@ -241,6 +241,45 @@ function ruleFailureDescription(
   return typeof value?.value === "string" ? value.value : undefined;
 }
 
+/**
+ * The token runs an infix operator's rules take as their whole right operand.
+ *
+ * A rule written `$value:expr |> await` has no expression to the right of
+ * the operator, and the parser reads an expression there before any rule is
+ * tried, so `p |> await` never reached the rule that names it. Only a rule
+ * whose pattern is a left capture, the operator's own spelling and then
+ * literal tokens contributes a run.
+ */
+function literalRightOperands(
+  definition: Extract<MacroDefinition, { readonly kind: "operator" }>,
+): readonly (readonly string[])[] {
+  const runs: (readonly string[])[] = [];
+  for (const rule of definition.rules) {
+    const pattern = rule.pattern;
+    if (pattern.kind !== "sequence") continue;
+    const [left, ...rest] = pattern.elements;
+    if (left?.kind !== "capture") continue;
+    let spelled = "";
+    let index = 0;
+    while (index < rest.length && spelled.length < definition.spelling.length) {
+      const element = rest[index]!;
+      if (element.kind !== "literal" || element.literal.kind !== "token") break;
+      spelled += element.literal.raw;
+      index += 1;
+    }
+    if (spelled !== definition.spelling) continue;
+    const tail = rest.slice(index);
+    if (tail.length === 0) continue;
+    const raws = tail.map((element) =>
+      element.kind === "literal" && element.literal.kind === "token"
+        ? element.literal.raw
+        : undefined,
+    );
+    if (raws.every((raw) => raw !== undefined)) runs.push(Object.freeze(raws));
+  }
+  return Object.freeze(runs);
+}
+
 function lowerOperator(
   definition: Extract<MacroDefinition, { readonly kind: "operator" }>,
   macro: CompiledMacroBinding,
@@ -253,6 +292,7 @@ function lowerOperator(
     associativityToken?.raw ??
     (fixity === "prefix" || fixity === "postfix" ? "none" : undefined);
   const precedenceToken = operatorProperty(definition, "precedence");
+  const operand = operatorProperty(definition, "operand")?.raw;
   const precedence =
     typeof precedenceToken?.value === "number"
       ? precedenceToken.value
@@ -270,6 +310,10 @@ function lowerOperator(
     problem = "prefix and postfix operators must be nonassociative";
   else if (!Number.isSafeInteger(precedence) || precedence < 1)
     problem = "precedence must be a positive safe integer";
+  else if (operand !== undefined && operand !== "arrow")
+    problem = "operand must be arrow";
+  else if (operand !== undefined && fixity !== "infix")
+    problem = "only an infix operator takes operand arrow";
   if (problem !== undefined) {
     const span = options.spanForOrigin(definition.origin);
     diagnostics.push(
@@ -294,6 +338,9 @@ function lowerOperator(
     associativity,
     precedence,
     origin: definition.origin,
+    literalRightOperands:
+      fixity === "infix" ? literalRightOperands(definition) : undefined,
+    arrowOperand: operand === "arrow",
   } as OperatorBinding);
 }
 

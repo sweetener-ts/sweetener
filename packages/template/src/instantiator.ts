@@ -499,6 +499,7 @@ class Instantiator {
             scopes,
             category: syntax.category,
             precedence: syntax.precedence,
+            form: syntax.form,
             children: syntax.children.map((child) =>
               this.#clone(child, policy),
             ),

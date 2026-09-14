@@ -1,0 +1,21 @@
+// `for syntax` says this import is compile-time only. It does not appear in
+// the TypeScript on the right.
+import { (|>) } from "./macros.sts" for syntax;
+
+function map<T, U>(items: T[], f: (item: T) => U): U[] {
+  return items.map(f);
+}
+
+function reduce<T, U>(items: T[], f: (result: U, item: T) => U, initial: U): U {
+  return items.reduce(f, initial);
+}
+
+// Reads left to right, instead of inside out:
+// reduce(map([1, 2, 3], (n) => n * 2), (sum, n) => sum + n, 0)
+export const total = [1, 2, 3]
+|> map((n) => n * 2)
+|> reduce((sum, n) => sum + n, 0);
+
+export const longest = ["pipes", "read", "left", "to", "right"]
+|> map((word) => word.length)
+|> reduce((most, length) => Math.max(most, length), 0);

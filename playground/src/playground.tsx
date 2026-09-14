@@ -28,7 +28,13 @@ const editorTheme = EditorView.theme({
     color: "#8c959f",
   },
   ".cm-line": { padding: "0 12px" },
-  ".cm-activeLine, .cm-activeLineGutter": { background: "#f6f8fa" },
+  // CodeMirror draws the selection in a layer behind the text, so anything
+  // painted on a line has to let it show through. An opaque active line hid
+  // the selection on whichever line the cursor stood on -- all of a selection
+  // within one line, and the last line of a longer one. This is `#f6f8fa`
+  // over white, as a tint.
+  ".cm-activeLine": { background: "rgba(195, 208, 222, 0.15)" },
+  ".cm-activeLineGutter": { background: "#f6f8fa" },
 });
 
 function Editor({

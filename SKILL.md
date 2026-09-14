@@ -139,10 +139,12 @@ export const pair = twice(21);
 
   export operator (|>):expr {
     fixity infix;
-    associativity left;
-    precedence 40;
-    rule { $value:expr |> $body:expr } => {
-      ((topic) => #parameterize(% = topic) { $body })($value)
+    associativity right;
+    precedence 20;
+    rule { $value:expr |> $body:expr }
+    refine $body form not in (conditional, arrow, assignment, yield);
+    => {
+      #let(topic = $value) { #parameterize(required % = topic) { $body } }
     }
   }
   ```
@@ -153,7 +155,20 @@ export const pair = twice(21);
   operands is still remainder. Hygiene alone cannot do this, because the `%`
   was written by the user and `topic` by the template. A parameter may have
   rules, used where no `#parameterize` names it; one without rules is reported
-  there.
+  there. `required` reports a body that never uses the parameter.
+
+- **A value used more than once, evaluated once**: `#let(name = $value) { body }`.
+  It becomes `((name) => body)(value)`, unless the body has an `await` or
+  `yield` of its own, which cannot move into a function; then it assigns a
+  variable declared in the enclosing function instead. Prefer it to writing the
+  arrow yourself, which breaks `await` in the body.
+- **An expression of a particular form**: `refine $body form not in (conditional,
+arrow, assignment, yield, await)` refuses those forms unparenthesized, and
+  `form in (...)` accepts only them.
+- **An operator whose right side is not an expression**: a rule may spell it
+  literally, `rule { $value:expr |> await } => { await $value }`, and
+  `operand arrow;` lets an unparenthesized arrow stand there, ending at the next
+  use of the operator: `x |> n => n + 1 |> f`.
 
 - **A name that begins with `$`** (`$inferSelect`, `$state`): write `$$` for
   the `$`, as in `typeof $table.$$inferSelect`. `$name` alone is a capture, in

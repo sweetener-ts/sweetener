@@ -1,5 +1,7 @@
-import pipelineMacros from "../examples/pipeline/macros.sts?raw";
-import pipelineMain from "../examples/pipeline/main.sts?raw";
+import pipeElixirMacros from "../examples/pipe-elixir/macros.sts?raw";
+import pipeElixirMain from "../examples/pipe-elixir/main.sts?raw";
+import pipeHackMacros from "../examples/pipe-hack/macros.sts?raw";
+import pipeHackMain from "../examples/pipe-hack/main.sts?raw";
 import unlessMacros from "../examples/unless/macros.sts?raw";
 import unlessMain from "../examples/unless/main.sts?raw";
 import matchingMacros from "../examples/matching/macros.sts?raw";
@@ -60,9 +62,11 @@ const example = (
 });
 
 /**
- * The first three are the ones worth meeting first: a sum type with a match
- * that knows its constructors, control flow inside JSX, and an operator with
- * its own precedence. The rest follow.
+ * The first four are the ones worth meeting first: a sum type with a match
+ * that knows its constructors, control flow inside JSX, and two pipe
+ * operators, Elixir's and TC39's Hack pipe, each an operator with its own
+ * precedence.
+ * The rest follow.
  *
  * Each is a whole working program rather than a fragment, and the build
  * expands every one of them, so an example that stopped compiling would fail
@@ -86,11 +90,18 @@ export const examples: PlaygroundExample[] = [
     "main.stsx",
   ),
   example(
-    "pipeline",
-    "Pipeline operator",
-    "An infix operator with its own precedence.",
-    pipelineMacros,
-    pipelineMain,
+    "pipe-elixir",
+    "Pipe Elixir",
+    "Elixir's `|>`: the value becomes the first argument of the call.",
+    pipeElixirMacros,
+    pipeElixirMain,
+  ),
+  example(
+    "pipe-hack",
+    "Pipe Hack",
+    "The Hack-style `|>` from TC39: pipe a value into any expression with `%`.",
+    pipeHackMacros,
+    pipeHackMain,
   ),
   example(
     "unless",

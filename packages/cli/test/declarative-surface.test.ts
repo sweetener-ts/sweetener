@@ -102,7 +102,7 @@ describe("optional captures", () => {
        export const some = atLeast(size > 0);`,
     );
     expect(text).toContain("export const none = [ true]");
-    expect(text).toContain("export const some = [(size > 0)]");
+    expect(text).toContain("export const some = [size > 0]");
   });
 
   test("let a syntax class declare a field a rule may omit", () => {
@@ -128,7 +128,7 @@ describe("optional captures", () => {
        export const table = arms { _ => 1, 2 if (size > 0) => 3 };`,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("[[ 1, true],[ 3, (size > 0)]]");
+    expect(text).toContain("[[ 1, true],[ 3, size > 0]]");
   });
 });
 
@@ -1003,7 +1003,7 @@ export const kept = value;
 `,
     );
     expect(messages).toEqual([]);
-    expect(text.replaceAll(/\s+/gu, "")).toContain("if(!((value>0)))");
+    expect(text.replaceAll(/\s+/gu, "")).toContain("if(!(value>0))");
     expect(text).not.toContain("unless");
   });
 
@@ -1021,7 +1021,7 @@ export function f(value: number): string {
 `,
     );
     expect(messages).toEqual([]);
-    expect(text.replaceAll(/\s+/gu, "")).toContain("if(!((value>0)))");
+    expect(text.replaceAll(/\s+/gu, "")).toContain("if(!(value>0))");
   });
 
   test("leaves an ordinary call of the same shape alone", () => {

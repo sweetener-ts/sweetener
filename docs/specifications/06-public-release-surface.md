@@ -38,7 +38,14 @@ following source-ordered environment and MUST NOT execute host code.
 `syntax parameter name:category` declares a syntax parameter, and
 `#parameterize(name = replacement) { body }` gives it a meaning for the
 expansion of `body`. A parameter used where none is in effect expands by its own
-rules, or reports `SWR4018` when it has none.
+rules, or reports `SWR4018` when it has none. `#parameterize(required name =
+replacement)` reports `SWR4022` when the body never uses the parameter.
+`#let(name = value) { body }` evaluates `value` once for `body`, keeping any
+`await` or `yield` in `body` in the function it is written in.
+
+An infix operator MAY declare `operand arrow;`, which lets its right operand be
+an unparenthesized arrow function ending at the next use of the operator, and a
+rule MAY spell its right operand as literal tokens (`$value:expr |> await`).
 
 ## 4. Macro-module format
 
@@ -162,7 +169,7 @@ Legacy `syntax`/`syntaxrec` definitions become declarative `macro` rules.
 Postfix ellipses become grouped `$()` repetition. Syntax-class concatenated
 fields become dot fields. `withSyntax`, host functions, and arbitrary transformer
 code must be replaced with templates, binding clauses, finite refinements,
-`#fresh`, `#datum`, `#if`, `#join`, `#fold`, `#metavar`, or `#parameterize`. A transformation that
+`#fresh`, `#datum`, `#if`, `#join`, `#fold`, `#metavar`, `#parameterize`, or `#let`. A transformation that
 cannot be expressed by those operations is unsupported in version `1`; it is
 not grounds for importing compiler APIs.
 

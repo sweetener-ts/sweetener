@@ -10,7 +10,7 @@ export const total: number = ((inspected_1) => {
         `${"inspected + actual + expected"} = ${globalThis.JSON.stringify(inspected_1)}`,
       );
       return inspected_1;
-    })(((inspected + actual) + expected));
+    })(inspected + actual + expected);
 
 export function check(): void {
   {

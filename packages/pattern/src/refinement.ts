@@ -2,6 +2,7 @@ import type { CaptureId } from "@sweetener/shared";
 import {
   greaterThanTokenWidth,
   type DelimiterKind,
+  type ExpressionForm,
   type TokenKind,
   type TokenSyntax,
 } from "@sweetener/syntax";
@@ -28,7 +29,13 @@ export type RefinementPredicate =
       readonly comparison: LengthComparison;
       readonly length: number;
     }
-  | { readonly kind: "delimiter"; readonly delimiter: DelimiterKind };
+  | { readonly kind: "delimiter"; readonly delimiter: DelimiterKind }
+  | {
+      readonly kind: "expression-form";
+      readonly forms: readonly ExpressionForm[];
+      /** Whether the capture must be none of the forms, rather than one. */
+      readonly excluded: boolean;
+    };
 
 export interface CaptureRefinement {
   readonly target: CaptureId;
@@ -92,6 +99,14 @@ export function createRefinement(
           "Repetition length must be a non-negative safe integer",
         );
       normalized = Object.freeze({ ...predicate });
+      break;
+    case "expression-form":
+      if (predicate.forms.length === 0)
+        throw new RangeError("Form refinement requires at least one form");
+      normalized = Object.freeze({
+        ...predicate,
+        forms: sortedUnique(predicate.forms) as readonly ExpressionForm[],
+      });
       break;
     case "boundary":
       if (!Object.isFrozen(predicate.literal))
@@ -242,7 +257,33 @@ export function evaluateRefinement(
           leaf.syntax[0]?.tag === "group" &&
           leaf.syntax[0].delimiter === predicate.delimiter,
       );
+    case "expression-form":
+      return leaves(value).every((leaf) => {
+        const form = expressionForm(leaf);
+        if (form === false) return false;
+        const listed = form !== undefined && predicate.forms.includes(form);
+        return predicate.excluded ? !listed : listed;
+      });
   }
+}
+
+/**
+ * The form of the one expression a capture holds: undefined for an
+ * expression of no particular form, and false where the capture is not one
+ * expression. A form is a question about an expression, so a capture of
+ * tokens neither has one nor lacks one, and refusing it keeps a form
+ * refinement written on a `tt` capture from passing vacuously.
+ */
+function expressionForm(
+  leaf: Extract<CaptureValue, { kind: "leaf" }>,
+): ExpressionForm | undefined | false {
+  if (leaf.syntax.length !== 1) return false;
+  const only = leaf.syntax[0]!;
+  if (only.tag === "protected")
+    return only.category === "expr" ? only.form : false;
+  // A lone token or group an expression capture took is an operand with no
+  // operator of its own.
+  return only.tag === "token" || only.tag === "group" ? undefined : false;
 }
 
 const lengthComparisonWords: Readonly<Record<LengthComparison, string>> = {
@@ -282,6 +323,10 @@ export function describeRefinement(predicate: RefinementPredicate): string {
       return `a boundary on the ${predicate.side} side`;
     case "selected-alternative":
       return `alternative ${String(predicate.alternative)}`;
+    case "expression-form":
+      return predicate.excluded
+        ? `an expression that is not ${formList(predicate.forms)}`
+        : `${formList(predicate.forms)}`;
   }
 }
 
@@ -293,4 +338,19 @@ export function evaluateRefinements(
   return refinements.every((refinement) =>
     evaluateRefinement(refinement, captures, context),
   );
+}
+
+const formWords: Readonly<Record<ExpressionForm, string>> = {
+  conditional: "an unparenthesized conditional",
+  arrow: "an unparenthesized arrow function",
+  assignment: "an unparenthesized assignment",
+  yield: "an unparenthesized `yield`",
+  await: "an unparenthesized `await`",
+};
+
+function formList(forms: readonly ExpressionForm[]): string {
+  const words = forms.map((form) => formWords[form]);
+  return words.length < 2
+    ? (words[0] ?? "")
+    : `${words.slice(0, -1).join(", ")} or ${words.at(-1)!}`;
 }

@@ -49,7 +49,7 @@ import {
   unknownTemplateFieldCode,
   unknownTemplateOperationCode,
 } from "./diagnostics.js";
-import { readParameterization } from "./parameterize.js";
+import { readLetBinding, readParameterization } from "./parameterize.js";
 
 export interface TemplateField {
   readonly name: string;
@@ -191,6 +191,7 @@ const templateOperations: ReadonlySet<string> = new Set([
   "if",
   "index",
   "join",
+  "let",
   "metavar",
   "parameterize",
   "syntax",
@@ -334,6 +335,40 @@ class TemplateParser {
         elements.push(createLiteralTemplate(current));
         if (splitParameterize)
           elements.push(createLiteralTemplate(nodes[index + 1]!));
+        elements.push(this.#atom(argumentsGroup, depth, fold, quoted));
+        elements.push(this.#atom(bodyGroup, depth, fold, quoted));
+        index = argumentsIndex + 2;
+        continue;
+      }
+      // `#let(name = value) { body }` is carried through to the expander too.
+      // Whether it becomes a function applied to the value or an assignment to
+      // a variable declared in the enclosing function depends on the body
+      // after expansion -- an `await` in it cannot cross a function boundary
+      // -- and on where the expansion stands, neither of which is known here.
+      const compactLet = !memberAccess && token(current, "#let");
+      const splitLet =
+        !memberAccess && token(current, "#") && token(nodes[index + 1], "let");
+      if (compactLet || splitLet) {
+        const argumentsIndex = index + (compactLet ? 1 : 2);
+        const argumentsGroup = nodes[argumentsIndex];
+        const bodyGroup = nodes[argumentsIndex + 1];
+        if (
+          !group(argumentsGroup, "parenthesis") ||
+          !group(bodyGroup, "brace") ||
+          bodyGroup.children.length === 0 ||
+          readLetBinding(argumentsGroup.children) === undefined
+        ) {
+          this.#diagnostic(
+            malformedTemplateCode,
+            current.origin,
+            "#let is written #let(name = value) { body }, naming one identifier and giving a value and a body that are not empty",
+          );
+          elements.push(createLiteralTemplate(current));
+          index += 1;
+          continue;
+        }
+        elements.push(createLiteralTemplate(current));
+        if (splitLet) elements.push(createLiteralTemplate(nodes[index + 1]!));
         elements.push(this.#atom(argumentsGroup, depth, fold, quoted));
         elements.push(this.#atom(bodyGroup, depth, fold, quoted));
         index = argumentsIndex + 2;

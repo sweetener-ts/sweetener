@@ -1,0 +1,34 @@
+// `for syntax` says this import is compile-time only. `%` is imported as
+// well, since the file writes it.
+import { (|>), (%) } from "./macros.sts" for syntax;
+
+// Any expression can be a step: a call with the value in any position, an
+// operator, a method, a template literal.
+const envars = { HOME: "/home/ada", SHELL: "/bin/zsh" };
+
+export const exports: string =
+Object.keys(envars)
+|> %.map((name) => `${name}=${envars[name as keyof typeof envars]}`)
+|> %.join(" ")
+|> `$ ${%}`;
+
+// `%` may be used more than once; the value is still evaluated only once.
+let calls = 0;
+const next = () => (calls += 1);
+export const pair: [number, number] = next() |> [%, % * 10];
+
+// `%` between two operands is still the remainder.
+export const remainder: number = 17 |> % % 5;
+
+// `await` and `yield` work in a step, because a step is not moved into a
+// function of its own.
+const lookup = async (id: number) => ({ id, name: `user ${id}` });
+
+export async function loadName(id: number): Promise<string> {
+  return id |> await lookup(%) |> %.name.toUpperCase();
+}
+
+export function* countdown(from: number): Generator<number, number, number> {
+  const received = from |> (yield %) |> (yield % - 1);
+  return received;
+}

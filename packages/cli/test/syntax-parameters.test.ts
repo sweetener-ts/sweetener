@@ -273,6 +273,67 @@ export const value = withIt(2, pairIt(it));
     expect(evaluate(generated, "value")).toEqual([2, 2]);
   });
 
+  test("a required parameterization reports a body that never uses it", () => {
+    const macros = `
+export syntax parameter it:expr;
+export syntax withIt:expr {
+  rule { withIt($value:expr, $body:expr) } => {
+    ((bound) => #parameterize(required it = bound) { $body })($value)
+  }
+}
+export syntax usesIt:expr {
+  rule { usesIt() } => { it }
+}
+`;
+    const unused = run(
+      macros,
+      `import { it, withIt } from "./macros.sts" for syntax;
+export const value = withIt(1, 2);
+`,
+    );
+    expect(unused.messages).toEqual([
+      "TS4022: This must use it, and does not. The macro gives it a meaning here only for syntax that uses it.",
+    ]);
+    // A use inside a macro the body expands counts.
+    const throughMacro = run(
+      macros,
+      `import { it, withIt, usesIt } from "./macros.sts" for syntax;
+export const value = withIt(3, usesIt());
+`,
+    );
+    expect(throughMacro.messages).toEqual([]);
+    expect(evaluate(throughMacro.generated, "value")).toBe(3);
+    // A use belongs to the nearest parameterization, so the outer one here is
+    // unused.
+    const shadowed = run(
+      macros,
+      `import { it, withIt } from "./macros.sts" for syntax;
+export const value = withIt(1, withIt(2, it));
+`,
+    );
+    expect(shadowed.messages).toEqual([
+      "TS4022: This must use it, and does not. The macro gives it a meaning here only for syntax that uses it.",
+    ]);
+  });
+
+  test("a parameter named required is the whole name", () => {
+    const { generated, messages } = run(
+      `
+export syntax parameter required:expr;
+export syntax withRequired:expr {
+  rule { withRequired($body:expr) } => {
+    #parameterize(required = 5) { $body }
+  }
+}
+`,
+      `import { required, withRequired } from "./macros.sts" for syntax;
+export const value = withRequired(required + 1);
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(evaluate(generated, "value")).toBe(6);
+  });
+
   test("a macro may still be named parameter", () => {
     const { generated, messages } = run(
       "export syntax parameter:expr { rule { parameter } => { 5 } }",

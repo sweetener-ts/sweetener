@@ -178,9 +178,36 @@ in the environment. An operator binding supplies left and right binding powers.
 For left-associative precedence `p`, use `(p, p + 1)`; for right-associative use
 `(p, p)`. Nonassociative operators reject another operator in the same band.
 
-The consumer wraps its result in `ProtectedSyntax` with outer precedence.
-Template insertion compares the captured and destination precedence and adds
-parentheses when omission would change grouping.
+`yield` is a prefix operator whose operand is an assignment expression, as in
+TypeScript: `yield a + b` yields the sum.
+
+A macro operator's right operand is read in one of three ways, tried in order:
+
+1. A token run that some rule spells literally after the operator, when nothing
+   after the run continues an operand. A rule `$value:expr |> await` makes
+   `p |> await |> f` read `await` as the whole right operand, while
+   `p |> await f` has `f` after it and is read as an expression.
+2. An arrow function, when the operator declares `operand arrow;`. Its body
+   ends at the next use of the same operator, so `x |> n => f(n) |> g` has
+   `n => f(n)` as the right operand of the first pipe.
+3. An expression at the operator's right binding power.
+
+An operator's rules must account for all of its operands. A rule that matches
+a prefix of them is not selected.
+
+The header of `if`, `while`, `do`, `for`, `with`, and `switch` is read as
+expressions: the whole header, or a `for` loop's initializer (declarators with
+their initializers), test and update, or the object a `for...in` or `for...of`
+walks. A header that does not read so is kept as written.
+
+The consumer wraps its result in `ProtectedSyntax` with outer precedence, and
+records its form when it is an unparenthesized conditional, arrow function,
+assignment, `yield`, or `await`. Parentheses make an expression of no form.
+Printing parenthesizes a protected expression that expansion placed where its
+own operators could re-associate: one whose precedence is not already tighter
+than the operator it is an operand of, and any conditional or arrow that is not
+the whole body of an arrow. `??` beside an unparenthesized `||` or `&&`, and a
+unary base of `**`, keep their parentheses.
 
 ## 8. TypeScript built-in parsing boundary
 
@@ -308,9 +335,11 @@ any macro.
 export syntax parameter (%):expr;
 
 export operator (|>):expr {
-  fixity infix; associativity left; precedence 40;
-  rule { $value:expr |> $body:expr } => {
-    ((topic) => #parameterize(% = topic) { $body })($value)
+  fixity infix; associativity right; precedence 20;
+  rule { $value:expr |> $body:expr }
+  refine $body form not in (conditional, arrow, assignment, yield);
+  => {
+    #let(topic = $value) { #parameterize(required % = topic) { $body } }
   }
 }
 ```
@@ -333,6 +362,13 @@ Where a parameter is dispatched:
 - with none in effect, a parameter with rules expands by them;
 - with none in effect, a parameter without rules reports `SWR4018` at its head.
 
+`#parameterize(required name = replacement) { body }` also requires the body to
+use the parameter: once the body is expanded, if no use of the parameter was
+dispatched under this parameterization, `SWR4022` is reported over the body. A
+use under a nearer parameterization of the same parameter does not count. A
+parameter used inside the operands of an operator no rule accepted is not
+reported with `SWR4018`; the operator's own diagnostic covers it.
+
 A parameter is measured by its head alone. What is written after it -- a call's
 arguments, a member access -- is read around it as around any operand, so it
 may stand wherever an operand may, however it is spelled. A punctuation-spelled
@@ -340,3 +376,36 @@ macro that is not an operator is dispatched only where an operand begins: after
 something that ends an operand it is the TypeScript operator of the same
 spelling, decided the way a scanner tells a regular expression from a division.
 In `7 |> % % 4`, the first `%` is the parameter and the second is remainder.
+
+## 16. Expression-level `let`
+
+`#let(name = value) { body }` evaluates `value` once, binds `name` to it, and
+evaluates to `body`. `name` is an identifier the template introduces, so hygiene
+keeps it apart from call-site bindings of the same spelling. The value and the
+body are expanded first, and the expansion then takes one of two forms:
+
+- `((name) => body)(value)`, which gives each evaluation a binding of its own;
+- `(name = value, body)`, with `let name;` declared at the start of the
+  enclosing function body, after its directive prologue, or of the module when
+  no function encloses it.
+
+The second form is used when the expanded body suspends the function it stands
+in: it holds an `await` or `yield` that is not inside a function, arrow, method
+or class written within the body. A function wrapped around such a body would
+change what the `await` or `yield` belongs to.
+
+A function body is a brace that follows `=>`, or that follows a parameter list
+not headed by `if`, `while`, `for`, `switch`, `catch`, `with`, or `for await`,
+optionally with a return type between. A class body is not one. An arrow with a
+concise body that needs a declaration is rewritten with a block body:
+`(x) => { let name; return body; }`. Each call of a function has its own
+variable, so concurrent calls of an async function do not share it.
+
+A later evaluation of the same `#let` in one call -- the next iteration of a
+loop, including a loop's test or update -- assigns the variable again. So that
+a closure keeps the value of its own evaluation, each function, arrow, or class
+in the body of the second form that reads `name` is wrapped as
+`((name) => (closure))(name)`, taking a copy when it is created. A method or
+accessor is copied through the object literal it is written in; an object
+literal that itself holds an `await` or `yield` cannot be wrapped, and reports
+`SWR4023`.

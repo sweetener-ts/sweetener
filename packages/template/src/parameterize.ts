@@ -15,6 +15,11 @@ export interface Parameterization {
   readonly name: readonly Syntax[];
   /** What each use of the parameter stands for inside the body. */
   readonly replacement: readonly Syntax[];
+  /**
+   * Whether the body must use the parameter, as a Hack pipe's body must use
+   * its topic. Written `#parameterize(required % = topic)`.
+   */
+  readonly required: boolean;
 }
 
 function isWord(node: Syntax): node is TokenSyntax {
@@ -31,7 +36,9 @@ function isWord(node: Syntax): node is TokenSyntax {
  * The parameter is named the way a definition names it: a word (`it`), a
  * spelling in parentheses (`(%)`, needed when the spelling holds an `=`), or
  * punctuation written together (`%`). The first `=` after the name separates
- * it from the replacement, which may not be empty.
+ * it from the replacement, which may not be empty. `required` before the name
+ * says the body must use it; a parameter that is itself named `required` is
+ * the whole name, as in `#parameterize(required = x)`.
  */
 export function readParameterization(
   children: readonly Syntax[],
@@ -40,7 +47,13 @@ export function readParameterization(
     (node) => node.tag === "token" && node.raw === "=",
   );
   if (equals < 1 || equals === children.length - 1) return undefined;
-  const name = children.slice(0, equals);
+  const first = children[0]!;
+  const required =
+    equals > 1 &&
+    first.tag === "token" &&
+    first.kind === "identifier" &&
+    first.raw === "required";
+  const name = children.slice(required ? 1 : 0, equals);
   const replacement = children.slice(equals + 1);
   const only = name.length === 1 ? name[0]! : undefined;
   if (only !== undefined && isWord(only))
@@ -48,6 +61,7 @@ export function readParameterization(
       spelling: only.raw,
       name: Object.freeze(name),
       replacement: Object.freeze(replacement),
+      required,
     });
   if (
     only?.tag === "group" &&
@@ -61,6 +75,7 @@ export function readParameterization(
         .join(""),
       name: Object.freeze(name),
       replacement: Object.freeze(replacement),
+      required,
     });
   // Punctuation spelled across several tokens is only that spelling when the
   // tokens are written together, as an operator's is.
@@ -75,5 +90,34 @@ export function readParameterization(
     spelling: name.map((node) => (node as TokenSyntax).raw).join(""),
     name: Object.freeze(name),
     replacement: Object.freeze(replacement),
+    required,
   });
+}
+
+/** What `#let(name = value) { body }` says between its parentheses. */
+export interface LetBinding {
+  /** The name the body refers to the value by. */
+  readonly name: TokenSyntax;
+  /** The expression evaluated once, before the body. */
+  readonly value: readonly Syntax[];
+}
+
+/**
+ * Reads the contents of a `#let` argument group, or answers undefined when
+ * they are not one binding: a single identifier, `=`, and a value that is not
+ * empty.
+ */
+export function readLetBinding(
+  children: readonly Syntax[],
+): LetBinding | undefined {
+  const [name, equals, ...value] = children;
+  if (
+    name?.tag !== "token" ||
+    name.kind !== "identifier" ||
+    equals?.tag !== "token" ||
+    equals.raw !== "=" ||
+    value.length === 0
+  )
+    return undefined;
+  return Object.freeze({ name, value: Object.freeze(value) });
 }

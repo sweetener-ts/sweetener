@@ -173,7 +173,12 @@ Version 1 supplies pure refinements:
   finite set;
 - token kind belongs to a finite set;
 - repetition length comparison with an integer literal;
-- delimiter kind.
+- delimiter kind;
+- expression form: `refine $body form in (...)` or `form not in (...)` over
+  `conditional`, `arrow`, `assignment`, `yield`, and `await`, each meaning an
+  unparenthesized expression of that form. A lone token or group is an
+  expression of no form; a capture that is not one expression satisfies
+  neither.
 
 Two further predicates were specified and are not supplied: a literal boundary
 on either side of a capture, and a capture having matched a named alternative.
@@ -272,11 +277,24 @@ A parameterization gives a syntax parameter a meaning for the syntax it wraps:
 
 The parameter is named as a definition names it: a word, punctuation written
 together, or a spelling in parentheses when it contains `=`. The first `=`
-separates the name from the replacement, which MUST NOT be empty. Captures may
+separates the name from the replacement, which MUST NOT be empty. `required`
+before the name, as in `#parameterize(required % = topic) { ... }`, requires
+the body to use the parameter; a parameter named `required` is written alone
+before the `=`. Captures may
 stand in the replacement and the body. A malformed parameterization reports
 `SWR2016` where the template is defined. The template language does not apply
 it: it is carried into the replacement and applied during expansion, because
 what it changes is how the body's own macros expand.
+
+An expression-level binding evaluates a value once for the body that uses it:
+
+```text
+#let(identifier = value syntax) { body syntax }
+```
+
+The value and the body MUST NOT be empty, and a malformed binding reports
+`SWR2016`. Like a parameterization it is carried into the replacement; the
+expansion specification (section 16) says what it becomes.
 
 ## 12. Binding clauses
 

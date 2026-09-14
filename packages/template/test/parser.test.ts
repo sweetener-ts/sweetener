@@ -324,6 +324,35 @@ describe("template parser", () => {
     ]);
   });
 
+  test("carries #let and #parameterize(required ...) through", () => {
+    const result = parse(
+      "{ #let(topic = $value) { #parameterize(required % = topic) { $body } } }",
+      [
+        binding("value", 1, createLeafShape(id<SyntaxClassId>(1))),
+        binding("body", 2, createLeafShape(id<SyntaxClassId>(1))),
+      ],
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.template.elements.map((element) => element.kind)).toEqual([
+      "literal",
+      "group",
+      "group",
+    ]);
+  });
+
+  test.each([
+    "{ #let(topic) { body } }",
+    "{ #let(topic =) { body } }",
+    "{ #let(a b = value) { body } }",
+    "{ #let(topic = value) }",
+    "{ #let(topic = value) {} }",
+  ])("reports a malformed #let: %s", (source) => {
+    const result = parse(source, []);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "SWR2016",
+    ]);
+  });
+
   test("reports malformed declarative conditionals", () => {
     const result = parse("{ #if(unknown $missing) { value } }", []);
     expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([

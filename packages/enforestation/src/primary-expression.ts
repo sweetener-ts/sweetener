@@ -4,6 +4,7 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  isIdentifierToken,
   spanEnvelope,
   type OriginStore,
   type Precedence,
@@ -86,8 +87,38 @@ function isPrimaryAtom(syntax: Syntax | undefined): boolean {
   return (
     syntax?.tag === "token" &&
     (literalKinds.has(syntax.kind) ||
-      (syntax.kind === "keyword" && literalKeywords.has(syntax.raw)))
+      (syntax.kind === "keyword" &&
+        // A contextual keyword is an ordinary name in an expression:
+        // `from`, `of` and `type` are all common parameter names.
+        (literalKeywords.has(syntax.raw) || isIdentifierToken(syntax))))
   );
+}
+
+/**
+ * How many nodes a template marker that stands for an expression takes:
+ * `#let(name = value) { body }` or `#parameterize(name = value) { body }`.
+ * The expander replaces each with the expression it builds, but an operator's
+ * rule reads its operands before that happens -- the right operand of a pipe
+ * can be another pipe's expansion, still holding its marker.
+ */
+function expressionMarkerWidth(cursor: SyntaxCursor): number | undefined {
+  const marker = cursor.peek();
+  if (marker?.tag !== "token") return undefined;
+  const split =
+    marker.raw === "#" &&
+    cursor.peek(1)?.tag === "token" &&
+    ["let", "parameterize"].includes((cursor.peek(1) as TokenSyntax).raw);
+  if (!split && marker.raw !== "#let" && marker.raw !== "#parameterize")
+    return undefined;
+  const offset = split ? 2 : 1;
+  const argumentsGroup = cursor.peek(offset);
+  const body = cursor.peek(offset + 1);
+  return argumentsGroup?.tag === "group" &&
+    argumentsGroup.delimiter === "parenthesis" &&
+    body?.tag === "group" &&
+    body.delimiter === "brace"
+    ? offset + 2
+    : undefined;
 }
 
 function functionExpressionWidth(cursor: SyntaxCursor): number | undefined {
@@ -153,6 +184,52 @@ function arrowWidth(
   cursor: SyntaxCursor,
   context: ConsumerContext,
 ): ArrowExtent | undefined {
+  // A single named parameter is left to the infix `=>`, which reads the body
+  // the same way; only a parameter list needs measuring here.
+  const bodyStart = parenthesizedArrowBodyStart(cursor, context);
+  if (bodyStart === undefined) return undefined;
+  // Only a concise body. Those did not parse here at all, and fell to the
+  // infix `=>`, which protects what is left of it as an expression and
+  // emitted a parameter list wrapped in its own parentheses. A block body
+  // still goes that way: taking it here protects a statement list as an
+  // expression, which mangles it at a call site. Written in a template, a
+  // block-bodied arrow is still emitted wrongly — that is unchanged, and
+  // not something this can fix without breaking the call site.
+  const body = cursor.peek(bodyStart);
+  if (body?.tag === "group" && body.delimiter === "brace") return undefined;
+  const width = arrowBodyEnd(cursor, bodyStart, context);
+  return width === undefined ? undefined : { width, bodyStart };
+}
+
+/**
+ * Where an arrow function's body begins, if one begins at the cursor: the
+ * offset just past its `=>`. Parameters may be a list, generic, or a single
+ * name, and `async` may stand before any of them.
+ */
+export function arrowBodyStart(
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): number | undefined {
+  const namedAt = (offset: number) => {
+    const name = cursor.peek(offset);
+    const arrow = cursor.peek(offset + 1);
+    return (
+      name?.tag === "token" &&
+      (name.kind === "identifier" || name.raw === "async") &&
+      arrow?.tag === "token" &&
+      arrow.raw === "=>"
+    );
+  };
+  if (namedAt(0)) return 2;
+  const head = cursor.peek();
+  if (head?.tag === "token" && head.raw === "async" && namedAt(1)) return 3;
+  return parenthesizedArrowBodyStart(cursor, context);
+}
+
+function parenthesizedArrowBodyStart(
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): number | undefined {
   let offset = 0;
   const head = cursor.peek();
   if (head?.tag === "token" && head.raw === "async") {
@@ -174,26 +251,23 @@ function arrowWidth(
   if (parameters?.tag !== "group" || parameters.delimiter !== "parenthesis")
     return undefined;
   offset += 1;
-  // A return type annotation may stand between the parameters and the arrow.
+  const after = cursor.peek(offset);
+  if (after?.tag === "token" && after.raw === "=>") return offset + 1;
+  // Otherwise only a return type annotation may stand between the parameters
+  // and the arrow, and it begins with `:`. Looking further for any `=>` read
+  // `(1) |> f; const g = () => 1;` as an arrow whose parameter list was `(1)`,
+  // reaching into the next statement for its `=>`.
+  if (after?.tag !== "token" || after.raw !== ":") return undefined;
+  offset += 1;
   const limit = offset + 64;
   while (offset < limit) {
     const node = cursor.peek(offset);
     if (node === undefined) return undefined;
-    if (node.tag === "token" && node.raw === "=>") {
-      // Only a concise body. Those did not parse here at all, and fell to the
-      // infix `=>`, which protects what is left of it as an expression and
-      // emitted a parameter list wrapped in its own parentheses. A block body
-      // still goes that way: taking it here protects a statement list as an
-      // expression, which mangles it at a call site. Written in a template, a
-      // block-bodied arrow is still emitted wrongly — that is unchanged, and
-      // not something this can fix without breaking the call site.
-      const body = cursor.peek(offset + 1);
-      if (body?.tag === "group" && body.delimiter === "brace") return undefined;
-      const width = arrowBodyEnd(cursor, offset + 1);
-      return width === undefined ? undefined : { width, bodyStart: offset + 1 };
-    }
+    if (node.tag === "token" && node.raw === "=>") return offset + 1;
     // Anything that cannot appear in a return type means this is not an arrow.
     if (node.tag === "group" && node.delimiter === "brace") return undefined;
+    if (node.tag === "token" && (node.raw === ";" || node.raw === "="))
+      return undefined;
     offset += 1;
   }
   return undefined;
@@ -207,12 +281,18 @@ function arrowWidth(
 function arrowBodyEnd(
   cursor: SyntaxCursor,
   bodyStart: number,
+  context: ConsumerContext,
 ): number | undefined {
   if (cursor.peek(bodyStart) === undefined) return undefined;
   let offset = bodyStart;
+  const at = cursor.fork();
+  at.advance(bodyStart);
   while (true) {
     const node = cursor.peek(offset);
     if (node === undefined) break;
+    // What the surrounding parse stops at ends the body too: an arrow that
+    // is a pipe's operand ends where the pipe continues.
+    if (offset > bodyStart && context.stopSet.matches(at)) break;
     // Groups are already balanced, so only a separator at this level ends it.
     if (
       node.tag === "token" &&
@@ -220,6 +300,7 @@ function arrowBodyEnd(
     )
       break;
     offset += 1;
+    at.advance();
   }
   return offset === bodyStart ? undefined : offset;
 }
@@ -433,6 +514,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       context,
     );
     const functionWidth = functionExpressionWidth(cursor);
+    const markerWidth = expressionMarkerWidth(cursor);
     const classWidth = classExpressionWidth(cursor);
     const arrow = arrowWidth(cursor, context);
     // A macro may be named by punctuation that begins no ordinary operand --
@@ -441,6 +523,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
     // expander, and what follows is read as postfix as it is for any operand.
     const macroOperand =
       functionWidth === undefined &&
+      markerWidth === undefined &&
       classWidth === undefined &&
       arrow === undefined &&
       !isPrimaryAtom(cursor.peek()) &&
@@ -450,6 +533,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         : undefined;
     if (
       functionWidth === undefined &&
+      markerWidth === undefined &&
       classWidth === undefined &&
       arrow === undefined &&
       macroOperand === undefined &&
@@ -465,7 +549,12 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       );
     }
     cursor.advance(
-      functionWidth ?? classWidth ?? arrow?.width ?? macroOperand ?? 1,
+      functionWidth ??
+        markerWidth ??
+        classWidth ??
+        arrow?.width ??
+        macroOperand ??
+        1,
     );
     // Postfix parsing runs first so the macro extent is compared against the
     // whole expression, not just its head.
@@ -498,10 +587,11 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       .sequence.slice(start, cursor.index);
     // Only when the arrow is the whole of what was taken: anything postfix
     // reached past its body, and the slice would no longer line up.
-    const consumed =
-      arrow !== undefined && cursor.index === start + arrow.width
-        ? arrowChildren(raw, arrow, this.options, context)
-        : raw;
+    const wholeArrow =
+      arrow !== undefined && cursor.index === start + arrow.width;
+    const consumed = wholeArrow
+      ? arrowChildren(raw, arrow, this.options, context)
+      : raw;
     const first = consumed[0]!;
     return Object.freeze({
       matched: true,
@@ -512,6 +602,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         scopes: first.scopes,
         category: "expr",
         precedence: primaryExpressionPrecedence,
+        form: wholeArrow ? "arrow" : undefined,
         children: consumed,
       }),
       cursor,

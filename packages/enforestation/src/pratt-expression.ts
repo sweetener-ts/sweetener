@@ -3,6 +3,7 @@ import {
   createPrecedence,
   createProtectedSyntax,
   spanEnvelope,
+  type ExpressionForm,
   type OriginStore,
   type ProtectedSyntax,
   type Syntax,
@@ -15,6 +16,7 @@ import {
   type SyntaxConsumer,
 } from "./consumer.js";
 import {
+  arrowBodyStart,
   createPrimaryExpressionConsumer,
   type PrimaryExpressionConsumerOptions,
 } from "./primary-expression.js";
@@ -53,7 +55,6 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
       "void",
       "delete",
       "await",
-      "yield",
       "new",
       "++",
       "--",
@@ -62,6 +63,10 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
     160,
     "right",
   ),
+  // `yield` takes a whole assignment expression, so `yield a + b` yields the
+  // sum and `yield a ? b : c` the conditional. Read at unary precedence it
+  // yielded `a` and added `b` to whatever came back.
+  ...operators(["yield"], "prefix", 20, "right"),
   ...operators(["**"], "infix", 150, "right"),
   ...operators(["*", "/", "%"], "infix", 140, "left"),
   ...operators(["+", "-"], "infix", 130, "left"),
@@ -128,6 +133,17 @@ export interface MacroOperatorCandidate {
   readonly associativity: PrattAssociativity;
   readonly width: number;
   readonly shadowsCore?: boolean | undefined;
+  /**
+   * Token runs a rule takes as its whole right operand, such as `await` in
+   * `p |> await`. One is taken only where what follows cannot continue an
+   * operand, so `p |> await f` is still read as an expression.
+   */
+  readonly literalRightOperands?: readonly (readonly string[])[] | undefined;
+  /**
+   * Whether the right operand may be an unparenthesized arrow function, whose
+   * body ends at the next use of this operator.
+   */
+  readonly arrowOperand?: boolean | undefined;
   readonly expand: (input: MacroOperatorExpansionInput) => ProtectedSyntax;
 }
 
@@ -284,10 +300,46 @@ function outputOrigin(origins: OriginStore, children: readonly Syntax[]) {
   return unique.length === 1 ? unique[0]! : origins.composed(unique);
 }
 
+const assignmentOperators = new Set([
+  "=",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "**=",
+  "<<=",
+  ">>=",
+  ">>>=",
+  "&=",
+  "^=",
+  "|=",
+  "&&=",
+  "||=",
+  "??=",
+]);
+
+/** The form a core operator gives the expression it builds, if any. */
+function coreForm(
+  fixity: PrattFixity,
+  spelling: string,
+): ExpressionForm | undefined {
+  if (fixity === "prefix")
+    return spelling === "yield"
+      ? "yield"
+      : spelling === "await"
+        ? "await"
+        : undefined;
+  if (fixity !== "infix") return undefined;
+  if (spelling === "=>") return "arrow";
+  return assignmentOperators.has(spelling) ? "assignment" : undefined;
+}
+
 function protect(
   options: PrattExpressionConsumerOptions,
   children: readonly Syntax[],
   precedence: number,
+  form?: ExpressionForm,
 ): ProtectedSyntax {
   const first = children[0]!;
   return createProtectedSyntax({
@@ -297,6 +349,7 @@ function protect(
     scopes: first.scopes,
     category: "expr",
     precedence: createPrecedence(precedence),
+    form,
     children,
   });
 }
@@ -358,7 +411,13 @@ function parsePrefix(
         left: undefined,
         right: right.syntax,
         context: context.consumer,
-      }) ?? protect(context.options, coreChildren, prefix.precedence);
+      }) ??
+      protect(
+        context.options,
+        coreChildren,
+        prefix.precedence,
+        coreForm("prefix", prefix.spelling),
+      );
     if (syntax.category !== "expr") {
       throw new TypeError(
         "Macro prefix operator returned non-expression syntax",
@@ -413,6 +472,7 @@ function parseConditional(
       context.options,
       [left.syntax, question, consequent.syntax, colon, alternate.syntax],
       30,
+      "conditional",
     ),
     cursor: alternate.cursor,
     outerPrecedence: 30,
@@ -456,6 +516,96 @@ function parseAssertedType(
     syntax: attempt.syntax,
     cursor: attempt.cursor,
     outerPrecedence: precedence,
+    unparenthesizedPrefix: false,
+    mixingFamily: undefined,
+  };
+}
+
+/**
+ * Whether nothing at the cursor continues the operand before it: the end,
+ * a stop, a statement or conditional boundary, or an operator that takes an
+ * operand on its left.
+ */
+function endsOperand(cursor: SyntaxCursor, context: PrattContext): boolean {
+  if (cursor.atEnd || context.consumer.stopSet.matches(cursor)) return true;
+  const next = cursor.peek();
+  if (next?.tag === "token" && (next.raw === ";" || next.raw === "?"))
+    return true;
+  return (
+    resolveOperator(cursor, "infix", context) !== undefined ||
+    resolveOperator(cursor, "postfix", context) !== undefined
+  );
+}
+
+/**
+ * A right operand one of the operator's rules spells as literal tokens, as
+ * `$value:expr |> await` spells `await`. It is taken only where it is the
+ * whole operand; `p |> await f` has more after `await`, and is read as the
+ * expression it is.
+ */
+function literalRightOperand(
+  cursor: SyntaxCursor,
+  macro: MacroOperatorCandidate,
+  context: PrattContext,
+): ParsedExpression | undefined {
+  for (const run of macro.literalRightOperands ?? []) {
+    const spelled = run.every((raw, offset) => {
+      const node = cursor.peek(offset);
+      return node?.tag === "token" && node.raw === raw;
+    });
+    if (!spelled) continue;
+    const after = cursor.fork();
+    after.advance(run.length);
+    if (!endsOperand(after, context)) continue;
+    const tokens = Array.from({ length: run.length }, () => cursor.consume()!);
+    return {
+      syntax: protect(context.options, tokens, 1_000),
+      cursor,
+      outerPrecedence: 1_000,
+      unparenthesizedPrefix: false,
+      mixingFamily: undefined,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * An arrow function standing unparenthesized as the right operand of an
+ * operator declared `operand arrow;`. Its body ends at the next use of the
+ * operator, so `x |> n => f(n) |> g` applies `g` to what the arrow returns
+ * rather than putting `|> g` inside the arrow. Anything else at the cursor
+ * is left to the ordinary operand parse.
+ */
+function arrowRightOperand(
+  cursor: SyntaxCursor,
+  macro: MacroOperatorCandidate,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt | undefined {
+  const bodyStart = arrowBodyStart(cursor, context.consumer);
+  if (bodyStart === undefined) return undefined;
+  const head = Array.from({ length: bodyStart }, () => cursor.consume()!);
+  const block = cursor.peek();
+  let body: Syntax;
+  if (block?.tag === "group" && block.delimiter === "brace") {
+    body = cursor.consume()!;
+  } else {
+    const parsed = parseExpression(cursor, 20, {
+      ...context,
+      allowComma: false,
+      consumer: Object.freeze({
+        ...context.consumer,
+        stopSet: context.consumer.stopSet.union(
+          new StopSet([{ kind: "spelling", raw: macro.spelling }]),
+        ),
+      }),
+    });
+    if ("matched" in parsed) return parsed;
+    body = parsed.syntax;
+  }
+  return {
+    syntax: protect(context.options, [...head, body], 20, "arrow"),
+    cursor,
+    outerPrecedence: 20,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
   };
@@ -564,10 +714,18 @@ function parseExpression(
     const operator = consumeOperator(cursor, infix);
     const rightMinimum =
       infix.associativity === "right" ? infix.precedence : infix.precedence + 1;
+    const macroOperand =
+      infix.macro === undefined
+        ? undefined
+        : (literalRightOperand(cursor, infix.macro, context) ??
+          (infix.macro.arrowOperand === true
+            ? arrowRightOperand(cursor, infix.macro, context)
+            : undefined));
     const right =
-      infix.spelling === "as" || infix.spelling === "satisfies"
+      macroOperand ??
+      (infix.spelling === "as" || infix.spelling === "satisfies"
         ? parseAssertedType(cursor, context, infix.precedence)
-        : parseExpression(cursor, rightMinimum, context);
+        : parseExpression(cursor, rightMinimum, context));
     if ("matched" in right) return right;
     if (
       (mixingFamily === "logical" && right.mixingFamily === "nullish") ||
@@ -591,6 +749,7 @@ function parseExpression(
         context.options,
         [left.syntax, ...operator, right.syntax],
         infix.precedence,
+        coreForm("infix", infix.spelling),
       );
     if (syntax.category !== "expr") {
       throw new TypeError(

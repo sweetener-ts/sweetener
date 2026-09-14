@@ -449,4 +449,138 @@ describe("Pratt expression consumer", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe("a + b");
     expect(result.cursor.peek()).toMatchObject({ raw: ";" });
   });
+
+  test("reads `yield` over a whole assignment expression", () => {
+    const result = parse("yield a + b").result;
+    if (!result.matched) throw new Error("expected a yield expression");
+    expect(result.syntax.form).toBe("yield");
+    const operand = result.syntax.children[1] as ProtectedSyntax;
+    expect(operatorAt(operand)).toBe("+");
+  });
+
+  test.each([
+    ["a ? b : c", "conditional"],
+    ["x => x + 1", "arrow"],
+    ["(x: number) => x + 1", "arrow"],
+    ["a += b", "assignment"],
+    ["a ??= b", "assignment"],
+    ["yield a", "yield"],
+    ["await a", "await"],
+    ["(a ? b : c)", undefined],
+    ["a + b", undefined],
+  ])("records the form of %s", (source, form) => {
+    const result = parse(source).result;
+    if (!result.matched) throw new Error(result.failure.expectations.join());
+    expect(result.syntax.form).toBe(form);
+  });
+
+  test("reads a contextual keyword as an operand", () => {
+    expect(output("from + of * type")).toBe("from + of * type");
+  });
+
+  test("does not reach past a statement for a parenthesized arrow", () => {
+    const origins = new OriginStore();
+    const read = readSyntax("(a) + b; (c) => d", {
+      sourceId,
+      scopes: 0 as ScopeSetId,
+      originStore: origins,
+    });
+    const syntax = read.root.children.filter(
+      (node) => node.tag !== "token" || node.kind !== "end-of-file",
+    );
+    const ids = createIdAllocator<SyntaxId>(50_000);
+    const registry = new ConsumerRegistry([
+      {
+        category: "expr",
+        consumer: createPrattExpressionConsumer({
+          origins,
+          allocateSyntaxId: () => ids.allocate(),
+        }),
+      },
+    ]);
+    const result = registry.consume("expr", {
+      cursor: createSyntaxCursor(syntax),
+      phase: createPhase(0),
+      environmentEpoch: 0 as EnvironmentEpoch,
+      tracker: new ResourceTracker(createResourceBudget()),
+    });
+    if (!result.matched) throw new Error("expected an expression");
+    expect(printLosslessSequence(result.syntax.children)).toBe("(a) + b");
+    expect(result.cursor.peek()).toMatchObject({ raw: ";" });
+  });
+
+  describe("a macro operator's right operand", () => {
+    function pipe(options: {
+      readonly literalRightOperands?: readonly (readonly string[])[];
+      readonly arrowOperand?: boolean;
+    }) {
+      const seen: string[] = [];
+      const ids = createIdAllocator<SyntaxId>(60_000);
+      const resolver: MacroOperatorResolver = (cursor, fixity) => {
+        const first = cursor.peek();
+        const second = cursor.peek(1);
+        if (
+          fixity !== "infix" ||
+          first?.tag !== "token" ||
+          second?.tag !== "token" ||
+          first.raw !== "|" ||
+          second.raw !== ">" ||
+          second.leadingTrivia.length > 0
+        )
+          return undefined;
+        return Object.freeze({
+          binding: 800 as BindingId,
+          spelling: "|>",
+          fixity: "infix",
+          precedence: 35,
+          associativity: "left",
+          width: 2,
+          ...options,
+          expand: ({ left, operator, right }: MacroOperatorExpansionInput) => {
+            seen.push(printLosslessSequence([right!]).trim());
+            const children: Syntax[] = [left!, ...operator, right!];
+            return createProtectedSyntax({
+              id: ids.allocate(),
+              span: {
+                start: children[0]!.span.start,
+                end: children.at(-1)!.span.end,
+              },
+              origin: children[0]!.origin,
+              scopes: children[0]!.scopes,
+              category: "expr",
+              precedence: createPrecedence(35),
+              children,
+            });
+          },
+        });
+      };
+      return { resolver, seen };
+    }
+
+    test("is a literal a rule names only where nothing continues it", () => {
+      const { resolver, seen } = pipe({ literalRightOperands: [["await"]] });
+      expect(output("p |> await |> f", resolver)).toBe("p |> await |> f");
+      expect(seen).toEqual(["await", "f"]);
+      seen.length = 0;
+      expect(output("p |> await f", resolver)).toBe("p |> await f");
+      expect(seen).toEqual(["await f"]);
+    });
+
+    test("may be an arrow that ends at the next use of the operator", () => {
+      const { resolver, seen } = pipe({ arrowOperand: true });
+      expect(output("x |> n => f(n) |> (m) => m + 1 |> g", resolver)).toBe(
+        "x |> n => f(n) |> (m) => m + 1 |> g",
+      );
+      expect(seen).toEqual(["n => f(n)", "(m) => m + 1", "g"]);
+    });
+
+    test("is not an arrow unless the operator says so", () => {
+      const { resolver } = pipe({});
+      const { result } = parse("x |> n => f(n)", resolver);
+      if (!result.matched) throw new Error("expected an expression");
+      // `=>` binds looser than the pipe, so the pipe became its parameters.
+      expect(result.syntax.form).toBe("arrow");
+      expect(operatorAt(result.syntax)).toBe("=>");
+    });
+  });
 });

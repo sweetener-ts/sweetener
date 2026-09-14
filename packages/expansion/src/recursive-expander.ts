@@ -35,11 +35,13 @@ import {
   notSyntaxParameterCode,
   uncategorizedExpansionCode,
   unparameterizedSyntaxParameterCode,
+  unusedRequiredParameterCode,
+  uncopiableClosureCode,
   unprocessedDefinitionCode,
   unreadableSyntaxCode,
   wrongCategoryMacroCode,
 } from "./diagnostics.js";
-import { readParameterization } from "@sweetener/template";
+import { readLetBinding, readParameterization } from "@sweetener/template";
 import { EnforestationError } from "./enforestation-error.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
@@ -80,8 +82,17 @@ export interface ExpandMacroSyntaxOptions extends Omit<
   readonly syntax: SyntaxSequence;
   readonly category: SyntaxCategory;
   readonly consumeClass: SyntaxClassConsumer;
+  /**
+   * The class consumer an invocation of the macro matches with, reading its
+   * captures in the contexts the invocation stands in -- a `yield` is an
+   * expression only inside a generator.
+   */
   readonly consumeClassForMacro?:
-    ((macro: CompiledMacroBinding) => SyntaxClassConsumer) | undefined;
+    | ((
+        macro: CompiledMacroBinding,
+        contexts: ReadonlySet<MacroContext>,
+      ) => SyntaxClassConsumer)
+    | undefined;
   readonly resolveMacro?:
     | ((request: {
         readonly spelling: string;
@@ -853,7 +864,8 @@ export function expandMacroSyntax(
             node.delimiter === "parenthesis" &&
             previous?.tag === "token" &&
             (previous.raw === "#parameterize" ||
-              (previous.raw === "parameterize" &&
+              previous.raw === "#let" ||
+              ((previous.raw === "parameterize" || previous.raw === "let") &&
                 nodes[at - 2]?.tag === "token" &&
                 (nodes[at - 2] as TokenSyntax).raw === "#"))
           )
@@ -874,7 +886,12 @@ export function expandMacroSyntax(
           continue;
         }
         if (node.tag !== "token") continue;
-        if (valueDeclarationKeywords.has(node.raw)) {
+        // `# let (name = value) { body }` names the variable of a `#let`, which
+        // the expansion declares itself where the body needs one.
+        const afterHash =
+          nodes[at - 1]?.tag === "token" &&
+          (nodes[at - 1] as TokenSyntax).raw === "#";
+        if (valueDeclarationKeywords.has(node.raw) && !afterHash) {
           addBinders(bindingSegments(nodes.slice(at + 1)), values);
           continue;
         }
@@ -1021,7 +1038,11 @@ export function expandMacroSyntax(
     readonly replacement: SyntaxSequence;
     /** Module whose macros are in scope where the replacement was written. */
     readonly lexicalModule: CompileParsedMacrosResult;
+    /** Whether the body must use the parameter. */
+    readonly required: boolean;
   }
+  /** The parameterizations whose parameter has stood somewhere in their body. */
+  const usedParameterizations = new Set<Parameterization>();
   const parameterizations: Parameterization[] = [];
 
   /**
@@ -1049,6 +1070,29 @@ export function expandMacroSyntax(
           end: source.span.end,
           originId: syntax.origin,
         };
+  };
+
+  /**
+   * Where to report a required parameter the body never used: the body as
+   * the call site wrote it. A pipe's body is a capture, and pointing at the
+   * template's braces would send the reader into the macro's definition.
+   */
+  const requiredUseOrigin = (body: Syntax) => {
+    const spans = body.tag === "group" ? body.children : [body];
+    const sources = spans
+      .map((child) => options.origins.selectPrimarySource(child.origin))
+      .filter((source) => source !== undefined);
+    const first = sources[0];
+    if (first === undefined) return primaryOrigin(body);
+    const sameFile = sources.filter(
+      (source) => source.sourceId === first.sourceId,
+    );
+    return {
+      sourceId: first.sourceId,
+      start: Math.min(...sameFile.map((source) => source.span.start)),
+      end: Math.max(...sameFile.map((source) => source.span.end)),
+      originId: body.origin,
+    };
   };
 
   /**
@@ -1155,6 +1199,495 @@ export function expandMacroSyntax(
         ? region.types.has(spelling)
         : region.values.has(spelling),
     );
+
+  /**
+   * The function bodies enclosing the syntax being walked, innermost last,
+   * with the variables `#let` has declared in each. A module is the outermost.
+   */
+  interface LiftFrame {
+    readonly names: TokenSyntax[];
+  }
+  const liftFrames: LiftFrame[] = [];
+
+  const controlKeywords = new Set([
+    "if",
+    "while",
+    "for",
+    "switch",
+    "catch",
+    "with",
+  ]);
+  const statementBoundaries = new Set([";", ",", "{", "}"]);
+
+  const lastTokenOf = (node: Syntax | undefined): TokenSyntax | undefined => {
+    let current = node;
+    while (current !== undefined && current.tag !== "token")
+      current =
+        current.tag === "group"
+          ? current.close.tag === "token"
+            ? current.close
+            : undefined
+          : current.children.at(-1);
+    return current;
+  };
+
+  /**
+   * What a brace group opens, read from what stands before it: the body of a
+   * function, arrow or method; the body of a class; or anything else -- a
+   * block, an object literal, a `switch`. Only the syntax already walked is
+   * consulted, as `functionBodyFollows` does.
+   */
+  const braceOpens = (
+    preceding: readonly Syntax[],
+  ): "function" | "class" | "other" => {
+    const previous = preceding.at(-1);
+    if (lastTokenOf(previous)?.raw === "=>") return "function";
+    // The header is read back to where the statement or member began. A
+    // class body is recognized by its keyword, which also covers
+    // `class A extends mixin(B) {` with a parameter list in front of its body.
+    let parameters: number | undefined;
+    // Type arguments in a return type hold commas of their own:
+    // `Generator<number, number, number>`.
+    let typeArguments = 0;
+    for (let at = preceding.length - 1; at >= 0; at -= 1) {
+      const node = preceding[at]!;
+      if (node.tag === "token") {
+        if (node.raw === ">") typeArguments += 1;
+        else if (node.raw === "<" && typeArguments > 0) typeArguments -= 1;
+        if (typeArguments > 0 || node.raw === "<") continue;
+        if (node.raw === "class") return "class";
+        if (
+          statementBoundaries.has(node.raw) ||
+          node.raw === "=" ||
+          node.raw === "?"
+        )
+          break;
+        // A return type annotation stands between a parameter list and the
+        // body: `m(): Promise<T> {`.
+        const before = preceding[at - 1];
+        if (
+          parameters === undefined &&
+          node.raw === ":" &&
+          before?.tag === "group" &&
+          before.delimiter === "parenthesis"
+        )
+          parameters = at - 1;
+        continue;
+      }
+      if (node.tag === "group" && node.delimiter === "brace") break;
+    }
+    if (previous?.tag === "group" && previous.delimiter === "parenthesis")
+      parameters = preceding.length - 1;
+    if (parameters === undefined) return "other";
+    const opener = preceding[parameters - 1];
+    // A function, method or accessor names itself, or is `function` or `*`;
+    // a computed name is a bracket group and a generic one ends in `>`.
+    if (opener?.tag === "group")
+      return opener.delimiter === "bracket" ? "function" : "other";
+    if (opener?.tag !== "token") return "other";
+    if (controlKeywords.has(opener.raw)) return "other";
+    if (
+      opener.raw === "await" &&
+      lastTokenOf(preceding[parameters - 2])?.raw === "for"
+    )
+      return "other";
+    return opener.kind === "identifier" ||
+      opener.kind === "keyword" ||
+      opener.kind === "string-literal" ||
+      opener.kind === "numeric-literal" ||
+      opener.raw === "*" ||
+      opener.raw === ">"
+      ? "function"
+      : "other";
+  };
+
+  /**
+   * Where a function, arrow or class written as tokens ends, when one begins
+   * at `at`: the index just past it. Syntax a template spliced into a group
+   * is not parsed, so a closure there is a run of tokens rather than one node.
+   * An arrow's body runs to the next `,` or `;` standing beside it.
+   */
+  const closureEndAt = (
+    nodes: readonly Syntax[],
+    at: number,
+  ):
+    | { readonly end: number; readonly kind: "function" | "class" }
+    | undefined => {
+    const token = (offset: number, raw: string) => {
+      const node = nodes[offset];
+      return node?.tag === "token" && node.raw === raw;
+    };
+    const braceAfter = (from: number) => {
+      for (let index = from; index < nodes.length; index += 1) {
+        const node = nodes[index]!;
+        if (node.tag === "group" && node.delimiter === "brace")
+          return index + 1;
+        if (node.tag === "token" && (node.raw === "," || node.raw === ";"))
+          return undefined;
+      }
+      return undefined;
+    };
+    // `task.class` and `task.function` name properties.
+    if (token(at - 1, ".") || token(at - 1, "?.")) return undefined;
+    const start = token(at, "async") ? at + 1 : at;
+    if (token(start, "function")) {
+      const end = braceAfter(start + 1);
+      return end === undefined ? undefined : { end, kind: "function" };
+    }
+    if (at === start && token(at, "class")) {
+      const end = braceAfter(at + 1);
+      return end === undefined ? undefined : { end, kind: "class" };
+    }
+    const parameters = nodes[start];
+    const named =
+      parameters?.tag === "token" && parameters.kind === "identifier";
+    const listed =
+      parameters?.tag === "group" && parameters.delimiter === "parenthesis";
+    if (!named && !listed) return undefined;
+    // `?` before a parenthesized operand is a conditional, whose `:` is not
+    // the start of a return type.
+    if (token(at - 1, "?")) return undefined;
+    let arrow = start + 1;
+    if (listed && token(arrow, ":"))
+      while (
+        arrow < nodes.length &&
+        !token(arrow, "=>") &&
+        !token(arrow, ",") &&
+        !token(arrow, ";")
+      )
+        arrow += 1;
+    if (!token(arrow, "=>")) return undefined;
+    let end = arrow + 1;
+    while (end < nodes.length && !token(end, ",") && !token(end, ";")) end += 1;
+    return end === arrow + 1 ? undefined : { end, kind: "function" };
+  };
+
+  /**
+   * Whether evaluating syntax may suspend the function it stands in: an
+   * `await` or `yield` that belongs to that function rather than to one
+   * written inside it. Such syntax cannot be moved into a function of its
+   * own, which is what `#let` otherwise does with its body.
+   */
+  const suspends = (nodes: readonly Syntax[]): boolean => {
+    for (let at = 0; at < nodes.length; at += 1) {
+      const closure = closureEndAt(nodes, at);
+      if (closure !== undefined) {
+        // A class's heritage is evaluated where the class is; its body and a
+        // function's are not.
+        if (
+          closure.kind === "class" &&
+          suspends(nodes.slice(at, closure.end - 1))
+        )
+          return true;
+        at = closure.end - 1;
+        continue;
+      }
+      const node = nodes[at]!;
+      if (node.tag === "token") {
+        // `task.await` names a property, not an operator.
+        const before = nodes[at - 1];
+        if (
+          (node.raw === "await" || node.raw === "yield") &&
+          !(
+            before?.tag === "token" &&
+            (before.raw === "." || before.raw === "?.")
+          )
+        )
+          return true;
+        continue;
+      }
+      if (node.tag === "protected") {
+        if (
+          node.form !== "arrow" &&
+          node.category !== "classElement" &&
+          suspends(node.children)
+        )
+          return true;
+        continue;
+      }
+      if (node.tag === "group") {
+        const opens =
+          node.delimiter === "brace" ? braceOpens(nodes.slice(0, at)) : "other";
+        if (
+          opens !== "function" &&
+          opens !== "class" &&
+          suspends(node.children)
+        )
+          return true;
+      }
+    }
+    return false;
+  };
+
+  /** Whether syntax reads the variable a `#let` named: its spelling and scopes. */
+  const readsBinding = (nodes: readonly Syntax[], name: TokenSyntax): boolean =>
+    nodes.some((node) =>
+      node.tag === "token"
+        ? node.raw === name.raw && node.scopes === name.scopes
+        : node.tag === "group" || node.tag === "protected"
+          ? readsBinding(node.children, name)
+          : false,
+    );
+
+  /** An arrow, `function`, or `class` written as an expression. */
+  const isFunctionExpression = (node: Syntax): boolean => {
+    if (node.tag !== "protected" || node.category !== "expr") return false;
+    if (node.form === "arrow") return true;
+    const [first, second] = node.children;
+    const head =
+      first?.tag === "token" && first.raw === "async" ? second : first;
+    return (
+      head?.tag === "token" && (head.raw === "function" || head.raw === "class")
+    );
+  };
+
+  /**
+   * The body of a `#let` whose variable is declared in the enclosing function,
+   * with each function in it that reads the variable given a copy of its own.
+   *
+   * The variable is one per call of that function, and a second evaluation of
+   * the same `#let` in the call -- the next time around a loop -- assigns it
+   * again. A closure that read the variable itself saw that later value, so
+   * `for (const id of ids) getters.push(id |> (await load(%), () => %))` made
+   * every getter return the last id. Taking the value when the closure is
+   * created keeps the one its evaluation had; and TypeScript, which cannot
+   * follow the variable's assignments into a closure, types the copy from
+   * the value it is given.
+   */
+  const capturingClosures = (
+    nodes: readonly Syntax[],
+    name: TokenSyntax,
+  ): SyntaxSequence => {
+    const output: Syntax[] = [];
+    const cannotCopy = (at: Syntax) => {
+      const origin = primaryOrigin(at);
+      if (origin === undefined)
+        throw new TypeError(
+          "Syntax that cannot take a copy of a #let variable has no source to report it at",
+        );
+      diagnostics.push(
+        expansionDiagnosticRegistry.create(uncopiableClosureCode, {
+          primaryOrigin: origin,
+          messageArguments: [],
+        }),
+      );
+    };
+    for (let at = 0; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      const closure = closureEndAt(nodes, at);
+      if (closure !== undefined) {
+        const run = nodes.slice(at, closure.end);
+        at = closure.end - 1;
+        if (!readsBinding(run, name)) {
+          output.push(...run);
+        } else if (closure.kind === "class" && suspends(run)) {
+          cannotCopy(run[0]!);
+          output.push(...run);
+        } else output.push(copyingInto(expressionOf(name, run), name));
+        continue;
+      }
+      if (
+        node.tag === "token" ||
+        node.tag === "root" ||
+        !readsBinding(node.children, name)
+      ) {
+        output.push(node);
+        continue;
+      }
+      if (isFunctionExpression(node)) {
+        output.push(copyingInto(node, name));
+        continue;
+      }
+      // A method or accessor cannot be taken out of the object literal it is
+      // written in, so the literal takes the copy for it.
+      const member =
+        node.tag === "group" &&
+        node.delimiter === "brace" &&
+        node.children.some(
+          (child, index) =>
+            child.tag === "group" &&
+            child.delimiter === "brace" &&
+            braceOpens(node.children.slice(0, index)) === "function" &&
+            readsBinding(child.children, name),
+        );
+      if (member) {
+        if (suspends(node.children)) {
+          cannotCopy(node);
+          output.push(node);
+        } else output.push(copyingInto(node, name));
+        continue;
+      }
+      const children = capturingClosures(node.children, name);
+      output.push(
+        node.tag === "group"
+          ? createGroup({ ...node, id: options.allocateSyntaxId(), children })
+          : createProtectedSyntax({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children,
+            }),
+      );
+    }
+    return createSyntaxSequence(output);
+  };
+
+  /** `((name) => (expression))(name)`. */
+  const copyingInto = (expression: Syntax, name: TokenSyntax): Syntax => {
+    const copy = () =>
+      createToken({
+        ...name,
+        id: options.allocateSyntaxId(),
+        leadingTrivia: [],
+      });
+    return expressionOf(name, [
+      writtenGroup(name, "parenthesis", [
+        writtenGroup(name, "parenthesis", [copy()]),
+        writtenToken(name, "=>", "punctuation"),
+        writtenGroup(name, "parenthesis", [expression]),
+      ]),
+      writtenGroup(name, "parenthesis", [copy()]),
+    ]);
+  };
+
+  /** A token the expansion writes itself, anchored on the syntax it serves. */
+  const writtenToken = (
+    anchor: Syntax,
+    raw: string,
+    kind: TokenSyntax["kind"],
+  ): TokenSyntax =>
+    createToken({
+      id: options.allocateSyntaxId(),
+      span: { start: anchor.span.start, end: anchor.span.start },
+      origin: anchor.origin,
+      scopes: anchor.scopes,
+      kind,
+      raw,
+      leadingTrivia: [],
+    });
+
+  const writtenGroup = (
+    anchor: Syntax,
+    delimiter: "parenthesis" | "brace",
+    children: readonly Syntax[],
+  ): Syntax =>
+    createGroup({
+      id: options.allocateSyntaxId(),
+      span: anchor.span,
+      origin: anchor.origin,
+      scopes: anchor.scopes,
+      delimiter,
+      open: writtenToken(
+        anchor,
+        delimiter === "brace" ? "{" : "(",
+        "punctuation",
+      ),
+      close: writtenToken(
+        anchor,
+        delimiter === "brace" ? "}" : ")",
+        "punctuation",
+      ),
+      children,
+    });
+
+  const expressionOf = (anchor: Syntax, children: readonly Syntax[]) => {
+    if (children.length === 0)
+      throw new TypeError("An expression the expansion writes cannot be empty");
+    const [sole] = children;
+    return children.length === 1 &&
+      sole!.tag === "protected" &&
+      sole!.category === "expr"
+      ? sole!
+      : createProtectedSyntax({
+          id: options.allocateSyntaxId(),
+          span: spanEnvelope([anchor, ...children].map(({ span }) => span)),
+          origin: anchor.origin,
+          scopes: anchor.scopes,
+          category: "expr",
+          children,
+        });
+  };
+
+  /** `let a, b;` for the variables a frame collected. */
+  const liftedDeclaration = (anchor: Syntax, names: readonly TokenSyntax[]) => [
+    writtenToken(anchor, "let", "keyword"),
+    ...names.flatMap((name, at) => [
+      ...(at === 0 ? [] : [writtenToken(anchor, ",", "punctuation")]),
+      createToken({
+        ...name,
+        id: options.allocateSyntaxId(),
+        leadingTrivia: [],
+      }),
+    ]),
+    writtenToken(anchor, ";", "punctuation"),
+  ];
+
+  /**
+   * Where a statement list's own statements begin: after any directive, so a
+   * declaration put in front of them does not end a `"use strict"` prologue.
+   */
+  const afterDirectives = (children: readonly Syntax[]): number => {
+    let at = 0;
+    while (at < children.length) {
+      const node = children[at]!;
+      const tokens =
+        node.tag === "protected" ? node.children : [node, children[at + 1]];
+      const [written, end] = tokens;
+      // A directive enforested as a statement holds its string as an
+      // expression of one token.
+      const literal =
+        written?.tag === "protected" && written.children.length === 1
+          ? written.children[0]
+          : written;
+      if (literal?.tag !== "token" || literal.kind !== "string-literal") break;
+      if (end?.tag !== "token" || end.raw !== ";") break;
+      at += node.tag === "protected" ? 1 : 2;
+    }
+    return at;
+  };
+
+  /** A statement list with `let` for the names in front of its statements. */
+  const declaringFirst = (
+    statements: readonly Syntax[],
+    names: readonly TokenSyntax[],
+  ): SyntaxSequence => {
+    const at = afterDirectives(statements);
+    return createSyntaxSequence([
+      ...statements.slice(0, at),
+      ...liftedDeclaration(names[0]!, names),
+      ...statements.slice(at),
+    ]);
+  };
+
+  /**
+   * An arrow whose concise body needs a variable declared for it, rewritten
+   * with a block body that declares it and returns what the body did.
+   */
+  const withConciseBodyDeclaring = (
+    arrow: readonly Syntax[],
+    names: readonly TokenSyntax[],
+  ): SyntaxSequence => {
+    let head = arrow.length - 1;
+    while (head >= 0) {
+      const node = arrow[head]!;
+      if (node.tag === "token" && node.raw === "=>") break;
+      head -= 1;
+    }
+    if (head < 0)
+      throw new TypeError(
+        "An arrow expression has no `=>` to split its body at",
+      );
+    const anchor = names[0]!;
+    const body = arrow.slice(head + 1);
+    return createSyntaxSequence([
+      ...arrow.slice(0, head + 1),
+      writtenGroup(anchor, "brace", [
+        ...liftedDeclaration(anchor, names),
+        writtenToken(anchor, "return", "keyword"),
+        expressionOf(anchor, body),
+        writtenToken(anchor, ";", "punctuation"),
+      ]),
+    ]);
+  };
 
   const visit = (
     initialInput: SyntaxSequence,
@@ -1340,6 +1873,128 @@ export function expandMacroSyntax(
               .map((module) => module.get(spelling, category))
               .find((macro) => macro !== undefined);
       };
+      const compactLet =
+        node.tag === "token" &&
+        node.raw === "#let" &&
+        input[index + 1]?.tag === "group" &&
+        input[index + 2]?.tag === "group";
+      const splitLet =
+        node.tag === "token" &&
+        node.raw === "#" &&
+        input[index + 1]?.tag === "token" &&
+        (input[index + 1] as TokenSyntax).raw === "let" &&
+        input[index + 2]?.tag === "group" &&
+        input[index + 3]?.tag === "group";
+      if (compactLet || splitLet) {
+        const argumentsIndex = index + (compactLet ? 1 : 2);
+        const argumentsGroup = input[argumentsIndex] as Extract<
+          Syntax,
+          { readonly tag: "group" }
+        >;
+        const body = input[argumentsIndex + 1] as Extract<
+          Syntax,
+          { readonly tag: "group" }
+        >;
+        const read =
+          argumentsGroup.delimiter === "parenthesis" &&
+          body.delimiter === "brace"
+            ? readLetBinding(argumentsGroup.children)
+            : undefined;
+        if (read !== undefined) {
+          const value = visit(
+            createSyntaxSequence(read.value),
+            currentEnvironment,
+            "expr",
+            parentInvocation,
+            lexicalModule,
+            contexts,
+            false,
+            recursiveBinding,
+          );
+          const expanded = visit(
+            body.children,
+            value.environment,
+            "expr",
+            parentInvocation,
+            lexicalModule,
+            contexts,
+            false,
+            recursiveBinding,
+          );
+          currentEnvironment = expanded.environment;
+          index = argumentsIndex + 2;
+          const empty =
+            value.syntax.length === 0
+              ? { at: argumentsGroup, part: "value" }
+              : expanded.syntax.length === 0
+                ? { at: body, part: "body" }
+                : undefined;
+          if (empty !== undefined) {
+            const origin = primaryOrigin(empty.at);
+            if (origin === undefined)
+              throw new TypeError(
+                `The ${empty.part} of #let expanded to nothing, and has no source to report it at`,
+              );
+            diagnostics.push(
+              expansionDiagnosticRegistry.create(unreadableSyntaxCode, {
+                primaryOrigin: origin,
+                messageArguments: [
+                  "an expression",
+                  `the ${empty.part} of #let expanded to nothing`,
+                ],
+              }),
+            );
+            continue;
+          }
+          const name = read.name;
+          const copy = () =>
+            createToken({
+              ...name,
+              id: options.allocateSyntaxId(),
+              leadingTrivia: [],
+            });
+          const valueExpression = expressionOf(name, value.syntax);
+          const frame = liftFrames.at(-1);
+          // The body is moved into a function applied to the value, which
+          // gives each evaluation a binding of its own -- unless the body
+          // suspends the function it stands in, which a nested function
+          // cannot do for it. Then the value is assigned to a variable
+          // declared in that function, so `await` and `yield` stay in it,
+          // and each function in the body that reads the variable takes a
+          // copy of its own when it is created.
+          const lifted = frame !== undefined && suspends(expanded.syntax);
+          if (lifted) frame.names.push(name);
+          const bodyExpression = expressionOf(
+            name,
+            lifted ? capturingClosures(expanded.syntax, name) : expanded.syntax,
+          );
+          const written = lifted
+            ? [
+                writtenGroup(name, "parenthesis", [
+                  copy(),
+                  writtenToken(name, "=", "punctuation"),
+                  valueExpression,
+                  writtenToken(name, ",", "punctuation"),
+                  bodyExpression,
+                ]),
+              ]
+            : [
+                writtenGroup(name, "parenthesis", [
+                  writtenGroup(name, "parenthesis", [copy()]),
+                  writtenToken(name, "=>", "punctuation"),
+                  bodyExpression,
+                ]),
+                writtenGroup(name, "parenthesis", [valueExpression]),
+              ];
+          output.push(
+            ...withLeadingTrivia(
+              [expressionOf(node, written)],
+              node.tag === "token" ? node.leadingTrivia : [],
+            ),
+          );
+          continue;
+        }
+      }
       const compactParameterize =
         node.tag === "token" &&
         node.raw === "#parameterize" &&
@@ -1400,14 +2055,18 @@ export function expandMacroSyntax(
                   messageArguments: [read.spelling],
                 }),
               );
-          } else
-            parameterizations.push(
-              Object.freeze({
-                binding: parameter.binding.id,
-                replacement: createSyntaxSequence(read.replacement),
-                lexicalModule: moduleWrittenIn(nameNode) ?? lexicalModule,
-              }),
-            );
+          }
+          const parameterization =
+            parameter === undefined
+              ? undefined
+              : Object.freeze({
+                  binding: parameter.binding.id,
+                  replacement: createSyntaxSequence(read.replacement),
+                  lexicalModule: moduleWrittenIn(nameNode) ?? lexicalModule,
+                  required: read.required,
+                });
+          if (parameterization !== undefined)
+            parameterizations.push(parameterization);
           let nested;
           try {
             nested = visit(
@@ -1421,7 +2080,20 @@ export function expandMacroSyntax(
               recursiveBinding,
             );
           } finally {
-            if (parameter !== undefined) parameterizations.pop();
+            if (parameterization !== undefined) parameterizations.pop();
+          }
+          if (parameterization !== undefined) {
+            const used = usedParameterizations.delete(parameterization);
+            const origin = parameterization.required
+              ? requiredUseOrigin(body)
+              : undefined;
+            if (!used && origin !== undefined)
+              diagnostics.push(
+                expansionDiagnosticRegistry.create(
+                  unusedRequiredParameterCode,
+                  { primaryOrigin: origin, messageArguments: [read.spelling] },
+                ),
+              );
           }
           currentEnvironment = nested.environment;
           index = argumentsIndex + 2;
@@ -1436,6 +2108,19 @@ export function expandMacroSyntax(
             category === "item"
               ? enforestSequence(spaced, category, lexicalModule, contexts)
               : undefined;
+          // A body that is already one expression is that expression. Wrapped
+          // again, it lost the precedence it was parsed with and printed in
+          // parentheses of its own.
+          const sole = spaced[0];
+          if (
+            category === "expr" &&
+            spaced.length === 1 &&
+            sole?.tag === "protected" &&
+            sole.category === "expr"
+          ) {
+            output.push(sole);
+            continue;
+          }
           output.push(
             createProtectedSyntax({
               id: options.allocateSyntaxId(),
@@ -1918,6 +2603,7 @@ export function expandMacroSyntax(
           depth -= 1;
         if (depth >= 0) {
           const parameterization = parameterizations[depth]!;
+          usedParameterizations.add(parameterization);
           // The replacement is expanded under the parameterizations that were
           // in effect where it was written, not under this one and those inside
           // it: `#parameterize(% = f(%)) { ... }` means the enclosing `%`.
@@ -2022,7 +2708,8 @@ export function expandMacroSyntax(
                 origin: input[resolvedHeadIndex]?.origin ?? node.origin,
               }) ?? options.coreInterception,
             consumeClass:
-              options.consumeClassForMacro?.(macro) ?? options.consumeClass,
+              options.consumeClassForMacro?.(macro, contexts) ??
+              options.consumeClass,
             environment: currentEnvironment,
             parentInvocation,
             expandReplacement: (request) => {
@@ -2525,7 +3212,10 @@ export function expandMacroSyntax(
                 (category === "expr" ||
                   category === "stmt" ||
                   category === "item") &&
-                functionBodyFollows(output)
+                // A method in an object literal is written without
+                // `function`, and its body is as much a statement list.
+                (functionBodyFollows(output) ||
+                  braceOpens(output) === "function")
               ? "stmt"
               : node.tag === "group" &&
                   node.delimiter === "parenthesis" &&
@@ -2598,18 +3288,46 @@ export function expandMacroSyntax(
           bodyCategory === "stmt";
         const enclosingModules = activeModules.length;
         const enclosingExpansionEnvironment = activeExpansionEnvironment;
-        const nested = visit(
-          createSyntaxSequence(statementBody ?? node.children),
-          currentEnvironment,
-          node.tag === "protected" ? node.category : bodyCategory,
-          parentInvocation,
-          lexicalModule,
-          node.tag === "protected"
-            ? contextsForContainer(node, contexts)
-            : contexts,
-          false,
-          recursiveBinding,
-        );
+        // A function body, or the concise body of an arrow, is where a `#let`
+        // inside it declares its variable: each call has its own.
+        const soleBrace =
+          node.tag === "protected" &&
+          node.children.length === 1 &&
+          node.children[0]!.tag === "group" &&
+          node.children[0]!.delimiter === "brace";
+        const conciseArrow =
+          node.tag === "protected" &&
+          node.form === "arrow" &&
+          !(
+            node.children.at(-1)?.tag === "group" &&
+            (node.children.at(-1) as Extract<Syntax, { tag: "group" }>)
+              .delimiter === "brace"
+          );
+        const frame: LiftFrame | undefined =
+          conciseArrow ||
+          (((node.tag === "group" && node.delimiter === "brace") ||
+            soleBrace) &&
+            braceOpens(output) === "function")
+            ? { names: [] }
+            : undefined;
+        if (frame !== undefined) liftFrames.push(frame);
+        let nested;
+        try {
+          nested = visit(
+            createSyntaxSequence(statementBody ?? node.children),
+            currentEnvironment,
+            node.tag === "protected" ? node.category : bodyCategory,
+            parentInvocation,
+            lexicalModule,
+            node.tag === "protected"
+              ? contextsForContainer(node, contexts)
+              : contexts,
+            false,
+            recursiveBinding,
+          );
+        } finally {
+          if (frame !== undefined) liftFrames.pop();
+        }
         if (opensBlock) {
           activeModules.length = enclosingModules;
           activeExpansionEnvironment = enclosingExpansionEnvironment;
@@ -2619,17 +3337,38 @@ export function expandMacroSyntax(
           index += 1;
           continue;
         }
+        const children =
+          frame === undefined || frame.names.length === 0
+            ? nested.syntax
+            : conciseArrow
+              ? withConciseBodyDeclaring(nested.syntax, frame.names)
+              : soleBrace
+                ? createSyntaxSequence(
+                    nested.syntax.map((child) =>
+                      child.tag === "group" && child.delimiter === "brace"
+                        ? createGroup({
+                            ...child,
+                            id: options.allocateSyntaxId(),
+                            children: declaringFirst(
+                              child.children,
+                              frame.names,
+                            ),
+                          })
+                        : child,
+                    ),
+                  )
+                : declaringFirst(nested.syntax, frame.names);
         output.push(
           node.tag === "group"
             ? createGroup({
                 ...node,
                 id: options.allocateSyntaxId(),
-                children: nested.syntax,
+                children,
               })
             : createProtectedSyntax({
                 ...node,
                 id: options.allocateSyntaxId(),
-                children: nested.syntax,
+                children,
               }),
         );
       } else {
@@ -2644,14 +3383,46 @@ export function expandMacroSyntax(
     });
   };
 
-  const expanded = visit(
-    options.syntax,
-    options.environment,
-    options.category,
-    options.parentInvocation,
-    options.module,
-    options.contexts ?? new Set(),
-  );
+  // A module is where a `#let` outside any function declares its variable.
+  const moduleFrame: LiftFrame | undefined =
+    options.category === "item" ? { names: [] } : undefined;
+  if (moduleFrame !== undefined) liftFrames.push(moduleFrame);
+  let visited;
+  try {
+    visited = visit(
+      options.syntax,
+      options.environment,
+      options.category,
+      options.parentInvocation,
+      options.module,
+      options.contexts ?? new Set(),
+    );
+  } finally {
+    if (moduleFrame !== undefined) liftFrames.pop();
+  }
+  const moduleNames = moduleFrame?.names ?? [];
+  const expanded =
+    moduleNames.length === 0
+      ? visited
+      : {
+          ...visited,
+          syntax: (() => {
+            const at = afterDirectives(visited.syntax);
+            const anchor = moduleNames[0]!;
+            return createSyntaxSequence([
+              ...visited.syntax.slice(0, at),
+              createProtectedSyntax({
+                id: options.allocateSyntaxId(),
+                span: { start: anchor.span.start, end: anchor.span.start },
+                origin: anchor.origin,
+                scopes: anchor.scopes,
+                category: "item",
+                children: liftedDeclaration(anchor, moduleNames),
+              }),
+              ...visited.syntax.slice(at),
+            ]);
+          })(),
+        };
   /**
    * The whole expansion has to read as one node of the category asked for. A
    * template that does not produce one is something its author wrote -- two

@@ -1,6 +1,7 @@
 import type { OriginId, ScopeSetId, SyntaxId } from "@sweetener/shared";
 import type {
   DelimiterKind,
+  ExpressionForm,
   LexicalMode,
   Precedence,
   SyntaxCategory,
@@ -46,6 +47,8 @@ export interface ProtectedSyntax extends SyntaxBase {
   readonly tag: "protected";
   readonly category: SyntaxCategory;
   readonly precedence: Precedence | undefined;
+  /** Set only for an expression of one of the forms the parser tells apart. */
+  readonly form?: ExpressionForm | undefined;
   readonly children: readonly Syntax[];
 }
 
@@ -214,6 +217,7 @@ export function createGroup(options: CreateGroupOptions): GroupSyntax {
 export interface CreateProtectedSyntaxOptions extends SyntaxBaseFields {
   readonly category: SyntaxCategory;
   readonly precedence?: Precedence | undefined;
+  readonly form?: ExpressionForm | undefined;
   readonly children: readonly Syntax[];
 }
 
@@ -228,6 +232,7 @@ export function createProtectedSyntax(
     tag: "protected",
     category: options.category,
     precedence: options.precedence,
+    ...(options.form === undefined ? {} : { form: options.form }),
     children: createSyntaxSequence(options.children),
   });
 }

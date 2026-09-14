@@ -50,6 +50,23 @@ export type Precedence = number & {
   readonly [precedenceBrand]: "Precedence";
 };
 
+/**
+ * The kind of expression a parsed operand is, for the few forms a macro may
+ * need to tell apart where precedence cannot: an unparenthesized arrow parses
+ * as one operand, like a call does, but a pipe may still refuse it. An
+ * expression written inside parentheses has no form of its own.
+ */
+export type ExpressionForm =
+  "conditional" | "arrow" | "assignment" | "yield" | "await";
+
+export const expressionForms: readonly ExpressionForm[] = Object.freeze([
+  "conditional",
+  "arrow",
+  "assignment",
+  "yield",
+  "await",
+]);
+
 export function createPrecedence(value: number): Precedence {
   if (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000) {
     throw new RangeError(

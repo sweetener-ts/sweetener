@@ -245,15 +245,6 @@ function requireTerminator(
   return failure(category, cursor, start, ["';' or automatic terminator"], 30);
 }
 
-function consumeHeaderGroup(cursor: SyntaxCursor, children: Syntax[]): boolean {
-  const header = cursor.peek();
-  if (header?.tag !== "group" || header.delimiter !== "parenthesis") {
-    return false;
-  }
-  children.push(cursor.consume()!);
-  return true;
-}
-
 class StatementConsumer implements SyntaxConsumer {
   readonly #expression: SyntaxConsumer;
 
@@ -391,6 +382,148 @@ class StatementConsumer implements SyntaxConsumer {
   }
 
   /**
+   * Takes a control statement's parenthesized header, with the expressions in
+   * it read as expressions.
+   *
+   * A header was kept as the tokens it was written with, so an operator
+   * written in one was never offered to its rules: `if (x |> f)` and
+   * `while (x |> f)` reached TypeScript with the `|>` still in them, while the
+   * same expression one line down expanded. A header this cannot read is kept
+   * as written, as a block is.
+   */
+  #consumeHeader(
+    cursor: SyntaxCursor,
+    children: Syntax[],
+    keyword: string,
+    context: ConsumerContext,
+  ): boolean {
+    const header = cursor.peek();
+    if (header?.tag !== "group" || header.delimiter !== "parenthesis")
+      return false;
+    cursor.advance();
+    const read =
+      keyword === "for"
+        ? this.#forHeader(header.children, context)
+        : this.#wholeExpression(header.children, context);
+    children.push(
+      read === undefined
+        ? header
+        : createGroup({
+            ...header,
+            id: this.options.allocateSyntaxId(),
+            children: createSyntaxSequence(read),
+          }),
+    );
+    return true;
+  }
+
+  /** The nodes as one expression, or undefined when they are not one. */
+  #wholeExpression(
+    nodes: readonly Syntax[],
+    context: ConsumerContext,
+    allowComma = true,
+  ): readonly Syntax[] | undefined {
+    if (nodes.length === 0) return nodes;
+    const cursor = createSyntaxCursor(createSyntaxSequence(nodes));
+    const consumer = allowComma
+      ? this.#expression
+      : createPrattExpressionConsumer({ ...this.options, allowComma: false });
+    const attempt = consumer.consume(cursor, {
+      ...context,
+      category: "expr",
+      stopSet: StopSet.empty,
+    });
+    return attempt.matched && attempt.cursor.atEnd
+      ? [attempt.syntax]
+      : undefined;
+  }
+
+  /**
+   * A `for` header: an initializer, a test and an update between its own `;`
+   * tokens, or a binding and the object a `for...in` or `for...of` walks.
+   */
+  #forHeader(
+    nodes: readonly Syntax[],
+    context: ConsumerContext,
+  ): readonly Syntax[] | undefined {
+    const pieces: Syntax[][] = [[]];
+    const separators: Syntax[] = [];
+    for (const node of nodes)
+      if (token(node, ";")) {
+        separators.push(node);
+        pieces.push([]);
+      } else pieces.at(-1)!.push(node);
+    if (pieces.length === 3) {
+      const [initializer, test, update] = pieces as [
+        Syntax[],
+        Syntax[],
+        Syntax[],
+      ];
+      const head = raw(initializer[0]);
+      const declared =
+        head === "const" ||
+        head === "let" ||
+        head === "var" ||
+        head === "using" ||
+        (head === "await" && raw(initializer[1]) === "using")
+          ? this.#declarators(initializer, context)
+          : this.#wholeExpression(initializer, context);
+      const readTest = this.#wholeExpression(test, context);
+      const readUpdate = this.#wholeExpression(update, context);
+      if (
+        declared === undefined ||
+        readTest === undefined ||
+        readUpdate === undefined
+      )
+        return undefined;
+      return [
+        ...declared,
+        separators[0]!,
+        ...readTest,
+        separators[1]!,
+        ...readUpdate,
+      ];
+    }
+    if (pieces.length !== 1) return undefined;
+    // What a `for...of` or `for...in` walks follows the first `of` or `in`
+    // after its binding.
+    const split = nodes.findIndex(
+      (node, at) => at > 0 && (token(node, "of") || token(node, "in")),
+    );
+    if (split < 0) return undefined;
+    const iterable = this.#wholeExpression(
+      nodes.slice(split + 1),
+      context,
+      token(nodes[split], "in"),
+    );
+    return iterable === undefined
+      ? undefined
+      : [...nodes.slice(0, split + 1), ...iterable];
+  }
+
+  /** A declaration list with each initializer read as an expression. */
+  #declarators(
+    nodes: readonly Syntax[],
+    context: ConsumerContext,
+  ): readonly Syntax[] | undefined {
+    const cursor = createSyntaxCursor(createSyntaxSequence(nodes));
+    const children: Syntax[] = [];
+    while (!cursor.atEnd) {
+      const next = cursor.consume()!;
+      children.push(next);
+      if (!token(next, "=")) continue;
+      const initializer = this.#expression.consume(cursor, {
+        ...context,
+        category: "expr",
+        stopSet: new StopSet([{ kind: "token", raw: "," }]),
+      });
+      if (!initializer.matched) return undefined;
+      children.push(initializer.syntax);
+    }
+    return children;
+  }
+
+  /**
    * Enforest a brace-delimited block as a statement list.
    *
    * Without this the block is carried through as an opaque token tree, and the
@@ -445,7 +578,7 @@ class StatementConsumer implements SyntaxConsumer {
     start: number,
   ): ConsumerAttempt {
     const children: Syntax[] = [cursor.consume()!];
-    if (!consumeHeaderGroup(cursor, children)) {
+    if (!this.#consumeHeader(cursor, children, "if", context)) {
       return failure("stmt", cursor, start, ["parenthesized if condition"], 40);
     }
     const consequent = this.#consumeNested(cursor, context);
@@ -471,7 +604,10 @@ class StatementConsumer implements SyntaxConsumer {
   ): ConsumerAttempt {
     const keyword = cursor.consume()!;
     const children: Syntax[] = [keyword];
-    if (!consumeHeaderGroup(cursor, children)) {
+    // `for await (const item of items)`.
+    if (token(keyword, "for") && token(cursor.peek(), "await"))
+      children.push(cursor.consume()!);
+    if (!this.#consumeHeader(cursor, children, raw(keyword)!, context)) {
       return failure(
         "stmt",
         cursor,
@@ -496,7 +632,7 @@ class StatementConsumer implements SyntaxConsumer {
     start: number,
   ): ConsumerAttempt {
     const children: Syntax[] = [cursor.consume()!];
-    if (!consumeHeaderGroup(cursor, children)) {
+    if (!this.#consumeHeader(cursor, children, "switch", context)) {
       return failure(
         "stmt",
         cursor,
@@ -576,7 +712,7 @@ class StatementConsumer implements SyntaxConsumer {
       return failure("stmt", cursor, start, ["'while' after do body"], 40);
     }
     children.push(cursor.consume()!);
-    if (!consumeHeaderGroup(cursor, children)) {
+    if (!this.#consumeHeader(cursor, children, "while", context)) {
       return failure(
         "stmt",
         cursor,

@@ -6,9 +6,12 @@ import {
   type SyntaxId,
 } from "@sweetener/shared";
 import {
+  createGroup,
+  createPrecedence,
   createProtectedSyntax,
   createToken,
   OriginStore,
+  type Syntax,
   type TokenSyntax,
 } from "@sweetener/syntax";
 import { describe, expect, test } from "vitest";
@@ -294,5 +297,118 @@ describe("trivia regions", () => {
     expect(
       printed.text.slice(trivia?.generatedStart, trivia?.generatedEnd),
     ).toBe("  ");
+  });
+  describe("grouping by precedence", () => {
+    const origins = new OriginStore();
+    const origin = origins.source(sourceId, { start: 0, end: 1 });
+    const token = (raw: string, kind: TokenSyntax["kind"] = "identifier") =>
+      createToken({
+        id: syntaxIds.allocate(),
+        span: { start: 0, end: 1 },
+        origin,
+        scopes,
+        kind,
+        raw,
+        leadingTrivia: [],
+      });
+    const expression = (
+      children: readonly Syntax[],
+      precedence?: number,
+      form?: "conditional" | "arrow",
+    ) =>
+      createProtectedSyntax({
+        id: syntaxIds.allocate(),
+        span: { start: 0, end: 1 },
+        origin,
+        scopes,
+        category: "expr",
+        ...(precedence === undefined
+          ? {}
+          : { precedence: createPrecedence(precedence) }),
+        form,
+        children,
+      });
+    const print = (syntax: ReturnType<typeof createProtectedSyntax>): string =>
+      printExpandedFile({
+        syntax: [syntax],
+        origins,
+        trace: {},
+        groupProtectedExpression: () => true,
+      }).text;
+
+    test("leaves out parentheses an operand's own precedence makes redundant", () => {
+      const product = expression(
+        [token("a"), token("*", "punctuation"), token("b")],
+        140,
+      );
+      const sum = expression(
+        [product, token("+", "punctuation"), token("c")],
+        130,
+      );
+      expect(print(expression([sum], undefined))).toBe("(a*b+c)");
+    });
+
+    test("keeps what precedence alone would drop but the language requires", () => {
+      const either = expression(
+        [token("a"), token("||", "punctuation"), token("b")],
+        50,
+      );
+      const nullish = expression(
+        [either, token("??", "punctuation"), token("c")],
+        40,
+      );
+      expect(print(expression([nullish], undefined))).toBe("((a||b)??c)");
+      const negated = expression([token("-", "punctuation"), token("a")], 160);
+      const power = expression(
+        [negated, token("**", "punctuation"), token("b")],
+        150,
+      );
+      expect(print(expression([power], undefined))).toBe("((-a)**b)");
+    });
+
+    test("groups a conditional or an arrow wherever it is not a whole arrow body", () => {
+      const conditional = expression(
+        [
+          token("c"),
+          token("?", "punctuation"),
+          token("a"),
+          token(":", "punctuation"),
+          token("b"),
+        ],
+        undefined,
+        "conditional",
+      );
+      const product = expression([
+        conditional,
+        token("*", "punctuation"),
+        token("d"),
+      ]);
+      expect(print(product)).toBe("((c?a:b)*d)");
+      const arrow = expression(
+        [
+          token("x"),
+          token("=>", "punctuation"),
+          expression([token("x"), token("+", "punctuation"), token("y")]),
+        ],
+        undefined,
+        "arrow",
+      );
+      // The body runs to the end of the arrow and needs no parentheses; the
+      // arrow called with an argument does.
+      const call = expression([
+        arrow,
+        createGroup({
+          id: syntaxIds.allocate(),
+          span: { start: 0, end: 1 },
+          origin,
+          scopes,
+          delimiter: "parenthesis",
+          open: token("(", "punctuation"),
+          close: token(")", "punctuation"),
+          children: [],
+        }),
+      ]);
+      expect(print(call)).toBe("(x=>x+y)()");
+    });
   });
 });

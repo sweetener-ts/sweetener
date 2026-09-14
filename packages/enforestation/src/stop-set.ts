@@ -1,9 +1,4 @@
-import type {
-  DelimiterKind,
-  Syntax,
-  SyntaxCursor,
-  TokenKind,
-} from "@sweetener/syntax";
+import type { DelimiterKind, SyntaxCursor, TokenKind } from "@sweetener/syntax";
 
 export type StopCondition =
   | {
@@ -12,6 +7,11 @@ export type StopCondition =
       readonly raw?: string | undefined;
     }
   | { readonly kind: "group"; readonly delimiter: DelimiterKind }
+  /**
+   * An operator spelling, which the scanner may split across tokens -- `|>`
+   * is `|` then `>`. It stops only where those tokens are written together.
+   */
+  | { readonly kind: "spelling"; readonly raw: string }
   | { readonly kind: "end" };
 
 function conditionKey(condition: StopCondition): string {
@@ -20,6 +20,8 @@ function conditionKey(condition: StopCondition): string {
       return `token|${condition.tokenKind ?? "*"}|${condition.raw ?? "*"}`;
     case "group":
       return `group|${condition.delimiter}`;
+    case "spelling":
+      return `spelling|${condition.raw}`;
     case "end":
       return "end";
   }
@@ -40,14 +42,32 @@ function createCondition(condition: StopCondition): StopCondition {
   ) {
     throw new RangeError("Token stop spelling must not be empty");
   }
+  if (condition.kind === "spelling" && condition.raw.length === 0) {
+    throw new RangeError("Stop spelling must not be empty");
+  }
   return Object.freeze({ ...condition });
+}
+
+function matchesSpelling(cursor: SyntaxCursor, spelling: string): boolean {
+  let actual = "";
+  for (let offset = 0; actual.length < spelling.length; offset += 1) {
+    const node = cursor.peek(offset);
+    if (node?.tag !== "token") return false;
+    if (offset > 0 && node.leadingTrivia.length > 0) return false;
+    actual += node.raw;
+    if (!spelling.startsWith(actual)) return false;
+  }
+  return actual === spelling;
 }
 
 function matchesSyntax(
   condition: StopCondition,
-  syntax: Syntax | undefined,
+  cursor: SyntaxCursor,
 ): boolean {
+  const syntax = cursor.peek();
   switch (condition.kind) {
+    case "spelling":
+      return matchesSpelling(cursor, condition.raw);
     case "end":
       return syntax === undefined;
     case "group":
@@ -90,7 +110,7 @@ export class StopSet {
 
   matches(cursor: SyntaxCursor): boolean {
     return this.conditions.some((condition) =>
-      matchesSyntax(condition, cursor.peek()),
+      matchesSyntax(condition, cursor),
     );
   }
 
