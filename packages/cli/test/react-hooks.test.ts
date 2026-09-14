@@ -25,7 +25,7 @@ describe("React hook macro project", () => {
       fileName.endsWith("main.tsx"),
     )?.generated.text;
     expect(generated).toBeDefined();
-    expect(generated).toContain("useState< number>");
+    expect(generated).toContain("useState<number>");
     expect(generated).toContain("setCount((value)");
     expect(generated).toContain("toggleDetailsOpen");
     expect(generated).toContain("useDeferredValue");

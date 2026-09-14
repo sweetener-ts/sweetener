@@ -142,7 +142,7 @@ export syntax named:item {
         "export const a = sizes([1,2,3], [4,5]);\n",
     );
     expect(messages).toEqual([]);
-    expect(generated).toContain("[3,2]");
+    expect(generated).toContain("[3, 2]");
   });
 
   test("#count still cannot drive the repetition it collapses", () => {

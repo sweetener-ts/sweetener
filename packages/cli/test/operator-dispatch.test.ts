@@ -66,8 +66,8 @@ describe("what counts as writing a multi-token operator", () => {
     // The rule's template writes `assign($left, $right)`, and that spacing is
     // now the expansion's, so both spellings print alike; what is under test
     // is that each of them dispatched the operator at all.
-    expect(expand("export const x = a <- b;")).toContain("assign( a, b)");
-    expect(expand("export const x = a <-b;")).toContain("assign( a, b)");
+    expect(expand("export const x = a <- b;")).toContain("assign(a, b)");
+    expect(expand("export const x = a <-b;")).toContain("assign(a, b)");
   });
 
   test("tokens written apart are the comparison they read as", () => {
@@ -110,26 +110,26 @@ describe("where an operator is dispatched", () => {
     // `[1, 2].map((n) => n |> double)` is the obvious thing to write, and the
     // operator was never offered it.
     expect(expand("export const x = [a].map((n) => n <- b);")).toContain(
-      "(n) =>assign( n, b)",
+      "(n) => assign(n, b)",
     );
   });
 
   test("inside a typed arrow's body", () => {
     expect(
       expand("export const x = [a].map((n: number): number => n <- b);"),
-    ).toContain("=>assign( n, b)");
+    ).toContain("=> assign(n, b)");
   });
 
   test("through a chain of them in one body", () => {
     expect(expand("export const x = [a].map((n) => n <- b <- a);")).toContain(
-      "assign(assign( n, b), a)",
+      "assign(assign(n, b), a)",
     );
   });
 
   test("inside an arrow nested in another arrow's body", () => {
     expect(
       expand("export const x = [a].map((n) => [n].map((m) => m <- b));"),
-    ).toContain("(m) =>assign( m, b)");
+    ).toContain("(m) => assign(m, b)");
   });
 
   test("an arrow whose body holds no operator is printed as written", () => {

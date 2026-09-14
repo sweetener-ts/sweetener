@@ -17,7 +17,7 @@ export const list = (items: readonly Item[], loading: boolean) => (
     {(items.length === 0) ?
       <li>nothing here</li>
      : null}
-    {(items).map(( item, index) =>
+    {(items).map((item, index) =>
       <li key={item.id}>{index}: {item.name}</li>
     )}
   </ul>

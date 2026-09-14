@@ -708,6 +708,38 @@ export function expandMacroSyntax(
     );
   };
 
+  /** A sequence whose first token has had the whitespace before it removed. */
+  const withoutLeadingTrivia = (syntax: SyntaxSequence): SyntaxSequence => {
+    const strip = (node: Syntax): Syntax => {
+      switch (node.tag) {
+        case "token":
+          return node.leadingTrivia.every(({ kind }) => kind === "whitespace")
+            ? createToken({ ...node, leadingTrivia: [] })
+            : node;
+        case "group":
+          return createGroup({
+            ...node,
+            open: strip(node.open) as TokenSyntax,
+          });
+        case "protected": {
+          const head = node.children[0];
+          return head === undefined
+            ? node
+            : createProtectedSyntax({
+                ...node,
+                children: [strip(head), ...node.children.slice(1)],
+              });
+        }
+        default:
+          return node;
+      }
+    };
+    const [first, ...rest] = syntax;
+    return first === undefined
+      ? syntax
+      : createSyntaxSequence([strip(first), ...rest]);
+  };
+
   /**
    * Moves trivia onto the front of a sequence whose own first token carries
    * none, so erasing a marker keeps the layout that stood before it.
@@ -2625,7 +2657,10 @@ export function expandMacroSyntax(
           }
           currentEnvironment = nested.environment;
           const trivia = head.tag === "token" ? head.leadingTrivia : [];
-          const replaced = nested.syntax;
+          // The replacement stands where the parameter was written, so it is
+          // spaced as the parameter was, not as the replacement was in the
+          // template: `lookup(%)` stays `lookup(topic)`.
+          const replaced = withoutLeadingTrivia(nested.syntax);
           // An expression keeps the node that bounds it, or the operators
           // around the use would re-bind against the replacement's own.
           if (

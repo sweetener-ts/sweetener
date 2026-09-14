@@ -10,7 +10,7 @@ export operator (|>):expr {
   rule { $value:expr |> $function:ident $(. $member:ident)* ($($argument:expr),*) }
   expect "a function call, like `f(a)`, or a function name";
   => {
-    $function $(. $member)*($value #if(present $argument) { , $($argument),* })
+    $function $(. $member)*($value #if(present $argument) {, $($argument),*})
   }
 
   rule { $value:expr |> $function:ident $(. $member:ident)* }

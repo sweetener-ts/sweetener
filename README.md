@@ -36,7 +36,7 @@ export operator (|>):expr {
   precedence 35;
 
   rule { $value:expr |> $function:ident $(. $member:ident)* ($($argument:expr),*) } => {
-    $function $(. $member)*($value #if(present $argument) { , $($argument),* })
+    $function $(. $member)*($value #if(present $argument) {, $($argument),*})
   }
 
   rule { $value:expr |> $function:ident $(. $member:ident)* } => {

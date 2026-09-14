@@ -1,11 +1,12 @@
 import type { OriginId, SyntaxId } from "@sweetener/shared";
-import type {
-  MissingToken,
-  Origin,
-  OriginStore,
-  ProtectedSyntax,
-  Syntax,
-  TokenSyntax,
+import {
+  isReservedWord,
+  type MissingToken,
+  type Origin,
+  type OriginStore,
+  type ProtectedSyntax,
+  type Syntax,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import type { NameAssignmentPlan } from "./name-assignment.js";
 
@@ -72,7 +73,137 @@ type PrintItem =
       readonly text: string;
       readonly origin: OriginId;
       readonly grouping: true;
-    };
+    }
+  /**
+   * Entering JSX, where whitespace is content, or code inside it -- an
+   * attribute's or a child's braces -- and leaving either.
+   */
+  | { readonly jsx: "text" | "code" | "leave" };
+
+/** Punctuators two adjacent tokens could print as, if nothing parted them. */
+const punctuators: readonly string[] = [
+  "++",
+  "--",
+  "**",
+  "=>",
+  "==",
+  "===",
+  "!=",
+  "!==",
+  "<=",
+  "&&",
+  "||",
+  "??",
+  "?.",
+  "...",
+  "<<",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "&=",
+  "|=",
+  "^=",
+  "**=",
+  "<<=",
+  "&&=",
+  "||=",
+  "??=",
+  "//",
+  "/*",
+];
+
+function joinsIntoOne(left: string, right: string): boolean {
+  // The reader leaves `>>`, `>=` and the rest of the `>` family as separate
+  // `>` tokens so nested type arguments close, and they are printed together
+  // however they reached each other.
+  if (left.endsWith(">") && (right.startsWith(">") || right.startsWith("=")))
+    return false;
+  return punctuators.some((punctuator) => {
+    for (let split = 1; split < punctuator.length; split += 1)
+      if (
+        left.endsWith(punctuator.slice(0, split)) &&
+        right.startsWith(punctuator.slice(split))
+      )
+        return true;
+    return false;
+  });
+}
+
+/** Whether `(` or `[` after this text calls or indexes it. */
+function applies(text: string): boolean {
+  if (text === ")" || text === "]" || text === ">" || text.endsWith("`"))
+    return true;
+  if (!/^[\p{ID_Start}$_][\p{ID_Continue}$]*$/u.test(text)) return false;
+  // `this`, `super` and `import` are called; every other reserved word, and
+  // the contextual ones that head an operand, stands before one.
+  return (
+    text === "this" ||
+    text === "super" ||
+    text === "import" ||
+    !(isReservedWord(text) || ["of", "async", "as", "satisfies"].includes(text))
+  );
+}
+
+/** Where a seam stands, as far as spacing it needs to know. */
+interface SeamContext {
+  /**
+   * The innermost bracket open around it: `(`, `[`, `{`, `<` for type
+   * arguments, or none.
+   */
+  readonly bracket: string | undefined;
+  /** Whether a conditional's `?` in that bracket still awaits its `:`. */
+  readonly conditional: boolean;
+  /** Whether the `-`, `+` or `<` just printed stands before an operand. */
+  readonly prefix: boolean;
+}
+
+/**
+ * The space between two tokens that an expansion put next to each other.
+ *
+ * What stood in front of a token where it was written describes its gap from
+ * the token that stood before it there, not from whatever an expansion placed
+ * before it now: the space after `=` in `total = [1, 2, 3]` belongs to `[`, and
+ * it followed `[` into `map( [1, 2, 3]`. At such a seam the gap is decided the
+ * way code is ordinarily spaced instead.
+ */
+function seamSpace(left: string, right: string, context: SeamContext): string {
+  if (joinsIntoOne(left, right)) return " ";
+  // The `>` family arrives split, and is printed whole.
+  if (left.endsWith(">") && (right === ">" || right.startsWith("="))) return "";
+  // Inside a template literal's substitution.
+  if (left.endsWith("${") || (right.startsWith("}") && right.length > 1))
+    return "";
+  // A statement ends here; a `for` loop's header is not a statement list.
+  if (left === ";") return context.bracket === "(" ? " " : "\n";
+  if (["(", "[", ".", "?.", "...", "!", "~", "#", "@"].includes(left))
+    return "";
+  if (left === "{") return right === "}" ? "" : " ";
+  // A sign, or the `<` that opens type arguments, holds on to what follows.
+  if ((left === "-" || left === "+" || left === "<") && context.prefix)
+    return "";
+  if (right === ">" && context.bracket === "<") return "";
+  if (right === ":") return context.conditional ? " " : "";
+  if ([")", "]", ",", ";", ".", "?."].includes(right)) return "";
+  if (right === "}") return " ";
+  if (right === "(" || right === "[") return applies(left) ? "" : " ";
+  if ((right === "!" || right === "++" || right === "--") && applies(left))
+    return "";
+  return " ";
+}
+
+/**
+ * Whether a line break after this text could end a statement, and so must not
+ * be taken away. After `return`, `throw`, `yield` or any other reserved word a
+ * line break would instead end the statement early, so it is not one of these.
+ */
+function mayEndStatement(text: string): boolean {
+  if ([";", "{", "}", ")", "]"].includes(text)) return true;
+  if (["this", "super", "null", "true", "false"].includes(text)) return true;
+  if (isReservedWord(text)) return false;
+  return /[\p{ID_Continue}$"'`]$/u.test(text);
+}
 
 function canonical(value: unknown, active = new Set<object>()): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean")
@@ -113,9 +244,10 @@ function wordCharacter(value: string | undefined): boolean {
   return value !== undefined && /[\p{ID_Continue}$]/u.test(value);
 }
 
-/** Tokens that bind against neighbours, and so need the grouping kept. */
 /** What ends an arrow's body where it stands in a sequence of nodes. */
 const arrowBodyEnds: ReadonlySet<string> = new Set([";", ",", ":"]);
+
+/** Tokens that bind against neighbours, and so need the grouping kept. */
 
 const nonBinding = new Set([".", "?.", "!", ",", ";", ":", "=>", "...", "?"]);
 
@@ -326,13 +458,140 @@ export function printExpandedFile<Trace>(
   const pendingOpens: { readonly text: string; readonly origin: OriginId }[] =
     [];
   const flushOpens = () => {
-    for (const open of pendingOpens) emit(open.text, open.origin, "grouping");
+    for (const open of pendingOpens) {
+      emit(open.text, open.origin, "grouping");
+      lastPrinted = open.text;
+      previousWritten = undefined;
+      brackets.push({ bracket: "(", conditional: false });
+      prefix = false;
+    }
     pendingOpens.length = 0;
+  };
+  /**
+   * Where a token was written: its position in the file that holds it. A
+   * token a template wrote is placed at its invocation, so its own span says
+   * nothing about its neighbours in the template; its origin records where
+   * the template wrote it.
+   */
+  const writtenAt = (
+    origin: OriginId,
+  ):
+    | {
+        readonly sourceId: number;
+        readonly start: number;
+        readonly end: number;
+      }
+    | undefined => {
+    const record = options.origins.get(origin);
+    switch (record?.kind) {
+      case "source":
+        return {
+          sourceId: record.sourceId,
+          start: record.span.start,
+          end: record.span.end,
+        };
+      case "copied":
+        return writtenAt(record.parent);
+      case "introduced":
+        return writtenAt(record.definition);
+      default:
+        return undefined;
+    }
+  };
+  /** The text last printed, a token or a grouping parenthesis. */
+  let lastPrinted: string | undefined;
+  /** What kind of origin the last token printed had. */
+  let previousKind: Origin["kind"] | undefined;
+  /** Where the last token printed was written, unless something followed it. */
+  let previousWritten: ReturnType<typeof writtenAt>;
+  /** Whether each JSX region or code region in it holds text, innermost last. */
+  const jsxRegions: boolean[] = [];
+  /** Whether JSX braces just opened, before the code in them. */
+  let jsxCodeOpened = false;
+  /** The brackets open around what is being printed, innermost last. */
+  const brackets: { bracket: string | undefined; conditional: boolean }[] = [
+    { bracket: undefined, conditional: false },
+  ];
+  /** Whether the `-`, `+` or `<` last printed stands before an operand. */
+  let prefix = false;
+  const trackBrackets = (text: string, gap: string) => {
+    const closes =
+      text === ")" || text === "]" || text === "}" || text.startsWith("}");
+    // A `<` taken for type arguments may never have closed, so a closing
+    // bracket first drops any left open inside it.
+    if (closes) {
+      while (brackets.length > 1 && brackets.at(-1)!.bracket === "<")
+        brackets.pop();
+      if (brackets.length > 1) brackets.pop();
+    }
+    if (text === ">" && brackets.at(-1)!.bracket === "<") brackets.pop();
+    const before = lastPrinted;
+    // `<` written against a name opens type arguments, `useState<number>`,
+    // and one where an operand begins opens type parameters, `<T>(value: T)`.
+    const typeArguments =
+      text === "<" &&
+      (before === undefined ||
+        (gap === "" && applies(before)) ||
+        ["(", ",", "=", "=>", ":", "?", "[", "{"].includes(before));
+    prefix =
+      ((text === "-" || text === "+") &&
+        (before === undefined ||
+          !(applies(before) || /[\p{ID_Continue}"'`]$/u.test(before)))) ||
+      typeArguments;
+    if (
+      text === "(" ||
+      text === "[" ||
+      text === "{" ||
+      text.endsWith("${") ||
+      typeArguments
+    )
+      brackets.push({
+        bracket: text.endsWith("${") ? "{" : text,
+        conditional: false,
+      });
+    const innermost = brackets.at(-1)!;
+    if (text === "?") innermost.conditional = true;
+    else if (text === ":" && innermost.conditional && before !== "?")
+      innermost.conditional = false;
   };
   const pushToken = (token: TokenSyntax) => {
     const kind = kindFor(token.origin);
-    const leading = token.leadingTrivia.map(({ raw }) => raw).join("");
     const text = replacements.get(token.id) ?? token.raw;
+    const written = writtenAt(token.origin);
+    const trivia = token.leadingTrivia.map(({ raw }) => raw).join("");
+    // The trivia a token was written with is its gap from the token before
+    // it there. It is kept where that token is still the one printed before
+    // it, and wherever it holds more than a space: a comment, JSX text, or the
+    // line break that starts a statement.
+    const neighbour =
+      previousWritten !== undefined &&
+      written !== undefined &&
+      previousWritten.sourceId === written.sourceId &&
+      previousWritten.end + trivia.length === written.start;
+    const keep =
+      lastPrinted === undefined ||
+      neighbour ||
+      jsxRegions.at(-1) === true ||
+      token.leadingTrivia.some(({ kind: piece }) => piece !== "whitespace") ||
+      // JSX text carries its own spacing in its text.
+      /^\s/u.test(text) ||
+      // A line break the author wrote where a statement may end is kept:
+      // automatic semicolon insertion reads it.
+      (/[\r\n]/u.test(trivia) && mayEndStatement(lastPrinted!)) ||
+      // A template's own token written directly against a placeholder stays
+      // against the capture that took its place: `$name<$parameter>` keeps
+      // `Result<T>` together.
+      (kind === "introduced" && previousKind === "copied" && trivia === "");
+    const leading = keep
+      ? trivia
+      : // Code a JSX child's or attribute's braces open on holds to them.
+        jsxCodeOpened
+        ? ""
+        : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
+            ...brackets.at(-1)!,
+            prefix,
+          });
+    jsxCodeOpened = false;
     // Trivia gets a region of its own so the token's region is exactly the
     // token. A region carries the token's whole source span, and a position
     // inside it is projected by its offset from the region start, so folding
@@ -360,12 +619,25 @@ export function printExpandedFile<Trace>(
     emit(text, token.origin, kind);
     const trailing = token.trailingTrivia.map(({ raw }) => raw).join("");
     emit(trailing, token.origin, "synthesized");
+    trackBrackets(text, leading);
+    lastPrinted = text;
+    previousKind = kind;
+    previousWritten =
+      written === undefined || trailing.length > 0 ? undefined : written;
     tokenSpans.push(
       Object.freeze({ syntax: token.id, start, end: start + text.length }),
     );
   };
   while (pending.length > 0) {
     const item = pending.pop()!;
+    if ("jsx" in item) {
+      if (item.jsx === "leave") jsxRegions.pop();
+      else {
+        jsxRegions.push(item.jsx === "text");
+        jsxCodeOpened = item.jsx === "code";
+      }
+      continue;
+    }
     if ("grouping" in item) {
       if (item.text === "(") {
         pendingOpens.push({ text: item.text, origin: item.origin });
@@ -373,6 +645,10 @@ export function printExpandedFile<Trace>(
       }
       flushOpens();
       emit(item.text, item.origin, "grouping");
+      trackBrackets(item.text, "");
+      lastPrinted = item.text;
+      previousKind = undefined;
+      previousWritten = undefined;
       continue;
     }
     switch (item.tag) {
@@ -381,14 +657,33 @@ export function printExpandedFile<Trace>(
       case "token":
         pushToken(item);
         break;
-      case "group":
-        pending.push(item.close);
+      case "group": {
+        // JSX whitespace is text; inside an attribute's or a child's braces
+        // it is code again.
+        const region =
+          item.delimiter === "jsx-element" || item.delimiter === "jsx-fragment"
+            ? "text"
+            : item.delimiter === "brace" && jsxRegions.at(-1) === true
+              ? "code"
+              : undefined;
+        // The braces themselves stand among the JSX children; only what they
+        // hold is code.
+        if (region === "code") pending.push(item.close, { jsx: "leave" });
+        else {
+          if (region !== undefined) pending.push({ jsx: "leave" });
+          pending.push(item.close);
+        }
         pushChildren(
           item.children,
           item.delimiter === "parenthesis" || item.delimiter === "bracket",
         );
-        pending.push(item.open);
+        if (region === "code") pending.push({ jsx: region }, item.open);
+        else {
+          pending.push(item.open);
+          if (region !== undefined) pending.push({ jsx: region });
+        }
         break;
+      }
       case "root":
         pushChildren(item.children);
         break;

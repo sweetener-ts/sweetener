@@ -86,7 +86,7 @@ describe("optional captures", () => {
        export const some = atLeast(size > 0);`,
     );
     expect(text).toContain("export const none = [true]");
-    expect(text).toContain("export const some = [true&& (size > 0)]");
+    expect(text).toContain("export const some = [true && (size > 0)]");
   });
 
   test("answer #if(present) rather than failing when absent", () => {
@@ -101,7 +101,7 @@ describe("optional captures", () => {
        export const none = atLeast();
        export const some = atLeast(size > 0);`,
     );
-    expect(text).toContain("export const none = [ true]");
+    expect(text).toContain("export const none = [true]");
     expect(text).toContain("export const some = [size > 0]");
   });
 
@@ -128,7 +128,7 @@ describe("optional captures", () => {
        export const table = arms { _ => 1, 2 if (size > 0) => 3 };`,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("[[ 1, true],[ 3, size > 0]]");
+    expect(text).toContain("[[1, true], [3, size > 0]]");
   });
 });
 
@@ -280,7 +280,7 @@ declare global {
     );
     expect(messages).toEqual([]);
     // The head, the body, and the closing brace were one invocation.
-    expect(text).toContain("([1, 2]).map(( value) =>");
+    expect(text).toContain("([1, 2]).map((value) =>");
     expect(text).not.toContain("{end}");
   });
 
@@ -418,8 +418,8 @@ describe("macros calling macros", () => {
        }`,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("globalThis.console.log( 1)");
-    expect(text).toContain("globalThis.console.log( 2)");
+    expect(text).toContain("globalThis.console.log(1)");
+    expect(text).toContain("globalThis.console.log(2)");
   });
 });
 
@@ -450,7 +450,7 @@ describe("template repetitions", () => {
     expect(messages).toEqual([]);
     // `#text($field)` is the only thing in the repetition, so it has to be
     // what drives it; `#count` reads the whole sequence and drives nothing.
-    expect(text).toContain('fields: ["x","y"]');
+    expect(text).toContain('fields: ["x", "y"]');
     expect(text).toContain("fieldCount: 2");
   });
 });
@@ -895,8 +895,8 @@ export const b = count(1, 2, 3);
 `,
     );
     expect(messages).toEqual([]);
-    expect(text).toContain(`export const a = ["pair",1, 2];`);
-    expect(text).toContain(`export const b = ["other",1, 2, 3];`);
+    expect(text).toContain(`export const a = ["pair", 1, 2];`);
+    expect(text).toContain(`export const b = ["other", 1, 2, 3];`);
   });
 
   test("rejects a predicate the matcher cannot decide", () => {

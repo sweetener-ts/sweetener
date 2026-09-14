@@ -5,8 +5,7 @@ const matched = "call-site binding";
 
 export const kept: string = matched;
 
-export const chosen: string = ((matched_1) => {if (((matched_1) ===
-  "call-site binding")) {
+export const chosen: string = ((matched_1) => { if (((matched_1) === "call-site binding")) {
         ;
           return matched;
       }

@@ -12,7 +12,7 @@ export const kept: readonly [string, number] = [item, index];
 
 export const mapped = (
   <ul>
-    {([10, 20]).map(( item, index) =>
+    {([10, 20]).map((item, index) =>
       <li>{index}: {item}</li>
     )}
   </ul>

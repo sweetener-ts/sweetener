@@ -345,7 +345,7 @@ describe("trivia regions", () => {
         [product, token("+", "punctuation"), token("c")],
         130,
       );
-      expect(print(expression([sum], undefined))).toBe("(a*b+c)");
+      expect(print(expression([sum], undefined))).toBe("(a * b + c)");
     });
 
     test("keeps what precedence alone would drop but the language requires", () => {
@@ -357,13 +357,13 @@ describe("trivia regions", () => {
         [either, token("??", "punctuation"), token("c")],
         40,
       );
-      expect(print(expression([nullish], undefined))).toBe("((a||b)??c)");
+      expect(print(expression([nullish], undefined))).toBe("((a || b) ?? c)");
       const negated = expression([token("-", "punctuation"), token("a")], 160);
       const power = expression(
         [negated, token("**", "punctuation"), token("b")],
         150,
       );
-      expect(print(expression([power], undefined))).toBe("((-a)**b)");
+      expect(print(expression([power], undefined))).toBe("((-a) ** b)");
     });
 
     test("groups a conditional or an arrow wherever it is not a whole arrow body", () => {
@@ -383,7 +383,7 @@ describe("trivia regions", () => {
         token("*", "punctuation"),
         token("d"),
       ]);
-      expect(print(product)).toBe("((c?a:b)*d)");
+      expect(print(product)).toBe("((c ? a : b) * d)");
       const arrow = expression(
         [
           token("x"),
@@ -408,7 +408,7 @@ describe("trivia regions", () => {
           children: [],
         }),
       ]);
-      expect(print(call)).toBe("(x=>x+y)()");
+      expect(print(call)).toBe("(x => x + y)()");
     });
   });
 });
