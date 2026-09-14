@@ -55,10 +55,12 @@ jobs:
             exit 1
           fi
 
-      # Every alpha goes out under the `alpha` dist-tag, which keeps `latest`
-      # where it is once a stable version exists. It does not hold for a
-      # package's first publish: that version becomes `latest` whatever --tag
-      # says, because a package with no `latest` cannot be installed by name.
+      # Every release goes out under `latest`, so a plain install gets the
+      # newest version. A publish sets exactly one dist-tag, and moving any
+      # other afterwards takes `npm dist-tag add`, which trusted publishing
+      # does not authorize (npm/cli#8547). Publishing under `alpha` left
+      # `latest` at the first version ever published.
+      #
       # Two ways in, and the workflow takes whichever is configured.
       #
       # A trusted publisher (npmjs.com -> Packages -> package -> Settings ->
@@ -98,9 +100,9 @@ jobs:
           done
           for tarball in $ordered; do
             if [ "${DRY_RUN:-false}" = "true" ]; then
-              npm publish "$tarball" --tag alpha --access public --dry-run
+              npm publish "$tarball" --tag latest --access public --dry-run
             else
-              npm publish "$tarball" --tag alpha --access public $attest
+              npm publish "$tarball" --tag latest --access public $attest
             fi
           done
 

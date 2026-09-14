@@ -10,9 +10,8 @@ source maps and expansion traces connect the result back to what you wrote.
 [Try the playground](https://sweetener-ts.github.io/). It runs the
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
-> Sweetener is alpha. Packages go out under the `alpha` dist-tag. These are the
-> first versions of their names, so a plain `npm install` gives you one of them,
-> with nothing stable behind it. Public TypeScript signatures may change before
+> Sweetener is alpha. Every release is published as `latest`, so a plain
+> `npm install` gives you the newest alpha, with nothing stable behind it. Public TypeScript signatures may change before
 > `1.0`. The language carries its own version, and changing how it behaves
 > requires a new one.
 
@@ -194,7 +193,7 @@ You see every file it would create before it writes one, and it leaves alone
 anything already there.
 
 ```bash
-npm install --save-dev @sweetener/cli@alpha
+npm install --save-dev @sweetener/cli
 npx sweetener init
 ```
 
@@ -219,7 +218,7 @@ integrations](docs/integrations.md) covers each host in full.
 ### Starting from nothing
 
 ```bash
-npx @sweetener/cli@alpha init my-app
+npx @sweetener/cli init my-app
 ```
 
 Run through `npx` before it is installed, the command is named by its package:
@@ -267,7 +266,7 @@ sweetener guide                     # print the guide to writing macros
 
 [SKILL.md](SKILL.md) is a short reference for writing macros: declaring them,
 the pattern forms, and how to read the compiler's diagnostics. `sweetener guide`
-prints it, and `npx @sweetener/cli@alpha guide` does without installing
+prints it, and `npx @sweetener/cli guide` does without installing
 anything.
 
 ## Documentation

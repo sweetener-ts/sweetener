@@ -29,11 +29,14 @@ deliberately excluded.
 Alpha succession uses `0.1.0-alpha.N`, which `npm version prerelease` produces.
 A changed tarball is never republished under an existing version.
 
-Registry publication uses the `alpha` dist-tag. That keeps an alpha out of
-`latest` only once something stable has been published: a package's first
-version becomes `latest` whatever `--tag` says, because a package with no
-`latest` cannot be installed by name at all. So the first alpha is what
-`npm install @sweetener/cli` gives you, and the README says so.
+Registry publication uses the `latest` dist-tag, so `npm install @sweetener/cli`
+gives the newest release. Releases through 0.1.0-alpha.3 went out under `alpha`,
+which left `latest` at the first version ever published: a package's first
+version becomes `latest` whatever `--tag` says, and nothing moved it after.
+A publish sets one dist-tag, and moving another takes `npm dist-tag add`, which
+npm's trusted publishing does not authorize
+([npm/cli#8547](https://github.com/npm/cli/issues/8547)), so the workflow does
+not maintain a second tag.
 
 A prerelease also does not satisfy an ordinary range: `^0.1.0` does not match
 `0.1.0-alpha.0`, and neither does `~0.1.0`. Only an exact version resolves one,
