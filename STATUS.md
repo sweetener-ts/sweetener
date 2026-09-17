@@ -116,7 +116,7 @@ No task is in progress.
 
 | Check | Result | Commit |
 |---|---|---|
-| unit | 1670 passed | f2d8a61 |
+| unit | 1696 passed | ff338b9 |
 
 ## Decisions requiring review
 

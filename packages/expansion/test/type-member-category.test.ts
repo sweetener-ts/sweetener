@@ -133,6 +133,12 @@ const definitions = `
   export syntax nowhere:item {
     rule { nowhere } => { const generated = 1; }
   }
+  export syntax only:typeMember {
+    rule { only } => { readonly only: string }
+  }
+  export syntax logit:stmt {
+    rule { logit } => { console.log(1); }
+  }
 `;
 
 describe("the typeMember category", () => {
@@ -280,5 +286,218 @@ describe("the typeMember category", () => {
   test("does not report an ordinary member that shares a macro name", () => {
     const { diagnose } = harness(definitions);
     expect(diagnose("interface Row { nowhere: string; }")).toEqual([]);
+  });
+});
+
+/**
+ * An interface body is a member list wherever the interface is declared. Only
+ * a module-level one is read by the item consumer, so below that the expander
+ * has to recognize the body from the `interface` that heads it; otherwise the
+ * members are walked under whatever category encloses the declaration and no
+ * member macro in them is ever dispatched.
+ */
+describe("an interface body below the top level", () => {
+  test("expands a member macro inside a namespace", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand(
+        "export namespace Inner { export interface Nested { timestamps } }",
+      ),
+    ).toBe(
+      "exportnamespaceInner{exportinterfaceNested{readonlycreatedAt:string;readonlyupdatedAt:string;}}",
+    );
+  });
+
+  test("expands a member macro inside a declared namespace", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand("declare namespace Inner { interface Nested { timestamps } }"),
+    ).toBe(
+      "declarenamespaceInner{interfaceNested{readonlycreatedAt:string;readonlyupdatedAt:string;}}",
+    );
+  });
+
+  test("expands a member macro inside declare global", () => {
+    const { expand } = harness(definitions);
+    expect(expand("declare global { interface Window { timestamps } }")).toBe(
+      "declareglobal{interfaceWindow{readonlycreatedAt:string;readonlyupdatedAt:string;}}",
+    );
+  });
+
+  test("expands a member macro inside a declared module", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand('declare module "x" { interface Nested { timestamps } }'),
+    ).toBe(
+      'declaremodule"x"{interfaceNested{readonlycreatedAt:string;readonlyupdatedAt:string;}}',
+    );
+  });
+
+  test("expands a member macro in an interface declared in a function body", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { interface Local { timestamps } }")).toBe(
+      "functionf(){interfaceLocal{readonlycreatedAt:string;readonlyupdatedAt:string;}}",
+    );
+  });
+
+  test("expands a member macro two namespaces down", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand("namespace A { namespace B { interface C { timestamps } } }"),
+    ).toBe(
+      "namespaceA{namespaceB{interfaceC{readonlycreatedAt:string;readonlyupdatedAt:string;}}}",
+    );
+  });
+
+  test("still expands a type alias body in the same namespace", () => {
+    const { expand } = harness(definitions);
+    expect(expand("namespace Inner { type Row = { timestamps }; }")).toBe(
+      "namespaceInner{typeRow={readonlycreatedAt:string;readonlyupdatedAt:string;};}",
+    );
+  });
+});
+
+/**
+ * A member is written with the separator that ends it, so the invocation of a
+ * member macro spans that separator too. A macro that ends its own last member
+ * leaves the written separator with nothing to terminate, and it stood in the
+ * output as a member of its own -- which TypeScript reports as a missing
+ * property or signature.
+ */
+describe("the separator after a member macro", () => {
+  test("consumes a `;` written after the macro in an object type", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Separated = { timestamps; };")).toBe(
+      "typeSeparated={readonlycreatedAt:string;readonlyupdatedAt:string;};",
+    );
+  });
+
+  test("consumes a `,` written after the macro in an object type", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Commas = { timestamps, id: string };")).toBe(
+      "typeCommas={readonlycreatedAt:string;readonlyupdatedAt:string;id:string};",
+    );
+  });
+
+  test("consumes a `;` written after the macro in an interface", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Separated { timestamps; }")).toBe(
+      "interfaceSeparated{readonlycreatedAt:string;readonlyupdatedAt:string;}",
+    );
+  });
+
+  test("consumes a `,` written after the macro in an interface", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Commas { timestamps, id: string }")).toBe(
+      "interfaceCommas{readonlycreatedAt:string;readonlyupdatedAt:string;id:string}",
+    );
+  });
+
+  test("puts the member after a terminated macro in its own member", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Two { timestamps; id: string }")).toBe(
+      "interfaceTwo{readonlycreatedAt:string;readonlyupdatedAt:string;id:string}",
+    );
+  });
+
+  test("keeps a macro whose single member is unterminated", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Single { only }")).toBe(
+      "interfaceSingle{readonlyonly:string}",
+    );
+  });
+
+  test("keeps the `;` that terminates such a macro's member", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Single { only; id: string }")).toBe(
+      "interfaceSingle{readonlyonly:string;id:string}",
+    );
+  });
+
+  test("keeps the `,` that terminates such a macro's member", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Single = { only, id: string };")).toBe(
+      "typeSingle={readonlyonly:string,id:string};",
+    );
+  });
+
+  test("leaves a newline-separated member list alone", () => {
+    const { expand } = harness(definitions);
+    expect(expand("interface Lines {\n  timestamps\n  id: string\n}")).toBe(
+      "interfaceLines{readonlycreatedAt:string;readonlyupdatedAt:string;id:string}",
+    );
+  });
+});
+
+/**
+ * The `=` of a type alias opens a type that runs to the end of the
+ * declaration. A function type written in it spells its arrow `=>`, the same
+ * token that opens an arrow function's body, so without the region the brace
+ * after the arrow was read as an expression -- and a member macro written in
+ * it was reported as being written where an expression is read.
+ */
+describe("an object type after the arrow of a function type", () => {
+  test("expands a member macro in a function type's return type", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Returned = () => { timestamps };")).toBe(
+      "typeReturned=()=>{readonlycreatedAt:string;readonlyupdatedAt:string;};",
+    );
+  });
+
+  test("expands a member macro in a constructor type's return type", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Ctor = new () => { timestamps };")).toBe(
+      "typeCtor=new()=>{readonlycreatedAt:string;readonlyupdatedAt:string;};",
+    );
+  });
+
+  test("expands a member macro nested in a return type's type argument", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Nested = () => Array<{ timestamps }>;")).toBe(
+      "typeNested=()=>Array<{readonlycreatedAt:string;readonlyupdatedAt:string;}>;",
+    );
+  });
+
+  test("still expands a member macro in a parameter's object type", () => {
+    const { expand } = harness(definitions);
+    expect(expand("type Param = (a: { timestamps }) => void;")).toBe(
+      "typeParam=(a:{readonlycreatedAt:string;readonlyupdatedAt:string;})=>void;",
+    );
+  });
+
+  test("still expands a member macro in a function's return type", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand("function fn(): { timestamps } | null { return null; }"),
+    ).toBe(
+      "functionfn():{readonlycreatedAt:string;readonlyupdatedAt:string;}|null{returnnull;}",
+    );
+  });
+
+  test("still reads an arrow function's body as statements", () => {
+    const { expand } = harness(definitions);
+    expect(expand("const f = () => { return 1; };")).toBe(
+      "constf=()=>{return1;};",
+    );
+  });
+
+  /**
+   * An alias names itself, so the `type` of one never stands directly in front
+   * of its `=`. A class field or a variable spelled `type` does, and reading
+   * back from the `=` for the keyword took one for an alias -- which put the
+   * body of the arrow it was assigned inside a type.
+   */
+  test("still reads the body of an arrow a `type` field is assigned", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C { type = () => { logit }; }")).toBe(
+      "classC{type=()=>{console.log(1);};}",
+    );
+  });
+
+  test("still reads the body of an arrow a `type` variable is assigned", () => {
+    const { expand } = harness(definitions);
+    expect(expand("const type = () => { logit };")).toBe(
+      "consttype=()=>{console.log(1);};",
+    );
   });
 });

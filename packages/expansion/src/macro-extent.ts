@@ -123,6 +123,30 @@ function protectedExtent(
   });
 }
 
+/**
+ * A cursor past the separator the type member a macro claimed is written with.
+ *
+ * A member list separates on `;` or `,`, and a member macro commonly emits
+ * whole members, terminating the last one itself. The separator written after
+ * such an invocation then terminates nothing: left outside the extent it stood
+ * in the output as a member of its own, which TypeScript reports as a missing
+ * property or signature. It belongs to the invocation the way a statement's
+ * terminator belongs to the statement, so the extent spans it and expansion
+ * decides whether one is still needed.
+ */
+function pastSeparator(
+  category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
+  end: SyntaxCursor,
+): SyntaxCursor {
+  if (category !== "typeMember") return end;
+  const next = end.peek();
+  if (next?.tag !== "token" || (next.raw !== ";" && next.raw !== ","))
+    return end;
+  const past = end.fork();
+  past.advance();
+  return past;
+}
+
 function fallbackExtent(cursor: SyntaxCursor): SyntaxCursor {
   const end = cursor.fork();
   while (!end.atEnd) {
@@ -187,7 +211,12 @@ export function createMacroExtentResolver(
         matched.matched &&
         evaluateRefinements(rule.refinements, matched.captures)
       )
-        return protectedExtent(category, cursor, matched.cursor, options);
+        return protectedExtent(
+          category,
+          cursor,
+          pastSeparator(category, matched.cursor),
+          options,
+        );
     }
     // An expression or type is claimed only by a rule that matched. A statement
     // or item has nowhere else to go, so a malformed invocation is preserved as

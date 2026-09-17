@@ -233,6 +233,11 @@ function punctuationSpelled(spelling: string): boolean {
   return !/^[\p{ID_Start}_$]/u.test(spelling);
 }
 
+/** Whether a node is one of the two tokens that separate type members. */
+function separatorSpelled(node: Syntax | undefined): boolean {
+  return node?.tag === "token" && (node.raw === ";" || node.raw === ",");
+}
+
 /**
  * How many tokens spell this operator here, or nothing if it is not spelled
  * here at all.
@@ -592,7 +597,11 @@ export function expandMacroSyntax(
   ): boolean => {
     const previous = preceding.at(-1);
     if (previous?.tag !== "token" || previous.raw !== "=") return false;
-    for (let at = preceding.length - 2; at >= 0; at -= 1) {
+    // An alias names itself, so `type` is never the token directly in front of
+    // its `=`. Reading back from there instead took the `type` of a class
+    // field or a variable spelled that way -- `type = () => { ... }` -- for an
+    // alias, and read the arrow's body as the type it would then declare.
+    for (let at = preceding.length - 3; at >= 0; at -= 1) {
       const node = preceding[at]!;
       if (node.tag !== "token") return false;
       if (node.raw === ";" || node.raw === "}") return false;
@@ -1532,7 +1541,7 @@ export function expandMacroSyntax(
   };
 
   interface BraceHeader {
-    readonly opens: "function" | "class" | "other";
+    readonly opens: "function" | "class" | "interface" | "other";
     /** Where a function's parameter list stands in what precedes the brace. */
     readonly parameters?: number;
     /**
@@ -1545,6 +1554,7 @@ export function expandMacroSyntax(
   }
   const otherBrace: BraceHeader = { opens: "other", yields: undefined };
   const classBrace: BraceHeader = { opens: "class", yields: undefined };
+  const interfaceBrace: BraceHeader = { opens: "interface", yields: undefined };
 
   /**
    * Whether the function whose parameter list stands at `parameters` is a
@@ -1600,6 +1610,13 @@ export function expandMacroSyntax(
         typeArguments = Math.max(0, typeArguments - angles(node, "<"));
         if (typeArguments > 0 || angles(node, "<") > 0) continue;
         if (node.raw === "class") return classBrace;
+        // An interface body is a member list, and so is an object type
+        // written in what the interface extends: `interface I extends
+        // Pick<{ a: 1 }, "a">`. Only a module-level interface is read by the
+        // item consumer, so this is how a body nested any deeper -- inside a
+        // namespace, a `declare global`, a function body, an item recovery
+        // swallowed -- is recognized as the member list it is.
+        if (node.raw === "interface") return interfaceBrace;
         if (
           statementBoundaries.has(node.raw) ||
           node.raw === "=" ||
@@ -1661,7 +1678,8 @@ export function expandMacroSyntax(
 
   const braceOpens = (
     preceding: readonly Syntax[],
-  ): "function" | "class" | "other" => braceHeader(preceding).opens;
+  ): "function" | "class" | "interface" | "other" =>
+    braceHeader(preceding).opens;
 
   /** Whether a node is a brace group, or a protected body holding only one. */
   const braceBody = (node: Syntax): boolean =>
@@ -2260,6 +2278,21 @@ export function expandMacroSyntax(
      */
     let typeRegion = false;
     let functionTypes = 0;
+    /**
+     * Whether the position being walked stands in the type a type alias
+     * declares. It opens at the `=` of `type Name =` and runs to the end of
+     * that declaration.
+     *
+     * Unlike a function's return type it is not ended by `=>`: the arrow of a
+     * function type stands inside it, and what follows that arrow is the
+     * function type's own return type, still a type. Read without the region,
+     * the `=>` of `type F = () => { ... }` opened an expression the way an
+     * arrow function's does, and the object type after it was walked as a
+     * function body.
+     */
+    let typeAliasRegion = false;
+    /** Whether the position being walked stands inside a type. */
+    const inTypeRegion = (): boolean => typeRegion || typeAliasRegion;
     /** Where the class member being walked begins in `output`. */
     let memberStart = 0;
     /**
@@ -2273,7 +2306,7 @@ export function expandMacroSyntax(
      * all agree about it.
      */
     const typeFollows = (): boolean =>
-      typeRegion ||
+      inTypeRegion() ||
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
         : typePositionHere());
@@ -2405,11 +2438,19 @@ export function expandMacroSyntax(
         }
       }
       if (walked?.tag === "token") {
-        if (expressionRegionEnds.has(walked.raw)) expressionRegion = false;
+        // A declaration keyword ends the declaration before it, so it closes
+        // both regions the same way a `;` does.
+        if (expressionRegionEnds.has(walked.raw)) {
+          expressionRegion = false;
+          typeAliasRegion = false;
+        } else if (typeAliasInitializerFollows(output)) typeAliasRegion = true;
         else if (
-          expressionRegionHeads.has(walked.raw) ||
-          // The `=` of a type alias opens a type, not an expression.
-          (initializerFollows(output) && !typePositionFollows(output))
+          // Nothing inside the type a type alias declares opens an expression.
+          // Its `=>` is a function type's arrow, not an arrow function's.
+          !typeAliasRegion &&
+          (expressionRegionHeads.has(walked.raw) ||
+            // The `=` of a type alias opens a type, not an expression.
+            (initializerFollows(output) && !typePositionFollows(output)))
         )
           expressionRegion = true;
       }
@@ -3042,7 +3083,7 @@ export function expandMacroSyntax(
       if (
         resolvedMacro === undefined &&
         node.tag === "token" &&
-        (readsType ? !namesSomethingElse : typeRegion || typePositionHere())
+        (readsType ? !namesSomethingElse : inTypeRegion() || typePositionHere())
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -3158,7 +3199,7 @@ export function expandMacroSyntax(
         // certainly one -- a `,` separates arguments as well as type
         // arguments. Naming the space would name the wrong one, so a name
         // that resolved nowhere is left to TypeScript here.
-        if (typeRegion || typePositionHere()) return undefined;
+        if (inTypeRegion() || typePositionHere()) return undefined;
         // An expression region is opened by `=>` among others, and a function
         // type's arrow is spelled the same way, so it says only that an
         // expression may be being written. A space is named where one
@@ -3803,6 +3844,20 @@ export function expandMacroSyntax(
           ]);
         }
         index = result.cursor.index;
+        // A member list separates on `;` or `,`, and a member macro that emits
+        // whole members terminates the last one itself. The separator written
+        // after such an invocation then terminates nothing, and standing in
+        // the output it reads as a member of its own -- which TypeScript
+        // reports as a missing property or signature. It is dropped where the
+        // replacement already carries one, and kept where it is what
+        // terminates the single member the macro emitted.
+        if (
+          resolvedCategory === "typeMember" &&
+          !eraseReplacement &&
+          separatorSpelled(lastTokenOf(result.syntax)) &&
+          separatorSpelled(input[index])
+        )
+          index += 1;
         continue;
       }
       if (node.tag === "group" || node.tag === "protected") {
@@ -4004,7 +4059,7 @@ export function expandMacroSyntax(
           node.tag === "group" &&
           node.delimiter === "brace" &&
           category === "expr" &&
-          !typeRegion &&
+          !inTypeRegion() &&
           node.children.some(
             (child) => child.tag === "token" && child.raw === ":",
           )
@@ -4280,104 +4335,112 @@ export function expandMacroSyntax(
           // container, or a nested element.
           node.tag === "group" && category === "jsxChild"
             ? "expr"
-            : node.tag === "group" &&
+            : // An interface body is a member list wherever the interface is
+              // declared, and the `interface` that heads it says so however
+              // the syntax around the declaration is being walked.
+              node.tag === "group" &&
                 node.delimiter === "brace" &&
-                // A function body holds statements wherever the function
-                // itself stands. Asking only in expression category left the
-                // body of a `function` or method emitted by an item template
-                // walked as items, where no expression macro resolves.
-                (category === "expr" ||
-                  category === "stmt" ||
-                  category === "item" ||
-                  category === "classElement" ||
-                  // A parameter's default may be a function, and its body is a
-                  // statement list however the parameter list is walked.
-                  category === "binding") &&
-                // A method in an object literal is written without
-                // `function`, and its body is as much a statement list. So is
-                // a class static block. A brace inside a return type is an
-                // object type, however the type around it is written.
-                !typeRegion &&
-                (functionBodyFollows(output) ||
-                  braceOpens(output) === "function" ||
-                  (category === "classElement" && staticBlockFollows(output)))
-              ? "stmt"
-              : // A class body holds members wherever the class stands. Read
-                // as a statement list, `value = f(x);` is an assignment, and a
-                // member no statement can spell leaves the body unread.
-                node.tag === "group" &&
+                braceOpens(output) === "interface"
+              ? "typeMember"
+              : node.tag === "group" &&
                   node.delimiter === "brace" &&
+                  // A function body holds statements wherever the function
+                  // itself stands. Asking only in expression category left the
+                  // body of a `function` or method emitted by an item template
+                  // walked as items, where no expression macro resolves.
                   (category === "expr" ||
                     category === "stmt" ||
-                    category === "item") &&
-                  braceOpens(output) === "class"
-                ? "classElement"
-                : // A computed member name is an expression, evaluated where
-                  // the class is.
+                    category === "item" ||
+                    category === "classElement" ||
+                    // A parameter's default may be a function, and its body is a
+                    // statement list however the parameter list is walked.
+                    category === "binding") &&
+                  // A method in an object literal is written without
+                  // `function`, and its body is as much a statement list. So is
+                  // a class static block. A brace inside a return type is an
+                  // object type, however the type around it is written, and so
+                  // is one inside the type a type alias declares.
+                  !inTypeRegion() &&
+                  (functionBodyFollows(output) ||
+                    braceOpens(output) === "function" ||
+                    (category === "classElement" && staticBlockFollows(output)))
+                ? "stmt"
+                : // A class body holds members wherever the class stands. Read
+                  // as a statement list, `value = f(x);` is an assignment, and a
+                  // member no statement can spell leaves the body unread.
                   node.tag === "group" &&
-                    node.delimiter === "bracket" &&
-                    category === "classElement" &&
-                    computedMemberNameFollows(output.slice(memberStart), node)
-                  ? "expr"
-                  : node.tag === "group" &&
-                      node.delimiter === "parenthesis" &&
-                      catchBinderFollows(output)
-                    ? "binding"
-                    : // A bracket inside a member list holds a type, not
-                      // another member: a mapped type's key, an index
-                      // signature's, a computed one. Walking it as a member
-                      // list made `{ [K in keyof list<string>]: 1 }` read
-                      // `list` as the name of a member rather than as the type
-                      // macro it is.
-                      node.tag === "group" &&
-                        node.delimiter === "bracket" &&
-                        category === "typeMember"
-                      ? "type"
-                      : // A brace standing where a type is written is an
-                        // object type, and its contents are a member list
-                        // rather than one more type.
+                    node.delimiter === "brace" &&
+                    (category === "expr" ||
+                      category === "stmt" ||
+                      category === "item") &&
+                    braceOpens(output) === "class"
+                  ? "classElement"
+                  : // A computed member name is an expression, evaluated where
+                    // the class is.
+                    node.tag === "group" &&
+                      node.delimiter === "bracket" &&
+                      category === "classElement" &&
+                      computedMemberNameFollows(output.slice(memberStart), node)
+                    ? "expr"
+                    : node.tag === "group" &&
+                        node.delimiter === "parenthesis" &&
+                        catchBinderFollows(output)
+                      ? "binding"
+                      : // A bracket inside a member list holds a type, not
+                        // another member: a mapped type's key, an index
+                        // signature's, a computed one. Walking it as a member
+                        // list made `{ [K in keyof list<string>]: 1 }` read
+                        // `list` as the name of a member rather than as the type
+                        // macro it is.
                         node.tag === "group" &&
-                          node.delimiter === "brace" &&
-                          (category === "type" || typeGroupFollows)
-                        ? "typeMember"
-                        : node.tag === "group" &&
-                            category !== "type" &&
-                            (node.delimiter === "bracket" ||
-                              node.delimiter === "parenthesis") &&
-                            typeGroupFollows
-                          ? "type"
-                          : // A function's parameter list holds binders: the
-                            // patterns, the names in them, their annotations
-                            // and their defaults. A member's parameter list is
-                            // walked as tokens where the class body is, and
-                            // read as members its patterns were read as member
-                            // lists -- where a `:` opens a type, so the default
-                            // written past one never reached an expression.
-                            // Asked after the type readings, so a parenthesised
-                            // function type inside a return type stays a type.
-                            node.tag === "group" &&
-                              node.delimiter === "parenthesis" &&
-                              parameterList(output, node, input, index + 1)
-                            ? "binding"
-                            : node.tag === "group" &&
-                                category !== "expr" &&
-                                ((node.delimiter === "parenthesis" &&
-                                  (conditionFollows(output) ||
-                                    classHeritageFollows(output))) ||
-                                  initializerFollows(output) ||
-                                  // An argument list, a parenthesised operand, an
-                                  // index: a group reached inside an expression
-                                  // region holds an expression however the
-                                  // statement around it is categorized.
-                                  ((node.delimiter === "parenthesis" ||
-                                    node.delimiter === "bracket") &&
-                                    expressionRegion))
-                              ? "expr"
+                          node.delimiter === "bracket" &&
+                          category === "typeMember"
+                        ? "type"
+                        : // A brace standing where a type is written is an
+                          // object type, and its contents are a member list
+                          // rather than one more type.
+                          node.tag === "group" &&
+                            node.delimiter === "brace" &&
+                            (category === "type" || typeGroupFollows)
+                          ? "typeMember"
+                          : node.tag === "group" &&
+                              category !== "type" &&
+                              (node.delimiter === "bracket" ||
+                                node.delimiter === "parenthesis") &&
+                              typeGroupFollows
+                            ? "type"
+                            : // A function's parameter list holds binders: the
+                              // patterns, the names in them, their annotations
+                              // and their defaults. A member's parameter list is
+                              // walked as tokens where the class body is, and
+                              // read as members its patterns were read as member
+                              // lists -- where a `:` opens a type, so the default
+                              // written past one never reached an expression.
+                              // Asked after the type readings, so a parenthesised
+                              // function type inside a return type stays a type.
+                              node.tag === "group" &&
+                                node.delimiter === "parenthesis" &&
+                                parameterList(output, node, input, index + 1)
+                              ? "binding"
                               : node.tag === "group" &&
-                                  node.delimiter === "parenthesis" &&
-                                  decoratorArgumentsFollow(output)
+                                  category !== "expr" &&
+                                  ((node.delimiter === "parenthesis" &&
+                                    (conditionFollows(output) ||
+                                      classHeritageFollows(output))) ||
+                                    initializerFollows(output) ||
+                                    // An argument list, a parenthesised operand, an
+                                    // index: a group reached inside an expression
+                                    // region holds an expression however the
+                                    // statement around it is categorized.
+                                    ((node.delimiter === "parenthesis" ||
+                                      node.delimiter === "bracket") &&
+                                      expressionRegion))
                                 ? "expr"
-                                : category;
+                                : node.tag === "group" &&
+                                    node.delimiter === "parenthesis" &&
+                                    decoratorArgumentsFollow(output)
+                                  ? "expr"
+                                  : category;
         const innerContexts = contextsWithin(
           node,
           output,

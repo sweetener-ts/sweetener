@@ -266,10 +266,23 @@ describe("an item recovery could not read", () => {
   }
 
   test("still reports a macro it really did leave unexpanded", () => {
-    // A member macro reads in a member list and nowhere else, so an item run
-    // asks about the position, finds nothing, and nothing else speaks for it.
-    const { text, messages } = expand(") export interface I { boxedMember; }");
+    // A member macro reads in a member list and nowhere else. Written where
+    // there is no member list, an item run asks about the position, finds
+    // nothing, and nothing else speaks for it.
+    const { text, messages } = expand(") boxedMember;");
     expect(text).toContain("boxedMember");
     expect(messages.join("\n")).toContain(swallowed);
+  });
+
+  /**
+   * An interface body recovery swallowed is still a member list, so a member
+   * macro written in one is dispatched there and nothing is left unexpanded to
+   * report. This was the fixture above until the body was walked as members.
+   */
+  test("says nothing about a member macro in an interface it swallowed", () => {
+    const { text, messages } = expand(") export interface I { boxedMember; }");
+    expect(text).toContain("readonly at: number;");
+    expect(text).not.toContain("boxedMember");
+    expect(messages.join("\n")).not.toContain(swallowed);
   });
 });

@@ -190,6 +190,23 @@ export function f() { return twice(2); }
   });
 
   /**
+   * An interface body recovery swallowed is still a member list. The walk can
+   * place a member macro written in one, so it expands there as it would in an
+   * interface the reader took whole.
+   */
+  test("expands a member macro in an interface recovery swallowed", () => {
+    const { generated, diagnostics } = expand(
+      `import { member } from "./macros.sts" for syntax;
+) interface I { member; }
+`,
+    );
+    expect(generated).toContain("readonly at: number;");
+    expect(diagnostics.join("\n")).not.toContain(
+      "Sweetener could not read this item",
+    );
+  });
+
+  /**
    * A statement recovery swallowed is still a statement, and an expression
    * macro standing as one is dispatched there as it would be anywhere else.
    */
