@@ -47,6 +47,7 @@ import { readLetBinding, readParameterization } from "@sweetener/template";
 import {
   classElementEndsBefore,
   classMemberNameFollows,
+  parameterBinder,
   typeOperandFollows,
 } from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
@@ -209,6 +210,14 @@ export interface ExpandMacroSyntaxResult {
    * was never offered is one whose expression could not be read.
    */
   readonly offeredOperators: ReadonlySet<Syntax["origin"]>;
+  /**
+   * The identifiers this expansion decided were names rather than macro
+   * references: a property read off a value, a member's or a label's name, a
+   * binder, a name an ordinary binding shadows. A check that looks for
+   * invocations still standing in the output has to skip these, or it blames
+   * code that never invoked anything.
+   */
+  readonly namedOrigins: ReadonlySet<Syntax["origin"]>;
 }
 
 const itemDispatchPrefixes = new Set([
@@ -258,6 +267,7 @@ export function expandMacroSyntax(
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
   const offeredOperators = new Set<Syntax["origin"]>();
+  const namedOrigins = new Set<Syntax["origin"]>();
   const generatedDefinitionTraces: GeneratedDefinitionsTrace[] = [];
   const activeModules: CompileParsedMacrosResult[] = [
     ...(options.modules ?? [options.module]),
@@ -715,11 +725,51 @@ export function expandMacroSyntax(
     return false;
   };
 
+  /** The words that stand between an object literal's brace and a method's name. */
+  const methodNamePrefixes = new Set(["get", "set", "async", "*"]);
+
   /** Whether the next node stands where a declaration names what it binds. */
   const binderFollows = (preceding: readonly Syntax[]): boolean => {
     const previous = preceding.at(-1);
     if (previous?.tag !== "token") return false;
     return ["const", "let", "var", "using"].includes(previous.raw);
+  };
+
+  /**
+   * Whether the parenthesis group written next holds the arguments a decorator
+   * is called with. `@deco(value)` calls `deco`, so what stands between those
+   * parentheses is an expression wherever the decorator itself stands -- in
+   * front of a class, where the syntax around it is items, and in front of one
+   * of its members, where the syntax around it is members and an expression is
+   * read nowhere else.
+   */
+  const decoratorArgumentsFollow = (preceding: readonly Syntax[]): boolean => {
+    let typeArguments = 0;
+    for (let at = preceding.length - 1; at >= 0; at -= 1) {
+      const node = preceding[at]!;
+      if (node.tag !== "token") return false;
+      const closes = angles(node, ">");
+      if (closes > 0) {
+        typeArguments += closes;
+        continue;
+      }
+      const opens = angles(node, "<");
+      if (opens > 0) {
+        if (typeArguments < opens) return false;
+        typeArguments -= opens;
+        continue;
+      }
+      if (typeArguments > 0) continue;
+      if (node.raw === "@") return true;
+      // A decorator names what it applies, and reads members off it: `@a.b.c`.
+      if (
+        node.raw !== "." &&
+        node.kind !== "identifier" &&
+        node.kind !== "keyword"
+      )
+        return false;
+    }
+    return false;
   };
 
   /** Whether a parenthesis group names what a `catch` binds. */
@@ -891,6 +941,16 @@ export function expandMacroSyntax(
       }
     };
     /**
+     * An import binds its local name in whichever namespaces the module it
+     * reads exports it in, and nothing here says which: `import { T }` is as
+     * readily a type as a value. Recording only the value namespace left a
+     * type macro dispatched on a name the file had imported for itself.
+     */
+    const importName = (spelling: string): void => {
+      values.add(spelling);
+      types.add(spelling);
+    };
+    /**
      * A statement list's entries arrive protected, so the declarations in them
      * are one level down. A brace is never entered: what it binds belongs to
      * the region it opens, not to this one.
@@ -933,13 +993,22 @@ export function expandMacroSyntax(
             for (const segment of bindingSegments(node.children)) {
               const local = segment.at(-1);
               if (local?.tag === "token" && local.kind === "identifier")
-                values.add(local.raw);
+                importName(local.raw);
             }
             continue;
           }
           if (node.delimiter !== "parenthesis") continue;
           if (bindsParameters(node, nodes.slice(at + 1), nodes.slice(0, at)))
-            addBinders(bindingSegments(node.children), values);
+            // A parameter's binder stands after the modifiers of a parameter
+            // property and after the `...` of a rest parameter, so what a
+            // parameter list binds is read from the binder rather than from
+            // the whole parameter.
+            addBinders(
+              bindingSegments(node.children).map((segment) =>
+                createSyntaxSequence(parameterBinder(segment)),
+              ),
+              values,
+            );
           else collect(node.children, false, nested);
           continue;
         }
@@ -965,6 +1034,30 @@ export function expandMacroSyntax(
         if (node.raw === "import") {
           collect(nodes.slice(at + 1), true, nested);
           return;
+        }
+        if (inImport) {
+          // `import name from`, `import name, { ... } from` and
+          // `import name = require(...)` all bind the name written straight
+          // after the keyword, while `import * as name` binds the one after
+          // `as`. The `type` of `import type ...` is a modifier and names
+          // nothing, unless what follows it makes it the local name itself.
+          const previous = nodes[at - 1];
+          const following = nodes[at + 1];
+          const heads =
+            at === 0 &&
+            !(
+              node.raw === "type" &&
+              following?.tag === "token" &&
+              following.raw !== "from" &&
+              following.raw !== "=" &&
+              following.raw !== ","
+            );
+          if (
+            node.kind === "identifier" &&
+            (heads || (previous?.tag === "token" && previous.raw === "as"))
+          )
+            importName(node.raw);
+          continue;
         }
         // An arrow's single parameter is written without parentheses.
         const following = nodes[at + 1];
@@ -2096,6 +2189,20 @@ export function expandMacroSyntax(
     enclosingContexts: ReadonlySet<MacroContext>,
     suppressHead = false,
     recursiveBinding?: BindingId,
+    /**
+     * Whether what is walked is one member of an object literal. A member is
+     * an expression everywhere but in its name, and a method's name is written
+     * where an expression would otherwise begin.
+     */
+    objectMember = false,
+    /**
+     * Whether this run is the inside of a parenthesis or bracket group that
+     * took the category of the syntax around it: a parameter list, an
+     * argument list, an index. Such a run holds no statements, however the
+     * declaration enclosing it is walked, so nothing in it begins one and
+     * nothing in it carries a label.
+     */
+    groupInterior = false,
   ): {
     readonly syntax: SyntaxSequence;
     readonly environment: BindingEnvironment;
@@ -2169,7 +2276,57 @@ export function expandMacroSyntax(
       typeRegion ||
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
-        : typePositionFollows(output));
+        : typePositionHere());
+    /** Whether a run of statements is what is being walked. */
+    const statementRun =
+      !groupInterior && (category === "stmt" || category === "item");
+    /**
+     * Whether the `:` that ends `preceding` labels a statement rather than
+     * opening a type. The two are spelled alike, and a run walked as tokens
+     * has only the syntax around them to tell them apart: a label is an
+     * identifier written where a statement begins, and nothing else is. Read
+     * as an annotation, `here: logit(x);` looked the statement macro up among
+     * type macros and reported that a statement macro cannot be written where
+     * a type is read.
+     */
+    const labelColonEnds = (preceding: readonly Syntax[]): boolean => {
+      if (!statementRun) return false;
+      const colon = preceding.at(-1);
+      if (colon?.tag !== "token" || colon.raw !== ":") return false;
+      const name = preceding.at(-2);
+      return (
+        name?.tag === "token" &&
+        name.kind === "identifier" &&
+        statementStartFollows(preceding.slice(0, -2))
+      );
+    };
+    /**
+     * Whether a statement begins next: at the head of the run, after the `;`
+     * that ended the one before, after a label, and after the body of a
+     * function or a class, which the keyword that opened them ends at.
+     */
+    const statementStartFollows = (preceding: readonly Syntax[]): boolean => {
+      if (!statementRun) return false;
+      const previous = preceding.at(-1);
+      if (previous === undefined) return true;
+      // A statement already read as one ends where it ends, however many
+      // tokens it holds: an expansion splices its replacement in that way.
+      if (previous.tag === "protected")
+        return previous.category === "stmt" || previous.category === "item";
+      if (previous.tag === "group")
+        return (
+          previous.delimiter === "brace" &&
+          braceOpens(preceding.slice(0, -1)) !== "other"
+        );
+      if (previous.tag !== "token") return false;
+      return previous.raw === ";" || labelColonEnds(preceding);
+    };
+    /**
+     * Whether the next node stands where a type is written, discounting the
+     * `:` of a label, which annotates nothing.
+     */
+    const typePositionHere = (): boolean =>
+      !labelColonEnds(output) && typePositionFollows(output);
     while (index < input.length) {
       const node = input[index]!;
       const walked = output.at(-1);
@@ -2256,6 +2413,14 @@ export function expandMacroSyntax(
         )
           expressionRegion = true;
       }
+      // A statement list holds an expression statement as readily as it holds
+      // a declaration, so an expression begins wherever a statement does. A
+      // run walked as tokens has no enforested statement to say so, and
+      // without this an expression macro written as a statement -- or inside
+      // the arguments of the call that is one -- was looked up only among the
+      // statement macros, found nowhere, and emitted verbatim as a call to a
+      // name the output never defines.
+      if (statementStartFollows(output)) expressionRegion = true;
       const coreKeyword = input[index + 1];
       const separatedCoreBody = input[index + 2];
       const compactCoreBody = input[index + 1];
@@ -2735,6 +2900,113 @@ export function expandMacroSyntax(
         );
       })();
       /**
+       * Whether this position spells a label: the one a statement carries, or
+       * the one a `break` or `continue` leaves by. A label lives in a
+       * namespace of its own -- no expression can read one, and no binding can
+       * shadow one -- so a label spelled like a macro is still a label.
+       */
+      const namesLabel = ((): boolean => {
+        if (node.tag !== "token" || node.kind !== "identifier") return false;
+        const previous = output.at(-1);
+        if (
+          previous?.tag === "token" &&
+          (previous.raw === "break" || previous.raw === "continue")
+        )
+          return true;
+        const next = input[index + 1];
+        return (
+          next?.tag === "token" &&
+          next.raw === ":" &&
+          statementStartFollows(output)
+        );
+      })();
+      /**
+       * Whether this position spells the name of a method an object literal
+       * declares: `name(parameters) { body }`, with `get`, `set`, `async` and
+       * a generator star written in front of the name. A member of an object
+       * literal is walked as the expression it usually is, and a method's name
+       * is the one member of one that is not: dispatching there rewrote every
+       * method whose name a macro in scope happened to share.
+       */
+      const namesObjectMethod = ((): boolean => {
+        if (!objectMember || node.tag !== "token") return false;
+        // Only what stands in this member, which begins after the `,` that
+        // ended the one before it.
+        let entryStart = 0;
+        for (let at = output.length - 1; at >= 0; at -= 1) {
+          const walked = output[at]!;
+          if (walked.tag === "token" && walked.raw === ",") {
+            entryStart = at + 1;
+            break;
+          }
+        }
+        if (
+          !output
+            .slice(entryStart)
+            .every(
+              (walked) =>
+                walked.tag === "token" && methodNamePrefixes.has(walked.raw),
+            )
+        )
+          return false;
+        // The type parameters the method may declare, `twice<T>(value: T)`,
+        // and then its parameter list.
+        let at = index + 1;
+        if (angles(input[at], "<") > 0) {
+          let depth = 0;
+          for (; at < input.length; at += 1) {
+            depth += angles(input[at], "<") - angles(input[at], ">");
+            if (depth <= 0) {
+              at += 1;
+              break;
+            }
+          }
+        }
+        const parameters = input[at];
+        if (
+          parameters?.tag !== "group" ||
+          parameters.delimiter !== "parenthesis"
+        )
+          return false;
+        // The body the member ends with, which is what makes it a method.
+        // Between it and the parameter list stands the return type, if one is
+        // written, and that may itself be an object type -- so the brace that
+        // is the body is the last node of the member rather than the first
+        // brace after the parameters. A member ending in anything else is an
+        // ordinary expression: `{ collect(values) }` calls a macro.
+        let depth = 0;
+        let last: Syntax | undefined;
+        for (at += 1; at < input.length; at += 1) {
+          const ahead = input[at]!;
+          depth = Math.max(0, depth + angles(ahead, "<") - angles(ahead, ">"));
+          if (depth === 0 && ahead.tag === "token" && ahead.raw === ",") break;
+          last = ahead;
+        }
+        return last?.tag === "group" && last.delimiter === "brace";
+      })();
+      /**
+       * Whether this position spells the name of a class member. A class body
+       * is walked as tokens wherever its member reader could not take it, and
+       * a name written in front of a parameter list, a `:`, a `?` or a `!`
+       * names a member there as surely as it does in a type's member list.
+       */
+      const namesClassMember =
+        category === "classElement" &&
+        classMemberNameFollows(output.slice(memberStart)) &&
+        memberNameFollows();
+      /**
+       * Whether this position spells an ordinary name rather than the head of
+       * an invocation. A macro's spelling is not reserved, and every one of
+       * these positions is a place where a name means itself: dispatching
+       * there rewrites syntax that never mentioned the macro.
+       */
+      const namesSomethingElse =
+        namesMember ||
+        namesProperty ||
+        namesLabel ||
+        namesObjectMethod ||
+        namesClassMember;
+      /**
        * Whether this position reads a type, whatever the syntax around it is
        * being walked as: an annotation, a type argument, a constraint, the
        * right of a type alias's `=`. A name written there is a type and can be
@@ -2759,10 +3031,7 @@ export function expandMacroSyntax(
        */
       const readsWalkedSpace = category === "type" || !readsType;
       let resolvedMacro =
-        node.tag === "token" &&
-        !namesMember &&
-        !namesProperty &&
-        readsWalkedSpace
+        node.tag === "token" && !namesSomethingElse && readsWalkedSpace
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
           : undefined;
       // A type is written in many places the surrounding syntax is not a type:
@@ -2773,7 +3042,7 @@ export function expandMacroSyntax(
       if (
         resolvedMacro === undefined &&
         node.tag === "token" &&
-        (readsType ? !namesProperty : typeRegion || typePositionFollows(output))
+        (readsType ? !namesSomethingElse : typeRegion || typePositionHere())
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -2878,8 +3147,7 @@ export function expandMacroSyntax(
       const spaceRead = (): SyntaxCategory | undefined => {
         const next = input[index + 1];
         if (
-          namesProperty ||
-          namesMember ||
+          namesSomethingElse ||
           binderFollows(output) ||
           (next?.tag === "token" && next.raw === ":")
         )
@@ -2890,7 +3158,7 @@ export function expandMacroSyntax(
         // certainly one -- a `,` separates arguments as well as type
         // arguments. Naming the space would name the wrong one, so a name
         // that resolved nowhere is left to TypeScript here.
-        if (typeRegion || typePositionFollows(output)) return undefined;
+        if (typeRegion || typePositionHere()) return undefined;
         // An expression region is opened by `=>` among others, and a function
         // type's arrow is spelled the same way, so it says only that an
         // expression may be being written. A space is named where one
@@ -2963,8 +3231,7 @@ export function expandMacroSyntax(
        */
       if (
         resolvedMacro === undefined &&
-        !namesMember &&
-        !namesProperty &&
+        !namesSomethingElse &&
         node.tag === "token" &&
         node.kind === "identifier" &&
         !shadowsMacro(node.raw, category) &&
@@ -3175,7 +3442,20 @@ export function expandMacroSyntax(
       // Applied after every lookup, not only the first: the operator-spelling
       // fallback below matches an identifier-spelled macro too, and would
       // otherwise dispatch the very name the member is declaring.
-      if (namesMember || namesProperty) resolvedMacro = undefined;
+      if (namesSomethingElse) resolvedMacro = undefined;
+      // Recorded wherever the walk declines to read a name as an invocation,
+      // so that whatever else asks whether an invocation survived can ask the
+      // walk that would have dispatched it rather than matching spellings.
+      if (
+        resolvedMacro === undefined &&
+        node.tag === "token" &&
+        node.kind === "identifier" &&
+        (namesSomethingElse ||
+          binderFollows(output) ||
+          shadowsMacro(node.raw, "expr") ||
+          shadowsMacro(node.raw, "type"))
+      )
+        namedOrigins.add(node.origin);
       if (
         resolvedMacro !== undefined &&
         resolvedMacro.binding.kind === "macro" &&
@@ -3731,7 +4011,11 @@ export function expandMacroSyntax(
         ) {
           const children: Syntax[] = [];
           let member: Syntax[] = [];
-          const expandExpression = (syntax: readonly Syntax[]): Syntax[] => {
+          const expandExpression = (
+            syntax: readonly Syntax[],
+            /** Whether `syntax` is a whole member, whose head may name it. */
+            wholeMember = false,
+          ): Syntax[] => {
             if (syntax.length === 0) return [];
             const enforested = options.enforestExpression?.({
               syntax: createSyntaxSequence(syntax),
@@ -3749,6 +4033,7 @@ export function expandMacroSyntax(
               contexts,
               false,
               recursiveBinding,
+              wholeMember,
             );
             currentEnvironment = nested.environment;
             return [...nested.syntax];
@@ -3770,8 +4055,11 @@ export function expandMacroSyntax(
               // A property name is not an expression, but a computed one holds
               // one inside its brackets.
               const key = member.slice(0, colon + 1).map((child) => {
-                if (child.tag !== "group" || child.delimiter !== "bracket")
+                if (child.tag !== "group" || child.delimiter !== "bracket") {
+                  if (child.tag === "token" && child.kind === "identifier")
+                    namedOrigins.add(child.origin);
                   return child;
+                }
                 const nested = visit(
                   child.children,
                   currentEnvironment,
@@ -3794,7 +4082,7 @@ export function expandMacroSyntax(
                 ...expandExpression(member.slice(colon + 1)),
               );
             } else {
-              children.push(...expandExpression(member));
+              children.push(...expandExpression(member, true));
             }
             member = [];
           };
@@ -3850,6 +4138,133 @@ export function expandMacroSyntax(
           index += 1;
           continue;
         }
+        // A binding pattern names what a declaration binds. Between its
+        // brackets stand the keys of the properties it reads, the targets it
+        // binds them to -- a name, or a pattern of its own -- the default of
+        // each, and the keys computed for them. A key is a name and a target
+        // is a binder, while a default and a computed key are expressions;
+        // none of them is a type, however the `:` between a key and its target
+        // reads elsewhere. Walked as one run, the `:` opened a type and
+        // everything past it in the pattern was read as one, so a macro in a
+        // nested default or a computed key was looked up among type macros,
+        // found nowhere, and emitted verbatim.
+        if (
+          node.tag === "group" &&
+          category === "binding" &&
+          (node.delimiter === "brace" || node.delimiter === "bracket") &&
+          // A pattern stands where a binder does: at the head of its entry,
+          // after the modifiers a parameter property carries and the `...` of
+          // a rest parameter. Past the `=` of a default a brace opens an
+          // object literal or the body of the function that is one, and past
+          // the `:` of an annotation it opens an object type.
+          parameterBinder(
+            output.slice(
+              output.findLastIndex(
+                (walked) => walked.tag === "token" && walked.raw === ",",
+              ) + 1,
+            ),
+          ).length === 0
+        ) {
+          const patternContexts = contextsWithin(
+            node,
+            output,
+            input,
+            index + 1,
+            contexts,
+          );
+          const walkAs = (
+            nodes: readonly Syntax[],
+            as: SyntaxCategory,
+          ): readonly Syntax[] => {
+            if (nodes.length === 0) return [];
+            const nested = visit(
+              createSyntaxSequence(nodes),
+              currentEnvironment,
+              as,
+              parentInvocation,
+              lexicalModule,
+              patternContexts,
+              false,
+              recursiveBinding,
+            );
+            currentEnvironment = nested.environment;
+            return nested.syntax;
+          };
+          const named = (child: Syntax): Syntax => {
+            if (child.tag === "token" && child.kind === "identifier")
+              namedOrigins.add(child.origin);
+            return child;
+          };
+          const spelt = (child: Syntax | undefined, raw: string): boolean =>
+            child?.tag === "token" && child.raw === raw;
+          const expandEntry = (entry: readonly Syntax[]): readonly Syntax[] => {
+            const emitted: Syntax[] = [];
+            let at = 0;
+            if (spelt(entry[at], "...")) {
+              emitted.push(entry[at]!);
+              at += 1;
+            }
+            // The key of a property, and the `:` in front of the target it
+            // reads into. An array pattern writes no key, and a shorthand
+            // property is its own target.
+            if (node.delimiter === "brace") {
+              const colon = entry.findIndex(
+                (child, offset) => offset >= at && spelt(child, ":"),
+              );
+              for (; colon >= 0 && at <= colon; at += 1) {
+                const child = entry[at]!;
+                if (child.tag === "group" && child.delimiter === "bracket")
+                  emitted.push(
+                    createGroup({
+                      ...child,
+                      id: options.allocateSyntaxId(),
+                      children: createSyntaxSequence(
+                        walkAs(child.children, "expr"),
+                      ),
+                    }),
+                  );
+                else emitted.push(named(child));
+              }
+            }
+            // The target: a name, or a pattern of its own. Then the default,
+            // which is an expression.
+            const equals = entry.findIndex(
+              (child, offset) => offset >= at && spelt(child, "="),
+            );
+            const target = equals < 0 ? entry.length : equals;
+            for (; at < target; at += 1) {
+              const child = entry[at]!;
+              if (child.tag === "group")
+                emitted.push(...walkAs([child], "binding"));
+              else emitted.push(named(child));
+            }
+            if (equals >= 0) {
+              emitted.push(entry[equals]!);
+              emitted.push(...walkAs(entry.slice(equals + 1), "expr"));
+            }
+            return emitted;
+          };
+          const children: Syntax[] = [];
+          let entry: Syntax[] = [];
+          for (const child of node.children) {
+            if (spelt(child, ",")) {
+              children.push(...expandEntry(entry), child);
+              entry = [];
+              continue;
+            }
+            entry.push(child);
+          }
+          children.push(...expandEntry(entry));
+          output.push(
+            createGroup({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children: createSyntaxSequence(children),
+            }),
+          );
+          index += 1;
+          continue;
+        }
         // A raw brace body reached under a statement or item category is a
         // statement list. Enforesting it here assigns interior categories, so
         // an expression macro inside it is seen as an expression rather than
@@ -3874,7 +4289,10 @@ export function expandMacroSyntax(
                 (category === "expr" ||
                   category === "stmt" ||
                   category === "item" ||
-                  category === "classElement") &&
+                  category === "classElement" ||
+                  // A parameter's default may be a function, and its body is a
+                  // statement list however the parameter list is walked.
+                  category === "binding") &&
                 // A method in an object literal is written without
                 // `function`, and its body is as much a statement list. So is
                 // a class static block. A brace inside a return type is an
@@ -3928,21 +4346,38 @@ export function expandMacroSyntax(
                               node.delimiter === "parenthesis") &&
                             typeGroupFollows
                           ? "type"
-                          : node.tag === "group" &&
-                              category !== "expr" &&
-                              ((node.delimiter === "parenthesis" &&
-                                (conditionFollows(output) ||
-                                  classHeritageFollows(output))) ||
-                                initializerFollows(output) ||
-                                // An argument list, a parenthesised operand, an
-                                // index: a group reached inside an expression
-                                // region holds an expression however the
-                                // statement around it is categorized.
-                                ((node.delimiter === "parenthesis" ||
-                                  node.delimiter === "bracket") &&
-                                  expressionRegion))
-                            ? "expr"
-                            : category;
+                          : // A function's parameter list holds binders: the
+                            // patterns, the names in them, their annotations
+                            // and their defaults. A member's parameter list is
+                            // walked as tokens where the class body is, and
+                            // read as members its patterns were read as member
+                            // lists -- where a `:` opens a type, so the default
+                            // written past one never reached an expression.
+                            // Asked after the type readings, so a parenthesised
+                            // function type inside a return type stays a type.
+                            node.tag === "group" &&
+                              node.delimiter === "parenthesis" &&
+                              parameterList(output, node, input, index + 1)
+                            ? "binding"
+                            : node.tag === "group" &&
+                                category !== "expr" &&
+                                ((node.delimiter === "parenthesis" &&
+                                  (conditionFollows(output) ||
+                                    classHeritageFollows(output))) ||
+                                  initializerFollows(output) ||
+                                  // An argument list, a parenthesised operand, an
+                                  // index: a group reached inside an expression
+                                  // region holds an expression however the
+                                  // statement around it is categorized.
+                                  ((node.delimiter === "parenthesis" ||
+                                    node.delimiter === "bracket") &&
+                                    expressionRegion))
+                              ? "expr"
+                              : node.tag === "group" &&
+                                  node.delimiter === "parenthesis" &&
+                                  decoratorArgumentsFollow(output)
+                                ? "expr"
+                                : category;
         const innerContexts = contextsWithin(
           node,
           output,
@@ -4032,6 +4467,15 @@ export function expandMacroSyntax(
             innerContexts,
             false,
             recursiveBinding,
+            // A brace left in the expression space after every other reading
+            // was ruled out is an object literal, and its members are walked
+            // as the expressions they are but for the name of a method.
+            node.tag === "group" &&
+              node.delimiter === "brace" &&
+              bodyCategory === "expr",
+            node.tag === "group" &&
+              (node.delimiter === "parenthesis" ||
+                node.delimiter === "bracket"),
           );
         } finally {
           if (frame !== undefined) liftFrames.pop();
@@ -4186,5 +4630,6 @@ export function expandMacroSyntax(
     generatedModules: Object.freeze(activeModules.slice(1)),
     expansionEnvironment: activeExpansionEnvironment,
     offeredOperators,
+    namedOrigins,
   });
 }

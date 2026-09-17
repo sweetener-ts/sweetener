@@ -28,6 +28,10 @@ const macros = `
 export syntax twice:expr {
   rule { twice($value:expr) } => { [$value, $value] }
 }
+
+export syntax member:typeMember {
+  rule { member } => { readonly at: number; }
+}
 `;
 
 interface Expansion {
@@ -167,16 +171,37 @@ export function f() { return twice(2); }
     expect(diagnostics.join("\n")).toContain("Unexpected");
   });
 
-  /** When recovery does swallow an invocation, it has to say so. */
+  /**
+   * When recovery does swallow an invocation, it has to say so. A member macro
+   * written at the top of a file is one: a member list is the only place it
+   * reads, so nothing the walk asks about the position finds it and nothing
+   * else reports it.
+   */
   test("reports a macro left unexpanded by recovery", () => {
+    const { generated, diagnostics } = expand(
+      `import { member } from "./macros.sts" for syntax;
+) member;
+`,
+    );
+    expect(generated).toContain("member");
+    expect(diagnostics.join("\n")).toContain(
+      "Sweetener could not read this item, so member in it was left unexpanded",
+    );
+  });
+
+  /**
+   * A statement recovery swallowed is still a statement, and an expression
+   * macro standing as one is dispatched there as it would be anywhere else.
+   */
+  test("expands an invocation recovery swallowed but the walk could place", () => {
     const { generated, diagnostics } = expand(
       `import { twice } from "./macros.sts" for syntax;
 ) twice(1);
 `,
     );
-    expect(generated).toContain("twice(");
-    expect(diagnostics.join("\n")).toContain(
-      "Sweetener could not read this item, so twice in it was left unexpanded",
+    expect(generated).not.toContain("twice(");
+    expect(diagnostics.join("\n")).not.toContain(
+      "Sweetener could not read this item",
     );
   });
 

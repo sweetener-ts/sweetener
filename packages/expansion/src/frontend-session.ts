@@ -931,6 +931,14 @@ export function createExpansionFrontendSession(
   const reportSurvivingMacros = (
     syntax: SyntaxSequence,
     reportedAlready: readonly ExpandMacroSyntaxResult["diagnostics"][number][],
+    /**
+     * The identifiers expansion read as names rather than as macro heads. A
+     * spelling in scope is not an invocation wherever it appears: it names a
+     * property, a member, a label, or whatever a nearer binding bound. Matching
+     * the spelling alone reported every one of those as an invocation left
+     * behind, and refused files that were correct.
+     */
+    named: ReadonlySet<OriginId>,
   ): void => {
     if (recoveredMacroNames.size === 0) return;
     const reported = new Set<OriginId>();
@@ -942,6 +950,7 @@ export function createExpansionFrontendSession(
     const visit = (node: Syntax): void => {
       if (node.tag === "token") {
         if (recoveredMacroNames.get(node.origin) !== node.raw) return;
+        if (named.has(node.origin)) return;
         if (reported.has(node.origin)) return;
         if (described(originOfSyntax(node))) return;
         reported.add(node.origin);
@@ -1391,10 +1400,11 @@ export function createExpansionFrontendSession(
           };
         },
       });
-      reportSurvivingMacros(result.syntax, [
-        ...operatorDiagnostics,
-        ...result.diagnostics,
-      ]);
+      reportSurvivingMacros(
+        result.syntax,
+        [...operatorDiagnostics, ...result.diagnostics],
+        result.namedOrigins,
+      );
       reportUnexpandedOperators(
         result.syntax,
         new Set([...result.offeredOperators, ...offeredOperatorTokens]),

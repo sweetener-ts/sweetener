@@ -841,6 +841,25 @@ class StatementConsumer implements SyntaxConsumer {
         50,
       );
     }
+    // What a `break` or a `continue` names is a label, and a label is not an
+    // expression: it lives in a namespace of its own, where no binding reaches
+    // and no macro is declared. Read as an expression, a label that happened to
+    // spell a macro in scope was dispatched as one and the statement rewritten
+    // into whatever the macro produced.
+    if (keyword === "break" || keyword === "continue") {
+      const label = cursor.peek();
+      if (!separated && label?.tag === "token" && label.kind === "identifier") {
+        cursor.advance();
+        children.push(label);
+      }
+      const terminated = requireTerminator("stmt", cursor, start, children);
+      if (terminated !== undefined) return terminated;
+      return Object.freeze({
+        matched: true,
+        syntax: protect("stmt", this.options, children),
+        cursor,
+      });
+    }
     if (
       !["debugger"].includes(keyword) &&
       !separated &&

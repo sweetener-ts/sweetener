@@ -146,6 +146,23 @@ function identifier(syntax: Syntax | undefined): syntax is TokenSyntax {
   return token(syntax) && syntax.kind === "identifier";
 }
 
+/**
+ * The binder of a parameter: what stands after the modifiers a parameter
+ * property carries and after the `...` of a rest parameter. Both are written
+ * in front of an ordinary binder, and a reader handed the whole parameter
+ * finds neither an identifier nor a pattern at its head.
+ */
+export function parameterBinder(segment: readonly Syntax[]): readonly Syntax[] {
+  let offset = 0;
+  while (true) {
+    const modifier = segment[offset];
+    if (!token(modifier) || !parameterModifiers.has(modifier.raw)) break;
+    offset += 1;
+  }
+  if (token(segment[offset], "...")) offset += 1;
+  return segment.slice(offset);
+}
+
 function splitOnComma(syntax: readonly Syntax[]): readonly SyntaxSequence[] {
   const segments: Syntax[][] = [[]];
   for (const item of syntax) {
