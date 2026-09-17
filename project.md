@@ -5,8 +5,8 @@ declarative, syntax-extending macros to TypeScript while leaving type checking,
 declaration generation, JavaScript emission, and editor semantics to the official
 TypeScript compiler.
 
-The project is in its research and design phase. No implementation choices in
-these documents are permanent until the first vertical prototype tests them.
+The compiler, the command line, the editor and bundler integrations, and the
+alpha release are implemented. These documents record the design behind them.
 
 ## Working documents
 
