@@ -139,6 +139,18 @@ const definitions = `
   export syntax logit:stmt {
     rule { logit } => { console.log(1); }
   }
+  export syntax logat:stmt {
+    rule { logat($value:expr); } => { console.log($value); }
+  }
+  export syntax loosely:stmt {
+    rule { loosely } => { console.log(2) }
+  }
+  export syntax fieldy:classElement {
+    rule { fieldy } => { readonly name: string; }
+  }
+  export syntax loosefield:classElement {
+    rule { loosefield } => { readonly other: string }
+  }
 `;
 
 describe("the typeMember category", () => {
@@ -499,5 +511,149 @@ describe("an object type after the arrow of a function type", () => {
     expect(expand("const type = () => { logit };")).toBe(
       "consttype=()=>{console.log(1);};",
     );
+  });
+});
+
+/**
+ * A brace written inside a type argument list is an object type, so its body
+ * is a member list. The header before it belongs to the type argument's own
+ * head, not to the brace: reading back over an unmatched `<` reached the
+ * `class` of `class C extends make<{ timestamps }>() {}` and took the object
+ * type for a class body.
+ */
+describe("an object type in a type argument list", () => {
+  test("expands a member macro in what a class extends", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C extends make<{ timestamps }>() {}")).toBe(
+      "classCextendsmake<{readonlycreatedAt:string;readonlyupdatedAt:string;}>(){}",
+    );
+  });
+
+  test("expands a member macro in what a class implements", () => {
+    const { expand } = harness(definitions);
+    expect(expand('class C implements Pick<{ timestamps }, "a"> {}')).toBe(
+      'classCimplementsPick<{readonlycreatedAt:string;readonlyupdatedAt:string;},"a">{}',
+    );
+  });
+
+  test("expands a member macro in what a class expression extends", () => {
+    const { expand } = harness(definitions);
+    expect(expand("const K = class extends make<{ timestamps }>() {};")).toBe(
+      "constK=classextendsmake<{readonlycreatedAt:string;readonlyupdatedAt:string;}>(){};",
+    );
+  });
+
+  test("expands a member macro in a class type parameter's constraint", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C<T extends { timestamps }> {}")).toBe(
+      "classC<Textends{readonlycreatedAt:string;readonlyupdatedAt:string;}>{}",
+    );
+  });
+
+  test("expands a member macro in a call's type arguments", () => {
+    const { expand } = harness(definitions);
+    expect(expand("const row = make<{ timestamps }>();")).toBe(
+      "constrow=make<{readonlycreatedAt:string;readonlyupdatedAt:string;}>();",
+    );
+  });
+
+  test("expands a type macro in what a class extends", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C extends make<list<string>>() {}")).toBe(
+      "classCextendsmake<ReadonlyArray<string>>(){}",
+    );
+  });
+
+  test("still expands a member macro in what an interface extends", () => {
+    const { expand } = harness(definitions);
+    expect(expand('interface I extends Pick<{ timestamps }, "a"> {}')).toBe(
+      'interfaceIextendsPick<{readonlycreatedAt:string;readonlyupdatedAt:string;},"a">{}',
+    );
+  });
+
+  test("still reads the class body after such a heritage clause", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand("class C extends make<{ timestamps }>() { m() { logit } }"),
+    ).toBe(
+      "classCextendsmake<{readonlycreatedAt:string;readonlyupdatedAt:string;}>(){m(){console.log(1);}}",
+    );
+  });
+});
+
+/**
+ * The same rule holds wherever a list is written with the separator that ends
+ * each unit: an item list, a statement list and a class body separate on `;`,
+ * and a macro that terminates what it emits leaves the written `;` with
+ * nothing to terminate. It stood in the output as an empty statement or an
+ * empty class member -- legal TypeScript, but not what was written.
+ */
+describe("the separator after an item, statement or class member macro", () => {
+  test("consumes a `;` written after a statement macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { logit; }")).toBe(
+      "functionf(){console.log(1);}",
+    );
+  });
+
+  test("leaves an unseparated statement macro alone", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { logit }")).toBe(
+      "functionf(){console.log(1);}",
+    );
+  });
+
+  test("keeps the statement written after a terminated macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { logit; return 1; }")).toBe(
+      "functionf(){console.log(1);return1;}",
+    );
+  });
+
+  test("keeps the `;` that terminates an unterminated statement macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { loosely; }")).toBe(
+      "functionf(){console.log(2);}",
+    );
+  });
+
+  test("neither loses nor doubles a `;` the rule itself matched", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { logat(1); }")).toBe(
+      "functionf(){console.log(1);}",
+    );
+  });
+
+  test("keeps what follows a `;` the rule itself matched", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { logat(1); return 2; }")).toBe(
+      "functionf(){console.log(1);return2;}",
+    );
+  });
+
+  test("consumes a `;` written after a class member macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C { fieldy; other = 1; }")).toBe(
+      "classC{readonlyname:string;other=1;}",
+    );
+  });
+
+  test("leaves an unseparated class member macro alone", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C { fieldy other = 1; }")).toBe(
+      "classC{readonlyname:string;other=1;}",
+    );
+  });
+
+  test("keeps the `;` that terminates an unterminated class member macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("class C { loosefield; }")).toBe(
+      "classC{readonlyother:string;}",
+    );
+  });
+
+  test("consumes a `;` written after an item macro", () => {
+    const { expand } = harness(definitions);
+    expect(expand("nowhere;")).toBe("constgenerated=1;");
   });
 });

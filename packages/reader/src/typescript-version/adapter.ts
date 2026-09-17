@@ -241,6 +241,68 @@ function functionTypeFollows(source: string, from: number): boolean {
   return source.startsWith("=>", index);
 }
 
+/**
+ * What a region entered at a given character is closed by: the same quote, the
+ * end of the line, the end of the comment, or the matching bracket.
+ */
+type RegionEnd = "'" | '"' | "`" | "\n" | "*/" | ")" | "]" | "}";
+
+/**
+ * The index just past the region beginning at `from`: a string, a template
+ * literal, a comment, or a balanced bracket group, each of which may hold any
+ * of the others. `source.length` where the region is never closed.
+ *
+ * What is written inside one of these belongs to it, so the scan below steps
+ * over it whole rather than reading a `,`, a `<` or a `>` out of it.
+ */
+function endOfRegion(source: string, from: number): number {
+  const regions: RegionEnd[] = [];
+  let index = from;
+  while (index < source.length) {
+    const character = source[index]!;
+    const region = regions.at(-1);
+    if (region === "'" || region === '"') {
+      if (character === "\\") index += 1;
+      else if (character === region) regions.pop();
+    } else if (region === "\n") {
+      if (character === "\n") regions.pop();
+    } else if (region === "*/") {
+      if (character === "*" && source[index + 1] === "/") {
+        regions.pop();
+        index += 1;
+      }
+    } else if (region === "`") {
+      if (character === "\\") index += 1;
+      else if (character === "`") regions.pop();
+      else if (character === "$" && source[index + 1] === "{") {
+        regions.push("}");
+        index += 1;
+      }
+    } else if (character === "'" || character === '"' || character === "`") {
+      regions.push(character);
+    } else if (character === "/" && source[index + 1] === "/") {
+      regions.push("\n");
+      index += 1;
+    } else if (character === "/" && source[index + 1] === "*") {
+      regions.push("*/");
+      index += 1;
+    } else if (character === "(") regions.push(")");
+    else if (character === "[") regions.push("]");
+    else if (character === "{") regions.push("}");
+    else if (character === region) regions.pop();
+    index += 1;
+    if (regions.length === 0) return index;
+  }
+  return source.length;
+}
+
+/** Whether a comment begins at `index`. */
+function commentBegins(source: string, index: number): boolean {
+  if (source[index] !== "/") return false;
+  const next = source[index + 1];
+  return next === "/" || next === "*";
+}
+
 function looksLikeJsxStart(source: string, start: number): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
   const nameStart = start + 1;
@@ -249,9 +311,45 @@ function looksLikeJsxStart(source: string, start: number): boolean {
   // A comma or an `extends` before the closing `>` means type parameters:
   // `<T,>` and `<T extends U>` are the two spellings that are unambiguous in
   // TSX, and neither is an element.
+  //
+  // Only what is written directly inside this `<` says that. A comma nested in
+  // the tag's own type arguments -- `<Comp<A, B> />`, `<Comp<Map<K, V>> />` --
+  // or one inside an attribute value, a string or a comment is a comma of that
+  // region, and reading it as the `<T,>` of a generic arrow left the element
+  // ungrouped: its tag became a run of loose tokens that nothing walked.
+  let angles = 0;
   for (let index = nameStart + 1; index < source.length; index += 1) {
     const character = source[index]!;
-    if (character === ">") return !functionTypeFollows(source, index + 1);
+    if (
+      character === "'" ||
+      character === '"' ||
+      character === "`" ||
+      character === "(" ||
+      character === "[" ||
+      character === "{" ||
+      commentBegins(source, index)
+    ) {
+      index = endOfRegion(source, index) - 1;
+      continue;
+    }
+    // The `>` of an arrow written among the type arguments closes nothing:
+    // `<Comp<(v: T) => U> />`.
+    if (character === "=" && source[index + 1] === ">") {
+      index += 1;
+      continue;
+    }
+    if (character === "<") {
+      angles += 1;
+      continue;
+    }
+    if (character === ">") {
+      if (angles > 0) {
+        angles -= 1;
+        continue;
+      }
+      return !functionTypeFollows(source, index + 1);
+    }
+    if (angles > 0) continue;
     if (character === ",") return false;
     if (
       character === "e" &&
@@ -348,6 +446,12 @@ export function scanWithSupportedTypeScript(
     const scanStart = scanner.getTextPos();
     const errorsBeforeScan = errors.length;
     const modeBeforeScan = jsxMode;
+    // A tag's type arguments are a type argument list, not tag syntax: what
+    // is written inside them is scanned as it would be anywhere else, so
+    // `<Comp<list<string>> />` names `list` with an ordinary identifier. Only
+    // the `<` and `>` that delimit them stay tag syntax, which is how the
+    // delimiter reader tells them from a nested element.
+    const insideTypeArguments = jsxMode === "tag" && typeArgumentDepth > 0;
     let kind: ts.SyntaxKind;
     if (jsxMode === "text") {
       kind = scanner.scanJsxToken();
@@ -368,7 +472,11 @@ export function scanWithSupportedTypeScript(
         ) {
           errors.splice(errorsBeforeScan);
         }
-      } else if (jsxMode === "tag" && kind === ts.SyntaxKind.Identifier) {
+      } else if (
+        jsxMode === "tag" &&
+        !insideTypeArguments &&
+        kind === ts.SyntaxKind.Identifier
+      ) {
         kind = scanner.scanJsxIdentifier();
       } else if (
         (jsxMode === "standard" || jsxMode === "expression") &&
@@ -484,6 +592,15 @@ export function scanWithSupportedTypeScript(
           jsxExpressionBraceDepth[expressionIndex] = depth - 1;
         }
       }
+    }
+
+    if (
+      insideTypeArguments &&
+      modeForToken === "tag" &&
+      kind !== ts.SyntaxKind.LessThanToken &&
+      closingAngleWidth(kind) === 0
+    ) {
+      modeForToken = "standard";
     }
 
     const lexicalMode = tokenLexicalMode(kind, modeForToken);

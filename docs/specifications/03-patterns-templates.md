@@ -106,6 +106,11 @@ dimensions: `$methods.name` has the same outer dimension as `$methods`.
   a clause is not reduced to the class not matching where it began. The words
   used are those of the innermost class or rule with an `expect` clause that
   was reading at that position.
+- A macro name written with nothing after it was offered no syntax for any rule
+  to read, and is reported as a name rather than as a failed match: what is
+  written there is a reference to a compile-time name, which the emitted code
+  does not define, rather than an invocation some rule wanted written
+  differently.
 - A syntax-class rule follows the same ordered policy.
 - The definition compiler warns when it proves a later rule unreachable.
 - Authors MUST mark low-priority catch-all behavior with `fallback rule`.

@@ -67,7 +67,7 @@ export syntax query:expr {
 }
 `;
 
-function diagnose(source: string) {
+function diagnose(source: string, code = 4001) {
   const directory = mkdtempSync(join(tmpdir(), "sweet-failure-position-"));
   const text = `import { query } from "./macros.sts" for syntax;\ndeclare const db: unknown;\ndeclare const users: unknown;\ndeclare const minAge: number;\n${source}\n`;
   writeFileSync(join(directory, "macros.sts"), macros);
@@ -84,7 +84,7 @@ function diagnose(source: string) {
     loadSweetProject(join(directory, "tsconfig.json")),
   );
   return expanded.diagnostics
-    .filter(({ code }) => code === 4001)
+    .filter((diagnostic) => diagnostic.code === code)
     .map(({ start, messageText }) => ({
       at: text.slice(start ?? 0, (start ?? 0) + 12),
       message: String(messageText),
@@ -149,5 +149,64 @@ describe("a macro no rule accepts is reported at the mistake", () => {
           "No rule for macro query accepted this input: from, then any of join, where and limit, in that order.",
       },
     ]);
+  });
+});
+
+/**
+ * A macro name written with nothing after it was offered no syntax at all, so
+ * no rule could read even its head. Reported as a failed match it read as the
+ * macro's own fault -- "expected a parenthesised group" -- for code that never
+ * meant to invoke it; what is wrong is that the name itself is not something
+ * the emitted code defines.
+ */
+describe("a macro name written on its own", () => {
+  const message =
+    "Macro query is written here as a name on its own, where an expr is read. " +
+    "A macro is a compile-time name, so nothing defines query in the emitted code. " +
+    "Write an invocation its rules accept.";
+
+  const bare: readonly (readonly [string, string])[] = [
+    ["in an array literal", "export const q = [query];"],
+    ["as an argument", "export const q = String(query);"],
+    ["as an initializer", "export const q = query;"],
+    [
+      "in an export clause",
+      "const query2 = 1;\nexport { query2 as a, query };",
+    ],
+    ["as an object literal shorthand", "export const q = { query };"],
+  ];
+  for (const [name, source] of bare) {
+    test(`${name} is reported as a name, not as a failed match`, () => {
+      const reported = diagnose(source, 4024);
+      expect(reported).toHaveLength(1);
+      // Reported at the name, which is the whole of what was written.
+      expect(reported[0]?.at.startsWith("query")).toBe(true);
+      expect(reported[0]?.message).toBe(message);
+      expect(diagnose(source)).toEqual([]);
+    });
+  }
+
+  test("a malformed invocation is still reported as a failed match", () => {
+    const reported = diagnose("export const q = query(db) { limit 20 };");
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.message).toContain("No rule for macro query accepted");
+    expect(diagnose("export const q = query(db) { limit 20 };", 4024)).toEqual(
+      [],
+    );
+  });
+
+  test("a name that only shares the spelling is left alone", () => {
+    expect(
+      diagnose(
+        "export const o = { query: 1 };\nexport const r = o.query;",
+        4024,
+      ),
+    ).toEqual([]);
+  });
+
+  test("an invocation a rule accepts still expands", () => {
+    expect(
+      diagnose("export const q = query(db) { from users };", 4024),
+    ).toEqual([]);
   });
 });

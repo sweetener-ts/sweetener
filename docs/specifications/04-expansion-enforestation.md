@@ -69,6 +69,21 @@ resolves to no `typeMember` macro but does resolve in another category is
 reported rather than emitted verbatim, because a leftover name there becomes an
 implicitly-typed member rather than a syntax error.
 
+A brace written among type arguments is an object type wherever it stands, so
+its body is a member run: `class C extends make<{ timestamps }>() {}` reads
+`timestamps` as a member, not as a class element, however the declaration
+around the type arguments is written. The type arguments of a JSX tag are read
+as types for the same reason, so a `type` macro in `<Comp<list<string>> />`
+expands there, while what follows them is read as the attributes of the tag
+they belong to.
+
+An item list, a statement list, a class body and a member run are each written
+with a separator that ends every unit: `;` throughout, and `,` as well in a
+member run. A macro invocation spans the separator written after it, and that
+separator is kept only where it terminates a unit the macro left open. A macro
+that terminates what it emits therefore leaves behind no empty statement,
+empty class member, or member of its own.
+
 ## 4. `expandOne` algorithm
 
 ```text

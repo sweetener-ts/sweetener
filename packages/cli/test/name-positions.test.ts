@@ -42,7 +42,7 @@ function expand(source: string, module = "ESNext"): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "other.ts"),
-    "export const twice = 3;\nexport type boxed = number;\nexport const boxed = 4;\n",
+    "export const twice = 3;\nexport type boxed = number;\nexport const boxed = 4;\nconst fallback = 5;\nexport default fallback;\n",
   );
   writeFileSync(
     join(directory, "main.sts"),
@@ -112,6 +112,54 @@ describe("a name that shadows a macro", () => {
         "CommonJS",
       ).messages,
     ).toEqual([]);
+  });
+
+  /**
+   * `import type ...` writes a modifier where a binding otherwise stands, and
+   * the name after it is still what the clause binds. Read as the `type` of a
+   * type alias, the clause bound the name in the type namespace alone, so a
+   * value macro of that spelling was still dispatched on a name the file had
+   * imported for itself. What that name may be used for afterwards is
+   * TypeScript's to report; rewriting it here is not.
+   */
+  const typeOnlyImports: readonly (readonly [string, string])[] = [
+    ["a default binding", 'import type twice from "./other.js";'],
+    ["a named specifier", 'import type { twice } from "./other.js";'],
+    [
+      "a renamed specifier",
+      'import type { boxed as twice } from "./other.js";',
+    ],
+    ["a namespace binding", 'import type * as twice from "./other.js";'],
+    [
+      "a default binding beside a named one",
+      'import type twice, { boxed } from "./other.js";',
+    ],
+  ];
+  for (const [name, clause] of typeOnlyImports) {
+    test(`a type-only import with ${name} is not dispatched as one`, () => {
+      const { text, messages } = expand(`${clause}\nexport const p = twice;`);
+      expect(messages).toEqual([]);
+      expect(text).toContain("p = twice");
+    });
+  }
+
+  test.each([
+    ["on its own", "type boxed = number;"],
+    [
+      "after an import",
+      'import fallback from "./other.js";\nvoid fallback;\ntype boxed = number;',
+    ],
+    [
+      "after a type-only import",
+      'import type fallback from "./other.js";\ntype boxed = number;',
+    ],
+  ])("a type alias %s still declares its name", (_, source) => {
+    // The `type` of an alias is what names it; only the `type` of an import
+    // clause is a modifier.
+    const { text, messages } = expand(`${source}\nexport type P = boxed;`);
+    expect(messages).toEqual([]);
+    expect(text).toContain("P = boxed");
+    expect(text).not.toContain("readonly number[]");
   });
 
   test("an import is a type as well as a value", () => {

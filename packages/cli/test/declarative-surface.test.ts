@@ -2174,3 +2174,169 @@ export const total: number = call(twice, 3);
     expect(compact).not.toContain("(twice(3))");
   });
 });
+
+describe("JSX tag type arguments", () => {
+  /** Components are values here, so a generic element has something to name. */
+  const runtime = `export function h(
+  tag: unknown,
+  props: Readonly<Record<string, unknown>> | null,
+  ...children: readonly unknown[]
+): unknown {
+  return { tag, props, children };
+}
+export const Fragment = "fragment";
+declare global {
+  namespace JSX {
+    type Element = unknown;
+    type ElementType = string | ((props: never) => unknown);
+    interface IntrinsicElements {
+      readonly [tag: string]: unknown;
+    }
+    interface ElementAttributesProperty {
+      readonly props: unknown;
+    }
+  }
+}`;
+
+  const components = `export function Comp<T>(props: {
+         readonly value?: readonly T[];
+       }): unknown {
+         return h("div", props);
+       }
+       export const Ns = { Comp };
+       export function Two<A, B>(props: {
+         readonly a: A;
+         readonly b: B;
+       }): unknown {
+         return h("div", props);
+       }`;
+
+  const listMacro = `export syntax list:type {
+       rule { list<$element:type> } => { readonly $element[] }
+     }`;
+
+  test.each([
+    ["a self-closing element", "<Comp<list<string>> value={[]} />"],
+    ["an element with children", '<Comp<list<string>>>{"x"}</Comp>'],
+    ["a member-expression tag", "<Ns.Comp<list<string>> value={[]} />"],
+  ])("expands a type macro in %s", (_, element) => {
+    const { text, messages } = expand(
+      listMacro,
+      `import { list } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       void Fragment;
+       ${components}
+       export const element = ${element};`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).not.toContain("list<");
+    expect(text).toContain("readonly string[]");
+  });
+
+  test("expands a type macro in a fragment-wrapped element", () => {
+    const { text, messages } = expand(
+      listMacro,
+      `import { list } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       ${components}
+       export const element = (
+         <>
+           <Comp<list<string>> value={[]} />
+         </>
+       );`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).not.toContain("list<");
+    expect(text).toContain("readonly string[]");
+  });
+
+  test("expands a type macro among several type arguments", () => {
+    const { text, messages } = expand(
+      listMacro,
+      `import { list } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       void Fragment;
+       ${components}
+       export const element = <Two<list<string>, number> a={[]} b={1} />;`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).not.toContain("list<");
+    expect(text).toContain("readonly string[]");
+  });
+
+  test("still expands an attribute and a child of a generic element", () => {
+    const { text, messages } = expand(
+      `export syntax twice:expr {
+         rule { twice($value:expr) } => { [$value, $value] }
+       }`,
+      `import { twice } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       void Fragment;
+       export function Comp<T>(props: {
+         readonly value?: readonly T[];
+       }): unknown {
+         return h("div", props);
+       }
+       export const element = (
+         <Comp<number> value={twice(1)}>{twice(2)}</Comp>
+       );`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("value={[1, 1]}");
+    expect(text).toContain(">{[2, 2]}<");
+  });
+
+  test("reads a generic element's attributes as its tag, not as children", () => {
+    // The `>` that closes the type arguments is not the one that ends the
+    // tag. Taking it as the tag's end walked the attributes after it as JSX
+    // children, where a child macro named like an attribute was dispatched.
+    const { text, messages } = expand(
+      `export syntax value:jsxChild {
+         rule { value } => { {"dispatched"} }
+       }`,
+      `import { value } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       void Fragment;
+       export function Comp<T>(props: {
+         readonly value?: readonly T[];
+       }): unknown {
+         return h("div", props);
+       }
+       export const element = <Comp<number> value={[]} />;`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).not.toContain("dispatched");
+    expect(text).toContain("value={[]}");
+  });
+
+  test("reads an element whose attributes hold a comma as an element", () => {
+    // A child macro is only ever dispatched inside an element, so its
+    // expansion is what says the element was read as one. A comma in an
+    // attribute value or an attribute string used to read as the `<T,>` of a
+    // generic arrow, which left the whole element as loose tokens.
+    const { text, messages } = expand(
+      `export syntax twice:jsxChild {
+         rule { {twice} $body:jsxChild {end} } => { $body $body }
+       }`,
+      `import { twice } from "./macros.sts" for syntax;
+       import { Fragment, h } from "./jsx-runtime.js";
+       void Fragment;
+       export const element = (
+         <div data-pair={[1, 2]} data-name="a, b">
+           {twice}
+           <span>x</span>
+           {end}
+         </div>
+       );`,
+      { runtime },
+    );
+    expect(messages).toEqual([]);
+    expect(text).not.toContain("{twice}");
+    expect(text.match(/<span>x<\/span>/gu)).toHaveLength(2);
+  });
+});

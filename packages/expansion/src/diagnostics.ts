@@ -23,6 +23,7 @@ export const unreadableSyntaxCode = diagnosticCode("SWR4020");
 export const unexpandedOperatorCode = diagnosticCode("SWR4021");
 export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
 export const uncopiableClosureCode = diagnosticCode("SWR4023");
+export const bareMacroNameCode = diagnosticCode("SWR4024");
 
 /**
  * The indefinite article for a space's name. The spaces a macro can be
@@ -173,6 +174,16 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "One module may define a macro name only once, and may export it for only one syntax category.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} is already defined in this module: ${String(arguments_[1] ?? "a second definition")}.`,
+  },
+  {
+    code: bareMacroNameCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A macro name stands for the rules that expand where it is written, not for anything the emitted code defines. Written on its own, with nothing after it for any rule to match, it is a reference to a name that its compile-time import does not leave behind -- which is what is wrong, rather than that the closest rule wanted different syntax there.",
+    format: (arguments_) =>
+      `Macro ${String(arguments_[0] ?? "unknown")} is written here as a name on its own, where ${article(String(arguments_[1] ?? "node"))} ${String(arguments_[1] ?? "node")} is read. A macro is a compile-time name, so nothing defines ${String(arguments_[0] ?? "unknown")} in the emitted code. Write an invocation its rules accept.`,
   },
   {
     code: noMatchingMacroRuleCode,

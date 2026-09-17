@@ -51,6 +51,7 @@ import {
   typeOperandFollows,
 } from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
+import { separatesList } from "./macro-extent.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
 import {
@@ -233,9 +234,54 @@ function punctuationSpelled(spelling: string): boolean {
   return !/^[\p{ID_Start}_$]/u.test(spelling);
 }
 
-/** Whether a node is one of the two tokens that separate type members. */
-function separatorSpelled(node: Syntax | undefined): boolean {
-  return node?.tag === "token" && (node.raw === ";" || node.raw === ",");
+interface JsxTagShape {
+  /**
+   * Where the `>` that ends the opening tag is written, as an index into the
+   * element's children, or -1 where the element is self-closing and its `>`
+   * is the group's own closer.
+   */
+  readonly tagEnd: number;
+  /**
+   * Where the tag's type arguments are written: the index of their `<` and of
+   * the `>` that matches it.
+   */
+  readonly typeArguments:
+    { readonly from: number; readonly to: number } | undefined;
+}
+
+/**
+ * How a JSX element's opening tag is laid out among the element's children.
+ *
+ * A generic element's type arguments carry `>` of their own --
+ * `<Comp<Map<K, V>> value={1} />` -- and the first of them is not what ends
+ * the tag. Reading it as the end walked the attributes after it as children,
+ * and left the type arguments themselves in the tag region, where nothing
+ * looked at them: a type macro written there was never expanded.
+ */
+function jsxTagShape(children: readonly Syntax[]): JsxTagShape {
+  let depth = 0;
+  let opened = -1;
+  let typeArguments: { readonly from: number; readonly to: number } | undefined;
+  for (let at = 0; at < children.length; at += 1) {
+    const child = children[at];
+    if (child?.tag !== "token") continue;
+    if (child.raw === "<") {
+      if (depth === 0) opened = at;
+      depth += 1;
+      continue;
+    }
+    if (child.raw === ">") {
+      if (depth === 0) return { tagEnd: at, typeArguments };
+      depth -= 1;
+      if (depth === 0 && typeArguments === undefined)
+        typeArguments = { from: opened, to: at };
+      continue;
+    }
+    // A closing tag holds no type arguments, so nothing beyond it is the
+    // opening tag's.
+    if (child.raw === "</") break;
+  }
+  return { tagEnd: -1, typeArguments };
 }
 
 /**
@@ -1031,6 +1077,40 @@ export function expandMacroSyntax(
           addBinders(bindingSegments(nodes.slice(at + 1)), values);
           continue;
         }
+        // An import clause is read by the clause reader below. The `type` of
+        // `import type name from "m"` is a modifier of the clause, and reading
+        // it as the `type` of an alias bound `name` in the type namespace
+        // alone -- which is how the clause came to shadow a macro at all, and
+        // why it shadowed only a type one.
+        if (inImport) {
+          // `import name from`, `import name, { ... } from` and
+          // `import name = require(...)` all bind the name written straight
+          // after the keyword, while `import * as name` binds the one after
+          // `as`. `import type ...` writes its modifier where that name
+          // otherwise stands, and the clause's own binding is the one after
+          // it. The word is the local name itself where what follows it
+          // cannot follow a modifier: `import type from "m"`,
+          // `import type = require("m")`, `import type, { a } from "m"`.
+          const previous = nodes[at - 1];
+          const first = nodes[0];
+          const second = nodes[1];
+          const modifier =
+            first?.tag === "token" &&
+            first.raw === "type" &&
+            !(
+              second?.tag === "token" &&
+              (second.raw === "from" ||
+                second.raw === "=" ||
+                second.raw === ",")
+            );
+          if (
+            node.kind === "identifier" &&
+            (at === (modifier ? 1 : 0) ||
+              (previous?.tag === "token" && previous.raw === "as"))
+          )
+            importName(node.raw);
+          continue;
+        }
         const named = namedDeclarations.get(node.raw);
         if (named !== undefined) {
           const name = nodes[at + 1];
@@ -1043,30 +1123,6 @@ export function expandMacroSyntax(
         if (node.raw === "import") {
           collect(nodes.slice(at + 1), true, nested);
           return;
-        }
-        if (inImport) {
-          // `import name from`, `import name, { ... } from` and
-          // `import name = require(...)` all bind the name written straight
-          // after the keyword, while `import * as name` binds the one after
-          // `as`. The `type` of `import type ...` is a modifier and names
-          // nothing, unless what follows it makes it the local name itself.
-          const previous = nodes[at - 1];
-          const following = nodes[at + 1];
-          const heads =
-            at === 0 &&
-            !(
-              node.raw === "type" &&
-              following?.tag === "token" &&
-              following.raw !== "from" &&
-              following.raw !== "=" &&
-              following.raw !== ","
-            );
-          if (
-            node.kind === "identifier" &&
-            (heads || (previous?.tag === "token" && previous.raw === "as"))
-          )
-            importName(node.raw);
-          continue;
         }
         // An arrow's single parameter is written without parentheses.
         const following = nodes[at + 1];
@@ -1607,8 +1663,19 @@ export function expandMacroSyntax(
       const node = preceding[at]!;
       if (node.tag === "token") {
         typeArguments += angles(node, ">");
-        typeArguments = Math.max(0, typeArguments - angles(node, "<"));
-        if (typeArguments > 0 || angles(node, "<") > 0) continue;
+        const opens = angles(node, "<");
+        if (opens > 0) {
+          // A `<` with no `>` of its own behind the brace encloses it: the
+          // brace is written among type arguments, where it is an object
+          // type and its body is a member list. What stands before that `<`
+          // heads the type reference and says nothing about the brace, so
+          // reading on reached the `class` of `class C extends
+          // make<{ a: 1 }>() {}` and took the object type for a class body.
+          if (opens > typeArguments) return interfaceBrace;
+          typeArguments -= opens;
+          continue;
+        }
+        if (typeArguments > 0) continue;
         if (node.raw === "class") return classBrace;
         // An interface body is a member list, and so is an object type
         // written in what the interface extends: `interface I extends
@@ -3844,18 +3911,19 @@ export function expandMacroSyntax(
           ]);
         }
         index = result.cursor.index;
-        // A member list separates on `;` or `,`, and a member macro that emits
-        // whole members terminates the last one itself. The separator written
-        // after such an invocation then terminates nothing, and standing in
-        // the output it reads as a member of its own -- which TypeScript
-        // reports as a missing property or signature. It is dropped where the
-        // replacement already carries one, and kept where it is what
-        // terminates the single member the macro emitted.
+        // A list of members, items, statements or class elements separates on
+        // a token of its own, and a macro that emits whole units terminates
+        // the last one itself. The separator written after such an invocation
+        // then terminates nothing, and standing in the output it reads as a
+        // unit of its own: a member list reports a missing property or
+        // signature, and a statement list or a class body is left with an
+        // empty statement or an empty member. An invocation spans the
+        // separator written after it, kept only where it terminates something
+        // the macro left open.
         if (
-          resolvedCategory === "typeMember" &&
           !eraseReplacement &&
-          separatorSpelled(lastTokenOf(result.syntax)) &&
-          separatorSpelled(input[index])
+          separatesList(lastTokenOf(result.syntax), resolvedCategory) &&
+          separatesList(input[index], resolvedCategory)
         )
           index += 1;
         continue;
@@ -3868,14 +3936,13 @@ export function expandMacroSyntax(
         ) {
           // An element's children begin after its opening tag closes and end
           // at its closing tag. Everything before that is the tag itself,
-          // whose attribute braces hold expressions.
-          const childStart = node.children.findIndex(
-            (child) => child.tag === "token" && child.raw === ">",
-          );
+          // whose attribute braces hold expressions and whose type arguments
+          // hold types.
+          const tag = jsxTagShape(node.children);
           const childEnd = node.children.findIndex(
             (child) => child.tag === "token" && child.raw === "</",
           );
-          const head = childStart < 0 ? node.children.length : childStart + 1;
+          const head = tag.tagEnd < 0 ? node.children.length : tag.tagEnd + 1;
           const tail = childEnd < 0 ? node.children.length : childEnd;
           const expandChild = (child: Syntax): readonly Syntax[] => {
             if (
@@ -3898,9 +3965,35 @@ export function expandMacroSyntax(
             currentEnvironment = nested.environment;
             return nested.syntax;
           };
-          const jsxChildren: Syntax[] = [
-            ...node.children.slice(0, head).flatMap(expandChild),
-          ];
+          const jsxChildren: Syntax[] = [];
+          if (tag.typeArguments === undefined) {
+            jsxChildren.push(
+              ...node.children.slice(0, head).flatMap(expandChild),
+            );
+          } else {
+            const { from, to } = tag.typeArguments;
+            jsxChildren.push(
+              ...node.children.slice(0, from + 1).flatMap(expandChild),
+            );
+            // A generic element's type arguments are types, and a type macro
+            // written among them resolves there like one written in any other
+            // type argument list.
+            const nested = visit(
+              createSyntaxSequence(node.children.slice(from + 1, to)),
+              currentEnvironment,
+              "type",
+              parentInvocation,
+              lexicalModule,
+              contexts,
+              false,
+              recursiveBinding,
+            );
+            currentEnvironment = nested.environment;
+            jsxChildren.push(...nested.syntax);
+            jsxChildren.push(
+              ...node.children.slice(to, head).flatMap(expandChild),
+            );
+          }
           if (head < tail) {
             // The children are walked as one sequence so a macro invocation
             // can span several of them, the way a block form does.

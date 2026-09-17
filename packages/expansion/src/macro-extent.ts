@@ -9,6 +9,8 @@ import {
   createProtectedSyntax,
   spanEnvelope,
   type OriginStore,
+  type Syntax,
+  type SyntaxCategory,
   type SyntaxCursor,
 } from "@sweetener/syntax";
 import type { SyntaxId } from "@sweetener/shared";
@@ -124,24 +126,46 @@ function protectedExtent(
 }
 
 /**
- * A cursor past the separator the type member a macro claimed is written with.
+ * What separates one written unit of a list from the next, by the category
+ * the list holds. A member list separates on `;` or `,`; an item list, a
+ * statement list and a class body separate on `;` alone. A category that
+ * names no list of its own is written with no separator at all.
+ */
+const listSeparators = new Map<SyntaxCategory, ReadonlySet<string>>([
+  ["typeMember", new Set([";", ","])],
+  ["item", new Set([";"])],
+  ["stmt", new Set([";"])],
+  ["classElement", new Set([";"])],
+]);
+
+/** Whether a node is a token that separates one unit of such a list. */
+export function separatesList(
+  node: Syntax | undefined,
+  category: SyntaxCategory,
+): boolean {
+  return (
+    node?.tag === "token" &&
+    (listSeparators.get(category)?.has(node.raw) ?? false)
+  );
+}
+
+/**
+ * A cursor past the separator the unit a macro claimed is written with.
  *
- * A member list separates on `;` or `,`, and a member macro commonly emits
- * whole members, terminating the last one itself. The separator written after
- * such an invocation then terminates nothing: left outside the extent it stood
- * in the output as a member of its own, which TypeScript reports as a missing
- * property or signature. It belongs to the invocation the way a statement's
- * terminator belongs to the statement, so the extent spans it and expansion
- * decides whether one is still needed.
+ * A list separates on a token of its own, and a macro commonly emits whole
+ * units, terminating the last one itself. The separator written after such an
+ * invocation then terminates nothing: left outside the extent it stood in the
+ * output as a unit of its own -- a member list reports a missing property or
+ * signature, and a statement list or a class body is left with an empty
+ * statement or an empty member. It belongs to the invocation the way a
+ * statement's terminator belongs to the statement, so the extent spans it and
+ * expansion decides whether one is still needed.
  */
 function pastSeparator(
   category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
   end: SyntaxCursor,
 ): SyntaxCursor {
-  if (category !== "typeMember") return end;
-  const next = end.peek();
-  if (next?.tag !== "token" || (next.raw !== ";" && next.raw !== ","))
-    return end;
+  if (!separatesList(end.peek(), category)) return end;
   const past = end.fork();
   past.advance();
   return past;

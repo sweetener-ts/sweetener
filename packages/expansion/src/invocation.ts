@@ -58,6 +58,7 @@ import {
 } from "@sweetener/template";
 import { EnforestationError } from "./enforestation-error.js";
 import {
+  bareMacroNameCode,
   expansionDiagnosticRegistry,
   noMatchingMacroRuleCode,
   uncategorizedExpansionCode,
@@ -300,6 +301,12 @@ export function invokeMacro(
   const attempts: RuleAttemptTrace[] = [];
   const failures: MatchFailure[] = [];
   const startRange = options.cursor.remainingRange();
+  /**
+   * Whether any rule's pattern matched, whatever refused it afterwards. A
+   * name no rule could even begin to read is a name, not an invocation some
+   * rule wanted written differently.
+   */
+  let anyRuleMatched = false;
 
   for (const rule of orderedRules(options.macro.rules)) {
     cancellation.throwIfCancellationRequested();
@@ -330,6 +337,7 @@ export function invokeMacro(
       );
       continue;
     }
+    anyRuleMatched = true;
     // A rule's `refine` clauses narrow what it accepts beyond what its pattern
     // can say -- how a captured name is spelled, which delimiter surrounded a
     // capture, how many times a repetition ran. A rule whose refinements fail
@@ -615,6 +623,29 @@ export function invokeMacro(
     cache: "miss",
     coreInterception: options.coreInterception,
   });
+  // A macro name with nothing written after it was offered no syntax at all,
+  // and no rule read even its head. That is not a malformed invocation: the
+  // name stands on its own, as a reference to something the emitted code does
+  // not define, and reporting it as a failed match blamed the macro for
+  // wanting syntax the author never meant to write.
+  if (
+    !anyRuleMatched &&
+    invocationHead.tag === "token" &&
+    (invocationHead.kind === "identifier" ||
+      invocationHead.kind === "jsx-identifier" ||
+      invocationHead.kind === "keyword") &&
+    options.cursor.peek(1) === undefined
+  ) {
+    return Object.freeze({
+      expanded: false,
+      cursor: options.cursor.fork(),
+      diagnostic: expansionDiagnosticRegistry.create(bareMacroNameCode, {
+        primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
+        messageArguments: [options.macro.binding.spelling, options.category],
+      }),
+      trace,
+    });
+  }
   return Object.freeze({
     expanded: false,
     cursor: options.cursor.fork(),

@@ -53,6 +53,61 @@ describe("generic JSX elements", () => {
     expect(printLossless(result.root)).toBe(source);
   });
 
+  /**
+   * A `,` decides between an element and a type parameter list only where it
+   * is written directly inside the `<`. One inside the tag's own type
+   * arguments, inside an attribute value, or inside a string is a comma of
+   * that region, and reading it as the `<T,>` of a generic arrow left the
+   * element ungrouped: its tag became a run of loose tokens, so nothing in it
+   * was ever walked as a tag.
+   */
+  it.each([
+    ["two type arguments", "const x = <Comp<A, B> value={1} />;\n"],
+    [
+      "a comma nested in the type arguments",
+      "const x = <Comp<Map<string, number>> value={1} />;\n",
+    ],
+    ["a comma in an attribute value", "const x = <Comp value={[1, 2]} />;\n"],
+    ["a comma in an attribute string", 'const x = <Comp name="a, b" />;\n'],
+    [
+      "two type arguments on a member tag",
+      "const x = <Ns.Comp<A, B> value={1} />;\n",
+    ],
+  ])("groups an element with %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.some(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * The same `,` and `extends`, written directly inside the `<`, are still
+   * what says a generic arrow is not an element.
+   */
+  it.each([
+    ["a trailing comma", "const f = <T,>(v: T) => v;\n"],
+    ["a trailing comma and a return type", "const f = <T,>(v: T): T => v;\n"],
+    ["a constraint", "const f = <T extends string>(v: T) => v;\n"],
+    [
+      "a constraint and a return type",
+      "const f = <T extends string>(v: T): T => v;\n",
+    ],
+    ["two parameters", "const f = <T, U>(v: T, w: U) => v;\n"],
+  ])("still reads a generic arrow with %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.some(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toBe(false);
+  });
+
   it("still reads an element whose text begins with a parenthesis", () => {
     for (const source of [
       "const x = <div>(text)</div>;\n",
