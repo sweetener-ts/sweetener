@@ -80,7 +80,7 @@ function harness(definitionText: string) {
     allocateBindingId: bindingIds.allocate,
     allocateInvocationId: invocationIds.allocate,
   });
-  return (source: string, category: "expr" | "stmt" | "item" | "type") => {
+  const run = (source: string, category: "expr" | "stmt" | "item" | "type") => {
     const read = readSyntax(source, {
       sourceId: invocationSource,
       scopes: scopes.singleton(scopes.freshScope("lexical", "nested-use")),
@@ -88,9 +88,16 @@ function harness(definitionText: string) {
     });
     expect(read.diagnostics).toEqual([]);
     const result = session.expand(withoutEof(read.root.children), category);
-    expect(result.diagnostics).toEqual([]);
-    return compact(result.syntax);
+    return { text: compact(result.syntax), diagnostics: result.diagnostics };
   };
+  return Object.assign(
+    (source: string, category: "expr" | "stmt" | "item" | "type") => {
+      const { text, diagnostics } = run(source, category);
+      expect(diagnostics).toEqual([]);
+      return text;
+    },
+    { run },
+  );
 }
 
 /**
@@ -686,10 +693,19 @@ describe("an ordinary binding shadows a macro", () => {
     );
   });
 
-  /** `type A = name;` reads a type, so no expression macro is looked up there. */
-  test("does not dispatch an expression macro in a type alias", () => {
+  /**
+   * `type A = name;` reads a type, so no expression macro is looked up there.
+   * The name is a macro of another space rather than a type nobody declared,
+   * so the mismatch is reported here instead of reaching TypeScript as a name
+   * it cannot find.
+   */
+  test("reports an expression macro written in a type alias", () => {
     const expand = harness(definitions);
-    expect(expand("export type A = twice;", "item")).toBe("exporttypeA=twice;");
+    const { text, diagnostics } = expand.run("export type A = twice;", "item");
+    expect(text).toBe("exporttypeA=twice;");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.code).toBe("SWR4013");
+    expect(diagnostics[0]?.messageArguments).toEqual(["twice", "expr", "type"]);
   });
 });
 

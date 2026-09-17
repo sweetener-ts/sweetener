@@ -727,8 +727,18 @@ export function createExpansionFrontendSession(
         // captured expression spliced into a template would re-associate
         // against the template's own operators: `$v * 2` with `$v` bound to
         // `1 + 2` would emit `1 + 2 * 2` and compute 5 rather than 6.
+        //
+        // A type has its own operators and its own precedence, and the same
+        // thing happens there: `$t[]` with `$t` bound to `string | number`
+        // emitted `string | number[]`, an array of `number` unioned with
+        // `string`. That one type-checks, so nothing at all is reported.
+        // Whether the boundary is then printed as parentheses is the
+        // printer's question, and it asks it of an expansion's own syntax the
+        // same way.
         const syntax =
-          attempted.syntax.category === "expr" && raw.length > 1
+          (attempted.syntax.category === "expr" ||
+            attempted.syntax.category === "type") &&
+          raw.length > 1
             ? [attempted.syntax]
             : raw;
         return Object.freeze({

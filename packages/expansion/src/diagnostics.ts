@@ -24,6 +24,15 @@ export const unexpandedOperatorCode = diagnosticCode("SWR4021");
 export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
 export const uncopiableClosureCode = diagnosticCode("SWR4023");
 
+/**
+ * The indefinite article for a space's name. The spaces a macro can be
+ * declared for include `expr` and `item`, and "a expr is read" is not a
+ * sentence.
+ */
+function article(word: string): string {
+  return /^[aeiou]/i.test(word) ? "an" : "a";
+}
+
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
   {
     code: unparameterizedSyntaxParameterCode,
@@ -133,7 +142,7 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     documentation:
       "A macro is dispatched only in the category it declares. A name written where another category is read is left alone, which emits it verbatim, so the mismatch is reported here rather than as whatever TypeScript makes of the leftover name.",
     format: (arguments_) =>
-      `Macro ${String(arguments_[0] ?? "unknown")} is declared ${String(arguments_[1] ?? "unknown")} and cannot be written where a ${String(arguments_[2] ?? "node")} is read. Declare it ${String(arguments_[2] ?? "unknown")} to use it here.`,
+      `Macro ${String(arguments_[0] ?? "unknown")} is declared ${String(arguments_[1] ?? "unknown")} and cannot be written where ${article(String(arguments_[2] ?? "node"))} ${String(arguments_[2] ?? "node")} is read. Declare it ${String(arguments_[2] ?? "unknown")} to use it here.`,
   },
   {
     code: unreadableItemCode,

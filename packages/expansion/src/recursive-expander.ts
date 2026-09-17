@@ -2126,6 +2126,21 @@ export function expandMacroSyntax(
     let functionTypes = 0;
     /** Where the class member being walked begins in `output`. */
     let memberStart = 0;
+    /**
+     * Whether what comes next is written where a type is, given everything
+     * walked so far. `as` and `satisfies` are the only two of those tokens
+     * that are not also an expression's, so an expression asks a narrower
+     * question than a declaration does.
+     *
+     * This is where the walk decides what a position reads, so that a group
+     * descended into, a template literal's substitution and a name looked up
+     * all agree about it.
+     */
+    const typeFollows = (): boolean =>
+      typeRegion ||
+      (category === "expr" || expressionRegion
+        ? typeFollowsInExpression(output)
+        : typePositionFollows(output));
     while (index < input.length) {
       const node = input[index]!;
       const walked = output.at(-1);
@@ -2677,17 +2692,46 @@ export function expandMacroSyntax(
             previous.raw === "#")
         );
       })();
+      /**
+       * Whether this position reads a type, whatever the syntax around it is
+       * being walked as: an annotation, a type argument, a constraint, the
+       * right of a type alias's `=`. A name written there is a type and can be
+       * nothing else, so it is looked up among type macros and among no
+       * others. Asking the walked space first dispatched an item macro in
+       * `type T = mkThing` and spliced `export const thing = 1;` where the
+       * type belongs.
+       *
+       * In a member list a bare name reads a member until the member's own
+       * `:`, and the separator in front of it says nothing about which -- `,`
+       * stands between members and between type arguments alike -- so the list
+       * is asked rather than the token before the name.
+       */
+      const readsType =
+        category === "type" ||
+        (category === "typeMember" ? !beforeMemberType() : typeFollows());
+      /**
+       * Whether the space being walked is the space this position reads. A
+       * type walked as a type is both; a type written inside a declaration is
+       * read as a type and walked as an item, and only the type space answers
+       * for it.
+       */
+      const readsWalkedSpace = category === "type" || !readsType;
       let resolvedMacro =
-        node.tag === "token" && !namesMember && !namesProperty
+        node.tag === "token" &&
+        !namesMember &&
+        !namesProperty &&
+        readsWalkedSpace
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
           : undefined;
       // A type is written in many places the surrounding syntax is not a type:
-      // an annotation, a return type, a constraint, a member of a union.
+      // an annotation, a return type, a constraint, a member of a union. Where
+      // the position is not certainly a type, a type macro is still looked up
+      // after the tokens a type can follow: finding one there costs nothing,
+      // and a name that is one is a type wherever it was written.
       if (
         resolvedMacro === undefined &&
         node.tag === "token" &&
-        category !== "type" &&
-        (typeRegion || typePositionFollows(output))
+        (readsType ? !namesProperty : typeRegion || typePositionFollows(output))
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -2704,7 +2748,8 @@ export function expandMacroSyntax(
       if (
         resolvedMacro === undefined &&
         node.tag === "token" &&
-        category === "item"
+        category === "item" &&
+        readsWalkedSpace
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -2718,6 +2763,7 @@ export function expandMacroSyntax(
         resolvedMacro === undefined &&
         node.tag === "token" &&
         category !== "expr" &&
+        readsWalkedSpace &&
         // What a class extends is an expression even though `extends` also
         // introduces a type elsewhere. Otherwise the `=` of a type alias
         // introduces a type, so an expression macro is not looked up after it:
@@ -2776,22 +2822,68 @@ export function expandMacroSyntax(
           }
         }
       }
-      // A member list is the one place a bare name is ordinary syntax, so a
-      // macro spelled there but declared for another category is left alone
-      // and emitted verbatim -- TypeScript then reports an implicit `any`
-      // member, or nothing at all when it is not asking for one. Report the
-      // mismatch here, where the macro and the category are both known.
-      if (
+      /**
+       * The space this position reads, where it reads one space and a bare
+       * name written there could be nothing but an invocation of it. A macro
+       * declared for another space is left alone and emitted verbatim, which
+       * TypeScript reports as a name it cannot find, as an implicitly-typed
+       * member, or -- when it is not asking for either -- as nothing at all.
+       *
+       * Not asked where a bare name is ordinary syntax: a member list names
+       * members, a declaration names what it binds, a qualified name names a
+       * property, and a name in front of a `:` names a key or a label.
+       */
+      const spaceRead = (): SyntaxCategory | undefined => {
+        const next = input[index + 1];
+        if (
+          namesProperty ||
+          namesMember ||
+          binderFollows(output) ||
+          (next?.tag === "token" && next.raw === ":")
+        )
+          return undefined;
+        if (readsType) return "type";
+        if (category === "typeMember") return "typeMember";
+        // A type is looked up after these too, though the position is not
+        // certainly one -- a `,` separates arguments as well as type
+        // arguments. Naming the space would name the wrong one, so a name
+        // that resolved nowhere is left to TypeScript here.
+        if (typeRegion || typePositionFollows(output)) return undefined;
+        // An expression region is opened by `=>` among others, and a function
+        // type's arrow is spelled the same way, so it says only that an
+        // expression may be being written. A space is named where one
+        // certainly is.
+        return category === "expr" ||
+          classHeritageFollows(output) ||
+          initializerFollows(output)
+          ? "expr"
+          : undefined;
+      };
+      const mismatchedSpace =
         resolvedMacro === undefined &&
-        category === "typeMember" &&
         node.tag === "token" &&
-        node.kind === "identifier" &&
-        !namesMember
+        node.kind === "identifier"
+          ? spaceRead()
+          : undefined;
+      if (
+        mismatchedSpace !== undefined &&
+        node.tag === "token" &&
+        !shadowsMacro(node.raw, mismatchedSpace)
       ) {
         const elsewhere = (
-          ["item", "stmt", "expr", "type", "classElement"] as const
+          [
+            "item",
+            "stmt",
+            "expr",
+            "type",
+            "classElement",
+            "typeMember",
+            "binding",
+            "jsxChild",
+          ] as const
         ).find(
           (candidate) =>
+            candidate !== mismatchedSpace &&
             resolveSpelling(
               node.raw,
               node.span.start,
@@ -2810,7 +2902,7 @@ export function expandMacroSyntax(
                   end: source.span.end,
                   originId: node.origin,
                 },
-                messageArguments: [node.raw, elsewhere, category],
+                messageArguments: [node.raw, elsewhere, mismatchedSpace],
               }),
             );
         }
@@ -2881,6 +2973,7 @@ export function expandMacroSyntax(
       }
       if (
         resolvedMacro === undefined &&
+        readsWalkedSpace &&
         node.tag === "group" &&
         node.delimiter === "parenthesis"
       ) {
@@ -2918,7 +3011,14 @@ export function expandMacroSyntax(
           break;
         }
       }
-      if (resolvedMacro === undefined && node.tag === "token") {
+      // A macro is matched by its spelling here whether that spelling is
+      // punctuation or a name, so this reaches the walked space the way the
+      // lookup above does, and is held to the same space the position reads.
+      if (
+        resolvedMacro === undefined &&
+        readsWalkedSpace &&
+        node.tag === "token"
+      ) {
         const punctuationHeads = activeModules
           .flatMap(({ macros }) => macros)
           .filter(
@@ -3454,13 +3554,7 @@ export function expandMacroSyntax(
           // a thrown error rather than a diagnostic, so one of them anywhere in
           // a file ended the whole compilation.
           const substitutionCategory: SyntaxCategory =
-            category === "type" ||
-            typeRegion ||
-            (category === "expr" || expressionRegion
-              ? typeFollowsInExpression(output)
-              : typePositionFollows(output))
-              ? "type"
-              : "expr";
+            category === "type" || typeFollows() ? "type" : "expr";
           const expandSubstitution = () => {
             if (substitution.length === 0) return;
             const enforested = enforestOrReport(
@@ -3716,11 +3810,7 @@ export function expandMacroSyntax(
         // Statements inside a function body are statements however the
         // expression around it is categorized, so a statement macro written in
         // a template's arrow or function body resolves in the statement space.
-        const typeGroupFollows =
-          typeRegion ||
-          (category === "expr" || expressionRegion
-            ? typeFollowsInExpression(output)
-            : typePositionFollows(output));
+        const typeGroupFollows = typeFollows();
         const bodyCategory: SyntaxCategory =
           // A group sitting among JSX children holds an expression: a braced
           // container, or a nested element.
