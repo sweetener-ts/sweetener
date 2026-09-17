@@ -15,8 +15,9 @@ describe("toolchain compatibility", () => {
   });
 
   test("accepts a Node newer than the one the matrix lists", () => {
-    // The floor used to be an equality, so the compatibility workflow's own
-    // Node 26 lane failed on the probe before it could run anything.
+    // The listed version is a floor, not an equality; otherwise the
+    // compatibility workflow's own Node 26 lane fails on the probe before it
+    // can run anything.
     expect(
       compatibilityDiagnostics({ node: "v26.5.0", typescript: "6.0.2" }),
     ).toEqual([]);

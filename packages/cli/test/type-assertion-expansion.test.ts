@@ -19,8 +19,8 @@ import {
  * later as an "unknown name" error from TypeScript.
  *
  * The statement and item consumers each build an expression consumer of their
- * own, so teaching only the top-level one to hand `as` off to the type consumer
- * fixed the module top level and left every function body broken.
+ * own, and each has to hand `as` off to the type consumer: one that does so
+ * only at the module top level leaves every function body broken.
  */
 
 const macros = `

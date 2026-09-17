@@ -145,9 +145,9 @@ function remapGeneratedDiagnostics(options: {
       diagnostic.length,
     );
     // A diagnostic's related locations are positions in the same generated
-    // file, and were carried through untouched: they named the virtual `.ts`,
-    // which no `check` ever writes, at offsets into text nobody had. "'size'
-    // was also declared here" pointed into a file the author could not open.
+    // file. Carried through untouched they would name the virtual `.ts`, which
+    // no `check` ever writes, at offsets into text nobody has: "'size' was
+    // also declared here" would point into a file the author cannot open.
     const related = (diagnostic.relatedInformation ?? []).map((entry) => {
       const entryLocation = locate(entry.file, entry.start, entry.length);
       return entryLocation === undefined
@@ -228,22 +228,6 @@ function sourceMapComposerFor(
   };
 }
 
-/**
- * Write a declaration beside every macro source, as `main.d.sts.ts`.
- *
- * With `allowArbitraryExtensions`, TypeScript resolves
- * `import { x } from "./main.sts"` through exactly that name, so an ordinary
- * `.ts` or `.tsx` file gets the real types of a `.sts` module — from `tsc`,
- * from an editor, from another project. Without them the only way to consume a
- * macro module from TypeScript was `declare module "*.sts"` with every export
- * restated by hand, which the checked-in Next example has to do and which goes
- * stale the moment a type changes.
- *
- * Declarations are emitted from a program of their own, because a project that
- * leaves emit to a bundler sets `noEmit` and one that emits JavaScript should
- * not start emitting `.d.ts` into its output as a side effect of asking for
- * these.
- */
 /** A declaration only gets rewritten when it changed, so watchers stay quiet. */
 function readFileIfPresent(fileName: string): string | undefined {
   try {
@@ -266,6 +250,21 @@ function withoutOutputDirectories(
   return rest;
 }
 
+/**
+ * Write a declaration beside every macro source, as `main.d.sts.ts`.
+ *
+ * With `allowArbitraryExtensions`, TypeScript resolves
+ * `import { x } from "./main.sts"` through exactly that name, so an ordinary
+ * `.ts` or `.tsx` file gets the real types of a `.sts` module — from `tsc`,
+ * from an editor, from another project — and those types follow the source
+ * rather than a hand-written `declare module` that goes stale the moment a
+ * type changes.
+ *
+ * Declarations are emitted from a program of their own, because a project that
+ * leaves emit to a bundler sets `noEmit` and one that emits JavaScript should
+ * not start emitting `.d.ts` into its output as a side effect of asking for
+ * these.
+ */
 function writeSourceDeclarations(options: {
   readonly virtualBySource: ReadonlyMap<string, string>;
   readonly virtualFiles: readonly VirtualTypeScriptFile[];
@@ -470,9 +469,9 @@ export function runConfiguredProjectCommand(options: {
   );
   // Before the program that checks the project, not after it. These are what
   // TypeScript resolves a `./main.sts` import through, so a `.ts` file that
-  // imports one cannot be checked until they exist — and writing them only
-  // once the check passed meant they were never written, because the check
-  // could not pass without them.
+  // imports one cannot be checked until they exist. Writing them only once the
+  // check passed would never write them, because the check cannot pass
+  // without them.
   if (project.sweet.sourceDeclarations)
     writeSourceDeclarations({
       virtualBySource,
@@ -486,8 +485,8 @@ export function runConfiguredProjectCommand(options: {
     compilerOptions: {
       // A macro module whose every item is a macro definition expands to
       // nothing, and TypeScript reads a file with no imports or exports as a
-      // script: the emitted JavaScript was a lone `"use strict";` and the
-      // declaration described a global scope. Every Sweetener source is a
+      // script: the emitted JavaScript would be a lone `"use strict";` and the
+      // declaration would describe a global scope. Every Sweetener source is a
       // module, so say so unless the project has an opinion.
       moduleDetection: ts.ModuleDetectionKind.Force,
       ...project.typescript.options,
@@ -574,10 +573,10 @@ export function watchConfiguredProject(options: {
   let closed = false;
 
   /**
-   * What the project reads now, which is not what it read when the watch
-   * began: a file added to the project, or a macro module a file has newly
-   * imported, was never watched, so editing it rebuilt nothing. The set is
-   * taken again after every build.
+   * Watch what the project reads, which is not fixed when the watch begins: a
+   * file added to the project, or a macro module a file newly imports, has to
+   * be watched too, or editing it would rebuild nothing. The set is taken
+   * again after every build.
    */
   const follow = (): void => {
     if (closed) return;
@@ -622,8 +621,8 @@ export function watchConfiguredProject(options: {
 
   function schedule(): void {
     if (closed) return;
-    // An editor writing one file in two steps, or a save across several files,
-    // used to start a build for each write. Only the last one is wanted.
+    // An editor writes one file in two steps, or saves several files at once,
+    // and each write fires. Only a build after the last one is wanted.
     if (pending !== undefined) clearTimeout(pending);
     pending = setTimeout(() => {
       pending = undefined;

@@ -178,9 +178,9 @@ export const doubled = twice(seed + 1);
     // `twice` writes `[$value, $value]`, so the expansion holds a space before
     // the second copy and a grouping parenthesis around each -- text the
     // printer gives the copy's own origin. Counted as places the written
-    // `seed` landed, they made the service ask TypeScript which binding lived
-    // at a space, and read the silence as a second, distinct one. The refusal
-    // that stands is the one this input earns: nothing yet proves which
+    // `seed` lands, they would make the service ask TypeScript which binding
+    // lives at a space, and read the silence as a second, distinct one. The
+    // refusal has to be the one this input earns: nothing yet proves which
     // binding each copy denotes.
     const result = service.rename(
       sourceFileName,

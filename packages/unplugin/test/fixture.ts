@@ -17,11 +17,10 @@ export function integrationFixture(
     /**
      * Whether the entry carries a type annotation. On by default.
      *
-     * It used to be off, and every host but Vite and Bun was verified against
+     * Expansion emits TypeScript, so a host verified only against
      * `export const answer = duplicate(21);` — source with nothing in it a
-     * JavaScript parser would refuse. Expansion emits TypeScript, so those
-     * hosts were failing on the first annotated declaration a real project
-     * would write, and the suite could not see it.
+     * JavaScript parser would refuse — can pass here while failing on the
+     * first annotated declaration a real project would write.
      */
     readonly typed?: boolean | undefined;
   } = {},

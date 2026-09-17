@@ -5,11 +5,11 @@ import type { ScopeSetId, SourceId } from "@sweetener/shared";
 /**
  * The reader's cost has to stay proportional to the file.
  *
- * Reading allocated per token far more than the tokens themselves: an empty
- * trivia array and a `Map` for every one, and a copy of trivia that was
- * already immutable. None of that changed the answer, so nothing failed when
- * it was there — the suite only got slower, until the slowest test began
- * timing out under load and it looked like flakiness.
+ * Allocating per token far more than the tokens themselves — an empty trivia
+ * array and a `Map` for every one, a copy of trivia that is already immutable
+ * — changes no answer, so nothing else fails when it happens. The suite only
+ * gets slower, until the slowest test times out under load and it looks like
+ * flakiness.
  *
  * This does not assert a wall-clock budget, which would fail on a loaded
  * machine for reasons that have nothing to do with the reader. It asserts the

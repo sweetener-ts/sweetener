@@ -46,8 +46,7 @@ function namedGroup(node: Syntax | undefined): node is GroupSyntax {
  *
  * Every other statement may end at a line break, and a compile-time import
  * that insisted on a semicolon could not be written at all in a project that
- * does without them — which the default Vite template is, so the first import
- * anyone wrote in one was rejected.
+ * does without them — which the default Vite template is.
  */
 function automaticTerminator(node: Syntax | undefined): boolean {
   if (node === undefined) return true;

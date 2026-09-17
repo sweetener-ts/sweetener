@@ -109,7 +109,7 @@ export async function checkPackageBoundaries(repositoryRoot) {
       const source = await readFile(file, "utf8");
       // Parsed rather than matched: read as text, an import specifier is
       // indistinguishable from the same words quoted inside a string, and
-      // documentation that shows someone what to import was being reported as
+      // documentation that shows someone what to import would be reported as
       // importing it.
       for (const specifier of importedSpecifiers(file, source)) {
         if (

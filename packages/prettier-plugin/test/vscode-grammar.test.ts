@@ -12,11 +12,11 @@ import { beforeAll, describe, expect, test } from "vitest";
  * `vscode-textmate` and `vscode-oniguruma` are what tokenizes a file in the
  * editor, and VS Code's own TSX grammar is what the Sweetener grammar embeds,
  * so registering all three here produces the scopes a reader would actually
- * see. That matters more than it sounds: the first version of this grammar
- * listed its patterns ahead of `source.tsx` and produced not one Sweetener
- * scope on any file in this repository, because TypeScript's rules open a
- * region at the start of `export …` and win, and a top-level pattern cannot
- * reach inside one. Every check here is a scope on a span of real source.
+ * see. That matters more than it sounds: a grammar that lists its patterns
+ * ahead of `source.tsx` produces not one Sweetener scope on any file in this
+ * repository, because TypeScript's rules open a region at the start of
+ * `export …` and win, and a top-level pattern cannot reach inside one. Every
+ * check here is a scope on a span of real source.
  */
 
 const { INITIAL, Registry, parseRawGrammar } = textmate;

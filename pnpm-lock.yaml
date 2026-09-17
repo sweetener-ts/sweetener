@@ -94,6 +94,9 @@ importers:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@sweetener/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@types/react':
         specifier: latest
         version: 19.3.0

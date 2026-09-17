@@ -5,8 +5,8 @@
 // The repository builds twenty-one packages and publishes nine. The layering
 // is real and `check:boundaries` enforces it, but that enforcement happens
 // here rather than on the registry: published separately, eleven of those
-// layers were names nobody installs deliberately, pinned to each other at one
-// version so they could never move apart. Splitting a published package later
+// layers would be names nobody installs deliberately, pinned to each other at
+// one version so they could never move apart. Splitting a published package later
 // is routine; merging published ones back is not.
 //
 // Staging and the release check both read this, so a package cannot be
@@ -37,9 +37,9 @@ export const absorbed = Object.freeze([
  * What the repository builds but does not publish at all.
  *
  * `test-support` is the harness this repository's own suites and gate scripts
- * share. Published, it was a public contract with nothing demonstrating it —
- * no example uses it, and even the scripts here reach it by path rather than
- * by name.
+ * share. Published, it would be a public contract with nothing demonstrating
+ * it — no example uses it, and even the scripts here reach it by path rather
+ * than by name.
  */
 export const unpublished = Object.freeze(["test-support"]);
 
@@ -63,7 +63,7 @@ export const coreEntryPoints = Object.freeze({
  * The specifier a consumer writes for one of the core's entry points.
  *
  * `coreEntryPoints` is keyed the way an exports map is — "." and "./reader" —
- * which is one character away from the specifier and was written wrong twice.
+ * which is one character away from the specifier and easy to write wrong.
  */
 export function coreSpecifier(entryPoint) {
   return `@sweetener/${core}${entryPoint === "." ? "" : entryPoint.slice(1)}`;

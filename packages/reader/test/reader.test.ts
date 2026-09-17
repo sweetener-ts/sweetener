@@ -15,8 +15,8 @@ describe("generic JSX elements", () => {
   /**
    * A generic element's type arguments are scanned in tag mode, like the tag's
    * own name. Counting the `>` that closes them as the one that ends the tag
-   * moved the scanner into JSX text mode, so the attributes after it were
-   * scanned as text and a `>` among them was reported as needing escaping.
+   * moves the scanner into JSX text mode, so the attributes after it are
+   * scanned as text and a `>` among them is reported as needing escaping.
    */
   it.each([
     ["one type argument", "const x = <Comp<string> value={1} />;\n"],
@@ -37,10 +37,10 @@ describe("generic JSX elements", () => {
 
   /**
    * `<T>(v: T) => T` is how a generic function type is written, and in a `.tsx`
-   * file its `<` sits exactly where a JSX element's does. The element reading
-   * won, so no `.stsx` file could annotate one. An element with children can be
-   * followed by a `(` too -- `<div>(text)</div>` -- but its parentheses are text
-   * and no `=>` follows them, which is what tells the two apart.
+   * file its `<` sits exactly where a JSX element's does. If the element
+   * reading wins, no `.stsx` file can annotate one. An element with children
+   * can be followed by a `(` too -- `<div>(text)</div>` -- but its parentheses
+   * are text and no `=>` follows them, which is what tells the two apart.
    */
   it.each([
     ["an annotation", "declare const g: <T>(v: T) => T;\n"],
@@ -176,10 +176,10 @@ describe("delimiter reader", () => {
   /**
    * A `<` opens JSX only where an expression can begin.
    *
-   * The decision used to be made from the lookahead alone: anything shaped
-   * like `<Name ... >` opened an element, so the `<T>` of a generic signature
-   * or a generic call was read as one and the file was reported as having a
-   * missing closing tag. All of these are ordinary TSX.
+   * The lookahead alone cannot decide: if anything shaped like `<Name ... >`
+   * opens an element, the `<T>` of a generic signature or a generic call is
+   * read as one and the file is reported as having a missing closing tag. All
+   * of these are ordinary TSX.
    */
   const typeArgumentPositions: readonly (readonly [string, string])[] = [
     ["a generic function signature", "declare function f<T>(v: T): T;"],

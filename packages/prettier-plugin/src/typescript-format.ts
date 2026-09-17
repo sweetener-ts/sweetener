@@ -169,8 +169,8 @@ function nextBindingMarker(source: string, index: number): string {
  * can be called are not identifiers: an operator, written `(|>)`, and a core
  * form being shadowed, written `typeof`. Prettier parses what is left after
  * the compile-time tail is masked, and `import { (|>) }` is not TypeScript, so
- * it failed to parse and returned the file untouched — silently, and for the
- * headline example in the README among others.
+ * left in place it would fail to parse and the file would come back untouched
+ * — silently, and for the headline example in the README among others.
  */
 function unspellableBinding(syntax: Syntax): boolean {
   if (syntax.tag === "group") return syntax.delimiter === "parenthesis";
@@ -206,11 +206,11 @@ function maskSweetenerSyntax(
   for (let index = 0; index < children.length; index += 1) {
     if (tokenRaw(children[index]) !== "import") continue;
     let end = index + 1;
-    // The import ends at its semicolon, or where the next line starts. It used
-    // to look only for the semicolon, so a `for syntax` import written without
-    // one — which the compiler accepts, as it does for any other statement —
-    // was never masked, Prettier could not parse what it was handed, and the
-    // whole file came back unformatted.
+    // The import ends at its semicolon, or where the next line starts. A
+    // `for syntax` import written without one — which the compiler accepts, as
+    // it does for any other statement — still has to be masked, or Prettier
+    // cannot parse what it is handed and the whole file comes back
+    // unformatted.
     for (
       ;
       end < children.length &&

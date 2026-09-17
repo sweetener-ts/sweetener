@@ -30,10 +30,7 @@ Alpha succession uses `0.1.0-alpha.N`, which `npm version prerelease` produces.
 A changed tarball is never republished under an existing version.
 
 Registry publication uses the `latest` dist-tag, so `npm install @sweetener/cli`
-gives the newest release. Releases through 0.1.0-alpha.3 went out under `alpha`,
-which left `latest` at the first version ever published: a package's first
-version becomes `latest` whatever `--tag` says, and nothing moved it after.
-A publish sets one dist-tag, and moving another takes `npm dist-tag add`, which
+gives the newest release. A publish sets one dist-tag, and moving another takes `npm dist-tag add`, which
 npm's trusted publishing does not authorize
 ([npm/cli#8547](https://github.com/npm/cli/issues/8547)), so the workflow does
 not maintain a second tag.

@@ -11,9 +11,8 @@ source maps and expansion traces connect the result back to what you wrote.
 real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
 > Sweetener is alpha. Every release is published as `latest`, so a plain
-> `npm install` gives you the newest alpha, with nothing stable behind it. Public TypeScript signatures may change before
-> `1.0`. The language carries its own version, and changing how it behaves
-> requires a new one.
+> `npm install` gives you the newest alpha, with nothing stable behind it.
+> Public TypeScript signatures may change before `1.0`.
 
 ## Define your own syntax
 
@@ -249,9 +248,6 @@ the name TypeScript resolves `./main.sts` through. Types cross the boundary:
 assign a `readonly number[]` export to a `string` and plain `tsc` rejects it.
 Your editor rejects it too, because your editor runs the same compiler. Add
 `*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
-
-This replaces hand-written `declare module "*.sts"` blocks, which restate every
-export and then go stale without telling you.
 
 ## The command line
 

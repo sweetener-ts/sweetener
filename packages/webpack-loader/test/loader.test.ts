@@ -16,8 +16,8 @@ function fixture(host: string) {
   );
   // Annotated on purpose. The loader emits what expansion produced, which is
   // TypeScript, and webpack's parser cannot read it: with an untyped fixture
-  // the documented single-loader rule passed here while failing on the first
-  // annotated declaration any real project would write.
+  // the documented single-loader rule would pass here while failing on the
+  // first annotated declaration any real project would write.
   writeFileSync(
     entry,
     `import { twice } from "./macros.sts" for syntax;\nexport const answer: readonly number[] = twice(21);\n`,
@@ -109,10 +109,10 @@ describe("native webpack loader", () => {
 });
 
 test("reports a macro failure to webpack instead of taking the process down", async () => {
-  // The loader used to throw from inside a `.then` success branch, so the
-  // error escaped as an unhandled rejection and the callback was never
-  // called. Under `webpack --watch` that kills the dev server rather than
-  // printing a compile error.
+  // A failure has to reach the loader's callback. Thrown from inside a `.then`
+  // success branch, it escapes as an unhandled rejection and the callback is
+  // never called; under `webpack --watch` that kills the dev server rather
+  // than printing a compile error.
   const directory = mkdtempSync(join(tmpdir(), "sweet-loader-fail-"));
   writeFileSync(
     join(directory, "macros.sts"),

@@ -296,12 +296,12 @@ export function createOriginQueryIndex(options: {
       // Only a region carrying the source's own characters is a place that
       // source went. Layout indexed under a source origin that some region
       // here already holds the text of is that text's own spacing, not a
-      // second occurrence of it, and reporting it as one made callers ask
-      // what a space means: rename asked TypeScript which binding lived at
-      // the offset of a separator, got no answer, and read the silence as a
-      // second, distinct binding — refusing to rename `[seed, seed]` on the
-      // grounds that the two copies of one written name denoted different
-      // things. So the text speaks for its own layout and the layout drops
+      // second occurrence of it, and reporting it as one would make callers
+      // ask what a space means: rename would ask TypeScript which binding
+      // lives at the offset of a separator, get no answer, and read the
+      // silence as a second, distinct binding — refusing to rename
+      // `[seed, seed]` on the grounds that the two copies of one written name
+      // denote different things. So the text speaks for its own layout and the layout drops
       // out. Layout under a source origin with no text here — a definition's
       // spacing seen from the definition file — is all that offset has, and
       // stands.
@@ -376,8 +376,8 @@ export function createLazyOriginQueryIndex(
   // Deferring the index would otherwise defer the check that its regions are
   // ordered and in bounds, so a malformed map — from a stale cache entry, or a
   // tool that wrote one — would be accepted and only rejected later, at
-  // whichever query happened to touch it. This says so now, and reads nothing
-  // but the entries themselves.
+  // whichever query happens to touch it. This checks up front, and reads
+  // nothing but the entries themselves.
   let previousEnd = 0;
   for (const entry of options.file.originMap.entries) {
     if (

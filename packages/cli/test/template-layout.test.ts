@@ -12,9 +12,9 @@ import {
  *
  * A placeholder carries the layout written before it -- the space in
  * `[$value, $value]` is trivia on the second `$value` -- and substitution
- * replaces the placeholder token outright. That threw the spacing away, so a
- * macro whose template read like TypeScript printed `[21,21]` in the middle of
- * a file whose every other line kept the author's formatting exactly.
+ * replaces the placeholder token outright. Throwing that spacing away would
+ * print `[21,21]` for a template that reads like TypeScript, in the middle of
+ * a file whose every other line keeps the author's formatting exactly.
  *
  * Layout is kept wherever two tokens still stand where they were written side
  * by side, in the template or at the call site. Where an expansion puts tokens
@@ -90,8 +90,8 @@ export const both = pair(1,  2  +   3);`,
   });
 
   test("does not carry a capture's spacing to where it lands", () => {
-    // The space after `=` was written in front of `[`, and followed it into
-    // the call it was spliced into: `total =map( [1, 2, 3]`.
+    // The space after `=` is written in front of `[`, and must not follow it
+    // into the call it is spliced into: `total =map( [1, 2, 3]`.
     expect(
       expand(
         `export operator (|>):expr {

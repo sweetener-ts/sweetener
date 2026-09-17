@@ -37,9 +37,9 @@ const transformer = {
     hash.update(sourceText);
     hash.update(sourcePath);
     // The macros a file expands through are as much of its input as its own
-    // text. Hashing these only when a configFile was passed meant a project
-    // without one served an expansion from before its macros were edited, and
-    // kept passing tests that should have changed.
+    // text, whether the config was passed or discovered. Hashed only for a
+    // passed configFile, a project without one would serve an expansion from
+    // before its macros were edited, and keep passing tests that should fail.
     const configFile =
       options.transformerConfig.configFile ??
       discoverSweetConfigFor(sourcePath);

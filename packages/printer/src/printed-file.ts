@@ -163,9 +163,9 @@ interface SeamContext {
  * The space between two tokens that an expansion put next to each other.
  *
  * What stood in front of a token where it was written describes its gap from
- * the token that stood before it there, not from whatever an expansion placed
- * before it now: the space after `=` in `total = [1, 2, 3]` belongs to `[`, and
- * it followed `[` into `map( [1, 2, 3]`. At such a seam the gap is decided the
+ * the token that stood before it there, not from whatever an expansion places
+ * before it in the output: the space after `=` in `total = [1, 2, 3]` belongs
+ * to `[`, and would follow `[` into `map( [1, 2, 3]`. At such a seam the gap is decided the
  * way code is ordinarily spaced instead.
  */
 function seamSpace(left: string, right: string, context: SeamContext): string {
@@ -323,14 +323,14 @@ export function printExpandedFile<Trace>(
   /**
    * The nodes that are the whole body of an arrow. An arrow's body is parsed
    * as an expression, so it arrives here as one protected node; wrapping that
-   * in parentheses printed `(value: number) => (value + 1)`, which is the same
-   * function spelled worse. Nothing to either side of a body can re-associate
+   * in parentheses would print `(value: number) => (value + 1)`, which is the
+   * same function spelled worse. Nothing to either side of a body can re-associate
    * into it -- it runs to the end of the arrow -- so nothing has to hold it
    * together.
    *
-   * Only a node that ends where the body does. Exempting whatever was printed
-   * first after `=>` also exempted the callee of a call that was the body:
-   * `(x) => $f(x)` with `$f` an arrow printed `(x) => (n) => n * 2(x)`.
+   * Only a node that ends where the body does. Exempting whatever is printed
+   * first after `=>` would also exempt the callee of a call that is the body:
+   * `(x) => $f(x)` with `$f` an arrow would print `(x) => (n) => n * 2(x)`.
    */
   const wholeArrowBodies = new Set<Syntax>();
   /**
@@ -477,8 +477,8 @@ export function printExpandedFile<Trace>(
     }
   };
   // A grouping parenthesis stands outside the layout that separates the
-  // expansion from whatever precedes it. Emitted the moment it was reached, it
-  // landed before the first token's leading trivia and printed
+  // expansion from whatever precedes it. Emitted the moment it is reached, it
+  // would land before the first token's leading trivia and print
   // `const value: number =( 1 + 2) * 10` — the space belongs before the
   // parenthesis, not after it. Holding it until a token is actually printed
   // puts it where it reads.

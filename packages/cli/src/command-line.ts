@@ -68,9 +68,10 @@ export type CliInvocation =
 /**
  * Pull `-p`/`--project` out of an argument list.
  *
- * `expand` and `explain` used to reject it, and only ever discovered a
- * `tsconfig.json`. `init` writes `sweetener.json`, so in a scaffolded project
- * two of the commands could not read the config the other four were using.
+ * Every command takes it, `expand` and `explain` included. `init` writes
+ * `sweetener.json`, which nothing discovers the way a `tsconfig.json` is
+ * discovered, so a command that could not be pointed at a config could not
+ * read the one the others in a scaffolded project use.
  */
 function splitProjectOption(argv: readonly string[]): {
   readonly positional: readonly string[];
@@ -269,10 +270,10 @@ function excerpt(text: string, start: number, end: number): string[] {
 /**
  * What `explain` says to a person.
  *
- * It used to print the raw origin records: interned numeric ids, byte offsets,
- * and a `sourceId` in place of a file name. That is the shape a tool wants,
- * and it is still available behind `--json`, but a command called `explain`
- * should answer in the terms the question was asked in.
+ * The raw origin records -- interned numeric ids, byte offsets, and a
+ * `sourceId` in place of a file name -- are the shape a tool wants, and they
+ * are available behind `--json`, but a command called `explain` should answer
+ * in the terms the question was asked in.
  */
 function describeExplanation(options: {
   readonly explanation: ReturnType<typeof explainOriginalPosition>;
@@ -525,10 +526,9 @@ export function runCli(options: {
       return Object.freeze({ exitCode: 1 });
     }
     // Printing the source, or an account of where it came from, and reporting
-    // success would say the macros ran. `explain` used to report the origins of
-    // an expansion that never happened, which reads as an expansion in which
-    // every token came from the source -- exactly what an unexpanded file looks
-    // like.
+    // success would say the macros ran. For `explain`, the origins of an
+    // expansion that never happened read as an expansion in which every token
+    // came from the source -- exactly what an unexpanded file looks like.
     if (inspected.diagnostics.length > 0) {
       for (const diagnostic of inspected.diagnostics)
         options.io.stderr(`${renderDiagnostic(diagnostic)}\n`);
@@ -538,8 +538,8 @@ export function runCli(options: {
       options.io.stdout(expansionView(inspected.generated));
     } else {
       // A position past the end of the file is something a person types, not
-      // an internal fault: it used to escape as a raw stack trace naming dist
-      // paths.
+      // an internal fault, so it is reported as a mistake rather than escaping
+      // as a raw stack trace naming dist paths.
       let offset: number;
       try {
         offset = sourceOffset(
@@ -576,9 +576,9 @@ export function runCli(options: {
     return Object.freeze({ exitCode: 0 });
   }
   if (invocation.command === "watch") {
-    // `build: success` on its own said nothing about when it happened or
-    // whether the run was still watching, so a rebuild was indistinguishable
-    // from the first build scrolling past.
+    // `build: success` on its own says nothing about when it happened or
+    // whether the run is still watching, so a rebuild would be
+    // indistinguishable from the first build scrolling past.
     const time = () =>
       new Date().toLocaleTimeString(undefined, { hour12: false });
     let first = true;

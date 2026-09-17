@@ -131,8 +131,8 @@ export class OriginStore {
   source(sourceId: SourceId, span: Span): OriginId {
     // Source origins outnumber every other kind — one per token — and hardly
     // ever repeat, since each token occupies its own span. Keying them by a
-    // built-up string meant allocating and hashing a key per token only to
-    // miss on it. Nesting maps on the numbers keeps the same guarantee, that
+    // built-up string would allocate and hash a key per token only to miss on
+    // it. Nesting maps on the numbers keeps the same guarantee, that
     // one span in one file is one origin, without the key.
     // Tokens arrive in file order, so the same source is asked for thousands
     // of times in a row before another one is.

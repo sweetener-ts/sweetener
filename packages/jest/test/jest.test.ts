@@ -63,9 +63,9 @@ test("Jest executes .sts through its real async transformer API", async () => {
 });
 
 test("re-expands after a macro changes, with no configFile given", async () => {
-  // The cache key hashed the macros only when a configFile was passed, so a
-  // project without one kept serving an expansion from before its macros were
-  // edited — and kept passing tests that should have changed.
+  // The cache key has to hash the macros whether or not a configFile is
+  // passed. Otherwise a project without one keeps serving an expansion from
+  // before its macros were edited — and keeps passing tests that should fail.
   const directory = mkdtempSync(join(tmpdir(), "sweet-jest-stale-"));
   const macros = join(directory, "macros.sts");
   writeFileSync(
@@ -116,12 +116,12 @@ test("re-expands after a macro changes, with no configFile given", async () => {
 /**
  * Jest has to be able to find this by name.
  *
- * `transform: { "\\.sts$": ["@sweetener/jest", {}] }` — the configuration
- * anyone would write — failed with `Module @sweetener/jest in the transform
- * option was not found`, because the exports map offered only `types` and
- * `import` and Jest resolves a transformer under conditions that need
- * `require` or `default`. The suite pointed at `dist/src/index.js` by absolute
- * path, so it never asked the question a user's config asks.
+ * `transform: { "\\.sts$": ["@sweetener/jest", {}] }` is the configuration
+ * anyone would write. Jest resolves a transformer under conditions that need
+ * `require` or `default`, so an exports map offering only `types` and `import`
+ * fails with `Module @sweetener/jest in the transform option was not found`.
+ * Pointing at `dist/src/index.js` by absolute path would never ask the
+ * question a user's config asks, so this resolves the package by name.
  */
 test("Jest resolves the transformer by package name", async () => {
   const root = mkdtempSync(join(tmpdir(), "sweet-jest-named-"));

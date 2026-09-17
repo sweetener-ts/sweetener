@@ -69,7 +69,7 @@ function computeTriviaKind(kind: ts.SyntaxKind): TriviaKind | undefined {
  * Every projection, precomputed once and indexed by syntax kind.
  *
  * These two run for every token and every piece of trivia in the file, and
- * each was a chain of comparisons that ended, for the commonest answers —
+ * each is a chain of comparisons that ends, for the commonest answers —
  * keyword and punctuation — only after falling through the whole switch. A
  * table is one array read. It is built from the same functions below, so the
  * two cannot drift.
@@ -336,9 +336,10 @@ export function scanWithSupportedTypeScript(
   /**
    * How many `<` of the current tag's type arguments are still open.
    * `<Comp<string> value={x} />` is a generic element, and the `>` that closes
-   * its type arguments is not the one that ends the tag. Counting the tag's own
-   * `>` there moved the scanner into text mode, so the attributes after it were
-   * scanned as JSX text and a `>` among them was reported as needing escaping.
+   * its type arguments is not the one that ends the tag. Taking that `>` as the
+   * tag's own would move the scanner into text mode, so the attributes after it
+   * would be scanned as JSX text and a `>` among them reported as needing
+   * escaping.
    */
   let typeArgumentDepth = 0;
   let regularExpressionAllowed = true;

@@ -1,5 +1,5 @@
-// This entry is CommonJS on purpose, and it is the only reason Parcel builds
-// with this plugin no longer start cold.
+// This entry is CommonJS on purpose: it is what keeps Parcel builds with this
+// plugin from starting cold.
 //
 // Parcel loads a plugin through its own package manager. A CommonJS plugin is
 // loaded with a patched `require`, so Parcel sees each dependency as it is
@@ -44,7 +44,6 @@ const loadCompiler = (): Promise<LoadedCompiler> =>
 const transformer = new PluginAPI.Transformer({
   // Read from .sweetenerrc / a `sweetener` key, so a project whose macros are
   // described by something other than a tsconfig beside them can say where.
-  // Without this there was no way to point the transformer at a config at all.
   async loadConfig({ config }) {
     const found = await config.getConfig<SweetenerTransformerConfig>(
       [".sweetenerrc", ".sweetenerrc.json"],

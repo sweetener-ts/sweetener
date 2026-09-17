@@ -43,9 +43,9 @@ describe("what an export clause pins", () => {
     "export syntax hold:item { rule { hold($value:expr) } => { const tmp = $value; } }";
 
   test("a call site exporting its own name does not pin an introduced one", () => {
-    // The pin was by spelling, so `export { tmp }` at the call site held a
+    // Pinned by spelling, `export { tmp }` at the call site would hold a
     // macro-introduced `tmp` in place too, leaving two `const tmp` in the
-    // output and a redeclaration error where hygiene should have renamed one.
+    // output and a redeclaration error where hygiene should rename one.
     const { generated, messages } = run(
       hold,
       'import { hold } from "./macros.sts" for syntax;\n' +
@@ -75,8 +75,9 @@ describe("labels", () => {
     "export syntax repeat:stmt { rule { repeat($body:expr); } => { outer: for (;;) { $body; break outer; } } }";
 
   test("an introduced label does not collide with one at the call site", () => {
-    // Labels were read as properties and so never renamed: a duplicate label,
-    // and a `break` that left whichever loop the collision left standing.
+    // A label is a binding, not a property, and has to be renamed: otherwise
+    // there is a duplicate label, and a `break` that leaves whichever loop the
+    // collision leaves standing.
     const { generated, messages } = run(
       loop,
       'import { repeat } from "./macros.sts" for syntax;\n' +
@@ -116,8 +117,8 @@ export syntax box:item {
   test("an introduced parameter property does not capture the call site", () => {
     // A parameter property declares a parameter and a member under the one
     // spelling, and `this.name` reaches the member. Leaving it unrenamed for
-    // that reason let it capture a call-site name of the same spelling: the
-    // captured `held` read the constructor's parameter instead of the
+    // that reason lets it capture a call-site name of the same spelling: the
+    // captured `held` would read the constructor's parameter instead of the
     // module's own.
     const { generated, messages } = run(
       box,

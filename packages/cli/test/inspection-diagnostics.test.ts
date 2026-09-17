@@ -12,12 +12,12 @@ import {
 /**
  * A file whose macros did not compile expands into itself.
  *
- * An inspection carried only the diagnostics raised against the file it
- * described, so a fault in the macro module it imports was invisible to it:
- * `expand` printed the unexpanded source and reported success, and `explain`
- * reported the origins of an expansion that never happened -- which reads as an
- * expansion in which every token came from the source, exactly what an
- * unexpanded file looks like.
+ * An inspection has to carry the diagnostics of the macro module a file
+ * imports, not only those raised against the file itself. Otherwise `expand`
+ * prints the unexpanded source and reports success, and `explain` reports the
+ * origins of an expansion that never happened -- which reads as an expansion in
+ * which every token came from the source, exactly what an unexpanded file
+ * looks like.
  */
 
 function project(macros: string): string {
@@ -115,8 +115,8 @@ describe("what an inspection reports", () => {
 describe("where a diagnostic's related locations point", () => {
   test("related information is mapped back to the source", () => {
     // A diagnostic's related locations are positions in the same generated
-    // file, and were carried through untouched: they named the virtual `.ts`,
-    // which no `check` ever writes, at offsets into text nobody had.
+    // file. Carried through untouched, they name the virtual `.ts`, which no
+    // `check` ever writes, at offsets into text nobody has.
     const directory = mkdtempSync(join(tmpdir(), "sweet-related-"));
     writeFileSync(
       join(directory, "macros.sts"),

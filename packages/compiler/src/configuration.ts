@@ -18,9 +18,7 @@ export interface SweetCompilerOptions {
    * TypeScript resolves `import ... from "./main.sts"` through that name when
    * `allowArbitraryExtensions` is on, so an ordinary `.ts` file in the project
    * — or in another project entirely — can import a `.sts` module and get its
-   * real types. Without them the only way to consume one from TypeScript was a
-   * hand-written `declare module "*.sts"`, restated for every export and kept
-   * in step by hand.
+   * real types, which follow the source rather than being restated by hand.
    */
   readonly sourceDeclarations: boolean;
   readonly trace: "off" | "errors" | "full";
@@ -292,7 +290,7 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
   // Deferred, which is what makes a wildcard pick these up at all: TypeScript
   // only admits an extra extension into `include` resolution when its kind
   // says the host owns the file. Declared as TS, every .sts under an `include`
-  // glob was quietly left out of the program and the build still succeeded.
+  // glob would be quietly left out of the program and the build still succeed.
   // How the file is then parsed comes from scriptKindForFileName, not here.
   const extraFileExtensions = parsedSweet.options.macroExtensions.map(
     (extension) => ({

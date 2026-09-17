@@ -11,12 +11,12 @@ import {
  * Syntax captured by a macro and spliced into its template must still have its
  * own macro invocations expanded.
  *
- * Two separate defects broke this. Definition-order visibility compared an
+ * Two things have to hold. Definition-order visibility must not compare an
  * offset from the call site against definition offsets in the macro's own
- * file, so whether a captured invocation expanded depended on where it
- * happened to sit in an unrelated file. And a replacement was walked while
- * still raw, so a captured statement's interior expressions were never given
- * their categories and an expression macro inside one was never recognized.
+ * file, or whether a captured invocation expands depends on where it happens
+ * to sit in an unrelated file. And a replacement must not be walked while
+ * still raw, or a captured statement's interior expressions are never given
+ * their categories and an expression macro inside one is never recognized.
  */
 
 const macros = `
@@ -95,9 +95,9 @@ describe("macro invocations inside captures", () => {
     });
 
   test("expansion does not depend on the call site's offset in its file", () => {
-    // The visibility threshold that broke this was an offset into the macro's
-    // own file, so padding the call site past that offset used to be the
-    // difference between expanding and not.
+    // A visibility threshold taken as an offset into the macro's own file
+    // would make padding the call site past that offset the difference
+    // between expanding and not.
     const short = expand("export const value = wrapExpr(duplicate(1));");
     const padded = expand(
       `${"// padding\n".repeat(20)}export const value = wrapExpr(duplicate(1));`,
@@ -110,9 +110,10 @@ describe("macro invocations inside captures", () => {
 /**
  * A comment above a compile-time import describes the module, not the import.
  *
- * The import is removed from the generated file, and its leading trivia went
- * with it — so a licence header at the top of a `.sts`, or any module comment
- * written above the first `for syntax` import, was deleted from the output.
+ * The import is removed from the generated file, but its leading trivia has to
+ * stay — otherwise a licence header at the top of a `.sts`, or any module
+ * comment written above the first `for syntax` import, is deleted from the
+ * output.
  */
 describe("comments above a compile-time import", () => {
   test("survive the import being removed", () => {

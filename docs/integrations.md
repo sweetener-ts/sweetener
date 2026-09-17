@@ -270,9 +270,6 @@ boundary: assigning a `readonly number[]` export to a `string` is an error in
 plain `tsc`, and editors report it too, because they are running the same
 compiler. Add `*.d.sts.ts` and `*.d.stsx.ts` to `.gitignore`.
 
-This replaces hand-written `declare module "*.sts"` blocks, which have to
-restate every export and go stale silently.
-
 ## Parcel
 
 `@sweetener/parcel-transformer` is a Parcel 2 transformer. It hands the asset
@@ -293,11 +290,11 @@ CommonJS plugin through a `require` it has patched, so it sees each dependency
 as the plugin asks for it. An ES module plugin is loaded with `import()`, which
 Parcel cannot intercept, so it parses the plugin's whole module graph up front
 instead. This plugin's graph reaches the TypeScript compiler, whose bundle
-calls `require` on paths it computes at runtime. Parcel used to report that as
+calls `require` on paths it computes at runtime. Parcel would report that as
 "contains non-statically analyzable dependencies in its module graph" and throw
-away its cache at every startup. A CommonJS entry is never analyzed, so both
-that warning and the cache loss are gone, and so is Parcel's separate warning
-that ES module plugins are experimental. The compiler itself is still an ES
+away its cache at every startup. A CommonJS entry is never analyzed, so Parcel
+raises neither that warning nor its separate warning that ES module plugins are
+experimental, and it keeps its cache. The compiler itself is still an ES
 module; the transformer reaches it with `import()` on the first file it
 expands.
 

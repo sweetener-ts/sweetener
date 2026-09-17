@@ -53,9 +53,8 @@ const libraryFiles = new Map<string, ts.SourceFile>();
  *
  * Read on first use rather than at module load. `getDefaultLibFilePath` throws
  * "only supported when consumed as a node module" outside Node, so computing
- * it eagerly made this module — and so the compiler — impossible to import in
- * a bundled worker at all. The playground is one, and its built worker stopped
- * loading.
+ * it eagerly would make this module — and so the compiler — impossible to
+ * import in a bundled worker at all, such as the playground's.
  *
  * Where it does throw there is no directory of library files on disk to share
  * parses of, so nothing is one. That is the honest answer in a browser, not a

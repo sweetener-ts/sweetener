@@ -165,8 +165,8 @@ export function createSweetenerSession(
     const project = loadSweetProject(configFile);
     // A config that cannot be read parses as an empty project, and every file
     // then looks merely left out of it. The command line refuses such a
-    // project before expanding; an adapter used to expand anyway and report a
-    // configFile pointing at nothing as the source not being opted in.
+    // project before expanding, and so does an adapter: expanding anyway would
+    // report a configFile pointing at nothing as the source not being opted in.
     const configurationErrors = [
       ...project.typescript.errors.map((diagnostic) =>
         ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
@@ -236,11 +236,10 @@ export function createSweetenerSession(
       cacheKey,
       virtualFilename: canonical(generated.fileName),
     });
-    // A failed expansion is not a result to remember. The public surface says
-    // partial results must not enter a content-addressed cache, and that was
-    // stated of a class this pipeline does not use — this is the cache it
-    // actually has. Recomputing a failure is cheap and always correct; serving
-    // one from a cache outlives the reason for it.
+    // A failed expansion is not a result to remember: partial results must not
+    // enter a content-addressed cache, and this is the one this pipeline has.
+    // Recomputing a failure is cheap and always correct; serving one from a
+    // cache outlives the reason for it.
     if (result.diagnostics.length === 0)
       cache.set(cacheKey, {
         result,

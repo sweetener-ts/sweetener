@@ -28,7 +28,7 @@ export interface SourceKind {
  * Extension of the virtual file produced for each supported macro extension.
  *
  * This is a closed table rather than a string transformation: an unrecognized
- * extension previously produced a silently wrong virtual name, which fed the
+ * extension would produce a silently wrong virtual name, which would feed the
  * unexpanded macro source to TypeScript.
  */
 const macroExtensionTargets = new Map<string, string>([

@@ -12,9 +12,9 @@ import {
  *
  * TypeScript's scanner labels words such as `unique`, `type` and `from` as
  * keywords, though they are ordinary identifiers wherever a name is expected.
- * The `fields` block accepted only tokens scanned as identifiers, so a field
- * named `unique` was reported as a malformed declaration and every later use
- * of it as a field that did not exist.
+ * A `fields` block that accepted only tokens scanned as identifiers would
+ * report a field named `unique` as a malformed declaration and every later use
+ * of it as a field that does not exist.
  */
 
 function run(macros: string, source: string) {

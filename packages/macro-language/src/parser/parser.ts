@@ -538,16 +538,17 @@ class Parser {
     const segments: Syntax[][] = [[]];
     for (const node of nodes) {
       // A clause ends at its `;`, and also where the next one begins. Splitting
-      // on `;` alone folded a clause that followed an unterminated one into it:
+      // on `;` alone would fold a clause that follows an unterminated one into
+      // it:
       //
       //   rule { matchBind($subject:expr, $name:binding); }
       //   refine $name spelling starts-with-lowercase
       //   bind $name in following as lexical value;
       //
-      // read as a single refinement whose predicate ran on past
-      // `starts-with-lowercase`, so it parsed as neither clause -- the rule
-      // matched anything it was refined to exclude, and the binding contract
-      // was dropped, with nothing said about either.
+      // would read as a single refinement whose predicate runs on past
+      // `starts-with-lowercase`, so it would parse as neither clause -- the
+      // rule would match anything it is refined to exclude, and the binding
+      // contract would be dropped, with nothing said about either.
       //
       // A keyword only begins a clause where a clause could begin. One spelled
       // inside a clause stands in a group or a string, neither of which is a
@@ -606,9 +607,9 @@ class Parser {
       const current = nodes[index];
       // A `|` between alternatives is written with space on either side of it,
       // which is what tells it from a `|` the pattern matches literally --
-      // `$name |= ...` matches an assignment operator. Only the space after it
-      // was asked about, so the rule read backwards for one of the two
-      // one-sided spellings: `$x:tt| $y:tt` was a choice and `$x:tt |$y:tt` was
+      // `$name |= ...` matches an assignment operator. Both sides are asked
+      // about: going by the space after it alone would read the two one-sided
+      // spellings backwards, making `$x:tt| $y:tt` a choice and `$x:tt |$y:tt`
       // a literal, neither of which anyone writes on purpose.
       const previous = nodes[index - 1];
       if (

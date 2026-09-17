@@ -16,9 +16,8 @@ const root = resolve(import.meta.dirname, "..");
 const output = join(root, "artifacts", "release");
 const staging = join(output, "staging");
 const tarballs = join(output, "tarballs");
-// The one place the release version is written. It was a constant here, which
-// made bumping it an edit to a build script rather than to the thing `npm
-// version` bumps.
+// The one place the release version is written is the root manifest, so
+// bumping it is what `npm version` does rather than an edit to a build script.
 const version = JSON.parse(
   await readFile(join(root, "package.json"), "utf8"),
 ).version;
@@ -32,11 +31,10 @@ const packageDirectories = await publishedDirectories(root);
 /**
  * What a package's npm page says.
  *
- * Every one of these used to read "Alpha package from Sweetener language
- * version 1." and nothing else — a blank page, for a project whose whole value
- * is integrating with something. The ones a consumer installs deliberately get
- * the snippet that makes them work; the internals say what they are and point
- * at the package people should actually reach for.
+ * A page that only says "Alpha package" is a blank page, for a project whose
+ * whole value is integrating with something. The ones a consumer installs
+ * deliberately get the snippet that makes them work; the internals say what
+ * they are and point at the package people should actually reach for.
  */
 const summaries = {
   cli: {
@@ -188,9 +186,8 @@ const summaries = {
 function readmeFor(name, directory) {
   const summary = summaries[directory];
   // Every published package is one someone installs deliberately, so every one
-  // has something to say. This used to fall back to a sentence about being an
-  // internal part of the compiler, which is what the layers now inside
-  // `@sweetener/compiler` published instead of a page.
+  // has something to say, and a missing summary is an error rather than a
+  // generic sentence about being an internal part of the compiler.
   if (summary === undefined)
     throw new Error(
       `No README summary for ${directory}. Add one to \`summaries\` in this script, or absorb the package into @sweetener/${core}.`,
@@ -277,8 +274,8 @@ for (const directory of packageDirectories) {
       },
     );
   // Everything the package says it ships, not just `dist` — a package whose
-  // command lives outside `dist` was staged without it, so the tarball
-  // declared a command it did not contain.
+  // command lives outside `dist` would be staged without it, and the tarball
+  // would declare a command it does not contain.
   for (const entry of layers.length > 0 ? [] : (manifest.files ?? ["dist"])) {
     // `sweetener guide` prints the repository's guide, which is kept at the
     // root where the README links to it rather than copied into the package
@@ -289,9 +286,10 @@ for (const directory of packageDirectories) {
     }
     await cp(join(sourceDirectory, entry), join(targetDirectory, entry), {
       // Compiled tests and the incremental build log are not part of the
-      // package. `files: ["dist"]` swept them in: 128 test artifacts in the
-      // command line, 104 in expansion, each importing a devDependency —
-      // vitest, vite, webpack, @parcel/core — that a consumer never installs.
+      // package. `files: ["dist"]` alone sweeps them in: over a hundred test
+      // artifacts in the command line and in expansion, each importing a
+      // devDependency — vitest, vite, webpack, @parcel/core — that a consumer
+      // never installs.
       filter: (path) =>
         !/(?:^|[\\/])(?:test|\.tsbuildinfo)(?:[\\/]|$)/u.test(
           path.slice(sourceDirectory.length),
@@ -300,8 +298,8 @@ for (const directory of packageDirectories) {
     });
   }
   if (layers.length > 0)
-    // Inside the merged package a layer reaches its neighbour by path. The
-    // names it used to import are the directories it now sits beside.
+    // Inside the merged package a layer reaches its neighbour by path: each
+    // `@sweetener/<layer>` it imports is a directory beside it.
     await rewriteSpecifiers(targetDirectory, (specifier, file) => {
       const layer = specifier.slice("@sweetener/".length);
       if (!layers.includes(layer)) return undefined;
@@ -325,8 +323,7 @@ for (const directory of packageDirectories) {
     });
   const dependencies = Object.fromEntries(
     Object.entries(manifest.dependencies ?? {})
-      // An absorbed layer is not a dependency any more; the package that holds
-      // it is.
+      // An absorbed layer is not a dependency; the package that holds it is.
       .map(([name, requirement]) =>
         absorbed.includes(name.slice("@sweetener/".length))
           ? [`@sweetener/${core}`, `workspace:*`]
@@ -453,9 +450,8 @@ const release = {
   originMapSchemaVersion: 1,
   expansionTraceSchemaVersion: 1,
   fixtureVersion: "1",
-  // The same floor the packages carry. This said `>=24 <25` while every
-  // package it describes said `>=24`, and the compatibility workflow passes
-  // on current Node.
+  // The same floor the packages carry: a floor, not a range, because the
+  // compatibility workflow passes on current Node.
   node: ">=24",
   typescriptApi: "6.0.x",
   packages,

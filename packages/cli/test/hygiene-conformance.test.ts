@@ -9,11 +9,10 @@ const fixture = resolve("fixtures/conformance/hygiene/semantic-suite");
 /**
  * The hygiene conformance fixture, expanded.
  *
- * It used to be checked by asserting that the list of scenario names in the
- * fixture equalled a list of the same names in the test, over an `input.sts`
- * that called macros its own `macros.sts` never defined and could not expand.
- * That said nothing about hygiene. This runs the fixture and reads what came
- * out.
+ * Asserting that the fixture's scenario names match a list in the test says
+ * nothing about hygiene on its own, and nothing at all if `input.sts` calls
+ * macros its `macros.sts` never defines. This runs the fixture and reads what
+ * comes out.
  */
 function expandFixture(): string {
   const directory = mkdtempSync(join(tmpdir(), "sweet-conformance-"));

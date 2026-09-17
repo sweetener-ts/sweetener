@@ -76,9 +76,9 @@ for (const item of release.packages) {
   )
     problems.push(`workspace dependency in ${item.name}`);
 }
-// Named for the release rather than pinned to one. The version literal used
-// to sit here as well as in the staging script, so cutting a second release
-// meant editing the check that was meant to police it.
+// Named for the release rather than pinned to one. A version literal here as
+// well as in the staging script would make cutting a release mean editing the
+// check that is meant to police it.
 for (const document of [
   `${release.release}.md`,
   "compatibility-matrix.md",

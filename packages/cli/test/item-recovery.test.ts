@@ -10,13 +10,13 @@ import {
 /**
  * An item the enforester cannot consume must not be passed through in silence.
  *
- * The item loop used to fall back to swallowing raw syntax up to the next
- * top-level `;` and protecting it as an opaque item. A bare `import "./x"`
- * with no semicolon took that path, and because the only remaining semicolons
- * were nested inside a following declaration's braces, the fallback consumed
- * the rest of the file. Every macro invocation in it was emitted verbatim,
- * the expansion reported no diagnostics at all, and every adapter built the
- * result happily — so a bundle shipped calling a macro that no longer existed.
+ * A fallback that swallows raw syntax up to the next top-level `;` and
+ * protects it as an opaque item fails badly on a bare `import "./x"` with no
+ * semicolon: when the only remaining semicolons are nested inside a following
+ * declaration's braces, it consumes the rest of the file. Every macro
+ * invocation in it is emitted verbatim, the expansion reports no diagnostics
+ * at all, and every adapter builds the result happily — so a bundle ships
+ * calling a macro that does not exist at run time.
  *
  * Two things have to hold. Recovery has to stop at the item boundary the
  * reader already knows about rather than hunting for a semicolon, so ordinary

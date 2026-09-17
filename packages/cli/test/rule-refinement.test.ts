@@ -11,16 +11,17 @@ import {
  * A macro rule's `refine` clauses narrow what it accepts beyond what its
  * pattern can say.
  *
- * Macro rules took the same clauses a syntax-class rule does and dropped them,
- * so two rules told apart only by a refinement both matched and the first one
- * written answered for both. A `match` macro whose binder arm is refined to
- * lowercase spellings bound `Ready` as a binder rather than comparing against
- * it, and every arm of the match reported itself taken.
+ * Macro rules take the same clauses a syntax-class rule does, and have to
+ * apply them: dropped, two rules told apart only by a refinement both match
+ * and the first one written answers for both. A `match` macro whose binder arm
+ * is refined to lowercase spellings would bind `Ready` as a binder rather than
+ * compare against it, and every arm of the match would report itself taken.
  *
- * A clause also used to end only at a `;`, so an unterminated one swallowed the
- * clause after it. `refine` followed by `bind` parsed as a single refinement
- * whose predicate ran on past its own end: the refinement was rejected and the
- * binding contract was dropped, with nothing said about either.
+ * A clause also ends where the next clause begins, not only at a `;`. Otherwise
+ * an unterminated one swallows the clause after it: `refine` followed by `bind`
+ * parses as a single refinement whose predicate runs on past its own end, the
+ * refinement is rejected and the binding contract dropped, with nothing said
+ * about either.
  */
 
 interface Case {
@@ -146,10 +147,10 @@ export syntax only:expr {
   });
 
   test("a capture that is not one token refuses a spelling refinement", () => {
-    // `find`ing the first token out of a capture answered for the whole of it,
-    // and a capture with no token at that position answered nothing at all --
-    // so the refinement passed vacuously on everything it was written to
-    // exclude.
+    // `find`ing the first token out of a capture would answer for the whole of
+    // it, and a capture with no token at that position would answer nothing at
+    // all -- so the refinement would pass vacuously on everything it is
+    // written to exclude.
     const { generated, messages } = run({
       macros: `
 export syntax low:expr {

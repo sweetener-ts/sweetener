@@ -11,15 +11,15 @@ import {
  * Where a custom operator is dispatched, and what counts as writing one.
  *
  * An operator whose spelling the scanner splits across tokens -- `<-` is `<`
- * then `-` -- was matched by joining the tokens' text however they were
- * spaced, so `a < - b`, a comparison against a negation, was read as the
- * operator: ordinary TypeScript silently given another meaning in any file
- * that merely had the operator in scope.
+ * then `-` -- is written only when those tokens are written together. Matching
+ * the joined text however it is spaced would read `a < - b`, a comparison
+ * against a negation, as the operator: ordinary TypeScript silently given
+ * another meaning in any file that merely has the operator in scope.
  *
- * In the other direction, a group standing in an expression holds expressions,
- * and only brackets were walked that way -- so `(a <- b)` and every call
- * argument spelled with a custom operator kept the reading the ordinary parse
- * gave them, silently and with no diagnostic.
+ * In the other direction, every group standing in an expression holds
+ * expressions, not only brackets. Otherwise `(a <- b)` and every call argument
+ * spelled with a custom operator keep the reading the ordinary parse gives
+ * them, silently and with no diagnostic.
  */
 
 const macros = `
@@ -64,8 +64,8 @@ function expand(source: string): string {
 describe("what counts as writing a multi-token operator", () => {
   test("tokens written together are the operator", () => {
     // The rule's template writes `assign($left, $right)`, and that spacing is
-    // now the expansion's, so both spellings print alike; what is under test
-    // is that each of them dispatched the operator at all.
+    // the expansion's, so both spellings print alike; what is under test is
+    // that each of them dispatches the operator at all.
     expect(expand("export const x = a <- b;")).toContain("assign(a, b)");
     expect(expand("export const x = a <-b;")).toContain("assign(a, b)");
   });
@@ -105,10 +105,9 @@ describe("where an operator is dispatched", () => {
   });
 
   test("inside an arrow's body", () => {
-    // An arrow was taken by measuring how far it reaches, which left its body
-    // as the tokens it was written with rather than as the expression it is.
-    // `[1, 2].map((n) => n |> double)` is the obvious thing to write, and the
-    // operator was never offered it.
+    // An arrow's body is an expression, not the tokens it is written with, so
+    // the operator has to be offered it. `[1, 2].map((n) => n |> double)` is
+    // the obvious thing to write.
     expect(expand("export const x = [a].map((n) => n <- b);")).toContain(
       "(n) => assign(n, b)",
     );
@@ -133,8 +132,8 @@ describe("where an operator is dispatched", () => {
   });
 
   test("an arrow whose body holds no operator is printed as written", () => {
-    // The body is parsed now, so it reaches the printer as one node. Wrapping
-    // that in parentheses would spell the same function worse.
+    // The body is parsed, so it reaches the printer as one node. Wrapping that
+    // in parentheses would spell the same function worse.
     const generated = expand("export const f = (value: number) => value + 1;");
     expect(generated).toContain("(value: number) => value + 1");
   });

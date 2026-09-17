@@ -179,9 +179,9 @@ function phrase(
 /**
  * What the closest rule was still waiting for, as a phrase for a person.
  *
- * A macro that matches nothing reports how many rules were tried, which says
- * only that something is wrong. The matcher already records what each rule
- * wanted where it stopped; this is that, in the order it would be written.
+ * How many rules were tried would say only that something is wrong. The
+ * matcher records what each rule wanted where it stopped; this is that, in the
+ * order it would be written.
  */
 export function describeExpectations(
   expectations: readonly MatcherExpectation[],

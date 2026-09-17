@@ -8,12 +8,12 @@ import { watchConfiguredProject } from "../src/index.js";
 /**
  * What a watch follows, and how often it builds.
  *
- * The set of watched files was taken once, when the watch began. A file added
- * to the project afterwards, and a macro module a file newly imported, were
- * never watched -- editing either rebuilt nothing, and the build kept
- * reporting what it had found before. Nor was there any delay: an editor
- * writing one file in two steps, or a save across several files, started a
- * build for each write.
+ * The set of watched files cannot be taken once, when the watch begins. A file
+ * added to the project afterwards, and a macro module a file newly imports,
+ * have to be watched too -- otherwise editing either rebuilds nothing, and the
+ * build keeps reporting what it found before. Builds are also delayed: an
+ * editor writing one file in two steps, or a save across several files, must
+ * not start a build for each write.
  */
 
 function project(): string {

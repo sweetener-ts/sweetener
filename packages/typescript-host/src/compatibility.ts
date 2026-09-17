@@ -1,10 +1,9 @@
 /**
  * A floor, not an equality.
  *
- * This required Node 24 exactly, which refused every Node newer than the one
- * the matrix happened to list — the same ceiling the packages carried as
- * `>=24 <25`. The compatibility workflow runs 26 and the suite passes on it,
- * so an exact match rejected a runtime this project supports.
+ * The compatibility workflow runs Node 26 and the suite passes on it, so an
+ * exact match, or a ceiling such as `>=24 <25`, would reject a runtime this
+ * project supports.
  */
 export const minimumNodeMajor = 24 as const;
 export const supportedTypeScriptLine = "6.0" as const;

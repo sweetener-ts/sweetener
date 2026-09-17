@@ -64,7 +64,7 @@ macro expansion with the parsing needed by the current context.
 ## Playground input
 
 The phase-planning pass reviewed the examples at
-`/Users/jimmyhmiller/Documents/Code/PlayGround/sweetjs`. They now define the
+`/Users/jimmyhmiller/Documents/Code/PlayGround/sweetjs`. They define the
 mandatory expressiveness contract in
 [Phase 0](docs/proposals/00-expressiveness-contract.md). The project still needs
 approved copies and expected TypeScript expansions under its own fixture tree.

@@ -40,10 +40,10 @@ function project(): {
 /**
  * A file may import one macro module twice: once plainly, and once
  * `for syntax shadows core` for a name that intercepts a core form. The
- * authorization was read off the first import statement naming the module
- * rather than the one declaring the name, so a plain import written above a
- * shadowing one silently cancelled it -- `typeof NaN` kept its built-in
- * meaning, and which import came first decided the program's meaning.
+ * authorization comes from the import declaring the name, not the first import
+ * naming the module; otherwise a plain import written above a shadowing one
+ * silently cancels it -- `typeof NaN` keeps its built-in meaning, and which
+ * import comes first decides the program's meaning.
  */
 describe("core shadowing across several imports of one module", () => {
   function shadowProject(mainSource: string): {
@@ -198,8 +198,8 @@ describe("public compiler session", () => {
   test("names the config a build tool could not read, not the source", async () => {
     // A configFile that is not there parses as an empty project, in which every
     // file looks merely unlisted. Farm resolves a relative config against its
-    // own bundled config directory, so an adapter reached this with a path that
-    // did not exist and reported the .sts as not opted in.
+    // own bundled config directory, so an adapter can reach this with a path
+    // that does not exist, and must not report the .sts as merely not opted in.
     const fixture = project();
     const session = createSweetenerSession();
     await expect(
@@ -260,10 +260,9 @@ function readFile(fileName: string): string {
 }
 
 test("does not cache an expansion that failed", async () => {
-  // The public surface says a partial or failed result must not be cached.
-  // That was stated of a class this pipeline does not use; this is the cache
-  // it has. A remembered failure outlives the reason for it — fix the macro
-  // and the old diagnostics come back.
+  // The public surface says a partial or failed result must not be cached,
+  // and this is the cache the pipeline has. A remembered failure outlives the
+  // reason for it — fix the macro and the old diagnostics come back.
   const fixture = project();
   const macros = fixture.main.replace("main.sts", "macros.sts");
   writeFileSync(

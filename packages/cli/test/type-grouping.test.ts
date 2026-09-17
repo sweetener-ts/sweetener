@@ -12,9 +12,9 @@ import {
  *
  * `|` and `&` bind looser than the postfix `[]` and than indexed access, so a
  * macro spliced loose into the type around it is re-associated by whatever
- * follows: `orNull(string)[]` printed as `string | null[]`, which is an array
- * of `null` unioned with `string` rather than an array of `string | null`. The
- * program still type-checked, under the wrong type, with nothing to say it had
+ * follows: `orNull(string)[]` printed as `string | null[]` is an array of
+ * `null` unioned with `string` rather than an array of `string | null`. The
+ * program still type-checks, under the wrong type, with nothing to say it has
  * happened.
  *
  * Grouping is only added where something could re-associate. A macro expanding
@@ -101,8 +101,8 @@ describe("grouping a type expansion", () => {
   });
 
   test("the grouping stands outside the layout before it", () => {
-    // Emitted the moment the group was reached, the parenthesis landed before
-    // the first token's leading trivia and printed `=( string | null)[]`.
+    // Emitted the moment the group is reached, the parenthesis lands before
+    // the first token's leading trivia and prints `=( string | null)[]`.
     const generated = expand("export type A = orNull(string)[];");
     expect(generated).toContain("= (string | null)[]");
     expect(generated).not.toContain("=(");
@@ -110,7 +110,7 @@ describe("grouping a type expansion", () => {
 
   test("an expansion still enforests back into one type", () => {
     // Keeping the expansion whole means the type consumer meets a protected
-    // type where it used to meet the expansion's tokens.
+    // type rather than the expansion's tokens, and has to accept it.
     expect(expand("export const value: orNull(string) = null;")).toContain(
       "string | null",
     );

@@ -138,11 +138,11 @@ wrapped const example = { single: 'quoted' };
  *
  * Semicolons and quotes are real tokens to a macro matcher, so Prettier's
  * normalizing of them cannot be applied — the implicit-return macro below
- * shows what it would cost. Counting them as changed tokens, though, meant a
- * file written without semicolons, or holding a single-quoted string, failed
- * the check entirely and came back unformatted with nothing said about it. The
- * file is printed again with the other choice instead, so its own style is
- * what survives and everything around it still gets formatted.
+ * shows what it would cost. Counting them as changed tokens, though, would
+ * fail a file written without semicolons, or holding a single-quoted string,
+ * entirely, returning it unformatted with nothing said about it. The file is
+ * printed again with the other choice instead, so its own style is what
+ * survives and everything around it still gets formatted.
  */
 describe("formatting a file written in its own style", () => {
   const cases: readonly (readonly [string, string, string])[] = [
@@ -199,8 +199,8 @@ describe("formatting a file written in its own style", () => {
 
 /**
  * The project's own Prettier settings have to reach the inner format call.
- * Only `trailingComma` is pinned; everything else was dropped, so a `.sts` was
- * formatted to Prettier's defaults no matter what the repository configured.
+ * Only `trailingComma` is pinned; dropping the rest would format a `.sts` to
+ * Prettier's defaults no matter what the repository configures.
  */
 describe("project Prettier options", () => {
   test("honours semi: false", async () => {
@@ -236,10 +236,10 @@ describe("project Prettier options", () => {
  * A compile-time import ends at a line break, so the formatter must too.
  *
  * The mask that stands in for the import while Prettier formats the file
- * looked only for the import's semicolon. A `for syntax` import written
- * without one — which the compiler accepts, as it does for any statement — was
- * therefore never masked, Prettier could not parse `for syntax`, and the whole
- * file came back unformatted with nothing said about it.
+ * cannot look only for the import's semicolon. A `for syntax` import written
+ * without one — which the compiler accepts, as it does for any statement —
+ * would never be masked, Prettier cannot parse `for syntax`, and the whole
+ * file would come back unformatted with nothing said about it.
  */
 describe("a compile-time import with no semicolon", () => {
   test("is masked, so the file around it still formats", async () => {
@@ -277,9 +277,9 @@ describe("a compile-time import with no semicolon", () => {
  * Sweetener imports a macro by whatever it is called, and two of the things it
  * can be called are not identifiers: an operator, `(|>)`, and a core form
  * being shadowed, `typeof`. Prettier parses what is left after the
- * compile-time tail is masked, and neither is TypeScript, so it failed to
- * parse and returned the file untouched — for the pipeline operator that opens
- * the README, among others.
+ * compile-time tail is masked, and neither is TypeScript, so unless both are
+ * masked it fails to parse and returns the file untouched — for the pipeline
+ * operator that opens the README, among others.
  */
 describe("importing a macro that is not named by an identifier", () => {
   const cases: readonly (readonly [string, string])[] = [
@@ -308,7 +308,7 @@ describe("importing a macro that is not named by an identifier", () => {
 
   test("does not let a stand-in change where the import wraps", async () => {
     // The stand-ins occupy the width of what they replace while Prettier
-    // decides on line breaks; long ones wrapped imports that fit.
+    // decides on line breaks; longer ones would wrap imports that fit.
     expect(
       await formatSweetenerWithPrettier(
         `import { twice, (|>) } from "./ops.sts" for syntax;\nconst   x=1;\n`,
@@ -356,7 +356,7 @@ describe("formatting that would change what a macro matches", () => {
  * The stand-in for a compile-time import is written as an import-attributes
  * clause, and Prettier prints it under the project's own settings: `semi:
  * false` drops its semicolon, `singleQuote` rewrites its quotes. Restoration
- * searched for the text as written, found nothing, and returned the file
+ * that searches for the text as written finds nothing and returns the file
  * untouched — which is every file with a compile-time import in it, in any
  * project configured either way.
  */

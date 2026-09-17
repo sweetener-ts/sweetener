@@ -39,7 +39,7 @@ describe("resource budgets", () => {
   it("measures the deadline from when it started, not from the epoch", () => {
     // A deadline is how long expansion may take. Compared against the clock
     // directly, any plausible setting is a moment decades past and fails on
-    // the first check — which is what `deadlineMs: 30000` used to do.
+    // the first check, as `deadlineMs: 30000` would.
     let clock = 1_000_000;
     const tracker = new ResourceTracker(
       createResourceBudget({ deadlineMs: 10 }),

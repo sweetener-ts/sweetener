@@ -68,12 +68,10 @@ export interface RepeatTemplate extends TemplateBase {
 /**
  * A conditional asks whether an optional capture matched.
  *
- * It once also offered `alternative`, which asked which of a pattern's choices
- * a capture took. Nothing on the matching side ever recorded that, so the
- * question was always answered no and the `#else` branch was taken for every
- * input. A syntax class with a rule per shape and an optional field for each
- * answers the same question, and does work, so the predicate that did not is
- * gone rather than kept as a second way to ask.
+ * `present` is the only predicate. Which of a pattern's choices a capture took
+ * is not recorded on the matching side, so it is not something a conditional
+ * can ask; a syntax class with a rule per shape and an optional field for each
+ * answers that question.
  */
 export type ConditionalPredicate = {
   readonly kind: "present";

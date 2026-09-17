@@ -119,7 +119,7 @@ describe('"use sweetener" opt-in', () => {
   test("parses the generated file as JavaScript, not TypeScript", () => {
     // `f(a) < b > (c)` is a pair of comparisons in JavaScript and a call with
     // a type argument in TypeScript, which erases to `f(a)(c)`. Presenting the
-    // expansion under a `.ts` name made TypeScript take the second reading and
+    // expansion under a `.ts` name makes TypeScript take the second reading and
     // silently emit different code for legal JavaScript.
     const { directory, config } = project({
       files: {

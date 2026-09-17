@@ -13,10 +13,10 @@ import {
  *
  * A `|` between alternatives is written with a space on either side of it,
  * which is what tells it from a `|` the pattern matches literally -- `$name |=
- * $value` matches an assignment operator. Only the space after it was asked
- * about, so the rule read backwards for one of the two one-sided spellings:
- * `$x:tt| $y:tt` was a choice and `$x:tt |$y:tt` was a literal, neither of
- * which anyone writes on purpose.
+ * $value` matches an assignment operator. Both spaces count: asking only about
+ * the one after it reads the rule backwards for one of the two one-sided
+ * spellings, making `$x:tt| $y:tt` a choice and `$x:tt |$y:tt` a literal,
+ * neither of which anyone writes on purpose.
  */
 
 function run(macros: string, source: string) {

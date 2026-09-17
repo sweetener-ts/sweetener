@@ -295,9 +295,9 @@ function runtimeSyntax(file: ParsedFile, origins: OriginStore) {
   const ranges = compileTimeRanges(file, origins);
   const kept: Syntax[] = [];
   // Comments written above a compile-time import describe the module, not the
-  // import: a licence header at the top of a file was deleted from the output
-  // along with the import it happened to sit on. They move to whatever
-  // survives instead. Comments inside the removed construct go with it.
+  // import, and a licence header at the top of a file must not be deleted from
+  // the output along with the import it happens to sit on. They move to
+  // whatever survives instead. Comments inside the removed construct go with it.
   let carried: readonly Trivia[] = [];
   for (const syntax of file.root.children) {
     if (syntax.tag === "token" && syntax.kind === "end-of-file") continue;
@@ -822,8 +822,8 @@ export class DefaultProjectExpansionProvider
     };
     const discovered = new Set<string>();
     // Which macro modules each file reads its macros from. A file whose macros
-    // did not compile expands into itself, and saying nothing about that
-    // reported the unexpanded source as the expansion.
+    // did not compile expands into itself, and saying nothing about that would
+    // report the unexpanded source as the expansion.
     const macroSources = new Map<string, Set<SourceId>>();
     const dependsOn = (importer: ParsedFile, target: ParsedFile): void => {
       let sources = macroSources.get(importer.fileName);
@@ -1258,9 +1258,9 @@ export class DefaultProjectExpansionProvider
             // The statement that declares this name, not merely the first one
             // naming the same module. A file may import one module twice --
             // once plainly and once `for syntax shadows core` -- and reading
-            // `shadowsCore` off the first statement silently dropped the
-            // authorization, so the core form kept its built-in meaning and
-            // which import came first decided it.
+            // `shadowsCore` off the first statement would silently drop the
+            // authorization, so the core form would keep its built-in meaning
+            // whenever the plain import came first.
             const sourceImport =
               importer.imports.imports.find(
                 (candidate) =>
@@ -1506,9 +1506,9 @@ export class DefaultProjectExpansionProvider
           // what it holds is unexpanded rather than presenting it as output --
           // and the errors raised against the macro modules it reads its
           // macros from, which stop those macros running and leave this file
-          // expanding into itself. Reporting only the first meant `expand`
-          // printed the unexpanded source and reported success whenever the
-          // fault was in the macros rather than in their use.
+          // expanding into itself. Reporting only the first would have `expand`
+          // print the unexpanded source and report success whenever the fault
+          // is in the macros rather than in their use.
           diagnostics: Object.freeze(
             diagnostics
               .filter(

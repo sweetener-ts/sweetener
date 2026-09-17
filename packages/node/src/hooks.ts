@@ -61,9 +61,9 @@ export async function load(
  *
  * Node is handed expanded, type-stripped JavaScript under the original file
  * name, and without a map `--enable-source-maps` has nothing to correct: every
- * frame was reported at its position in the expansion, off by however many
- * lines the compile-time import and the macro definitions occupied, and the
- * frame Node printed was read from the `.sts` at that wrong line.
+ * frame would be reported at its position in the expansion, off by however
+ * many lines the compile-time import and the macro definitions occupy, and the
+ * frame Node prints would be read from the `.sts` at that wrong line.
  */
 function withSourceMap(
   expanded: { composeMap(map: RawSourceMap): RawSourceMap | undefined },

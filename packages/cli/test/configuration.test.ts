@@ -99,9 +99,9 @@ describe("macro sources under wildcard globs", () => {
   };
 
   test("an include glob resolves them, as it does ordinary TypeScript", () => {
-    // They used to be left out of the program entirely while the build still
-    // reported success, so a project laid out the ordinary way compiled none
-    // of its macros and was told nothing.
+    // Left out of the program, they are never compiled while the build still
+    // reports success, so a project laid out the ordinary way compiles none of
+    // its macros and is told nothing.
     const directory = project({ ...base, include: ["src"] });
     const loaded = loadSweetProject(join(directory, "tsconfig.json"));
     const names = loaded.typescript.fileNames.map((name) =>

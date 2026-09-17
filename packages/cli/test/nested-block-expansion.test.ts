@@ -11,11 +11,11 @@ import {
  * Macros must expand wherever their category is valid, not only at the top
  * level of a module.
  *
- * Blocks used to be carried through expansion as opaque token trees, so an
+ * A block carried through expansion as an opaque token tree leaves an
  * expression macro inside any function body, control-flow block, or class
- * method was silently left unexpanded and only failed later as an
- * "unknown name" error from TypeScript. The acceptance corpus never invoked an
- * expression macro inside a block, so nothing caught it.
+ * method silently unexpanded, failing only later as an "unknown name" error
+ * from TypeScript. The acceptance corpus invokes no expression macro inside a
+ * block, so these are what catch it.
  */
 
 const macros = `

@@ -12,9 +12,9 @@ import {
  * A `token` capture takes a whole operator of the `>` family.
  *
  * TypeScript's scanner reads `>=` as `>` then `=`, because a `>` may close a
- * list of type arguments. A `$op:token` capture took just the `>`, and the
- * rule then failed on the `=`, so a macro could not capture a comparison
- * operator generically and needed one literal rule per operator.
+ * list of type arguments. A `$op:token` capture that took just the `>` would
+ * leave the rule to fail on the `=`, so a macro could not capture a comparison
+ * operator generically and would need one literal rule per operator.
  */
 
 const macros = `

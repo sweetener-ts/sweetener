@@ -83,8 +83,8 @@ describe("incremental equivalence protocol", () => {
     });
     expect(steps.map(({ name }) => name)).toEqual(cases.map(([name]) => name));
     expect(steps.every(({ runtime }) => Array.isArray(runtime))).toBe(true);
-    // Still the slowest test in the suite — it builds a project clean and
-    // again incrementally for every edit class — but sharing the parsed
-    // library files across programs left it well inside this.
+    // The slowest test in the suite — it builds a project clean and again
+    // incrementally for every edit class — but sharing the parsed library
+    // files across programs keeps it well inside this.
   }, 60_000);
 });

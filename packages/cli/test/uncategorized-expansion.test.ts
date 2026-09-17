@@ -11,10 +11,10 @@ import {
  * A macro's expansion has to read as one node of the category the macro
  * declares.
  *
- * When it did not, the enforestation threw. A thrown error is not a
- * diagnostic: the project command caught it as an internal fault, abandoned
- * the expansion of every file, produced no output at all, and reported a
- * message that named neither the macro nor where it was written.
+ * When it does not, that is a diagnostic, not a thrown error. Thrown, it is
+ * caught by the project command as an internal fault that abandons the
+ * expansion of every file, produces no output at all, and reports a message
+ * naming neither the macro nor where it was written.
  */
 
 function run(macros: string, source: string) {

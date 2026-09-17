@@ -26,10 +26,9 @@ function loaderFor(filename: string): "ts" | "tsx" | "js" | "jsx" {
  * Expansion emits TypeScript, and only some hosts can take it from here. Vite
  * runs its own Oxc transform in the entry point beside this one; esbuild and
  * Bun are told the loader to use and strip types themselves. The rest have no
- * TypeScript at all, and were handed `export const x: T = ...` — which they
- * reported as `'const' declarations must be initialized`, an error naming
- * neither Sweetener nor types. Their fixtures were untyped, so nothing caught
- * it. These hosts get the types stripped for them.
+ * TypeScript at all, and handed `export const x: T = ...` they report
+ * `'const' declarations must be initialized`, an error naming neither
+ * Sweetener nor types. These hosts get the types stripped for them.
  */
 const stripsTypeScript = new Set([
   "rollup",

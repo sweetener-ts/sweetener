@@ -147,10 +147,10 @@ function roleFor(
         ? "property"
         : "reference";
     // A label declares a name and `break`/`continue` refer to one, in a
-    // namespace of their own. Reading both as properties meant a label a macro
-    // introduced was never renamed, so it collided with a label of the same
+    // namespace of their own. Read as properties, a label a macro introduces
+    // would never be renamed, so it would collide with a label of the same
     // spelling around the call site: a duplicate label, and a `break` that
-    // left whichever loop the collision left standing.
+    // leaves whichever loop the collision leaves standing.
     case ts.SyntaxKind.LabeledStatement:
       return (parent as ts.LabeledStatement).label === identifier
         ? "binder"
@@ -367,11 +367,11 @@ export function planHygienicRenames(
   /**
    * Whether an `export { name }` in this file names this binder.
    *
-   * The check was by spelling alone, so a call site that exported its own
-   * `tmp` pinned a macro-introduced `tmp` as well -- leaving two `const tmp`
-   * declarations in the output and a redeclaration error where hygiene should
-   * have renamed one of them. An export specifier resolves the way any
-   * reference does: to a binder whose scopes it contains.
+   * An export specifier resolves the way any reference does: to a binder whose
+   * scopes it contains. Checked by spelling alone, a call site that exports
+   * its own `tmp` would pin a macro-introduced `tmp` as well -- leaving two
+   * `const tmp` declarations in the output and a redeclaration error where
+   * hygiene should have renamed one of them.
    */
   const isExported = (token: TokenSyntax): boolean =>
     exportSpecifiers.some(

@@ -604,7 +604,7 @@ declare const g: number;
 export const value = async () => 1 |> await g;
 `,
     );
-    // It expanded to \`await 1\`, dropping \`g\`.
+    // Matched, it would expand to \`await 1\`, dropping \`g\`.
     expect(messages.join("\n")).toContain("No rule for macro |>");
   });
 

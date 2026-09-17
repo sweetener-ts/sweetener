@@ -107,8 +107,8 @@ describe("sweetener init in a project that already exists", () => {
   }
 
   test("adds to a project rather than refusing it", () => {
-    // Adding macros to something that already builds is the ordinary case;
-    // this used to tell a person with an app to find an empty directory.
+    // Adding macros to something that already builds is the ordinary case, so
+    // a person with an app must not be told to find an empty directory.
     const { output, exitCode } = into({ devDependencies: { vite: "^6.0.0" } });
     expect(exitCode).toBe(0);
     expect(output).toContain("Detected Vite");
@@ -139,8 +139,8 @@ describe("sweetener init in a project that already exists", () => {
 
   test("recognises the hosts unplugin has an entry point for", () => {
     // Rsbuild and Farm each get their own entry point and their own row in the
-    // integrations table, and init used to tell such a project that no bundler
-    // was recognised — sending someone with a working bundler to the command
+    // integrations table. Telling such a project that no bundler was
+    // recognised would send someone with a working bundler to the command
     // line instead.
     const rsbuild = into({ devDependencies: { "@rsbuild/core": "^2.0.0" } });
     expect(rsbuild.output).toContain("Detected Rsbuild");
@@ -303,7 +303,7 @@ describe("the config init writes", () => {
 
   test("can emit where the advice is to run the build", () => {
     // With no bundler, init says to run `sweetener build -p sweetener.json`.
-    // A config that cannot emit made that command report success and write
+    // A config that cannot emit makes that command report success and write
     // nothing at all.
     const { compilerOptions } = config({ dependencies: { express: "^4.0.0" } });
     expect(compilerOptions["noEmit"]).toBeUndefined();

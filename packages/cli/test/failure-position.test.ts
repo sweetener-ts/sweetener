@@ -10,13 +10,11 @@ import {
 /**
  * Where a macro that no rule accepts is reported, and with what words.
  *
- * Every no-match was reported at the start of the invocation, and a syntax
- * class that failed deep inside its input was recorded only as not matching
- * where it began. So a `=` written for `==` in the fourth clause of a query was
- * reported at `query(`, naming what the first optional clause wanted -- the
- * farthest failure, inside a class, never reached the macro. The mistake is now
- * reported where it is, in the words of the innermost class that described
- * what belongs there.
+ * A no-match is reported where the farthest failure is, including one deep
+ * inside a syntax class, in the words of the innermost class that describes
+ * what belongs there. Reported at the start of the invocation instead, a `=`
+ * written for `==` in the fourth clause of a query points at `query(`, naming
+ * what the first optional clause wanted.
  */
 
 const macros = `

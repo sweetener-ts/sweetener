@@ -10,9 +10,9 @@ import {
 /**
  * A macro definition that cannot work should say so where it is written.
  *
- * Both faults here used to be silent at the definition and confusing at the
- * use: a second definition of one name was discarded without a word, and a rule
- * naming a syntax class that does not exist compiled and then reported only
+ * Unreported, both faults here are silent at the definition and confusing at
+ * the use: a second definition of one name is discarded without a word, and a
+ * rule naming a syntax class that does not exist compiles and then reports only
  * that no rule matched, pointing at the call rather than at the name that was
  * never declared.
  */
@@ -50,7 +50,7 @@ describe("defining one name twice", () => {
   });
 
   test("two exported definitions in different categories are refused", () => {
-    // A module's export list records one category per name, so the second was
+    // A module's export list records one category per name, so the second is
     // unreachable through any import.
     const messages = run(
       "export syntax both:expr { rule { both($x:tt) } => { 1 } }\n" +

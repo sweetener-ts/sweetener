@@ -4,12 +4,12 @@ import * as ts from "typescript";
  * A macro failure with the place it happened, the way the command line reports
  * it.
  *
- * Every adapter had its own version of this, and all but one of them printed
- * the message alone: a build failed with `Malformed compile-time syntax
- * import: expected named bindings, module string, ...` and nothing to say
- * which file, let alone which line. The host then wrapped that in its own
- * stack trace through its plugin machinery, so what reached the terminal named
- * a dozen frames inside the bundler and no position in the source.
+ * Every adapter reports through this one. The message alone is not enough: a
+ * build that fails with `Malformed compile-time syntax import: expected named
+ * bindings, module string, ...` and nothing to say which file, let alone which
+ * line, gets wrapped by the host in its own stack trace through its plugin
+ * machinery, so what reaches the terminal names a dozen frames inside the
+ * bundler and no position in the source.
  */
 export function describeDiagnostics(
   diagnostics: readonly ts.Diagnostic[],

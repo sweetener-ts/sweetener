@@ -13,12 +13,12 @@ import {
  * use.
  *
  * A class written in a template that declares `#count(value: number)` or calls
- * `this.#count(1)` was read as the `#count` operation, which reported that its
- * argument was invalid and left the whole class unexpanded. In the other
- * direction, a `#name(` naming no operation at all was printed into the
- * expansion as written, so a misspelling was reported as "private identifiers
- * are not allowed outside class bodies" against generated code the author never
- * wrote.
+ * `this.#count(1)` must not be read as the `#count` operation, which would
+ * report that its argument is invalid and leave the whole class unexpanded. In
+ * the other direction, a `#name(` naming no operation at all must be reported
+ * as such: printed into the expansion as written, a misspelling surfaces as
+ * "private identifiers are not allowed outside class bodies" against generated
+ * code the author never wrote.
  */
 
 function run(macros: string, source: string) {
@@ -72,7 +72,7 @@ export syntax counter:item {
       'import { m } from "./macros.sts" for syntax;\nexport const a = m(1);\n',
     );
     expect(messages.join("\n")).toContain("Template has no operation #bogus");
-    // Not the confusing TypeScript error the literal output used to produce.
+    // Not the confusing TypeScript error the literal output would produce.
     expect(messages.join("\n")).not.toContain("Private identifiers");
   });
 
@@ -87,8 +87,8 @@ export syntax counter:item {
   });
 
   test("a #join affix that cannot form an identifier is reported", () => {
-    // Left to expansion the join threw, and a thrown error is not a
-    // diagnostic: it abandoned the whole project expansion and reported no
+    // Left to expansion the join throws, and a thrown error is not a
+    // diagnostic: it abandons the whole project expansion and reports no
     // expanded file at all.
     const { messages } = run(
       `
@@ -120,9 +120,9 @@ export syntax named:item {
   });
 
   test("a #fresh hint that is not an identifier is reported", () => {
-    // The hint becomes the introduced name. Only its emptiness was checked, so
-    // a hint of two words printed a name that was two, reported by TypeScript
-    // as a syntax error in generated code.
+    // The hint becomes the introduced name, so checking only its emptiness is
+    // not enough: a hint of two words prints a name that is two, reported by
+    // TypeScript as a syntax error in generated code.
     const { messages } = run(
       'export syntax f:item { rule { f() } => { const #fresh("has space") = 1; } }',
       'import { f } from "./macros.sts" for syntax;\nf()\n',
@@ -134,7 +134,7 @@ export syntax named:item {
 
   test("#count drives the repetitions outside the one it collapses", () => {
     // A count collapses only its innermost dimension. Given no shape at all,
-    // it drove nothing, and a repetition whose content was a count was refused
+    // it drives nothing, and a repetition whose content is a count is refused
     // as having no driving capture.
     const { generated, messages } = run(
       "export syntax sizes:expr { rule { sizes($([$($x:tt),*]),*) } => { [$(#count($x)),*] } }",

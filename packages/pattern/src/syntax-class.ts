@@ -272,8 +272,8 @@ function patternConsumption(pattern: PatternNode): Map<PatternNode, boolean> {
 /**
  * Every syntax class a pattern names, and where it named it. Exported so that
  * macro rules can be checked against the registry the same way class rules
- * are: a rule naming a class that does not exist used to compile, and reported
- * only that no rule matched wherever the macro was used.
+ * are. A rule naming a class that does not exist would otherwise compile, and
+ * report only that no rule matched wherever the macro is used.
  */
 export function classReferences(pattern: PatternNode): readonly {
   classId: SyntaxClassId;

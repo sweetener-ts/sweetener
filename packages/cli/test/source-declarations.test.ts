@@ -8,15 +8,16 @@ import { runConfiguredProjectCommand } from "../src/index.js";
 /**
  * Declarations that let ordinary TypeScript import a macro module.
  *
- * `import { pair } from "./main.sts"` in a `.ts` or `.tsx` file was
- * unresolvable: `tsc` has no idea what a `.sts` is, so the standard Vite build
- * script — `tsc -b && vite build` — failed the moment any file imported one.
- * The workaround in the checked-in examples is a hand-written
- * `declare module "*.sts"` restating every export, which goes stale silently.
+ * `tsc` has no idea what a `.sts` is, so on its own it cannot resolve
+ * `import { pair } from "./main.sts"` in a `.ts` or `.tsx` file, and the
+ * standard Vite build script — `tsc -b && vite build` — fails the moment any
+ * file imports one.
  *
  * With `allowArbitraryExtensions`, TypeScript resolves `./main.sts` through
  * `main.d.sts.ts` beside it. Emitting that is what makes the import work
- * everywhere TypeScript already works, editors included.
+ * everywhere TypeScript already works, editors included. These check that the
+ * declarations are written when the project asks for them, kept in step with
+ * the sources, and read by plain `tsc` with real types.
  */
 
 const macros = `
@@ -98,11 +99,11 @@ describe("source declarations", () => {
   /**
    * They cannot wait for the project to check.
    *
-   * A `.ts` file importing a `.sts` one is unresolvable until the declaration
-   * exists, so writing them only after a clean check meant they were never
-   * written at all: the check could not pass without what it refused to
-   * produce, and `sweetener check` reported `Cannot find module "./main.sts"`
-   * for a project that was correct.
+   * A `.ts` file importing a `.sts` one does not resolve until the declaration
+   * exists, so declarations written only after a clean check would never be
+   * written at all: the check cannot pass without what it would refuse to
+   * produce, and `sweetener check` would report `Cannot find module
+   * "./main.sts"` for a project that is correct.
    */
   test("are written even when the project does not check", () => {
     const directory = mkdtempSync(join(tmpdir(), "sweet-declarations-first-"));
@@ -151,8 +152,8 @@ describe("source declarations", () => {
    *
    * These stand beside the sources and are what TypeScript resolves a
    * `./main.sts` import through, so one left behind keeps answering for a
-   * module that no longer exists: an import of a deleted file goes on
-   * type-checking until the bundler fails on it.
+   * module that is gone: an import of a deleted file goes on type-checking
+   * until the bundler fails on it.
    */
   test("removes one whose source has been deleted", () => {
     const { directory } = project(main);

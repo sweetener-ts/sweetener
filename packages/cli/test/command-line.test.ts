@@ -161,9 +161,9 @@ describe("sweet-ts command line", () => {
 /**
  * `init` writes `sweetener.json`, so every command has to be able to read it.
  *
- * `expand` and `explain` rejected `-p` outright and only ever discovered a
- * `tsconfig.json`, which left two of the six commands unable to read the
- * config the scaffolder had just written.
+ * `expand` and `explain` take `-p` like the rest. Discovering only a
+ * `tsconfig.json` would leave two of the six commands unable to read the
+ * config the scaffolder has just written.
  */
 test("expand and explain accept a project path", () => {
   expect(

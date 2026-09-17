@@ -216,8 +216,8 @@ describe("project commands", () => {
     expect(generated).toContain("beforeOperator = 1 %% 2");
     expect(generated).toMatch(/afterOperator\s*=\s*\(?\s*1\)?\s*\+\s*2/u);
     // The use above the definition is reported by expansion, which knows the
-    // macro is defined below. It used to reach TypeScript as 2552, a missing
-    // name, which said nothing about the definition underneath it.
+    // macro is defined below. Left to TypeScript it is 2552, a missing name,
+    // which says nothing about the definition underneath it.
     expect(result.diagnostics.map(({ code }) => code)).toContain(4017);
   });
 

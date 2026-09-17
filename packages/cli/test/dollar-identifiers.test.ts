@@ -10,11 +10,11 @@ import {
 /**
  * A name that begins with `$` is written `$$` in a template or a pattern.
  *
- * `$name` is a capture there, and a template had no way to write an ordinary
- * identifier that begins with `$` -- Drizzle's `$inferSelect`, Svelte's
- * `$state` -- so `typeof $table.$inferSelect` was refused as a reference to an
- * unknown capture. `$$` stands for one `$`, the way `$$` escapes a dollar in a
- * Rust macro.
+ * `$name` is a capture there, so a template needs some other way to write an
+ * ordinary identifier that begins with `$` -- Drizzle's `$inferSelect`,
+ * Svelte's `$state` -- or `typeof $table.$inferSelect` is refused as a
+ * reference to an unknown capture. `$$` stands for one `$`, the way `$$`
+ * escapes a dollar in a Rust macro.
  */
 
 function run(macros: string, source: string) {

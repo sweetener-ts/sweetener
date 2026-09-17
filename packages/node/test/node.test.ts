@@ -44,9 +44,9 @@ test("Node imports and executes .sts through registration hooks", async () => {
  * A thrown error has to name the line the author wrote.
  *
  * Node is handed expanded, type-stripped JavaScript under the `.sts` file
- * name. Without a map every frame carried its position in the expansion —
+ * name. Without a map every frame carries its position in the expansion —
  * shifted by whatever the compile-time import occupied — and the source frame
- * Node printed above the trace was read from the `.sts` at that wrong line.
+ * Node prints above the trace is read from the `.sts` at that wrong line.
  */
 test("reports a stack frame at the line in the .sts source", async () => {
   const root = mkdtempSync(join(tmpdir(), "sweet-node-trace-"));

@@ -64,10 +64,10 @@ describe("compile-time syntax imports", () => {
 /**
  * A compile-time import ends where any other statement ends.
  *
- * Requiring the semicolon meant a project that does without them could not
+ * Requiring the semicolon would mean a project that does without them cannot
  * write one at all — and the default Vite template is such a project, so the
- * very first import anyone added to one was rejected, with a message that
- * listed what was expected and no line to look at.
+ * very first import anyone adds to one would be rejected, with a message that
+ * lists what was expected and no line to look at.
  */
 describe("a syntax import without a semicolon", () => {
   test("ends at a line break", () => {

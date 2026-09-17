@@ -9,12 +9,12 @@ import { runConfiguredProjectCommand } from "../src/index.js";
  * The maps a build writes to disk, read the way a debugger reads them.
  *
  * `source-map-fidelity.test.ts` covers the first stage — `.sts` to expanded
- * TypeScript — and that stage was always right. What nothing covered was the
- * map that actually ships. TypeScript emits its map against the virtual `.ts`
- * it was handed, so a build wrote `sources: ["../src/main.ts"]`: a file that
- * has never existed, at line and column positions belonging to a text nobody
- * has, with no `sourcesContent` to fall back on. The composition that fixes it
- * existed and was unit-tested, and no production path called it.
+ * TypeScript. These cover the map that actually ships. TypeScript emits its
+ * map against the virtual `.ts` it is handed, so uncomposed, a build writes
+ * `sources: ["../src/main.ts"]`: a file that never exists, at line and column
+ * positions belonging to a text nobody has, with no `sourcesContent` to fall
+ * back on. A composition that is unit-tested but that no production path calls
+ * does not help, so these read the file the build writes.
  */
 
 function build(macros: string, main: string) {

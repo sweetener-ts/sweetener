@@ -87,8 +87,8 @@ export class ResourceTracker {
   /**
    * When this tracker started, so `deadlineMs` can mean how long expansion may
    * take rather than a moment in history. Read as an absolute time, any
-   * plausible setting — `deadlineMs: 30000` for thirty seconds — was already
-   * decades past and failed on the first check.
+   * plausible setting — `deadlineMs: 30000` for thirty seconds — would be
+   * decades past and fail on the first check.
    */
   readonly #startedAt: number;
 
