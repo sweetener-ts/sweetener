@@ -169,10 +169,8 @@ describe("a macro name written on its own", () => {
     ["in an array literal", "export const q = [query];"],
     ["as an argument", "export const q = String(query);"],
     ["as an initializer", "export const q = query;"],
-    [
-      "in an export clause",
-      "const query2 = 1;\nexport { query2 as a, query };",
-    ],
+    ["as what a function returns", "export function f() { return query; }"],
+    ["as a spread element", "export const q = [...query];"],
     ["as an object literal shorthand", "export const q = { query };"],
   ];
   for (const [name, source] of bare) {
@@ -185,6 +183,18 @@ describe("a macro name written on its own", () => {
       expect(diagnose(source)).toEqual([]);
     });
   }
+
+  /**
+   * An export clause is not a value position: its names are specifiers, which
+   * TypeScript resolves against this module's own bindings and reports on
+   * itself. Reported here, a re-export of another module's name -- which the
+   * emitted code does define -- was rejected as a macro written wrongly.
+   */
+  test("an export clause is left for TypeScript to resolve", () => {
+    const source = "const query2 = 1;\nexport { query2 as a, query };";
+    expect(diagnose(source, 4024)).toEqual([]);
+    expect(diagnose(source)).toEqual([]);
+  });
 
   test("a malformed invocation is still reported as a failed match", () => {
     const reported = diagnose("export const q = query(db) { limit 20 };");

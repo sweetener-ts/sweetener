@@ -1138,6 +1138,66 @@ export function expandMacroSyntax(
     return Object.freeze({ values, types });
   };
 
+  /**
+   * Whether the syntax walked so far heads an import or an export declaration:
+   * the `import` or `export` that opens one, read at the start of what is
+   * being walked, since a declaration is walked as a statement of its own.
+   */
+  const declaresModuleNames = (preceding: readonly Syntax[]): boolean => {
+    const head = preceding[0];
+    return (
+      head?.tag === "token" && (head.raw === "import" || head.raw === "export")
+    );
+  };
+
+  /**
+   * Whether the brace group written next is an import or export specifier
+   * list: `import { a as b } from "m"`, `export { a, b }`, `export { a } from
+   * "m"`, each of which may write a `type` modifier first, and an import that
+   * names its default binding before the list.
+   *
+   * What stands between those braces is a specifier. It names an export of a
+   * module, or the local binding an export clause re-exports, and no rule can
+   * match across it: nothing in one is an invocation, so the list is emitted
+   * as it was written. Walking it dispatched a macro on the spelling of
+   * someone else's export and rejected `export { twice } from "./other.js"`,
+   * which is ordinary TypeScript.
+   */
+  const specifierListFollows = (preceding: readonly Syntax[]): boolean => {
+    if (!declaresModuleNames(preceding)) return false;
+    let at = 1;
+    const spelt = (node: Syntax | undefined, raw: string): boolean =>
+      node?.tag === "token" && node.raw === raw;
+    if (spelt(preceding[at], "type")) at += 1;
+    // `import name, { a } from "m"` binds its default before the list.
+    const binding = preceding[at];
+    if (binding?.tag === "token" && binding.kind === "identifier") {
+      if (!spelt(preceding[at + 1], ",")) return false;
+      at += 2;
+    }
+    return at === preceding.length;
+  };
+
+  /**
+   * Whether the name written next is the one a namespace import or export
+   * introduces: the `ns` of `import * as ns from "m"` and of `export * as ns
+   * from "m"`. It is the same specifier position, written without braces.
+   *
+   * The `as` of a type assertion has an operand in front of it rather than a
+   * `*`, so `export const p = [] as boxed;` still reads its type.
+   */
+  const namesNamespaceAlias = (preceding: readonly Syntax[]): boolean => {
+    if (!declaresModuleNames(preceding)) return false;
+    const previous = preceding.at(-1);
+    const before = preceding.at(-2);
+    return (
+      previous?.tag === "token" &&
+      previous.raw === "as" &&
+      before?.tag === "token" &&
+      before.raw === "*"
+    );
+  };
+
   /** Tokens after which an assignment expression, and so an arrow, begins. */
   const assignmentExpressionHeads = new Set([
     "=",
@@ -3113,7 +3173,8 @@ export function expandMacroSyntax(
         namesProperty ||
         namesLabel ||
         namesObjectMethod ||
-        namesClassMember;
+        namesClassMember ||
+        namesNamespaceAlias(output);
       /**
        * Whether this position reads a type, whatever the syntax around it is
        * being walked as: an annotation, a type argument, a constraint, the
@@ -4283,6 +4344,17 @@ export function expandMacroSyntax(
               children: createSyntaxSequence(children),
             }),
           );
+          index += 1;
+          continue;
+        }
+        // An import or export specifier list holds names of its own, so it is
+        // emitted as written rather than walked.
+        if (
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          specifierListFollows(output)
+        ) {
+          output.push(node);
           index += 1;
           continue;
         }

@@ -173,6 +173,95 @@ describe("a name that shadows a macro", () => {
   });
 });
 
+/**
+ * A name written inside an import or export specifier list, or as the one a
+ * `* as` introduces, is a specifier: it names an export of a module, or the
+ * local binding a clause re-exports, and nothing there can be an invocation.
+ * Dispatching there rejected ordinary TypeScript -- `export { twice } from
+ * "./other.js"` re-exports the other module's `twice`, which the emitted code
+ * does define -- and reported it against a macro the file only imported for
+ * syntax.
+ */
+describe("a name an import or export clause writes", () => {
+  const clauses: readonly (readonly [string, string])[] = [
+    ["a re-exported name", 'export { twice } from "./other.js";'],
+    [
+      "a re-exported name given the spelling",
+      'export { boxed as twice } from "./other.js";',
+    ],
+    [
+      "a re-exported name renamed away",
+      'export { twice as other } from "./other.js";',
+    ],
+    ["a namespace re-export", 'export * as twice from "./other.js";'],
+    [
+      "an imported name renamed away",
+      'import { twice as t2 } from "./other.js";\nvoid t2;',
+    ],
+    [
+      "an imported name given the spelling",
+      'import { boxed as twice } from "./other.js";\nvoid twice;',
+    ],
+    ["a type-only re-export", 'export type { twice } from "./other.js";'],
+    [
+      "a type-only import",
+      'import type { twice } from "./other.js";\nexport type P = typeof twice;',
+    ],
+    [
+      "an inline type specifier",
+      'import { type twice } from "./other.js";\nexport type P = typeof twice;',
+    ],
+    [
+      "a default binding beside a specifier list",
+      'import fallback, { twice as t2 } from "./other.js";\nvoid fallback;\nvoid t2;',
+    ],
+    ["a local re-export of a binding", "const twice = 1;\nexport { twice };"],
+  ];
+  for (const [name, source] of clauses) {
+    test(`${name} is not dispatched as one`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("twice");
+      expect(text).not.toContain("[1, 1]");
+    });
+  }
+
+  /**
+   * A local `export { name }` re-exports a binding of this module, so a name
+   * no binding declares does not exist -- but that is TypeScript's `TS2304`
+   * to report about a name, not a macro report about an invocation that was
+   * never written. The clause is a specifier list either way.
+   */
+  test("a local re-export of nothing is left for TypeScript to report", () => {
+    const { text, messages } = expand("export { twice };");
+    expect(messages).toEqual([]);
+    expect(text).toContain("export { twice }");
+  });
+
+  test("a name after the clause is still dispatched", () => {
+    const { text, messages } = expand(
+      'export { boxed } from "./other.js";\nexport const p = twice(1);',
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("[1, 1]");
+  });
+
+  test("the `as` of a type assertion still reads a type", () => {
+    // `as` inside an export declaration is a specifier's only where a `*`
+    // stands in front of it.
+    const { text, messages } = expand("export const p = [] as boxed;");
+    expect(messages).toEqual([]);
+    expect(text).toContain("readonly number[]");
+  });
+
+  test("an import attribute is still read as what it is", () => {
+    const { messages } = expand(
+      'import { boxed } from "./other.js" with { type: "json" };\nexport const p: boxed = 1;',
+    );
+    expect(messages).toEqual([]);
+  });
+});
+
 describe("a name an object literal writes", () => {
   // Each member written twice: once bare and once with the return type that
   // stands between its parameter list and its body, which is where the name of

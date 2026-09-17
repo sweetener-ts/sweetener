@@ -77,6 +77,14 @@ as types for the same reason, so a `type` macro in `<Comp<list<string>> />`
 expands there, while what follows them is read as the attributes of the tag
 they belong to.
 
+A name written inside an import or export specifier list -- `import { a as b }
+from "m"`, `export { a, b }`, `export { a } from "m"`, each of which may write
+a `type` modifier first -- is a specifier rather than a reference: it names an
+export of a module, or the local binding an export clause re-exports. The name
+a `* as` introduces is the same position written without braces. Nothing in
+either is an invocation, so a specifier list is emitted as it was written, and
+a name no binding declares is left for TypeScript to report.
+
 An item list, a statement list, a class body and a member run are each written
 with a separator that ends every unit: `;` throughout, and `,` as well in a
 member run. A macro invocation spans the separator written after it, and that
