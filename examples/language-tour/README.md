@@ -1,8 +1,8 @@
 # Language tour
 
 Runnable, type-checked Sweetener examples organized by feature rather than by
-framework. `recovered/` preserves examples previously shipped in the
-playground. `new/` contains additional examples built for this catalog.
+framework. `recovered/` contains the playground examples. `new/` contains
+examples written for this catalog.
 
 Each directory is self-contained: macro definitions live beside the source
 that imports and uses them. Run every example from the repository root:
@@ -11,7 +11,7 @@ that imports and uses them. Run every example from the repository root:
 pnpm --dir examples/language-tour build
 ```
 
-## Recovered from the playground
+## Playground examples
 
 | Example               | Demonstrates                                                    |
 | --------------------- | --------------------------------------------------------------- |
@@ -31,9 +31,9 @@ pnpm --dir examples/language-tour build
 | `unless`              | User-defined statement-level control flow                       |
 | `debug-assert`        | Source-aware debugging and assertions                           |
 | `generated-records`   | Classes generated from record declarations                      |
-| `recursive-threading` | The later, reader-oriented threading example                    |
+| `recursive-threading` | Reader-oriented threading                                       |
 | `structural-matching` | Nested patterns, binders, guards, and fallbacks                 |
-| `readable-adt`        | The later, reader-oriented ADT example                          |
+| `readable-adt`        | Reader-oriented algebraic data types                            |
 | `jsx-control-flow`    | `when` and `each` blocks spanning JSX children                  |
 | `reactive-signals`    | A macro that generates lexical read/write macros                |
 
@@ -62,7 +62,7 @@ pnpm --dir examples/language-tour build
 | `conditional-log`      | A statement macro with multiple expressions    |
 | `invariant-expression` | An expression macro that can throw             |
 
-The recovered combined-language example keeps its records, extension method,
-optional type, and method-call operator. Its old `module` wrapper is omitted
-because TypeScript 6 rejects the generated namespace node; the original macro
-definition remains beside the example for reference.
+The `new-language` example uses its records, extension method, optional type,
+and method-call operator. Its `macros.sts` also defines a `module` wrapper,
+which `main.sts` does not use because TypeScript 6 rejects the generated
+namespace node.

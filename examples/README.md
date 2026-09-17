@@ -52,7 +52,7 @@ add framework coverage.
   an edit to `server.ts`; a macro edit needs a restart, and the restart does
   re-expand from disk.
 - SWC and Oxc cannot directly parse arbitrary Sweetener syntax. Sweetener must
-  run before them. The Vite adapter now performs Vite's official Oxc transform
+  run before them. The Vite adapter performs Vite's official Oxc transform
   after expansion so typed `.sts` output continues through Vite as JavaScript.
 - Frameworks that merely orchestrate a supported host should use that host's
   adapter. Examples include Storybook (Vite/webpack), Electron (Vite/webpack),

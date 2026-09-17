@@ -5,7 +5,11 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowArbitraryExtensions": true
+  },
+  "sweet": {
+    "sourceDeclarations": true
   },
   "files": ["macro-suite/macros.sts", "macro-suite/showcase.sts"]
 }

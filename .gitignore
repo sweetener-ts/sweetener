@@ -12,6 +12,8 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 /build
+*.d.sts.ts
+*.d.stsx.ts
 examples/*/dist/
 examples/*/.next/
 examples/*/.astro/

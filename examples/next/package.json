@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build"
+    "build": "sweetener check -p ../sweetener.json && next build"
   },
   "dependencies": {
     "@sweetener/webpack-loader": "workspace:*",
@@ -12,6 +12,7 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@sweetener/cli": "workspace:*",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "typescript": "^6.0.2"

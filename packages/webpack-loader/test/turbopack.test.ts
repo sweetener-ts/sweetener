@@ -10,6 +10,7 @@ import {
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, test } from "vitest";
+import { runConfiguredProjectCommand } from "@sweetener/compiler";
 
 const execute = promisify(execFile);
 const temporaryProjects = new Set<string>();
@@ -46,8 +47,11 @@ test("Next builds Sweetener with the native loader under Turbopack", async () =>
         module: "ESNext",
         moduleResolution: "Bundler",
         target: "ES2022",
+        allowArbitraryExtensions: true,
+        noEmit: true,
       },
-      files: ["app/page.tsx", "value.sts", "macros.sts"],
+      sweet: { sourceDeclarations: true },
+      files: ["value.sts", "macros.sts"],
     }),
   );
   writeFileSync(
@@ -58,8 +62,9 @@ test("Next builds Sweetener with the native loader under Turbopack", async () =>
         module: "ESNext",
         moduleResolution: "Bundler",
         target: "ES2022",
+        allowArbitraryExtensions: true,
       },
-      include: ["app/**/*.tsx", "sweetener.d.ts"],
+      include: ["app/**/*.tsx"],
     }),
   );
   writeFileSync(
@@ -74,10 +79,10 @@ test("Next builds Sweetener with the native loader under Turbopack", async () =>
     join(app, "page.tsx"),
     `import { answer } from "../value.sts";\nexport default function Page() { return <main>{answer.join(",")}</main>; }\n`,
   );
-  writeFileSync(
-    join(root, "sweetener.d.ts"),
-    `declare module "*.sts" { export const answer: number[]; }\n`,
-  );
+  expect(
+    runConfiguredProjectCommand({ command: "check", configPath: config })
+      .diagnostics,
+  ).toEqual([]);
 
   const binary = resolve("packages/webpack-loader/node_modules/.bin/next");
   const result = await execute(binary, ["build"], {
