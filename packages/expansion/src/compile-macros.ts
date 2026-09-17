@@ -452,10 +452,10 @@ export function compileParsedMacros(
     for (const rule of definition.rules) {
       const template = templateByRule.get(rule.id);
       if (template === undefined) continue;
-      // A rule naming a syntax class that does not exist used to compile, and
-      // reported only that no rule matched wherever the macro was used --
-      // pointing at the call rather than at the name that was never declared.
-      // Class rules were already checked this way; macro rules were not.
+      // A rule naming a syntax class that does not exist is refused here, as a
+      // class rule's is. Compiled anyway, it would report only that no rule
+      // matched wherever the macro is used -- pointing at the call rather than
+      // at the name that was never declared.
       const unresolved = classReferences(rule.pattern).filter(
         ({ classId }) => !knownClassIds.has(classId),
       );
@@ -577,12 +577,12 @@ export function compileParsedMacros(
     // Registering it anyway would leave a definition with no table entry, which
     // later reads as a broken invariant rather than the error it is.
     if (definition.kind === "operator" && operator === undefined) continue;
-    // A second definition of one name never ran: lookup takes the first, so
-    // the later definition was discarded without a word and a module could
-    // quietly disagree with itself about what a macro does. Two exported
-    // definitions of one name are refused even in different categories,
-    // because a module's export list records one category per name and the
-    // second was silently unreachable through any import.
+    // A second definition of one name would never run: lookup takes the
+    // first, so the later definition would be discarded without a word and a
+    // module could quietly disagree with itself about what a macro does. Two
+    // exported definitions of one name are refused even in different
+    // categories, because a module's export list records one category per name
+    // and the second would be silently unreachable through any import.
     const definedName = macro.binding.spelling;
     const claimed = definitions.find(
       ({ definition: existing, macro: existingMacro }) =>

@@ -5,10 +5,11 @@ import type { SyntaxCategory } from "@sweetener/syntax";
  *
  * This is something a macro author wrote, not a broken invariant: a template
  * that produces two statements where one expression was asked for, or JSX in a
- * file whose extension cannot hold it. It used to leave here as a bare
- * `TypeError`, which the project command caught as an internal fault -- the
- * whole expansion was abandoned, no file was produced, and the message named
- * neither the macro nor where it was written.
+ * file whose extension cannot hold it. It has its own class so it is reported
+ * as a diagnostic on the macro. As a bare `TypeError` the project command
+ * would catch it as an internal fault -- the whole expansion abandoned, no
+ * file produced, and a message naming neither the macro nor where it was
+ * written.
  */
 export class EnforestationError extends Error {
   readonly category: SyntaxCategory;

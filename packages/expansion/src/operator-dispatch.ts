@@ -144,10 +144,10 @@ export function operatorInvocationSyntax(
  *
  * An operator whose spelling the scanner splits across tokens -- `<-` is `<`
  * then `-` -- is only that operator when the tokens are written together.
- * Joining their text regardless of what stood between them read `a < - b`,
- * which is a comparison against a negation, as the operator: a silent
- * misreading of ordinary TypeScript, in a file that merely had the operator in
- * scope.
+ * Joining their text regardless of what stands between them would read
+ * `a < - b`, which is a comparison against a negation, as the operator: a
+ * silent misreading of ordinary TypeScript, in a file that merely has the
+ * operator in scope.
  */
 function matchingWidth(
   cursor: SyntaxCursor,

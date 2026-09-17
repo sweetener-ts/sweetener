@@ -279,7 +279,7 @@ declare global {
       { runtime },
     );
     expect(messages).toEqual([]);
-    // The head, the body, and the closing brace were one invocation.
+    // The head, the body, and the closing brace are one invocation.
     expect(text).toContain("([1, 2]).map((value) =>");
     expect(text).not.toContain("{end}");
   });
@@ -954,7 +954,7 @@ export const a = typed(1);
 
   test("says when a rule wanted the invocation to end", () => {
     // The shape that reads as an ordinary trailing comma but needs a rule of
-    // its own, which reported only a count of rules tried.
+    // its own; a count of rules tried would not say what is wrong with it.
     const { messages } = expand(
       `export syntax pipeline:expr {
          rule { pipeline($head:expr, $step:expr) } => { $step($head) }
@@ -987,8 +987,8 @@ export const a = field(size :);
 describe("statement macros at the top level of a module", () => {
   test("dispatches where a statement is written outside any function", () => {
     // A module's top level takes statements, so a statement macro belongs
-    // there. It used to resolve only inside a function body, and a top-level
-    // use reported the macro as an undefined name.
+    // there, not only inside a function body. Unresolved, a top-level use
+    // reports the macro as an undefined name.
     const { text, messages } = expand(
       `export syntax unless:stmt {
          rule { unless ($condition:expr) { $($body:stmt)* } }
@@ -1047,7 +1047,7 @@ describe("macros beside TypeScript the parser has to understand", () => {
 
   test("a type assertion does not stop the body around it expanding", () => {
     // `as` and `satisfies` take a type, not an expression. Parsed as one,
-    // `as const` did not parse at all, and the whole function body fell back
+    // `as const` does not parse at all, and the whole function body falls back
     // to unexpanded tokens — silently, with check reporting success.
     const { text, messages } = expand(
       twice,
@@ -1103,13 +1103,529 @@ export function* run(): Generator<number, readonly number[], unknown> {
     expect(compact).toContain("[21,21]");
     expect(compact).toContain("yield*[1,2]");
   });
+
+  // A return type may hold an object type. Its braces are part of the type,
+  // and the body is the brace after the whole type, so a macro in the body
+  // expands.
+  for (const [form, main] of [
+    [
+      "a class method",
+      `export class Shapes {
+  make(): { a: number } {
+    return { a: twice(1)[0] };
+  }
+}`,
+    ],
+    [
+      "a class method returning a function type",
+      `export class Shapes {
+  make(): () => { a: number } {
+    return () => ({ a: twice(1)[0] });
+  }
+}`,
+    ],
+    [
+      "a class method with a type predicate",
+      `export class Shapes {
+  test(value: unknown): value is { a: number } {
+    return twice(value)[0] !== undefined;
+  }
+}`,
+    ],
+    [
+      "a class method returning a union of object types",
+      `export class Shapes {
+  make(): { a: number } | { b: string } {
+    return { a: twice(1)[0] };
+  }
+}`,
+    ],
+    [
+      "a class method returning a conditional type",
+      `export class Shapes {
+  make<T>(): T extends { a: infer U } ? { u: U } : {} {
+    return twice(null!)[0];
+  }
+}`,
+    ],
+    [
+      "a class accessor",
+      `export class Shapes {
+  get made(): { a: number } {
+    return { a: twice(1)[0] };
+  }
+}`,
+    ],
+    [
+      "a class method of a class inside a function",
+      `export function build(): unknown {
+  class Shapes {
+    make(): { a: number } {
+      return { a: twice(1)[0] };
+    }
+  }
+  return Shapes;
+}`,
+    ],
+    [
+      "a function declaration",
+      `export function make(): { a: number } {
+  return { a: twice(1)[0] };
+}`,
+    ],
+    [
+      "a function declaration with an assertion predicate",
+      `export function check(value: unknown): asserts value is { a: number } {
+  void twice(value);
+}`,
+    ],
+    [
+      "a function declaration inside a function",
+      `export function outer(): unknown {
+  function make(): { a: number } {
+    return { a: twice(1)[0] };
+  }
+  return make;
+}`,
+    ],
+    [
+      "a function expression",
+      `export const make = function (): { a: number } {
+  return { a: twice(1)[0] };
+};`,
+    ],
+    [
+      "an object literal method",
+      `export const shapes = {
+  make(): { a: number } {
+    return { a: twice(1)[0] };
+  },
+};`,
+    ],
+    [
+      "an arrow with a concise body",
+      `export const make = (): { a: number } => ({ a: twice(1)[0] });`,
+    ],
+    [
+      "an arrow with a block body",
+      `export const make = (): { a: number } => {
+  return { a: twice(1)[0] };
+};`,
+    ],
+  ] as const) {
+    test(`an object type in the return type of ${form} is not its body`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).not.toContain("twice(");
+    });
+  }
+
+  test("members with parenthesized decorators are read as members", () => {
+    // `@(expr)` and `@name()` are decorators. A macro that emits members
+    // written with them has its expansion read as those members, and a body
+    // holding them is read member by member, so the field macro after a field
+    // with no semicolon is found at the head of a member of its own.
+    const { text, messages } = expand(
+      `${twice}
+      export syntax fields:classElement {
+        rule { fields $name:ident; } => {
+          @(logged) $name = 0;
+          @(factory()) other = twice(3);
+        }
+      }`,
+      `import { twice, fields } from "./macros.sts" for syntax;
+declare function logged(value: undefined, context: ClassFieldDecoratorContext): void;
+declare function factory(): (value: undefined, context: ClassFieldDecoratorContext) => void;
+export class Box {
+  @(factory()) first = twice(1);
+  @(logged) second = twice(2)
+  fields counted;
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    const compact = text.replaceAll(/\s+/gu, "");
+    expect(compact).toContain("@(factory())first=[1,1];");
+    expect(compact).toContain("@(logged)second=[2,2]");
+    expect(compact).toContain("@(logged)counted=0;");
+    expect(compact).toContain("@(factory())other=[3,3];");
+  });
+
+  // Whether `yield` is an expression is decided by the function it is written
+  // directly in. `$value:expr` captures `yield 1` only where it is one, so each
+  // of these expands only if that function is recognized as a generator.
+  for (const [form, main] of [
+    [
+      "a generator method in a class",
+      `export class Pairs {
+  *run(): Generator<number, unknown, unknown> {
+    return twice(yield 1);
+  }
+}`,
+    ],
+    [
+      "a static async generator method in a class",
+      `export class Pairs {
+  static async *run(): AsyncGenerator<number, unknown, unknown> {
+    return twice(yield 1);
+  }
+}`,
+    ],
+    [
+      "a generator method in an object literal",
+      `export const pairs = {
+  *run(): Generator<number, unknown, unknown> {
+    return twice(yield 1);
+  },
+};`,
+    ],
+    [
+      "a generator function expression",
+      `export const run = function* (): Generator<number, unknown, unknown> {
+  return twice(yield 1);
+};`,
+    ],
+    // A computed member name is evaluated where the class is written, so it
+    // is inside the generator around the class.
+    [
+      "a computed method name in a class inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  class Keys {
+    [twice(yield 1)[0] as number](): number {
+      return 1;
+    }
+  }
+  return Keys;
+}`,
+    ],
+    // A parenthesis group after an operand is an argument list, never an
+    // arrow's parameters, even where an arrow follows it in a conditional.
+    [
+      "a call in a conditional whose alternative is an arrow",
+      `declare function f(value: unknown): number;
+export function* run(cond: boolean): Generator<number, unknown, unknown> {
+  const pick = cond ? f(twice(yield 1)) : (y: number) => y;
+  return pick;
+}`,
+    ],
+    [
+      "a method call in a conditional whose alternative is an arrow",
+      `declare const o: { m(value: unknown): number };
+export function* run(cond: boolean): Generator<number, unknown, unknown> {
+  const pick = cond ? o.m(twice(yield 1)) : (y: number): number => y;
+  return pick;
+}`,
+    ],
+    [
+      "a call to a function named async in a conditional whose alternative is an arrow",
+      `declare function async(value: unknown): number;
+export function* run(cond: boolean): Generator<number, unknown, unknown> {
+  const pick = cond ? async(twice(yield 1)) : (y: number) => y;
+  return pick;
+}`,
+    ],
+    [
+      "a call followed by a conditional whose alternative is an arrow",
+      `declare function f(value: unknown): number;
+export function* run(): Generator<number, unknown, unknown> {
+  const pick = f(twice(yield 1)) ? 0 : (y: number) => y;
+  return pick;
+}`,
+    ],
+    // A parameter list admits no `yield`, but a generator written in one has a
+    // body of its own.
+    [
+      "a generator function expression that is a parameter default",
+      `export function run(
+  make = function* (): Generator<number, unknown, unknown> {
+    return twice(yield 1);
+  },
+): unknown {
+  return make;
+}`,
+    ],
+  ] as const) {
+    test(`yield is an expression in ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text.replaceAll(/\s+/gu, "")).toContain("[yield1,yield1]");
+      expect(text).not.toContain("twice(");
+    });
+  }
+
+  test("a class body walked as tokens ends a member where the member reader does", () => {
+    // `@1` is a decorator TypeScript rejects, so the member reader cannot take
+    // the body and it is walked as tokens. The field's initializer, where
+    // `yield` is not an expression, still ends at the line break before the
+    // next member, whose computed name is inside the generator around the
+    // class.
+    const { text, messages } = expand(
+      twice,
+      `import { twice } from "./macros.sts" for syntax;
+export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    @1 value = 1
+    static [twice(yield 1)[0] as number](): number {
+      return 1;
+    }
+  }
+  return Inner;
+}
+`,
+    );
+    expect(messages).toContain(
+      "Expression must be enclosed in parentheses to be used as a decorator.",
+    );
+    expect(messages.join("\n")).not.toContain("No rule for macro twice");
+    expect(text.replaceAll(/\s+/gu, "")).toContain("[yield1,yield1]");
+  });
+
+  // A class member ends where TypeScript ends it. After a field with a type
+  // and no initializer, a line beginning `*` begins a generator member whose
+  // computed name is inside the generator around the class.
+  test("a line beginning with a star after a typed field begins a member", () => {
+    const { text, messages } = expand(
+      twice,
+      `import { twice } from "./macros.sts" for syntax;
+export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    first!: number
+    *[twice(yield 1)[0] as number](): Generator<number, void, unknown> {}
+  }
+  return Inner;
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text.replaceAll(/\s+/gu, "")).toContain("[yield1,yield1]");
+  });
+
+  // After a field's initializer, a line that can continue the initializer
+  // does: TypeScript reads each of these as one field whose initializer holds
+  // `yield`, which is not an expression there.
+  for (const [form, member] of [
+    ["an element access", "first = 1\n    [twice(yield 1)[0] as number] = 2"],
+    [
+      "an operator at the end of the line",
+      "first = 1 +\n    twice(yield 1)[0]",
+    ],
+  ] as const) {
+    test(`a field's initializer continues onto the next line through ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    ${member}
+  }
+  return Inner;
+}
+`,
+      );
+      expect(messages.join("\n")).toContain("No rule for macro twice");
+      expect(text.replaceAll(/\s+/gu, "")).not.toContain("[yield1,yield1]");
+    });
+  }
+
+  // TypeScript rejects `yield` in a parameter initializer, even a generator's
+  // own, and in a class field initializer or static block, even of a class
+  // inside a generator: each is evaluated as a function of its own. A capture
+  // of `yield 1` as an expression there is refused.
+  for (const [form, main] of [
+    [
+      "a generator's parameter default",
+      `export function* run(
+  value: unknown = twice(yield 1),
+): Generator<number, unknown, unknown> {
+  return value;
+}`,
+    ],
+    [
+      "a generator method's parameter default",
+      `export class Pairs {
+  *run(value: unknown = twice(yield 1)): Generator<number, unknown, unknown> {
+    return value;
+  }
+}`,
+    ],
+    [
+      "an arrow's parameter default inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  const inner = (value: unknown = twice(yield 1)) => value;
+  return inner;
+}`,
+    ],
+    [
+      "an async arrow's parameter default inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  const inner = async (value: unknown = twice(yield 1)) => value;
+  return inner;
+}`,
+    ],
+    [
+      "a nested function declaration's parameter default",
+      `export function* run(): Generator<number, unknown, unknown> {
+  function inner(value: unknown = twice(yield 1)): unknown {
+    return value;
+  }
+  return inner;
+}`,
+    ],
+    [
+      "a nested function expression's parameter default",
+      `export function* run(): Generator<number, unknown, unknown> {
+  const inner = function (value: unknown = twice(yield 1)): unknown {
+    return value;
+  };
+  return inner;
+}`,
+    ],
+    [
+      "a nested object literal method's parameter default",
+      `export function* run(): Generator<number, unknown, unknown> {
+  const inner = {
+    run(value: unknown = twice(yield 1)): unknown {
+      return value;
+    },
+  };
+  return inner;
+}`,
+    ],
+    [
+      "a nested class method's parameter default",
+      `export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    run(value: unknown = twice(yield 1)): unknown {
+      return value;
+    }
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "the parameter default of an arrow passed as an argument",
+      `export function* run(): Generator<number, unknown, unknown> {
+  return [1].map((value: unknown = twice(yield 1)) => value);
+}`,
+    ],
+    [
+      "a class field initializer inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    value = twice(yield 1);
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "a static field initializer inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    static value = twice(yield 1);
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "a static block inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  class Inner {
+    static {
+      void twice(yield 1);
+    }
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "a class expression's field initializer inside a generator",
+      `export function* run(): Generator<number, unknown, unknown> {
+  const Inner = class {
+    value = twice(yield 1);
+  };
+  return Inner;
+}`,
+    ],
+  ] as const) {
+    test(`yield is not an expression in ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages.join("\n")).toContain("No rule for macro twice");
+      expect(text.replaceAll(/\s+/gu, "")).not.toContain("[yield1,yield1]");
+    });
+  }
+
+  // A function nested in a generator is not one itself: TypeScript rejects
+  // `yield` written directly in it, so a capture of `yield 1` as an expression
+  // there is refused rather than expanded into code that does not compile.
+  for (const [form, name, body] of [
+    [
+      "a function declaration",
+      "inner",
+      "function inner() { return twice(yield 1); }",
+    ],
+    [
+      "a function expression",
+      "inner",
+      "const inner = function () { return twice(yield 1); };",
+    ],
+    ["an arrow", "inner", "const inner = () => twice(yield 1);"],
+    [
+      "an arrow with a block body",
+      "inner",
+      "const inner = () => { return twice(yield 1); };",
+    ],
+    [
+      "an object literal method",
+      "inner",
+      "const inner = { run() { return twice(yield 1); } };",
+    ],
+    [
+      "a class method",
+      "Inner",
+      "class Inner { run() { return twice(yield 1); } }",
+    ],
+    [
+      "a class accessor",
+      "Inner",
+      "class Inner { get run() { return twice(yield 1); } }",
+    ],
+  ] as const) {
+    test(`yield is not an expression in ${form} nested in a generator`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+export function* run(): Generator<number, void, unknown> {
+  ${body}
+  void ${name};
+}
+`,
+      );
+      expect(messages.join("\n")).toContain("No rule for macro twice");
+      expect(text.replaceAll(/\s+/gu, "")).not.toContain("[yield1,yield1]");
+    });
+  }
 });
 
 describe("#fresh", () => {
   test("gives a different name to each occurrence in one expansion", () => {
-    // `#fresh` is the way a macro asks for a name that cannot collide, and it
-    // used to collide with itself: two of them emitted the same identifier,
-    // which TypeScript rejected as a redeclaration.
+    // `#fresh` is the way a macro asks for a name that cannot collide, so it
+    // must not collide with itself either: two of them emitting the same
+    // identifier is a redeclaration TypeScript rejects.
     const { text, messages } = expand(
       `export syntax pair:stmt {
          rule { pair($a:expr, $b:expr); } => {
@@ -1173,8 +1689,8 @@ export function demo(): number {
 
 describe("arrow functions", () => {
   test("a concise-bodied arrow written in a template is emitted as written", () => {
-    // Only generic arrows were recognised as expressions, so a plain one fell
-    // to the infix `=>`, which protects what stands to its left — emitting a
+    // A plain arrow is an expression as much as a generic one is. Left to the
+    // infix `=>`, which protects what stands to its left, it is emitted with a
     // parameter list wrapped in its own parentheses, which does not parse.
     const { text, messages } = expand(
       `export syntax define:item {
@@ -1221,9 +1737,9 @@ export const held = wrap(${source});
 
 describe("expression grouping", () => {
   test("keeps a macro's own operators from re-binding outward", () => {
-    // `sum(1, 2) * 10` used to expand to `1 + 2 * 10`, which computes 21
-    // rather than 30 — silently, with the project type-checking clean. The
-    // expansion is one expression and has to stay one.
+    // `sum(1, 2) * 10` must expand to `(1 + 2) * 10`, not `1 + 2 * 10`, which
+    // computes 21 rather than 30 — silently, with the project type-checking
+    // clean. The expansion is one expression and has to stay one.
     const { text, messages } = expand(
       `export syntax sum:expr {
          rule { sum($a:expr, $b:expr) } => { $a + $b }
@@ -1239,7 +1755,7 @@ export const total: number = sum(1, 2) * 10;
   });
 
   test("keeps a captured expression from re-binding against the template", () => {
-    // `dbl(1 + 2)` with template `$v * 2` used to expand to `1 + 2 * 2`,
+    // `dbl(1 + 2)` with template `$v * 2` must not expand to `1 + 2 * 2`,
     // which computes 5 rather than 6.
     const { text, messages } = expand(
       `export syntax dbl:expr {
@@ -1255,7 +1771,7 @@ export const total: number = dbl(1 + 2);
 
   test("adds no parentheses where nothing can re-bind", () => {
     // A call, a member chain or a literal cannot be re-associated by what
-    // surrounds it, and wrapping those turned readable output into nests of
+    // surrounds it, and wrapping those turns readable output into nests of
     // redundant parentheses.
     const { text, messages } = expand(
       `export syntax call:expr {

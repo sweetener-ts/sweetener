@@ -110,6 +110,8 @@ export function processItemContext(
         stopSet: StopSet.empty,
         tracker: options.tracker,
         cancellation,
+        // Module items stand outside every function, so never in a generator.
+        allowYield: false,
       }),
     );
     if (!attempted.matched) {

@@ -49,6 +49,7 @@ function consume(source: string, stopSet?: StopSet) {
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
     stopSet,
+    allowYield: false,
   });
   return { result, cursor, syntax, origins };
 }

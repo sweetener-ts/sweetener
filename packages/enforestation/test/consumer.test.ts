@@ -58,6 +58,7 @@ function context() {
     phase: createPhase(0),
     environmentEpoch: 4 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
+    allowYield: false,
   };
 }
 

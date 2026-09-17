@@ -130,9 +130,9 @@ const definitions = `
 
 /**
  * A typed capture has to recognize a type macro standing in it. Without that,
- * only a macro shaped like an ordinary generic type (\`list<string>\`) survived:
- * one written with a brace (\`wrap { string }\`) read its name as a type
- * reference, stopped at the brace, and the enclosing rule refused its input.
+ * only a macro shaped like an ordinary generic type (\`list<string>\`) survives:
+ * one written with a brace (\`wrap { string }\`) reads its name as a type
+ * reference, stops at the brace, and the enclosing rule refuses its input.
  */
 describe("type macros inside type captures", () => {
   test("expands a brace-shaped type macro captured as a type", () => {

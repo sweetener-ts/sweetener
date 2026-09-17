@@ -75,6 +75,7 @@ function consume(
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
     stopSet,
+    allowYield: false,
   });
   return { result, cursor, syntax, ids };
 }
@@ -89,6 +90,21 @@ function parseDiagnostics(source: string) {
       ts.ScriptKind.TS,
     ) as ts.SourceFile & { readonly parseDiagnostics: readonly ts.Diagnostic[] }
   ).parseDiagnostics;
+}
+
+/** The text of the first member TypeScript reads in a class body. */
+function typescriptFirstMember(body: string) {
+  const file = ts.createSourceFile(
+    "fragment.ts",
+    `class Fixture { ${body} }`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const fixture = file.statements[0];
+  if (fixture === undefined || !ts.isClassDeclaration(fixture))
+    throw new Error("expected a class");
+  return fixture.members[0]?.getText(file);
 }
 
 describe("type and class-element consumers", () => {
@@ -145,7 +161,7 @@ describe("type and class-element consumers", () => {
   });
 
   // A parameter list is only the head of a function type, and `=>` only ever
-  // follows one. Accepting either alone emitted code TypeScript cannot parse.
+  // follows one. Accepting either alone emits code TypeScript cannot parse.
   test.each([
     "(...args: any[])",
     "(value: T)",
@@ -226,6 +242,11 @@ describe("type and class-element consumers", () => {
     "static { initialize(); }",
     "@sealed() public method(): void {}",
     "@sealed() property: { value: string };",
+    "@(logged) value = 1;",
+    "@(factory()) method(): void {}",
+    "@a.b.c property = 1;",
+    "@a.b<T>(value) method(): void {}",
+    "@async value = 1;",
     "[key: string]: unknown;",
     "abstract method(): void;",
     "#private = 1;",
@@ -248,6 +269,77 @@ describe("type and class-element consumers", () => {
       "first = 1",
     );
     expect(result.cursor.peek()).toMatchObject({ raw: "second" });
+  });
+
+  // Each member here is followed, on the next line and with no semicolon
+  // between, by syntax TypeScript reads as another member, and the member
+  // ends where TypeScript ends it.
+  test.each([
+    'first = 1\n"quoted"(): number { return 1; }',
+    "first = 1\n0(): number { return 1; }",
+    "first = 1\n#second = 2;",
+    "first = 1\n@(logged) second = 2;",
+    "first!: number\n*second(): Generator<number> { yield 1; }",
+    "first!: number\n[key](): number { return 1; }",
+    "first = 1\nget second(): number { return 1; }",
+    "first = 1\nset second(value: number) {}",
+    "first = 1\nasync second(): Promise<void> {}",
+    "first = 1\nstatic second = 2;",
+    "first = 1\naccessor second = 2;",
+    "first = 1\ndeclare second: number;",
+    "first = 1\nreadonly second = 2;",
+    "first = 1\noverride second = 2;",
+    "first = 1\nabstract second: number;",
+    "first!: Array<number>\nsecond = 2;",
+    // Only `static`, `get` and `set` continue onto the next line as modifiers;
+    // any other modifier word ending a line is the name of a field.
+    "readonly\nsecond = 2;",
+    "async\nsecond(): void {}",
+    "accessor\nsecond = 2;",
+  ])("ends a member where TypeScript does: %s", (source) => {
+    expect(parseDiagnostics(`class Fixture { ${source} }`)).toEqual([]);
+    const { result } = consume(source, "classElement");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children).trim()).toBe(
+      typescriptFirstMember(source),
+    );
+    expect(result.cursor.atEnd).toBe(false);
+  });
+
+  // Here the next line continues the member: the line before it cannot end
+  // there, or what begins the next line carries the initializer on.
+  test.each([
+    "first = a +\nb;",
+    "first = a\n+ b;",
+    "first = a >\nb;",
+    "first = a\n[key] = 2;",
+    "first = a\n* b;",
+    "first = a\ninstanceof B;",
+    "first = a\nin b;",
+    "first = typeof\na;",
+    "first = a satisfies\nT;",
+    "first!: keyof\nT;",
+    "first!: A |\nB;",
+    "first!: A\n| B;",
+    "first!: Map<string,\nnumber>;",
+    "static\nsecond = 2;",
+    "get\nsecond(): number { return 1; }",
+    "m(): { a: number } { return { a: 1 }; }",
+    "m(): () => { a: number } { return () => ({ a: 1 }); }",
+    "m(value: unknown): value is { a: number } { return true; }",
+    "m(): { a: number } | { b: string } { return { a: 1 }; }",
+    "m<T>(): T extends { a: infer U } ? { u: U } : {} { return null!; }",
+    "get m(): { a: number } { return { a: 1 }; }",
+  ])("reads one member where TypeScript does: %s", (source) => {
+    expect(parseDiagnostics(`class Fixture { ${source} }`)).toEqual([]);
+    expect(typescriptFirstMember(source)).toBe(source);
+    const { result } = consume(`${source} next = 1;`, "classElement");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children).trim()).toBe(source);
   });
 
   test("dispatches type and class-element macro heads", () => {

@@ -64,6 +64,7 @@ function parse(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker,
+    allowYield: false,
   });
   return { result, cursor, syntax, origins, ids, tracker };
 }
@@ -100,6 +101,10 @@ describe("statement and item consumers", () => {
     "outer: for (;;) { break outer; }",
     "@sealed class DecoratedBox { value = 1; }",
     "target.call(value);",
+    // A return type may hold an object type, whose braces are not the body.
+    "function shape(): { a: number } { return { a: 1 }; }",
+    "function check(value: unknown): asserts value is { a: number } {}",
+    "function make(): () => { a: number } { return () => ({ a: 1 }); }",
   ])("consumes the complete statement extent: %s", (source) => {
     const { result } = parse(`${source} after();`, "stmt");
     expect(result.matched).toBe(true);
@@ -107,6 +112,28 @@ describe("statement and item consumers", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe(source);
     expect(result.cursor.atEnd).toBe(false);
     expect(result.syntax.category).toBe("stmt");
+  });
+
+  test("enforests each member of a class body with parenthesized decorators", () => {
+    // `@(expr)` is a decorator, so the body is a list of members rather than
+    // syntax the member reader gives up on.
+    const { result } = parse(
+      "class Box { @(logged) value = 1; @(factory()) method(): void {} }",
+      "item",
+    );
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected class item");
+    const body = result.syntax.children.find(
+      (syntax) =>
+        syntax.tag === "protected" && syntax.category === "classElement",
+    );
+    const members = body?.tag === "protected" ? body.children[0] : undefined;
+    if (members?.tag !== "group") throw new Error("expected a class body");
+    expect(
+      members.children.map((member) =>
+        member.tag === "protected" ? member.category : member.tag,
+      ),
+    ).toEqual(["classElement", "classElement"]);
   });
 
   test("enforests statements inside switch clauses", () => {
@@ -142,9 +169,9 @@ describe("statement and item consumers", () => {
   test.each(["return 1 + ;", "break 1 + ;", "continue 1 + ;"])(
     "does not drop what a restricted statement could not read: %s",
     (source) => {
-      // The failed expression attempt had already read `1 +`, and the `;`
-      // after it then satisfied the terminator, so the statement matched as
-      // the keyword alone and the rest of what was written vanished.
+      // The failed expression attempt has already read `1 +`. If the `;`
+      // after it then satisfies the terminator, the statement matches as the
+      // keyword alone and the rest of what was written vanishes.
       const { result } = parse(source, "stmt");
       expect(result.matched).toBe(false);
     },

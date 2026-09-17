@@ -397,10 +397,10 @@ export function createExpansionFrontendSession(
           .find(({ binding }) => binding.id === operator.binding);
         const written = cursor.peek();
         // Definition order is a comparison of offsets in one file. Without the
-        // source of the operator's token, an operator a template writes was
-        // compared at its call-site offset against its definition's offset in
-        // the module that defines it, and read as used above its definition --
-        // so a macro could not expand to an operator its call site had not
+        // source of the operator's token, an operator a template writes would
+        // be compared at its call-site offset against its definition's offset
+        // in the module that defines it, and read as used above its definition
+        // -- so a macro could not expand to an operator its call site has not
         // imported.
         const positionSourceId =
           written === undefined
@@ -438,7 +438,7 @@ export function createExpansionFrontendSession(
             consumeClass,
             // The operator was read where its operands were; a `yield` among
             // them is refused only where that reading refused one.
-            input.context.allowYield === false ? noContexts : generatorContexts,
+            input.context.allowYield ? generatorContexts : noContexts,
           ),
           scopeStore: options.scopeStore,
           origins: options.origins,
@@ -556,8 +556,8 @@ export function createExpansionFrontendSession(
   const typeConsumers = createTypeConsumers({
     ...shared,
     // A type macro standing in a typed capture is measured by its own rule.
-    // Without this, only one shaped like a generic type (`list<string>`) read
-    // through; `wrap { string }` stopped at its brace.
+    // Without this, only one shaped like a generic type (`list<string>`) would
+    // read through; `wrap { string }` would stop at its brace.
     resolveMacro: (category, cursor, context) =>
       category === "classElement"
         ? undefined
@@ -611,15 +611,15 @@ export function createExpansionFrontendSession(
   const jsxChild = createJsxChildConsumer(shared);
   const classElement = createClassElementConsumer({
     ...shared,
-    enforestStatementBlock: (block, blockContext) =>
-      statement.enforestBlock(block, blockContext),
+    enforestStatementBlock: (block, blockContext, allowYield) =>
+      statement.enforestBlock(block, blockContext, allowYield),
   });
   const typeMember = typeConsumers.typeMember;
   /**
    * The contexts a capture being matched stands in. A capture is read by the
    * class consumer a module shares across every invocation, so the invocation
    * sets these around its match; without them a capture of `yield value`
-   * inside a generator was refused as a `yield` outside one.
+   * inside a generator would be refused as a `yield` outside one.
    */
   let captureContexts: ReadonlySet<MacroContext> = new Set();
   const inContexts = (
@@ -723,10 +723,10 @@ export function createExpansionFrontendSession(
           .remainingRange()
           .sequence.slice(start, attempted.cursor.index);
         // What the consumer parsed, not the tokens it read. Keeping the raw
-        // run threw away the boundary the parse had just established, so a
-        // captured expression spliced into a template re-associated against
-        // the template's own operators: `$v * 2` with `$v` bound to `1 + 2`
-        // emitted `1 + 2 * 2` and computed 5 rather than 6.
+        // run would throw away the boundary the parse just established, so a
+        // captured expression spliced into a template would re-associate
+        // against the template's own operators: `$v * 2` with `$v` bound to
+        // `1 + 2` would emit `1 + 2 * 2` and compute 5 rather than 6.
         const syntax =
           attempted.syntax.category === "expr" && raw.length > 1
             ? [attempted.syntax]
@@ -1097,10 +1097,10 @@ export function createExpansionFrontendSession(
           const next = fallback.consume()!;
           raw.push(next);
           if (next.tag === "token" && next.raw === ";") break;
-          // Recovery used to run to the next top-level semicolon, and a file
-          // whose remaining semicolons all sat inside braces had the whole
-          // rest of itself swallowed by one unreadable item. An item start on
-          // a new line ends the damage where the next item begins.
+          // An item start on a new line ends the damage where the next item
+          // begins. Recovering only to the next top-level semicolon, a file
+          // whose remaining semicolons all sit inside braces would have the
+          // whole rest of itself swallowed by one unreadable item.
           const following = fallback.peek();
           if (
             following !== undefined &&

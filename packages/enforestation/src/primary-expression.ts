@@ -19,7 +19,10 @@ import {
   type MacroExtentResolver,
   type SyntaxConsumer,
 } from "./consumer.js";
-import { consumeBalancedTypeArguments } from "./type-class-element.js";
+import {
+  consumeBalancedTypeArguments,
+  typeOperandFollows,
+} from "./type-class-element.js";
 
 export const primaryExpressionPrecedence: Precedence = createPrecedence(1_000);
 
@@ -37,13 +40,13 @@ export interface PrimaryExpressionConsumerOptions {
   /**
    * Parses an expression standing on its own.
    *
-   * An arrow is taken here by measuring how far it reaches, which left its body
-   * as the tokens it was written with rather than as the expression it is. A
-   * custom operator spelled in it was never offered them, so
-   * `[1, 2].map((n) => n |> double)` kept the reading the ordinary parse gives
-   * `n | > double`, while `21 |> double` beside it expanded. The body is
-   * parsed with this once the arrow's extent is settled, so what the arrow
-   * reaches over does not change.
+   * An arrow is taken here by measuring how far it reaches, which on its own
+   * leaves its body as the tokens it was written with rather than as the
+   * expression it is. A custom operator spelled in it would never be offered
+   * them, so `[1, 2].map((n) => n |> double)` would keep the reading the
+   * ordinary parse gives `n | > double`, while `21 |> double` beside it
+   * expands. The body is parsed with this once the arrow's extent is settled,
+   * so what the arrow reaches over does not change.
    */
   readonly consumeExpression?:
     | ((cursor: SyntaxCursor, context: ConsumerContext) => ConsumerAttempt)
@@ -147,7 +150,12 @@ function functionExpressionWidth(cursor: SyntaxCursor): number | undefined {
   ) {
     const node = cursor.peek(candidate);
     if (node === undefined) return undefined;
-    if (node.tag === "group" && node.delimiter === "brace")
+    // A brace where the return type is written is an object type.
+    if (
+      node.tag === "group" &&
+      node.delimiter === "brace" &&
+      !typeOperandFollows(cursor.peek(candidate - 1))
+    )
       return candidate + 1;
   }
   return undefined;
@@ -168,11 +176,12 @@ function classExpressionWidth(cursor: SyntaxCursor): number | undefined {
 /**
  * How wide an arrow function is, from `(` or `async` or `<` to its body.
  *
- * Only generic arrows were recognised here. A plain `(x) => x` fell through to
+ * Every parenthesized arrow is measured here, not only a generic one. Left to
  * the pratt `=>` infix operator, which protects what stands to its left as an
- * expression — so a parameter list came back wrapped in its own parentheses and
- * the emitted TypeScript did not parse. `() => x` was worse: an empty
- * parenthesis group is not a primary atom, so nothing could begin it at all.
+ * expression, a plain `(x) => x` would come back with its parameter list
+ * wrapped in its own parentheses and the emitted TypeScript would not parse.
+ * `() => x` could not be read at all: an empty parenthesis group is not a
+ * primary atom, so nothing could begin it.
  */
 interface ArrowExtent {
   readonly width: number;
@@ -188,13 +197,10 @@ function arrowWidth(
   // the same way; only a parameter list needs measuring here.
   const bodyStart = parenthesizedArrowBodyStart(cursor, context);
   if (bodyStart === undefined) return undefined;
-  // Only a concise body. Those did not parse here at all, and fell to the
-  // infix `=>`, which protects what is left of it as an expression and
-  // emitted a parameter list wrapped in its own parentheses. A block body
-  // still goes that way: taking it here protects a statement list as an
-  // expression, which mangles it at a call site. Written in a template, a
-  // block-bodied arrow is still emitted wrongly — that is unchanged, and
-  // not something this can fix without breaking the call site.
+  // Only a concise body. A block body goes to the infix `=>`: taking it here
+  // would protect a statement list as an expression, which mangles it at a
+  // call site. Written in a template, a block-bodied arrow is emitted wrongly
+  // by that route, and this cannot fix it without breaking the call site.
   const body = cursor.peek(bodyStart);
   if (body?.tag === "group" && body.delimiter === "brace") return undefined;
   const width = arrowBodyEnd(cursor, bodyStart, context);
@@ -254,9 +260,9 @@ function parenthesizedArrowBodyStart(
   const after = cursor.peek(offset);
   if (after?.tag === "token" && after.raw === "=>") return offset + 1;
   // Otherwise only a return type annotation may stand between the parameters
-  // and the arrow, and it begins with `:`. Looking further for any `=>` read
-  // `(1) |> f; const g = () => 1;` as an arrow whose parameter list was `(1)`,
-  // reaching into the next statement for its `=>`.
+  // and the arrow, and it begins with `:`. Looking further for any `=>` would
+  // read `(1) |> f; const g = () => 1;` as an arrow whose parameter list is
+  // `(1)`, reaching into the next statement for its `=>`.
   if (after?.tag !== "token" || after.raw !== ":") return undefined;
   offset += 1;
   const limit = offset + 64;
@@ -265,7 +271,13 @@ function parenthesizedArrowBodyStart(
     if (node === undefined) return undefined;
     if (node.tag === "token" && node.raw === "=>") return offset + 1;
     // Anything that cannot appear in a return type means this is not an arrow.
-    if (node.tag === "group" && node.delimiter === "brace") return undefined;
+    // A brace can, as an object type, only where a type is written.
+    if (
+      node.tag === "group" &&
+      node.delimiter === "brace" &&
+      !typeOperandFollows(cursor.peek(offset - 1))
+    )
+      return undefined;
     if (node.tag === "token" && (node.raw === ";" || node.raw === "="))
       return undefined;
     offset += 1;
@@ -448,7 +460,9 @@ function arrowChildren(
   if (consumeExpression === undefined || body.length < 2) return raw;
   const attempt = consumeExpression(
     createSyntaxCursor(createSyntaxSequence(body)),
-    context,
+    // An arrow is never a generator, so `yield` is not an expression in its
+    // body even inside one.
+    Object.freeze({ ...context, allowYield: false }),
   );
   if (!attempt.matched || !attempt.cursor.atEnd) return raw;
   return [...raw.slice(0, arrow.bodyStart), attempt.syntax];
@@ -471,8 +485,8 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       // may still be postfix. A template writing `$value.every(check)` splices
       // a captured expression here and then reads a member off it, and a
       // capture of more than one node arrives protected. Returning the operand
-      // on its own left `.every(check)` for a caller with nowhere to put it,
-      // and the expansion was reported as not being one expression.
+      // on its own would leave `.every(check)` for a caller with nowhere to put
+      // it, and the expansion would be reported as not being one expression.
       let chained = false;
       while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
         const before = cursor.index;

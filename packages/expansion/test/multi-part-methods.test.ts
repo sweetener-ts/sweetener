@@ -130,6 +130,7 @@ function createHarness() {
     stopSet: StopSet.empty,
     tracker,
     cancellation: guard.cancellation,
+    allowYield: false,
   });
   const consumers = new Map<SyntaxClassId, SyntaxConsumer>([
     [module.classId("expr")!, expression],

@@ -64,6 +64,9 @@ function parse(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
+    // Read as though inside a generator, so `yield` parses like any other
+    // prefix operator; refusing it outside one is tested on its own.
+    allowYield: true,
   });
   return { result, cursor, origins, syntax, ids };
 }
@@ -109,8 +112,8 @@ describe("Pratt expression consumer", () => {
       const { result } = parse(source);
       expect(result.matched, source).toBe(true);
       if (!result.matched) continue;
-      // Before the operator was rejoined the consumer stopped at the first
-      // `>` and left the rest of the expression unconsumed.
+      // Unless the operator is rejoined, the consumer stops at the first `>`
+      // and leaves the rest of the expression unconsumed.
       expect(result.cursor.atEnd, source).toBe(true);
       expect(output(source), source).toBe(source);
     }
@@ -444,6 +447,7 @@ describe("Pratt expression consumer", () => {
       environmentEpoch: 0 as EnvironmentEpoch,
       tracker: new ResourceTracker(createResourceBudget()),
       stopSet: new StopSet([{ kind: "token", raw: ";" }]),
+      allowYield: false,
     });
     if (!result.matched) throw new Error("expected expression");
     expect(printLosslessSequence(result.syntax.children)).toBe("a + b");
@@ -503,6 +507,7 @@ describe("Pratt expression consumer", () => {
       phase: createPhase(0),
       environmentEpoch: 0 as EnvironmentEpoch,
       tracker: new ResourceTracker(createResourceBudget()),
+      allowYield: false,
     });
     if (!result.matched) throw new Error("expected an expression");
     expect(printLosslessSequence(result.syntax.children)).toBe("(a) + b");
@@ -578,7 +583,7 @@ describe("Pratt expression consumer", () => {
       const { resolver } = pipe({});
       const { result } = parse("x |> n => f(n)", resolver);
       if (!result.matched) throw new Error("expected an expression");
-      // `=>` binds looser than the pipe, so the pipe became its parameters.
+      // `=>` binds looser than the pipe, so the pipe becomes its parameters.
       expect(result.syntax.form).toBe("arrow");
       expect(operatorAt(result.syntax)).toBe("=>");
     });

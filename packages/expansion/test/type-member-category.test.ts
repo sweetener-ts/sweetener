@@ -186,8 +186,8 @@ describe("the typeMember category", () => {
 
   /**
    * A member list separates on `,`, and an invocation may contain one of its
-   * own. Reading the member up to the first comma cut the invocation in half
-   * and emitted the remainder verbatim.
+   * own. Reading the member up to the first comma cuts the invocation in half
+   * and emits the remainder verbatim.
    */
   test("keeps an invocation that contains a comma whole", () => {
     const { expand } = harness(definitions);
@@ -220,8 +220,8 @@ describe("the typeMember category", () => {
 
   /**
    * A member's key is ordinary syntax that may be spelled like a macro without
-   * meaning it. Dispatching there rewrote the declaration of a property whose
-   * name simply collided.
+   * meaning it. Dispatching there would rewrite the declaration of a property
+   * whose name simply collides.
    */
   test("leaves a member whose name collides with a macro alone", () => {
     const { expand } = harness(definitions);
@@ -259,7 +259,7 @@ describe("the typeMember category", () => {
   });
 
   /**
-   * Without the category a macro written here was dispatched as an item and
+   * Without the category a macro written here is dispatched as an item and
    * blamed for expanding to something that is not one item. With it, a name
    * that resolves in no member space but does resolve elsewhere is reported
    * against the category it was declared for, rather than left to become an

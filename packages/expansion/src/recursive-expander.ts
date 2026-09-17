@@ -43,6 +43,11 @@ import {
   wrongCategoryMacroCode,
 } from "./diagnostics.js";
 import { readLetBinding, readParameterization } from "@sweetener/template";
+import {
+  classElementEndsBefore,
+  classMemberNameFollows,
+  typeOperandFollows,
+} from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
@@ -224,10 +229,10 @@ function punctuationSpelled(spelling: string): boolean {
  *
  * An operator whose spelling the scanner splits across tokens -- `<-` is `<`
  * then `-` -- is only that operator when the tokens are written together.
- * Joining their text regardless of what stood between them read `a < - b`,
- * which is a comparison against a negation, as the operator: a silent
- * misreading of ordinary TypeScript, in a file that merely had the operator in
- * scope.
+ * Joining their text regardless of what stands between them would read
+ * `a < - b`, which is a comparison against a negation, as the operator: a
+ * silent misreading of ordinary TypeScript, in a file that merely has the
+ * operator in scope.
  */
 export function operatorWidthAt(
   syntax: SyntaxSequence,
@@ -448,8 +453,8 @@ export function expandMacroSyntax(
    *
    * A template literal's substitution and a group holding a custom operator
    * are read here rather than by a macro, so a failure is a fact about the
-   * source. Left to escape it ended the whole project's expansion with a
-   * stack trace naming no file -- `` `${%}` `` in one file was enough.
+   * source. Left to escape it would end the whole project's expansion with a
+   * stack trace naming no file -- `` `${%}` `` in one file would be enough.
    */
   const enforestOrReport = (
     syntax: SyntaxSequence,
@@ -528,30 +533,14 @@ export function expandMacroSyntax(
   const typePositionFollows = (preceding: readonly Syntax[]): boolean => {
     const previous = preceding.at(-1);
     if (previous?.tag !== "token") return false;
+    // The tokens after which a type is written, including words that exist
+    // only in a type. Without those a type macro after one of them would not
+    // be looked up at all, so `keyof list<string>` would keep the macro's own
+    // spelling and no diagnostic would say why.
     if (
-      [
-        ":",
-        "as",
-        "satisfies",
-        "extends",
-        "|",
-        "&",
-        "<",
-        ",",
-        "?",
-        "[",
-        "(",
-        "=>",
-        // Words that exist only in a type. Without these a type macro after
-        // one of them was not looked up at all, so `keyof list<string>` kept
-        // the macro's own spelling and no diagnostic said why.
-        "readonly",
-        "keyof",
-        "infer",
-        "unique",
-        "asserts",
-        "is",
-      ].includes(previous.raw)
+      typeOperandFollows(previous) ||
+      previous.raw === "as" ||
+      previous.raw === "satisfies"
     )
       return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
@@ -778,29 +767,6 @@ export function expandMacroSyntax(
     return createSyntaxSequence([prepend(first), ...syntax.slice(1)]);
   };
 
-  const contextsForContainer = (
-    node: Extract<Syntax, { readonly tag: "protected" }>,
-    inherited: ReadonlySet<MacroContext>,
-  ): ReadonlySet<MacroContext> => {
-    if (node.category !== "item") return inherited;
-    const bodyIndex = node.children.findIndex(
-      (child) => child.tag === "protected" && child.category === "stmt",
-    );
-    const header =
-      bodyIndex < 0 ? node.children : node.children.slice(0, bodyIndex);
-    const functionIndex = header.findIndex(
-      (child) => child.tag === "token" && child.raw === "function",
-    );
-    const generator =
-      functionIndex >= 0 &&
-      header
-        .slice(functionIndex + 1)
-        .some((child) => child.tag === "token" && child.raw === "*");
-    return generator
-      ? new Set<MacroContext>([...inherited, "generator"])
-      : inherited;
-  };
-
   /**
    * What a region of source binds, by namespace.
    *
@@ -955,6 +921,156 @@ export function expandMacroSyntax(
     return Object.freeze({ values, types });
   };
 
+  /** Tokens after which an assignment expression, and so an arrow, begins. */
+  const assignmentExpressionHeads = new Set([
+    "=",
+    "+=",
+    "-=",
+    "*=",
+    "/=",
+    "%=",
+    "**=",
+    "<<=",
+    ">>=",
+    ">>>=",
+    "&=",
+    "|=",
+    "^=",
+    "&&=",
+    "||=",
+    "??=",
+    ",",
+    "?",
+    ":",
+    "=>",
+    ";",
+    "...",
+    "return",
+    "yield",
+    "throw",
+    "default",
+    "case",
+    "else",
+    "do",
+    "in",
+    "of",
+  ]);
+
+  /**
+   * Where the syntax before an arrow's head ends, when the head ends at `end`
+   * in `nodes`: `async` and a type parameter list are read past. Undefined
+   * where a type parameter list does not close.
+   */
+  const arrowHeadBefore = (
+    nodes: readonly Syntax[],
+    end: number,
+  ): number | undefined => {
+    let at = end - 1;
+    const closing = nodes[at];
+    if (closing?.tag === "token" && closing.raw === ">") {
+      let depth = 0;
+      for (; at >= 0; at -= 1) {
+        const node = nodes[at]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ">") depth += 1;
+        else if (node.raw === "<") depth -= 1;
+        if (depth === 0) break;
+      }
+      if (at < 0) return undefined;
+      at -= 1;
+    }
+    const modifier = nodes[at];
+    if (modifier?.tag === "token" && modifier.raw === "async") at -= 1;
+    return at;
+  };
+
+  /**
+   * Whether an arrow's parameters can begin at `end` in `nodes`. An arrow is an
+   * assignment expression, so it begins where one does: at the start of a
+   * group or a statement, or after an assignment, a comma, a conditional's `?`
+   * or `:`, `=>`, `return` and the like. A parenthesis group after an operand
+   * -- a name, a literal, a closing group, a member access -- is that operand's
+   * argument list, and after any other operator it is a parenthesized operand;
+   * neither is ever an arrow's parameters, whatever follows it.
+   */
+  const arrowParametersCanFollow = (
+    nodes: readonly Syntax[],
+    end: number,
+  ): boolean => {
+    const at = arrowHeadBefore(nodes, end);
+    if (at === undefined) return false;
+    const previous = nodes[at];
+    if (previous === undefined) return true;
+    if (previous.tag === "group") return previous.delimiter === "brace";
+    if (previous.tag === "protected") return previous.category !== "expr";
+    return (
+      previous.tag === "token" && assignmentExpressionHeads.has(previous.raw)
+    );
+  };
+
+  /**
+   * Where the `=>` of an arrow stands in `following`, when the parameter list
+   * just before `from` begins one; the list's head ends at `end` in
+   * `preceding`.
+   *
+   * A return type may stand between the parameters and `=>`. In a
+   * conditional's consequent TypeScript reads one only when the arrow is
+   * followed by the conditional's own `:`, so `c ? (x): T => x : y` is an arrow
+   * while in `c ? (x) : (y) => y` the consequent is `(x)`.
+   */
+  const arrowAfterParameters = (
+    preceding: readonly Syntax[],
+    end: number,
+    following: readonly Syntax[],
+    from: number,
+  ): number | undefined => {
+    if (!arrowParametersCanFollow(preceding, end)) return undefined;
+    const spelled = (node: Syntax | undefined, raw: string): boolean =>
+      node?.tag === "token" && node.raw === raw;
+    if (spelled(following[from], "=>")) return from;
+    if (!spelled(following[from], ":")) return undefined;
+    let arrow = from + 1;
+    let typeArguments = 0;
+    for (; arrow < following.length; arrow += 1) {
+      const node = following[arrow]!;
+      if (node.tag !== "token") continue;
+      if (node.raw === "<") typeArguments += 1;
+      else if (node.raw === ">" && typeArguments > 0) typeArguments -= 1;
+      else if (typeArguments === 0) {
+        if (node.raw === "=>") break;
+        if (statementBoundaries.has(node.raw) || node.raw === "=")
+          return undefined;
+      }
+    }
+    if (arrow === following.length) return undefined;
+    if (!spelled(preceding[arrowHeadBefore(preceding, end)!], "?"))
+      return arrow;
+    return arrowBodyEnd(following, arrow + 1).conditional ? arrow : undefined;
+  };
+
+  /**
+   * Where a concise arrow body starting at `from` in `nodes` ends: at a `,` or
+   * `;` beside it, or at a `:` that belongs to a conditional around the arrow
+   * rather than to one in its body. `conditional` says which it was.
+   */
+  const arrowBodyEnd = (
+    nodes: readonly Syntax[],
+    from: number,
+  ): { readonly end: number; readonly conditional: boolean } => {
+    let conditionals = 0;
+    for (let at = from; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      if (node.tag !== "token") continue;
+      if (node.raw === "?") conditionals += 1;
+      else if (node.raw === ":") {
+        if (conditionals === 0) return { end: at, conditional: true };
+        conditionals -= 1;
+      } else if (node.raw === "," || node.raw === ";")
+        return { end: at, conditional: false };
+    }
+    return { end: nodes.length, conditional: false };
+  };
+
   /**
    * Whether a parenthesis group holds names being bound rather than an
    * expression: a parameter list, or what a `catch` binds.
@@ -981,19 +1097,11 @@ export function expandMacroSyntax(
     if (following?.tag === "group" && following.delimiter === "brace")
       return true;
     if (following?.tag === "protected") return true;
-    if (following?.tag !== "token") return false;
-    if (following.raw === "=>") return true;
-    if (following.raw !== ":") return false;
-    // `(x): T => body` annotates an arrow's return type, but `c ? (x) : y` is a
-    // conditional, and reading its consequent as parameters bound whatever
-    // names it held -- which then shadowed a macro written there. Only an
-    // arrow follows its annotation with `=>`.
-    for (const node of after.slice(1)) {
-      if (node.tag !== "token") continue;
-      if (node.raw === "=>") return true;
-      if (node.raw === "," || node.raw === ";") return false;
-    }
-    return false;
+    // Read as parameters, a call's arguments or a conditional's consequent
+    // would bind whatever names they held, shadowing a macro written there.
+    return (
+      arrowAfterParameters(preceding, preceding.length, after, 0) !== undefined
+    );
   };
 
   /**
@@ -1264,17 +1372,70 @@ export function expandMacroSyntax(
     return current;
   };
 
+  /** Whether a brace written next is a class static block, `static {`. */
+  const staticBlockFollows = (preceding: readonly Syntax[]): boolean => {
+    const previous = preceding.at(-1);
+    return previous?.tag === "token" && previous.raw === "static";
+  };
+
+  interface BraceHeader {
+    readonly opens: "function" | "class" | "other";
+    /** Where a function's parameter list stands in what precedes the brace. */
+    readonly parameters?: number;
+    /**
+     * Whether `yield` is an expression inside the brace, where the brace
+     * decides that for itself: a function body by whether the function is a
+     * generator, and a class static block never. Undefined where the brace is
+     * inside whatever function holds it.
+     */
+    readonly yields: boolean | undefined;
+  }
+  const otherBrace: BraceHeader = { opens: "other", yields: undefined };
+  const classBrace: BraceHeader = { opens: "class", yields: undefined };
+
+  /**
+   * Whether the function whose parameter list stands at `parameters` is a
+   * generator. The star is written in front of the name -- `function* name(`,
+   * `async *name(`, `static *[key](` -- or in place of one, `function* (`; a
+   * type parameter list may stand between the name and the parameters.
+   */
+  const generatorHeader = (
+    preceding: readonly Syntax[],
+    parameters: number,
+  ): boolean => {
+    let at = parameters - 1;
+    const closing = preceding[at];
+    if (closing?.tag === "token" && closing.raw === ">") {
+      let depth = 0;
+      for (; at >= 0; at -= 1) {
+        const node = preceding[at]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ">") depth += 1;
+        else if (node.raw === "<") depth -= 1;
+        if (depth === 0) break;
+      }
+      at -= 1;
+    }
+    const star = (node: Syntax | undefined): boolean =>
+      node?.tag === "token" && node.raw === "*";
+    return star(preceding[at]) || star(preceding[at - 1]);
+  };
+
   /**
    * What a brace group opens, read from what stands before it: the body of a
-   * function, arrow or method; the body of a class; or anything else -- a
-   * block, an object literal, a `switch`. Only the syntax already walked is
+   * function, arrow or method, and whether that function is a generator; the
+   * body of a class; or anything else -- a block, an object literal, a
+   * `switch`, a class static block. Only the syntax already walked is
    * consulted, as `functionBodyFollows` does.
    */
-  const braceOpens = (
-    preceding: readonly Syntax[],
-  ): "function" | "class" | "other" => {
+  const braceHeader = (preceding: readonly Syntax[]): BraceHeader => {
     const previous = preceding.at(-1);
-    if (lastTokenOf(previous)?.raw === "=>") return "function";
+    // An arrow is never a generator.
+    if (lastTokenOf(previous)?.raw === "=>")
+      return { opens: "function", yields: false };
+    // A static block is evaluated as a function of its own, where `yield` is
+    // not an expression.
+    if (staticBlockFollows(preceding)) return { opens: "other", yields: false };
     // The header is read back to where the statement or member began. A
     // class body is recognized by its keyword, which also covers
     // `class A extends mixin(B) {` with a parameter list in front of its body.
@@ -1288,7 +1449,7 @@ export function expandMacroSyntax(
         if (node.raw === ">") typeArguments += 1;
         else if (node.raw === "<" && typeArguments > 0) typeArguments -= 1;
         if (typeArguments > 0 || node.raw === "<") continue;
-        if (node.raw === "class") return "class";
+        if (node.raw === "class") return classBrace;
         if (
           statementBoundaries.has(node.raw) ||
           node.raw === "=" ||
@@ -1296,42 +1457,179 @@ export function expandMacroSyntax(
         )
           break;
         // A return type annotation stands between a parameter list and the
-        // body: `m(): Promise<T> {`.
+        // body: `m(): Promise<T> {`. A colon with nothing after it annotates
+        // nothing, and is a `case (x): {` or the `: {` of a conditional.
         const before = preceding[at - 1];
         if (
           parameters === undefined &&
           node.raw === ":" &&
+          at !== preceding.length - 1 &&
           before?.tag === "group" &&
           before.delimiter === "parenthesis"
         )
           parameters = at - 1;
         continue;
       }
-      if (node.tag === "group" && node.delimiter === "brace") break;
+      // A brace where a return type is written is an object type, and the
+      // header reads on past it.
+      if (
+        node.tag === "group" &&
+        node.delimiter === "brace" &&
+        !typeOperandFollows(preceding[at - 1])
+      )
+        break;
     }
     if (previous?.tag === "group" && previous.delimiter === "parenthesis")
       parameters = preceding.length - 1;
-    if (parameters === undefined) return "other";
+    if (parameters === undefined) return otherBrace;
     const opener = preceding[parameters - 1];
+    const functionBrace: BraceHeader = {
+      opens: "function",
+      parameters,
+      yields: generatorHeader(preceding, parameters),
+    };
     // A function, method or accessor names itself, or is `function` or `*`;
     // a computed name is a bracket group and a generic one ends in `>`.
     if (opener?.tag === "group")
-      return opener.delimiter === "bracket" ? "function" : "other";
-    if (opener?.tag !== "token") return "other";
-    if (controlKeywords.has(opener.raw)) return "other";
+      return opener.delimiter === "bracket" ? functionBrace : otherBrace;
+    if (opener?.tag !== "token") return otherBrace;
+    if (controlKeywords.has(opener.raw)) return otherBrace;
     if (
       opener.raw === "await" &&
       lastTokenOf(preceding[parameters - 2])?.raw === "for"
     )
-      return "other";
+      return otherBrace;
     return opener.kind === "identifier" ||
       opener.kind === "keyword" ||
       opener.kind === "string-literal" ||
       opener.kind === "numeric-literal" ||
       opener.raw === "*" ||
       opener.raw === ">"
-      ? "function"
-      : "other";
+      ? functionBrace
+      : otherBrace;
+  };
+
+  const braceOpens = (
+    preceding: readonly Syntax[],
+  ): "function" | "class" | "other" => braceHeader(preceding).opens;
+
+  /** Whether a node is a brace group, or a protected body holding only one. */
+  const braceBody = (node: Syntax): boolean =>
+    node.tag === "group"
+      ? node.delimiter === "brace"
+      : node.tag === "protected" &&
+        node.children.length === 1 &&
+        node.children[0]!.tag === "group" &&
+        node.children[0]!.delimiter === "brace";
+
+  /**
+   * Whether a bracket group written next in a class body is a computed member
+   * name: `member`, the member read so far, holds only decorators and
+   * modifiers. An index signature's brackets hold a parameter and its type,
+   * `[key: string]`, and are not a name.
+   */
+  const computedMemberNameFollows = (
+    member: readonly Syntax[],
+    group: Extract<Syntax, { readonly tag: "group" }>,
+  ): boolean => {
+    const annotated = group.children[1];
+    if (annotated?.tag === "token" && annotated.raw === ":") return false;
+    return classMemberNameFollows(member);
+  };
+
+  /**
+   * Whether `group`, standing after `preceding` and before `following` from
+   * `from` on, is a function's parameter list: an arrow's, where an arrow can
+   * begin and with `=>` after it and any return type, or the one the header of
+   * the body after it names. An object type written as a return type is passed
+   * over on the way to the body.
+   */
+  const parameterList = (
+    preceding: readonly Syntax[],
+    group: Syntax,
+    following: readonly Syntax[],
+    from: number,
+  ): boolean => {
+    if (group.tag !== "group" || group.delimiter !== "parenthesis")
+      return false;
+    if (
+      arrowAfterParameters(preceding, preceding.length, following, from) !==
+      undefined
+    )
+      return true;
+    let typeArguments = 0;
+    for (let at = from; at < following.length; at += 1) {
+      const node = following[at]!;
+      if (node.tag === "token") {
+        if (at === from && node.raw !== ":") return false;
+        if (node.raw === "<") typeArguments += 1;
+        else if (node.raw === ">" && typeArguments > 0) typeArguments -= 1;
+        else if (typeArguments === 0) {
+          if (
+            statementBoundaries.has(node.raw) ||
+            node.raw === "=" ||
+            node.raw === "=>"
+          )
+            return false;
+        }
+        continue;
+      }
+      if (typeArguments > 0) continue;
+      if (!braceBody(node)) {
+        if (at === from) return false;
+        continue;
+      }
+      if (typeOperandFollows(following[at - 1])) continue;
+      return (
+        braceHeader([...preceding, group, ...following.slice(from, at)])
+          .parameters === preceding.length
+      );
+    }
+    return false;
+  };
+
+  /**
+   * The contexts inside `node`, which stands after `preceding` and before
+   * `following` from `from` on. Whether `yield` is an expression is decided by
+   * the function it is written directly in, so a function body is a generator
+   * or not by its own header -- `function*`, `*method()` -- whatever function
+   * encloses it, and an arrow never is one. A parameter list, even a
+   * generator's, and a class static block admit no `yield`. Any other group, a
+   * block or an object literal or an argument list, is inside whatever
+   * function holds it and inherits.
+   */
+  const contextsWithin = (
+    node: Syntax,
+    preceding: readonly Syntax[],
+    following: readonly Syntax[],
+    from: number,
+    inherited: ReadonlySet<MacroContext>,
+  ): ReadonlySet<MacroContext> =>
+    withYield(
+      inherited,
+      node.tag === "protected" && node.form === "arrow"
+        ? false
+        : braceBody(node)
+          ? braceHeader(preceding).yields
+          : parameterList(preceding, node, following, from)
+            ? false
+            : undefined,
+    );
+
+  /**
+   * `contexts` with `yield` an expression or not, as `yields` says; unchanged
+   * where it is undefined.
+   */
+  const withYield = (
+    contexts: ReadonlySet<MacroContext>,
+    yields: boolean | undefined,
+  ): ReadonlySet<MacroContext> => {
+    if (yields === undefined || contexts.has("generator") === yields)
+      return contexts;
+    const changed = new Set(contexts);
+    if (yields) changed.add("generator");
+    else changed.delete("generator");
+    return changed;
   };
 
   /**
@@ -1353,7 +1651,12 @@ export function expandMacroSyntax(
     const braceAfter = (from: number) => {
       for (let index = from; index < nodes.length; index += 1) {
         const node = nodes[index]!;
-        if (node.tag === "group" && node.delimiter === "brace")
+        // A brace where a return type is written is an object type.
+        if (
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          !typeOperandFollows(nodes[index - 1])
+        )
           return index + 1;
         if (node.tag === "token" && (node.raw === "," || node.raw === ";"))
           return undefined;
@@ -1377,21 +1680,13 @@ export function expandMacroSyntax(
     const listed =
       parameters?.tag === "group" && parameters.delimiter === "parenthesis";
     if (!named && !listed) return undefined;
-    // `?` before a parenthesized operand is a conditional, whose `:` is not
-    // the start of a return type.
-    if (token(at - 1, "?")) return undefined;
-    let arrow = start + 1;
-    if (listed && token(arrow, ":"))
-      while (
-        arrow < nodes.length &&
-        !token(arrow, "=>") &&
-        !token(arrow, ",") &&
-        !token(arrow, ";")
-      )
-        arrow += 1;
-    if (!token(arrow, "=>")) return undefined;
-    let end = arrow + 1;
-    while (end < nodes.length && !token(end, ",") && !token(end, ";")) end += 1;
+    const arrow = listed
+      ? arrowAfterParameters(nodes, start, nodes, start + 1)
+      : arrowParametersCanFollow(nodes, start) && token(start + 1, "=>")
+        ? start + 1
+        : undefined;
+    if (arrow === undefined) return undefined;
+    const { end } = arrowBodyEnd(nodes, arrow + 1);
     return end === arrow + 1 ? undefined : { end, kind: "function" };
   };
 
@@ -1738,13 +2033,14 @@ export function expandMacroSyntax(
     category: SyntaxCategory,
     parentInvocation: InvocationId | undefined,
     lexicalModule: CompileParsedMacrosResult,
-    contexts: ReadonlySet<MacroContext>,
+    enclosingContexts: ReadonlySet<MacroContext>,
     suppressHead = false,
     recursiveBinding?: BindingId,
   ): {
     readonly syntax: SyntaxSequence;
     readonly environment: BindingEnvironment;
   } => {
+    let contexts = enclosingContexts;
     let input = initialInput;
     regions.push(regionBindings(initialInput));
     const output: Syntax[] = [];
@@ -1764,9 +2060,26 @@ export function expandMacroSyntax(
      * and runs to the end of the statement.
      */
     let expressionRegion = false;
+    /** Where the class member being walked begins in `output`. */
+    let memberStart = 0;
     while (index < input.length) {
       const node = input[index]!;
       const walked = output.at(-1);
+      // A class field's initializer is evaluated as a function of its own,
+      // where `yield` is not an expression. The rest of a member -- its
+      // computed name, a decorator -- is inside whatever function holds the
+      // class. A member list the class element reader could not take whole
+      // -- one holding a decorator TypeScript rejects -- is walked as tokens,
+      // so a member ends where that reader ends one, and the initializer and
+      // the expression it began end with it.
+      if (category === "classElement") {
+        if (classElementEndsBefore(output.slice(memberStart), node)) {
+          memberStart = output.length;
+          contexts = enclosingContexts;
+          expressionRegion = false;
+        } else if (walked?.tag === "token" && walked.raw === "=")
+          contexts = withYield(enclosingContexts, false);
+      }
       if (walked?.tag === "token") {
         if (expressionRegionEnds.has(walked.raw)) expressionRegion = false;
         else if (
@@ -1807,7 +2120,7 @@ export function expandMacroSyntax(
           lexicalModule,
           protectedCapture === undefined
             ? contexts
-            : contextsForContainer(protectedCapture, contexts),
+            : contextsWithin(protectedCapture, output, [], 0, contexts),
           true,
           recursiveBinding,
         );
@@ -1866,8 +2179,9 @@ export function expandMacroSyntax(
         // template's tokens were written in the module defining the template,
         // whichever file's expansion walks them: an operator's replacement is
         // produced while the call site is read and walked under the call
-        // site's module, and resolving there left a helper macro the template
-        // calls unexpanded unless the call site happened to import it too.
+        // site's module, and resolving there would leave a helper macro the
+        // template calls unexpanded unless the call site happens to import it
+        // too.
         const lookupModule =
           moduleWrittenIn(written) ??
           (positionSourceId !== undefined &&
@@ -2152,7 +2466,7 @@ export function expandMacroSyntax(
               ? enforestSequence(spaced, category, lexicalModule, contexts)
               : undefined;
           // A body that is already one expression is that expression. Wrapped
-          // again, it lost the precedence it was parsed with and printed in
+          // again, it would lose the precedence it was parsed with and print in
           // parentheses of its own.
           const sole = spaced[0];
           if (
@@ -2226,9 +2540,10 @@ export function expandMacroSyntax(
       /**
        * Whether this position names a member of something rather than heading
        * an invocation. `xs.map(f)` reads a property called `map`, and
-       * dispatching a macro of that name there rewrote the property access
-       * into whatever the macro produced -- so a file that merely had a macro
-       * named `map` in scope had every `.map(...)` in it silently rewritten.
+       * dispatching a macro of that name there would rewrite the property
+       * access into whatever the macro produces -- so a file that merely has a
+       * macro named `map` in scope would have every `.map(...)` in it silently
+       * rewritten.
        */
       const namesProperty = ((): boolean => {
         const previous = output.at(-1);
@@ -2379,10 +2694,11 @@ export function expandMacroSyntax(
       }
       /**
        * A macro is visible to what follows its definition, the way a `const`
-       * is, so a name used above its definition is not a macro there. The
-       * invocation was left alone and emitted as a call to a name the output
-       * does not define, and the only report came from TypeScript, which said
-       * the name was missing and nothing about the macro below it.
+       * is, so a name used above its definition is not a macro there. It is
+       * reported here: left alone, the invocation is emitted as a call to a
+       * name the output does not define, and the only report would come from
+       * TypeScript, which says the name is missing and nothing about the macro
+       * below it.
        *
        * Not reported where the name is deliberately something else: shadowed
        * by an ordinary binding, naming a property or a member, or spelling a
@@ -2417,9 +2733,9 @@ export function expandMacroSyntax(
           );
       }
       // A definition context is read at module level. One written inside a
-      // block is not processed, and was carried through into the emitted
-      // TypeScript, where the host compiler reported an unexpected identifier
-      // on a line of macro language. Reporting it here names what happened.
+      // block is not processed, and carried through into the emitted
+      // TypeScript the host compiler would report an unexpected identifier on
+      // a line of macro language. Reporting it here names what happened.
       if (
         category !== "item" &&
         node.tag === "token" &&
@@ -2908,12 +3224,12 @@ export function expandMacroSyntax(
           const head = input[resolvedHeadIndex] ?? node;
           const trivia = head.tag === "token" ? head.leadingTrivia : [];
           // An expression or a type keeps the node that says where it begins
-          // and ends. Spreading its children spliced the tokens loose into
-          // whatever surrounded the call, so the operators there re-bound
-          // against them: `sum(1, 2) * 10` expanded to `1 + 2 * 10` and
-          // computed 21 rather than 30, and `orNull(string)[]` expanded to
-          // `string | null[]`, an array of `null` -- with nothing in either
-          // case to say it had happened.
+          // and ends. Spreading its children would splice the tokens loose
+          // into whatever surrounds the call, so the operators there would
+          // re-bind against them: `sum(1, 2) * 10` would expand to
+          // `1 + 2 * 10` and compute 21 rather than 30, and `orNull(string)[]`
+          // would expand to `string | null[]`, an array of `null` -- with
+          // nothing in either case to say it had happened.
           const spliceWhole =
             (result.syntax.category === "expr" ||
               result.syntax.category === "type") &&
@@ -3068,11 +3384,11 @@ export function expandMacroSyntax(
           continue;
         }
         // A group standing in an expression holds expressions, and an operator
-        // written inside one has to be dispatched there too. Only brackets were
-        // walked this way, so `(a <- b)` and every call argument spelled with a
-        // custom operator kept the reading the ordinary parse gave them --
-        // `a < (-b)` for an operator spelled `<-` -- silently and with no
-        // diagnostic. The group is only entered when an operator's spelling
+        // written inside one has to be dispatched there too, parentheses as
+        // well as brackets. Otherwise `(a <- b)` and every call argument
+        // spelled with a custom operator would keep the reading the ordinary
+        // parse gives them -- `a < (-b)` for an operator spelled `<-` --
+        // silently and with no diagnostic. The group is only entered when an operator's spelling
         // actually stands in it, so an ordinary parenthesised expression and an
         // arrow's parameter list are left as they were.
         if (
@@ -3214,11 +3530,45 @@ export function expandMacroSyntax(
             }
             member = [];
           };
+          // A method's type parameters and return type hold commas of their
+          // own -- `*run(): Generator<number, void, unknown> {` -- which do not
+          // end the member. Angle brackets are counted only in a method's head:
+          // in a property's value or a spread they compare.
+          let methodHead = true;
+          let typeArguments = 0;
           for (const child of node.children) {
-            if (child.tag === "token" && child.raw === ",") {
+            if (
+              child.tag === "token" &&
+              child.raw === "," &&
+              typeArguments === 0
+            ) {
               expandMember();
               children.push(child);
-            } else member.push(child);
+              methodHead = true;
+              continue;
+            }
+            const previous = member.at(-1);
+            member.push(child);
+            if (!methodHead) continue;
+            if (child.tag !== "token") {
+              if (child.tag === "group" && child.delimiter === "brace") {
+                methodHead = false;
+                typeArguments = 0;
+              }
+              continue;
+            }
+            if (child.raw === "<") typeArguments += 1;
+            else if (child.raw === ">" && typeArguments > 0) typeArguments -= 1;
+            else if (
+              (child.raw === "..." && previous === undefined) ||
+              (child.raw === ":" &&
+                typeArguments === 0 &&
+                !(
+                  previous?.tag === "group" &&
+                  previous.delimiter === "parenthesis"
+                ))
+            )
+              methodHead = false;
           }
           expandMember();
           output.push(
@@ -3257,52 +3607,80 @@ export function expandMacroSyntax(
                 // walked as items, where no expression macro resolves.
                 (category === "expr" ||
                   category === "stmt" ||
-                  category === "item") &&
+                  category === "item" ||
+                  category === "classElement") &&
                 // A method in an object literal is written without
-                // `function`, and its body is as much a statement list.
+                // `function`, and its body is as much a statement list. So is
+                // a class static block.
                 (functionBodyFollows(output) ||
-                  braceOpens(output) === "function")
+                  braceOpens(output) === "function" ||
+                  (category === "classElement" && staticBlockFollows(output)))
               ? "stmt"
-              : node.tag === "group" &&
-                  node.delimiter === "parenthesis" &&
-                  catchBinderFollows(output)
-                ? "binding"
-                : // A bracket inside a member list holds a type, not another
-                  // member: a mapped type's key, an index signature's, a
-                  // computed one. Walking it as a member list made
-                  // `{ [K in keyof list<string>]: 1 }` read `list` as the name
-                  // of a member rather than as the type macro it is.
+              : // A class body holds members wherever the class stands. Read
+                // as a statement list, `value = f(x);` is an assignment, and a
+                // member no statement can spell leaves the body unread.
+                node.tag === "group" &&
+                  node.delimiter === "brace" &&
+                  (category === "expr" ||
+                    category === "stmt" ||
+                    category === "item") &&
+                  braceOpens(output) === "class"
+                ? "classElement"
+                : // A computed member name is an expression, evaluated where
+                  // the class is.
                   node.tag === "group" &&
                     node.delimiter === "bracket" &&
-                    category === "typeMember"
-                  ? "type"
-                  : // A brace standing where a type is written is an object
-                    // type, and its contents are a member list rather than one
-                    // more type.
-                    node.tag === "group" &&
-                      node.delimiter === "brace" &&
-                      (category === "type" || typeGroupFollows)
-                    ? "typeMember"
-                    : node.tag === "group" &&
-                        category !== "type" &&
-                        (node.delimiter === "bracket" ||
-                          node.delimiter === "parenthesis") &&
-                        typeGroupFollows
+                    category === "classElement" &&
+                    computedMemberNameFollows(output.slice(memberStart), node)
+                  ? "expr"
+                  : node.tag === "group" &&
+                      node.delimiter === "parenthesis" &&
+                      catchBinderFollows(output)
+                    ? "binding"
+                    : // A bracket inside a member list holds a type, not
+                      // another member: a mapped type's key, an index
+                      // signature's, a computed one. Walking it as a member
+                      // list made `{ [K in keyof list<string>]: 1 }` read
+                      // `list` as the name of a member rather than as the type
+                      // macro it is.
+                      node.tag === "group" &&
+                        node.delimiter === "bracket" &&
+                        category === "typeMember"
                       ? "type"
-                      : node.tag === "group" &&
-                          category !== "expr" &&
-                          ((node.delimiter === "parenthesis" &&
-                            conditionFollows(output)) ||
-                            initializerFollows(output) ||
-                            // An argument list, a parenthesised operand, an index:
-                            // a group reached inside an expression region holds an
-                            // expression however the statement around it is
-                            // categorized.
-                            ((node.delimiter === "parenthesis" ||
-                              node.delimiter === "bracket") &&
-                              expressionRegion))
-                        ? "expr"
-                        : category;
+                      : // A brace standing where a type is written is an
+                        // object type, and its contents are a member list
+                        // rather than one more type.
+                        node.tag === "group" &&
+                          node.delimiter === "brace" &&
+                          (category === "type" || typeGroupFollows)
+                        ? "typeMember"
+                        : node.tag === "group" &&
+                            category !== "type" &&
+                            (node.delimiter === "bracket" ||
+                              node.delimiter === "parenthesis") &&
+                            typeGroupFollows
+                          ? "type"
+                          : node.tag === "group" &&
+                              category !== "expr" &&
+                              ((node.delimiter === "parenthesis" &&
+                                conditionFollows(output)) ||
+                                initializerFollows(output) ||
+                                // An argument list, a parenthesised operand, an
+                                // index: a group reached inside an expression
+                                // region holds an expression however the
+                                // statement around it is categorized.
+                                ((node.delimiter === "parenthesis" ||
+                                  node.delimiter === "bracket") &&
+                                  expressionRegion))
+                            ? "expr"
+                            : category;
+        const innerContexts = contextsWithin(
+          node,
+          output,
+          input,
+          index + 1,
+          contexts,
+        );
         const statementBody =
           node.tag === "group" &&
           node.delimiter === "brace" &&
@@ -3311,18 +3689,33 @@ export function expandMacroSyntax(
           node.children.some((child) => child.tag === "token")
             ? options.enforestStatements?.({
                 syntax: node.children,
-                contexts,
+                contexts: innerContexts,
+                lexicalModule,
+              })
+            : undefined;
+        // A class body is enforested as its members, as the body of a class
+        // declared at module level is, so a static block is read as the
+        // statement list it is and each member is walked on its own.
+        const classMembers =
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          bodyCategory === "classElement" &&
+          braceOpens(output) === "class" &&
+          node.children.some((child) => child.tag === "token")
+            ? options.enforestClassElements?.({
+                syntax: node.children,
+                contexts: innerContexts,
                 lexicalModule,
               })
             : undefined;
         /**
          * A block is a definition context of its own, so a macro generated
          * inside one is visible for the rest of that block and no further.
-         * Generated definitions are recorded in expansion-wide state, and
-         * nothing restored it when the block ended, so a macro a statement
-         * macro installed for one body stayed visible afterwards -- and where
-         * two bodies installed the same name, whichever ran last was the one
-         * in scope after them. That is what the hygiene the language promises
+         * Generated definitions are recorded in expansion-wide state, which is
+         * restored when the block ends. Otherwise a macro a statement macro
+         * installs for one body would stay visible afterwards -- and where two
+         * bodies install the same name, whichever ran last would be the one in
+         * scope after them. That is what the hygiene the language promises
          * rules out, and what `processLocalDefinitionContext` exists for.
          *
          * An item's definitions are deliberately not restored: a macro
@@ -3360,14 +3753,14 @@ export function expandMacroSyntax(
         let nested;
         try {
           nested = visit(
-            createSyntaxSequence(statementBody ?? node.children),
+            createSyntaxSequence(
+              classMembers ?? statementBody ?? node.children,
+            ),
             currentEnvironment,
             node.tag === "protected" ? node.category : bodyCategory,
             parentInvocation,
             lexicalModule,
-            node.tag === "protected"
-              ? contextsForContainer(node, contexts)
-              : contexts,
+            innerContexts,
             false,
             recursiveBinding,
           );

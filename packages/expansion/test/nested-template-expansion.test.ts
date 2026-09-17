@@ -95,13 +95,12 @@ function harness(definitionText: string) {
 
 /**
  * A macro written in another macro's template has to expand wherever it
- * stands. A replacement is walked before it is parsed, so the category of a
- * position in it was read from the single token in front of it. That found the
- * head of an emitted expression and the elements of an array literal and
- * nothing else: a macro in an argument list, an operand, an arrow body or a
- * function body resolved in the category of the declaration around it, found
- * no macro, and was emitted verbatim as a call to a function that does not
- * exist -- with no diagnostic to say so.
+ * stands. A replacement is walked before it is parsed, and the single token in
+ * front of a position finds only the head of an emitted expression and the
+ * elements of an array literal: read that way, a macro in an argument list, an
+ * operand, an arrow body or a function body resolves in the category of the
+ * declaration around it, finds no macro, and is emitted verbatim as a call to
+ * a function that does not exist -- with no diagnostic to say so.
  */
 describe("macros nested in a template", () => {
   const definitions = `
@@ -199,9 +198,9 @@ describe("macros nested in a template", () => {
 
 /**
  * A capture of more than one node arrives protected. Returning it as a
- * complete operand without reading what follows left a template's own postfix
+ * complete operand without reading what follows leaves a template's own postfix
  * -- `$value.every(check)`, `$value[0]`, `$value(arg)` -- for a caller with
- * nowhere to put it, and the expansion was reported as not one expression.
+ * nowhere to put it, and the expansion is reported as not one expression.
  */
 describe("postfix written after a captured expression", () => {
   const definitions = `
@@ -248,9 +247,8 @@ describe("postfix written after a captured expression", () => {
  * `#name(arguments) { body }` is how a class declares a private method, so a
  * template operation in that shape is left alone. A declaration keyword is
  * followed by the name it declares, though, and `interface #join(...) { ... }`
- * has the same three parts -- name, arguments, body -- so it was read as a
- * method and the operation was emitted verbatim, naming the interface
- * `#join(...)`.
+ * has the same three parts -- name, arguments, body. Read as a method, the
+ * operation is emitted verbatim, naming the interface `#join(...)`.
  */
 describe("a template operation naming a declaration", () => {
   test("builds an interface name with #join", () => {
@@ -299,11 +297,11 @@ describe("a template operation naming a declaration", () => {
 });
 
 /**
- * A declaration header is scanned up to the brace that opens its body, and the
- * first brace found was taken to be it. A `<...>` region may hold an object
+ * A declaration header is scanned up to the brace that opens its body, which
+ * is not always the first brace found. A `<...>` region may hold an object
  * type -- `class E extends make()<{ a: string }> {}` is how a tagged error is
- * declared -- so that object type was claimed as the body and the real body
- * was left over, and the declaration did not read as one item.
+ * declared -- and claiming that object type as the body leaves the real body
+ * over, so the declaration does not read as one item.
  */
 describe("a declaration whose type arguments hold an object type", () => {
   const definitions = `
@@ -360,11 +358,11 @@ describe("a declaration whose type arguments hold an object type", () => {
 
 /**
  * A macro is invoked by its head, and `xs.map(f)` has no head to invoke: `map`
- * there names a property of `xs`. Dispatching anyway rewrote the property
- * access into whatever the macro produced, so a file that merely had a macro
- * named `map` in scope had every `.map(...)` in it turned into something else,
+ * there names a property of `xs`. Dispatching anyway rewrites the property
+ * access into whatever the macro produces, so a file that merely has a macro
+ * named `map` in scope has every `.map(...)` in it turned into something else,
  * with no diagnostic. A macro's own template is the likeliest victim, since
- * `Effect.gen(...)` in a template is rewritten by a macro named `gen`.
+ * `Effect.gen(...)` in a template would be rewritten by a macro named `gen`.
  */
 describe("a macro spelled like a property", () => {
   const definitions = `
@@ -405,8 +403,8 @@ describe("a macro spelled like a property", () => {
 
 /**
  * Positions a macro is written in, found by putting one in each of them. Every
- * failure here was silent: the invocation kept its own spelling and the output
- * named a macro that expansion removes.
+ * failure here is silent: the invocation keeps its own spelling and the output
+ * names a macro that expansion removes.
  */
 describe("positions a macro is dispatched in", () => {
   const definitions = `
@@ -416,8 +414,8 @@ describe("positions a macro is dispatched in", () => {
 
   /**
    * A template literal holds expressions; a template literal *type* holds
-   * types. Reading every substitution as an expression made an ordinary
-   * `` `a${string}` `` unreadable, and at a use site it escaped as a thrown
+   * types. Reading every substitution as an expression makes an ordinary
+   * `` `a${string}` `` unreadable, and at a use site it escapes as a thrown
    * error rather than a diagnostic, ending the whole compilation.
    */
   test("reads a template literal type", () => {
@@ -510,8 +508,9 @@ describe("positions a macro is dispatched in", () => {
  * and the same holds for core forms. Rhombus says it of its expression space --
  * a binding there "hides any binding for another space in an enclosing scope".
  *
- * Here every binding form failed instead: `const map = 5; return map;` was
- * dispatched as the macro and reported against the macro's own definition.
+ * Every binding form has to shadow the same way, or `const map = 5; return
+ * map;` is dispatched as the macro and reported against the macro's own
+ * definition.
  *
  * Value and type stay apart because TypeScript keeps them apart, which is the
  * one place this cannot follow Rhombus: `const list` and `type list` are both
@@ -695,10 +694,11 @@ describe("an ordinary binding shadows a macro", () => {
 });
 
 /**
- * Expansion is bounded so a macro cannot consume the build. Reaching a bound
- * threw past every caller, so a macro that did not terminate ended the run with
- * a stack trace naming no file, no line and no macro -- and it escaped the
- * compiler session too, so every host integration failed the same way.
+ * Expansion is bounded so a macro cannot consume the build, and reaching a
+ * bound is a diagnostic. Thrown past every caller, a macro that does not
+ * terminate ends the run with a stack trace naming no file, no line and no
+ * macro -- and it escapes the compiler session too, so every host integration
+ * fails the same way.
  */
 describe("a macro that does not terminate", () => {
   const run = (definitionText: string, source: string) => {
@@ -771,8 +771,8 @@ describe("a macro that does not terminate", () => {
 
 /**
  * Definition contexts are read at module level. One written inside a block is
- * not processed, and was carried through into the emitted TypeScript, where the
- * host compiler reported `Unexpected keyword or identifier` on a line of macro
+ * not processed, and carried through into the emitted TypeScript it makes the
+ * host compiler report `Unexpected keyword or identifier` on a line of macro
  * language. Local macro scope is a milestone deliverable whose machinery exists
  * but is not wired in; until it is, saying so is better than emitting it.
  */
@@ -865,10 +865,11 @@ describe("a definition written inside a block", () => {
 /**
  * A block is a definition context of its own, so a macro generated inside one
  * is visible for the rest of that block and no further. Generated definitions
- * live in expansion-wide state and nothing restored it when the block ended, so
- * a macro a statement macro installed for one body stayed visible afterwards,
- * and where two bodies installed the same name whichever ran last was the one
- * in scope after them -- the opposite of the hygiene the language promises.
+ * live in expansion-wide state, which has to be restored when the block ends.
+ * Otherwise a macro a statement macro installs for one body stays visible
+ * afterwards, and where two bodies install the same name whichever ran last is
+ * the one in scope after them -- the opposite of the hygiene the language
+ * promises.
  */
 describe("a macro generated inside a block", () => {
   const definitions = `
@@ -929,9 +930,10 @@ describe("a macro generated inside a block", () => {
 
 /**
  * A macro is visible to what follows its definition, the way a `const` is, so a
- * name used above its definition is not a macro there. The invocation was
- * emitted as a call to a name the output does not define, and only TypeScript
- * reported it -- as a missing name, saying nothing about the definition below.
+ * name used above its definition is not a macro there. Unreported, the
+ * invocation is emitted as a call to a name the output does not define, and
+ * only TypeScript reports it -- as a missing name, saying nothing about the
+ * definition below.
  */
 describe("a macro used above its definition", () => {
   const definitions = "export syntax noop:expr { rule { noop } => { 0 } }";

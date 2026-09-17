@@ -93,6 +93,7 @@ describe("recursive declarative expansion", () => {
       stopSet: awaitStopSet as never,
       tracker,
       cancellation: guard.cancellation,
+      allowYield: false,
     });
     const builtins = {
       token: module.classId("token")!,

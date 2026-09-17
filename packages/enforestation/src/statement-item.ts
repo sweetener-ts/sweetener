@@ -31,6 +31,8 @@ import {
   createClassElementConsumer,
   consumeBalancedTypeArguments,
   createTypeConsumers,
+  decoratorWidth,
+  typeOperandFollows,
 } from "./type-class-element.js";
 
 export type StatementItemMacroResolver = MacroExtentResolver;
@@ -141,6 +143,33 @@ function declaresGenerator(children: readonly Syntax[]): boolean {
       token(node, "*") &&
       children.slice(0, index).every((prior) => prior.tag === "token"),
   );
+}
+
+/**
+ * The decorator at the cursor, as `@` and the expression it applies, advancing
+ * past it; undefined, with the cursor unmoved, where no well-formed decorator
+ * begins. Its extent is TypeScript's decorator grammar, and the expression in
+ * it is enforested so a macro written there is reached.
+ */
+function consumeDecorator(
+  expression: SyntaxConsumer,
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): readonly Syntax[] | undefined {
+  const width = decoratorWidth((offset) => cursor.peek(offset));
+  if (width === undefined) return undefined;
+  const nodes = Array.from({ length: width }, (_, offset) =>
+    cursor.peek(offset)!,
+  );
+  const applied = createSyntaxCursor(createSyntaxSequence(nodes.slice(1)));
+  const attempt = expression.consume(applied, {
+    ...context,
+    category: "expr",
+    stopSet: StopSet.empty,
+  });
+  if (!attempt.matched || !attempt.cursor.atEnd) return undefined;
+  cursor.advance(width);
+  return [nodes[0]!, attempt.syntax];
 }
 
 function leadingLineBreak(syntax: Syntax | undefined): boolean {
@@ -275,15 +304,10 @@ class StatementConsumer implements SyntaxConsumer {
     if (token(first, "@")) {
       const children: Syntax[] = [];
       while (token(cursor.peek(), "@")) {
-        children.push(cursor.consume()!);
-        const decorator = this.#expression.consume(cursor, {
-          ...context,
-          category: "expr",
-          stopSet: StopSet.empty,
-        });
-        if (!decorator.matched)
+        const decorator = consumeDecorator(this.#expression, cursor, context);
+        if (decorator === undefined)
           return failure("stmt", cursor, start, ["decorator expression"], 35);
-        children.push(decorator.syntax);
+        children.push(...decorator);
       }
       const declaration = this.consume(cursor, context);
       if (!declaration.matched) return declaration;
@@ -385,11 +409,11 @@ class StatementConsumer implements SyntaxConsumer {
    * Takes a control statement's parenthesized header, with the expressions in
    * it read as expressions.
    *
-   * A header was kept as the tokens it was written with, so an operator
-   * written in one was never offered to its rules: `if (x |> f)` and
-   * `while (x |> f)` reached TypeScript with the `|>` still in them, while the
-   * same expression one line down expanded. A header this cannot read is kept
-   * as written, as a block is.
+   * Kept as the tokens it was written with, an operator written in a header
+   * would never be offered to its rules: `if (x |> f)` and `while (x |> f)`
+   * would reach TypeScript with the `|>` still in them, while the same
+   * expression one line down expands. A header this cannot read is kept as
+   * written, as a block is.
    */
   #consumeHeader(
     cursor: SyntaxCursor,
@@ -528,8 +552,8 @@ class StatementConsumer implements SyntaxConsumer {
    *
    * Without this the block is carried through as an opaque token tree, and the
    * expander only ever walks its raw children under the enclosing category.
-   * That let a statement macro at the head of a block expand while every macro
-   * in an expression position inside the block was silently left alone.
+   * That lets a statement macro at the head of a block expand while every macro
+   * in an expression position inside the block is silently left alone.
    *
    * A block whose contents do not enforest is returned unchanged rather than
    * failing the enclosing statement: the block may hold syntax this consumer
@@ -538,7 +562,7 @@ class StatementConsumer implements SyntaxConsumer {
   enforestBlock(
     block: GroupSyntax,
     context: ConsumerContext,
-    allowYield?: boolean,
+    allowYield: boolean = context.allowYield,
   ): Syntax {
     if (block.children.length === 0) return block;
     if (this.options.holdsStatementOperator?.(block.children) === true)
@@ -551,10 +575,12 @@ class StatementConsumer implements SyntaxConsumer {
       // Stop tokens belong to the enclosing construct; inside the braces the
       // statement list runs to the closing delimiter.
       stopSet: StopSet.empty,
-      // `yield` is only a statement inside a generator. Inheriting the
-      // enclosing permission would fail to enforest a generator body reached
-      // from a non-generator context, which silently skips expansion there.
-      ...(allowYield === undefined ? {} : { allowYield }),
+      // `yield` is only an expression inside a generator. A function body
+      // says for itself whether it is one; a bare block, or the body of an
+      // `if` or a `try`, is inside whatever function holds it and inherits.
+      // A generator body reached from a non-generator context that inherited
+      // would fail to enforest, and so silently skip expansion there.
+      allowYield,
     });
     while (!inner.atEnd) {
       const before = inner.index;
@@ -806,11 +832,11 @@ class StatementConsumer implements SyntaxConsumer {
         ),
       });
       const expression = this.#expression.consume(cursor, expressionContext);
-      // What follows the keyword on its line belongs to the statement. Only
-      // `throw` reported a failure to read it: `return 1 + ;` carried on past
-      // the tokens the failed attempt had already read, found the `;`, and
-      // succeeded as `return ;` -- dropping `1 +` from the program without a
-      // word, where TypeScript would have rejected what was written.
+      // What follows the keyword on its line belongs to the statement, so a
+      // failure to read it is reported for `return` as for `throw`. Carrying on
+      // past the tokens the failed attempt read would find the `;` and succeed
+      // as `return ;` -- dropping `1 +` from `return 1 + ;` without a word,
+      // where TypeScript would have rejected what was written.
       if (!expression.matched)
         return failure(
           "stmt",
@@ -841,9 +867,9 @@ class StatementConsumer implements SyntaxConsumer {
    *
    * The declarator head is scanned rather than parsed, but the initializer is
    * enforested as an expression so that macros can be invoked there. Scanning
-   * the whole declaration, as this previously did, meant `const a = m(x);`
-   * inside any block never saw its expression macros expanded, while the same
-   * declaration at module level did.
+   * the whole declaration would leave `const a = m(x);` inside a block with
+   * its expression macros unexpanded, while the same declaration at module
+   * level expands.
    */
   #consumeVariable(
     cursor: SyntaxCursor,
@@ -914,8 +940,8 @@ class StatementConsumer implements SyntaxConsumer {
       // A `<...>` region holds type parameters or type arguments, and a brace
       // inside one is an object type: `class E extends make()<{ a: string }>`,
       // or `class C<T extends { a: string }>`. Taking the first brace as the
-      // declaration's body claimed that object type as the body and left the
-      // real one behind, so the declaration did not read as one item.
+      // declaration's body would claim that object type as the body and leave
+      // the real one behind, so the declaration would not read as one item.
       if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
         const region = consumeBalancedTypeArguments(cursor, context);
         if (region !== undefined) {
@@ -925,7 +951,14 @@ class StatementConsumer implements SyntaxConsumer {
         }
       }
       cursor.advance();
-      if (endsAtBlock && next.tag === "group" && next.delimiter === "brace") {
+      // A brace where a return type is written is an object type; the body
+      // is the brace after the whole type.
+      if (
+        endsAtBlock &&
+        next.tag === "group" &&
+        next.delimiter === "brace" &&
+        !typeOperandFollows(children.at(-1))
+      ) {
         children.push(
           statementBody
             ? this.enforestBlock(next, context, declaresGenerator(children))
@@ -1023,8 +1056,8 @@ class ItemConsumer implements SyntaxConsumer {
     this.#type = typeConsumers.type;
     this.#classElement = createClassElementConsumer({
       ...shared,
-      enforestStatementBlock: (block, blockContext) =>
-        this.#statement.enforestBlock(block, blockContext),
+      enforestStatementBlock: (block, blockContext, allowYield) =>
+        this.#statement.enforestBlock(block, blockContext, allowYield),
     });
     // Like the class-element consumer, this one is not given a macro
     // resolver: a member macro is dispatched by the expander when it walks the
@@ -1036,9 +1069,9 @@ class ItemConsumer implements SyntaxConsumer {
   /**
    * Enforest a class body as a list of class elements.
    *
-   * Protecting the raw body as `classElement`, as this previously did, never
-   * ran the element consumer over it, so a method body was never reached and
-   * macros inside methods were left unexpanded.
+   * Protecting the raw body as `classElement` would never run the element
+   * consumer over it, so a method body would never be reached and macros
+   * inside methods would be left unexpanded.
    *
    * A body that does not enforest is returned unchanged; TypeScript reports
    * anything genuinely malformed.
@@ -1205,15 +1238,10 @@ class ItemConsumer implements SyntaxConsumer {
     if (token(first, "@")) {
       const children: Syntax[] = [];
       while (token(cursor.peek(), "@")) {
-        children.push(cursor.consume()!);
-        const decorator = this.#expression.consume(cursor, {
-          ...context,
-          category: "expr",
-          stopSet: StopSet.empty,
-        });
-        if (!decorator.matched)
+        const decorator = consumeDecorator(this.#expression, cursor, context);
+        if (decorator === undefined)
           return failure("item", cursor, start, ["decorator expression"], 35);
-        children.push(decorator.syntax);
+        children.push(...decorator);
       }
       const declaration = this.consume(cursor, context);
       if (!declaration.matched) return declaration;
@@ -1228,11 +1256,11 @@ class ItemConsumer implements SyntaxConsumer {
     if (variable !== undefined) return variable;
     if (itemStarts.has(raw(first) ?? "")) {
       const children: Syntax[] = [];
-      // Only this item's own head decides whether it ends at a block. The
-      // lookahead used to run a fixed four nodes and so read into whatever
-      // followed: `import "./x"` with no semicolon saw the `function` of the
-      // next declaration, concluded it was itself a block item, and failed for
-      // having no body. Stop where the consumption loop below stops.
+      // Only this item's own head decides whether it ends at a block, so the
+      // lookahead stops where the consumption loop below stops. Reading on into
+      // whatever follows, `import "./x"` with no semicolon would see the
+      // `function` of the next declaration, conclude it is itself a block
+      // item, and fail for having no body.
       const headWords: string[] = [];
       for (let offset = 0; offset < 4; offset += 1) {
         const node = cursor.peek(offset);
@@ -1269,7 +1297,14 @@ class ItemConsumer implements SyntaxConsumer {
         }
         children.push(cursor.consume()!);
         if (token(next, ";")) break;
-        if (endsAtBlock && next.tag === "group" && next.delimiter === "brace")
+        // A brace where a return type is written is an object type; the body
+        // is the brace after the whole type.
+        if (
+          endsAtBlock &&
+          next.tag === "group" &&
+          next.delimiter === "brace" &&
+          !typeOperandFollows(children.at(-2))
+        )
           break;
       }
       if (
@@ -1314,9 +1349,9 @@ class ItemConsumer implements SyntaxConsumer {
           children[bodyIndex] = protect(bodyCategory, this.options, [
             // A function body is a statement list and a class body is an
             // element list; both are enforested as such. Protecting the raw
-            // group instead only let the expander walk its tokens under the
-            // body's category, which reached a macro at the head of the body
-            // and nothing else.
+            // group instead would only let the expander walk its tokens under
+            // the body's category, which reaches a macro at the head of the
+            // body and nothing else.
             bodyCategory === "stmt"
               ? this.#statement.enforestBlock(
                   body,
@@ -1361,7 +1396,15 @@ class ItemConsumer implements SyntaxConsumer {
  * methods, for instance — delegate their bodies here.
  */
 export interface StatementBlockConsumer extends SyntaxConsumer {
-  enforestBlock(block: GroupSyntax, context: ConsumerContext): Syntax;
+  /**
+   * `allowYield` is given for a function body, which is or is not a generator
+   * whatever encloses it; any other block inherits it from `context`.
+   */
+  enforestBlock(
+    block: GroupSyntax,
+    context: ConsumerContext,
+    allowYield?: boolean,
+  ): Syntax;
 }
 
 export function createStatementConsumer(

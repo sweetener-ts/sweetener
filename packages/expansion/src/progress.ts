@@ -20,7 +20,7 @@ class InputHasher {
 
   // Every expansion step hashes its whole input to recognise a macro that is
   // not making progress, so this runs over every token and every piece of
-  // trivia in a file. Building a string per field to hash it meant allocating
+  // trivia in a file. Building a string per field to hash it would allocate
   // several strings per token; the tag, the length and the characters are
   // mixed directly instead.
   add(value: string | number | undefined): void {

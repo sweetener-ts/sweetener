@@ -4,6 +4,7 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  isIdentifierToken,
   spanEnvelope,
   type GroupSyntax,
   type OriginStore,
@@ -18,6 +19,7 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
+import { coreExpressionOperators } from "./core-operators.js";
 import { StopSet } from "./stop-set.js";
 
 export type TypeClassMacroResolver = (
@@ -64,8 +66,7 @@ export interface TypeClassConsumerOptions {
   /**
    * Enforests a brace body as a list of type members. Without it an object
    * type stays an opaque token tree and a member macro written in one never
-   * expands, the way `interface` bodies behaved before they were read as
-   * member lists.
+   * expands.
    */
   readonly enforestTypeMemberBody?:
     ((body: GroupSyntax, context: ConsumerContext) => Syntax) | undefined;
@@ -470,11 +471,45 @@ class TypeConsumer implements SyntaxConsumer {
   }
 }
 
+/**
+ * Tokens after which a type is written: an annotation's `:`, a union or
+ * intersection, type arguments, a conditional type's branches, a function
+ * type's `=>`, a type operator, a predicate's `is`.
+ */
+const typeOperandHeads = new Set([
+  ":",
+  "|",
+  "&",
+  "<",
+  ",",
+  "?",
+  "=>",
+  "extends",
+  "keyof",
+  "readonly",
+  "unique",
+  "infer",
+  "asserts",
+  "is",
+]);
+
+/**
+ * Whether what is written after `previous` is a type. A brace group there is
+ * an object type, not the body of the declaration whose header holds it:
+ * `m(): { a: number } {`, `(): () => { a: number } {`, `value is { a: number }
+ * {`, `T extends { a: infer U } ? { u: U } : {} {`. The body is the brace
+ * after the whole type.
+ */
+export function typeOperandFollows(previous: Syntax | undefined): boolean {
+  return token(previous) && typeOperandHeads.has(previous.raw);
+}
+
 function classElementCanEndAtBrace(children: readonly Syntax[]): boolean {
   const brace = children.at(-1);
   if (brace?.tag !== "group" || brace.delimiter !== "brace") return false;
   const before = children.slice(0, -1);
   if (before.some((item) => token(item, "="))) return false;
+  if (typeOperandFollows(before.at(-1))) return false;
   const declaration = before.slice(decoratorPrefixLength(before));
   if (declaration.length === 1 && token(declaration[0], "static")) return true;
   return declaration.some(
@@ -482,32 +517,208 @@ function classElementCanEndAtBrace(children: readonly Syntax[]): boolean {
   );
 }
 
-function decoratorPrefixLength(children: readonly Syntax[]): number {
-  let index = 0;
-  while (token(children[index], "@")) {
-    index += 1;
-    if (!token(children[index])) return index;
-    index += 1;
-    while (token(children[index], ".") && token(children[index + 1])) {
-      index += 2;
-    }
-    const arguments_ = children[index];
-    if (arguments_?.tag === "group" && arguments_.delimiter === "parenthesis")
-      index += 1;
+/**
+ * How many nodes the decorator beginning at offset 0 takes, reading nodes with
+ * `peek`; undefined where no well-formed decorator begins there. A decorator is
+ * `@` and then a parenthesized expression, `@(expr)`, or a name and the members
+ * read off it, `@a.b.c`, which may be called once with type arguments and
+ * arguments: `@a.b<T>(x)`.
+ */
+export function decoratorWidth(
+  peek: (offset: number) => Syntax | undefined,
+): number | undefined {
+  if (!token(peek(0), "@")) return undefined;
+  const target = peek(1);
+  if (target?.tag === "group")
+    return target.delimiter === "parenthesis" ? 2 : undefined;
+  if (!token(target) || !isIdentifierToken(target)) return undefined;
+  let width = 2;
+  while (token(peek(width), ".")) {
+    const member = peek(width + 1);
+    if (
+      !token(member) ||
+      (member.kind !== "identifier" &&
+        member.kind !== "keyword" &&
+        member.kind !== "private-identifier")
+    )
+      return undefined;
+    width += 2;
   }
-  return index;
+  let call = width;
+  if (token(peek(call), "<")) {
+    let depth = 0;
+    for (; ; call += 1) {
+      const node = peek(call);
+      if (node === undefined) return width;
+      if (token(node, "<")) depth += 1;
+      else if (token(node, ">")) depth -= 1;
+      if (depth === 0) break;
+    }
+    call += 1;
+  }
+  const arguments_ = peek(call);
+  return arguments_?.tag === "group" && arguments_.delimiter === "parenthesis"
+    ? call + 1
+    : width;
 }
 
-function likelyNextClassElement(syntax: Syntax | undefined): boolean {
-  if (token(syntax)) {
-    return (
-      syntax.raw === "@" ||
-      syntax.kind === "identifier" ||
-      syntax.kind === "private-identifier" ||
-      syntax.kind === "keyword"
-    );
+/** How many nodes the decorators written one after another take. */
+function decoratorsWidth(peek: (offset: number) => Syntax | undefined): number {
+  let index = 0;
+  for (;;) {
+    const width = decoratorWidth((offset) => peek(index + offset));
+    if (width === undefined) return index;
+    index += width;
   }
-  return syntax?.tag === "group" && syntax.delimiter === "bracket";
+}
+
+/** How many nodes the decorators at the start of `children` take. */
+function decoratorPrefixLength(children: readonly Syntax[]): number {
+  return decoratorsWidth((offset) => children[offset]);
+}
+
+/**
+ * Whether a class member can begin with `syntax`: a decorator, a generator's
+ * `*`, a name -- a word, a private name, a string or number, or a computed
+ * name in brackets.
+ */
+function beginsClassMember(syntax: Syntax): boolean {
+  if (syntax.tag === "group") return syntax.delimiter === "bracket";
+  if (syntax.tag !== "token") return false;
+  return (
+    syntax.raw === "@" ||
+    syntax.raw === "*" ||
+    syntax.kind === "identifier" ||
+    syntax.kind === "keyword" ||
+    syntax.kind === "private-identifier" ||
+    syntax.kind === "string-literal" ||
+    syntax.kind === "numeric-literal" ||
+    syntax.kind === "bigint-literal"
+  );
+}
+
+/**
+ * Spellings a line cannot end after, because they need an operand after them:
+ * every prefix and infix operator of the expression grammar that is not also
+ * postfix, a member access, a conditional's `?` and `:`, a spread, and the
+ * operators of the type grammar. `!` is postfix too, as a non-null assertion.
+ */
+const operandExpectedAfter = new Set([
+  ...coreExpressionOperators
+    .filter(
+      ({ spelling }) =>
+        spelling !== "!" &&
+        !coreExpressionOperators.some(
+          (operator) =>
+            operator.spelling === spelling && operator.fixity === "postfix",
+        ),
+    )
+    .map(({ spelling }) => spelling),
+  ".",
+  "?.",
+  "?",
+  ":",
+  "...",
+  ...typeOperandHeads,
+]);
+
+/**
+ * Modifiers TypeScript reads across a line break. Any other modifier word
+ * ending a line is the name of a field: `readonly` alone on a line declares a
+ * field called `readonly`.
+ */
+const modifiersContinuingOntoNextLine = new Set(["static", "get", "set", "*"]);
+
+/** Whether a line can end after `member`, the syntax of a member read so far. */
+function lineCanEndAfter(member: readonly Syntax[]): boolean {
+  const previous = member.at(-1);
+  if (!token(previous)) return true;
+  if (classMemberNameFollows(member.slice(0, -1)))
+    return !modifiersContinuingOntoNextLine.has(previous.raw);
+  // `?` straight after a member's name marks it optional, and ends it.
+  if (previous.raw === "?" && classMemberNameFollows(member.slice(0, -2)))
+    return true;
+  // A `>` closing type arguments ends a type; any other is an operator.
+  if (previous.raw === ">") {
+    let depth = 0;
+    for (const node of member) {
+      if (token(node, "<")) depth += 1;
+      else if (token(node, ">")) depth -= 1;
+    }
+    return depth <= 0 && member.some((node) => token(node, "<"));
+  }
+  return !operandExpectedAfter.has(previous.raw);
+}
+
+/**
+ * Whether `member` has an initializer: an `=` outside the type parameters and
+ * arguments written in it.
+ */
+function hasInitializer(member: readonly Syntax[]): boolean {
+  let depth = 0;
+  for (const node of member) {
+    if (token(node, "<")) depth += 1;
+    else if (token(node, ">") && depth > 0) depth -= 1;
+    else if (depth === 0 && token(node, "=")) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `next`, which could begin a member, instead carries an initializer
+ * on from the line before: `*` multiplies, a bracket indexes, `in` and
+ * `instanceof` compare.
+ */
+function continuesInitializer(next: Syntax): boolean {
+  if (next.tag === "group") return next.delimiter === "bracket";
+  return (
+    token(next) &&
+    (next.raw === "*" || next.raw === "in" || next.raw === "instanceof")
+  );
+}
+
+const memberNameModifiers = new Set([
+  ...classModifiers,
+  "async",
+  "get",
+  "set",
+  "*",
+]);
+
+/**
+ * Whether the name of a class member is written next after `member`, the
+ * syntax of the member read so far: it holds only decorators and modifiers.
+ */
+export function classMemberNameFollows(member: readonly Syntax[]): boolean {
+  return member
+    .slice(decoratorPrefixLength(member))
+    .every((node) => token(node) && memberNameModifiers.has(node.raw));
+}
+
+/**
+ * Whether `next` begins a new class member after `member`, the syntax of the
+ * member read so far. A member ends at its `;`, at the body of a method or
+ * static block, or -- by automatic semicolon insertion, as TypeScript reads a
+ * class body -- at a line break before syntax that begins another member.
+ * It does not end there where the line cannot end: after decorators alone,
+ * after a modifier TypeScript carries onto the next line, or after an operator
+ * waiting for its operand. Nor does it end where what begins the next line
+ * carries a field's initializer on.
+ */
+export function classElementEndsBefore(
+  member: readonly Syntax[],
+  next: Syntax,
+): boolean {
+  if (member.length === 0) return false;
+  if (token(member.at(-1), ";") || classElementCanEndAtBrace(member))
+    return true;
+  return (
+    leadingLineBreak(next) &&
+    beginsClassMember(next) &&
+    decoratorPrefixLength(member) !== member.length &&
+    lineCanEndAfter(member) &&
+    !(hasInitializer(member) && continuesInitializer(next))
+  );
 }
 
 class ClassElementConsumer implements SyntaxConsumer {
@@ -520,11 +731,8 @@ class ClassElementConsumer implements SyntaxConsumer {
     checkWork(context);
     const macro = this.options.resolveMacro?.("classElement", cursor, context);
     if (macro !== undefined) return validateMacro(macro, "classElement", start);
-    const decoratorTarget = cursor.peek(1);
-    if (
-      token(cursor.peek(), "@") &&
-      (!token(decoratorTarget) || decoratorTarget.kind !== "identifier")
-    ) {
+    const decorators = decoratorsWidth((offset) => cursor.peek(offset));
+    if (token(cursor.peek(decorators), "@")) {
       return failure(
         "classElement",
         cursor,
@@ -537,20 +745,8 @@ class ClassElementConsumer implements SyntaxConsumer {
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
-      const previous = children.at(-1);
-      const onlyDecorators =
-        decoratorPrefixLength(children) === children.length;
-      if (
-        children.length > 0 &&
-        leadingLineBreak(next) &&
-        likelyNextClassElement(next) &&
-        !onlyDecorators &&
-        !continuationLineTokens.has(token(previous) ? previous.raw : "") &&
-        !classModifiers.has(token(previous) ? previous.raw : "")
-      )
-        break;
+      if (classElementEndsBefore(children, next)) break;
       children.push(cursor.consume()!);
-      if (token(next, ";")) break;
       if (classElementCanEndAtBrace(children)) {
         // The element ended at its body; enforest that body so macros inside a
         // method are reached.
@@ -783,9 +979,9 @@ class TypeMemberConsumer implements SyntaxConsumer {
  * Builds the type and type-member consumers as one pair.
  *
  * The two are mutually recursive: an object type's body is a member list, and
- * a member's own type may be another object type. Building them separately
- * left whichever was built first with no way to reach the other, so a member
- * macro written one level in was never dispatched.
+ * a member's own type may be another object type. Built separately, whichever
+ * was built first would have no way to reach the other, so a member macro
+ * written one level in would never be dispatched.
  */
 export function createTypeConsumers(options: TypeClassConsumerOptions): {
   readonly type: SyntaxConsumer;

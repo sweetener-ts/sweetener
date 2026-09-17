@@ -22,94 +22,17 @@ import {
 } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 
-export type PrattFixity = "prefix" | "infix" | "postfix";
-export type PrattAssociativity = "left" | "right" | "none";
-
-export interface CoreOperator {
-  readonly spelling: string;
-  readonly fixity: PrattFixity;
-  readonly precedence: number;
-  readonly associativity: PrattAssociativity;
-}
-
-function operators(
-  spellings: readonly string[],
-  fixity: PrattFixity,
-  precedence: number,
-  associativity: PrattAssociativity,
-): CoreOperator[] {
-  return spellings.map((spelling) =>
-    Object.freeze({ spelling, fixity, precedence, associativity }),
-  );
-}
-
-export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
-  ...operators(["++", "--"], "postfix", 170, "none"),
-  ...operators(
-    [
-      "+",
-      "-",
-      "!",
-      "~",
-      "typeof",
-      "void",
-      "delete",
-      "await",
-      "new",
-      "++",
-      "--",
-    ],
-    "prefix",
-    160,
-    "right",
-  ),
-  // `yield` takes a whole assignment expression, so `yield a + b` yields the
-  // sum and `yield a ? b : c` the conditional. Read at unary precedence it
-  // yielded `a` and added `b` to whatever came back.
-  ...operators(["yield"], "prefix", 20, "right"),
-  ...operators(["**"], "infix", 150, "right"),
-  ...operators(["*", "/", "%"], "infix", 140, "left"),
-  ...operators(["+", "-"], "infix", 130, "left"),
-  ...operators(["<<", ">>", ">>>"], "infix", 120, "left"),
-  ...operators(
-    ["<", "<=", ">", ">=", "in", "instanceof", "as", "satisfies"],
-    "infix",
-    110,
-    "left",
-  ),
-  ...operators(["==", "!=", "===", "!=="], "infix", 100, "left"),
-  ...operators(["&"], "infix", 90, "left"),
-  ...operators(["^"], "infix", 80, "left"),
-  ...operators(["|"], "infix", 70, "left"),
-  ...operators(["&&"], "infix", 60, "left"),
-  ...operators(["||"], "infix", 50, "left"),
-  ...operators(["??"], "infix", 40, "left"),
-  ...operators(
-    [
-      "=",
-      "+=",
-      "-=",
-      "*=",
-      "/=",
-      "%=",
-      "**=",
-      "<<=",
-      ">>=",
-      ">>>=",
-      "&=",
-      "^=",
-      "|=",
-      "&&=",
-      "||=",
-      "??=",
-      "=>",
-    ],
-    "infix",
-    20,
-    "right",
-  ),
-  ...operators([","], "infix", 10, "left"),
-]);
+export {
+  coreExpressionOperators,
+  type CoreOperator,
+  type PrattAssociativity,
+  type PrattFixity,
+} from "./core-operators.js";
+import {
+  coreExpressionOperators,
+  type PrattAssociativity,
+  type PrattFixity,
+} from "./core-operators.js";
 
 const coreByKey = new Map(
   coreExpressionOperators.map((operator) => [
@@ -395,7 +318,7 @@ function parsePrefix(
     ? undefined
     : resolveOperator(cursor, "prefix", context);
   if (prefix !== undefined) {
-    if (prefix.spelling === "yield" && context.consumer.allowYield === false) {
+    if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);
     }
     const operator = consumeOperator(cursor, prefix);
@@ -485,9 +408,9 @@ function parseConditional(
  * What stands to the right of `as` or `satisfies`: a type, not an expression.
  *
  * Read as an expression, `x as const` and `x as string[]` do not parse, and
- * the statement holding them fell back to unexpanded tokens with nothing
- * reported — so one `as const` in a function body silently stopped every macro
- * in it from running.
+ * the statement holding them would fall back to unexpanded tokens with nothing
+ * reported — so one `as const` in a function body would silently stop every
+ * macro in it from running.
  */
 function parseAssertedType(
   cursor: SyntaxCursor,
@@ -570,6 +493,17 @@ function literalRightOperand(
 }
 
 /**
+ * The context an arrow's body is read in. An arrow is never a generator, so
+ * `yield` is not an expression in its body even inside one.
+ */
+function arrowBodyContext(context: PrattContext): PrattContext {
+  return {
+    ...context,
+    consumer: Object.freeze({ ...context.consumer, allowYield: false }),
+  };
+}
+
+/**
  * An arrow function standing unparenthesized as the right operand of an
  * operator declared `operand arrow;`. Its body ends at the next use of the
  * operator, so `x |> n => f(n) |> g` applies `g` to what the arrow returns
@@ -593,7 +527,7 @@ function arrowRightOperand(
       ...context,
       allowComma: false,
       consumer: Object.freeze({
-        ...context.consumer,
+        ...arrowBodyContext(context).consumer,
         stopSet: context.consumer.stopSet.union(
           new StopSet([{ kind: "spelling", raw: macro.spelling }]),
         ),
@@ -725,7 +659,11 @@ function parseExpression(
       macroOperand ??
       (infix.spelling === "as" || infix.spelling === "satisfies"
         ? parseAssertedType(cursor, context, infix.precedence)
-        : parseExpression(cursor, rightMinimum, context));
+        : parseExpression(
+            cursor,
+            rightMinimum,
+            infix.spelling === "=>" ? arrowBodyContext(context) : context,
+          ));
     if ("matched" in right) return right;
     if (
       (mixingFamily === "logical" && right.mixingFamily === "nullish") ||

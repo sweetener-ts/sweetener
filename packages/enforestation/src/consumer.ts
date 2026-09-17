@@ -42,8 +42,8 @@ export interface ConsumerContext {
   readonly stopSet: StopSet;
   readonly tracker: ResourceTracker;
   readonly cancellation: CancellationToken;
-  /** Explicit lexical permission for `yield`; omitted preserves legacy callers. */
-  readonly allowYield?: boolean | undefined;
+  /** Whether `yield` is an expression here, as it is only inside a generator. */
+  readonly allowYield: boolean;
 }
 
 export interface ConsumeRequest {
@@ -53,7 +53,7 @@ export interface ConsumeRequest {
   readonly tracker: ResourceTracker;
   readonly stopSet?: StopSet | undefined;
   readonly cancellation?: CancellationToken | undefined;
-  readonly allowYield?: boolean | undefined;
+  readonly allowYield: boolean;
 }
 
 export interface ConsumeSuccess extends ConsumerAttemptSuccess {

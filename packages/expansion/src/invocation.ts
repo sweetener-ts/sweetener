@@ -489,8 +489,8 @@ export function invokeMacro(
         // macro declares -- two statements where an expression was wanted, or
         // JSX in a file whose extension cannot hold it. That is something its
         // author wrote, so it is reported against the invocation rather than
-        // thrown, which abandoned the expansion of every file in the project
-        // and named neither the macro nor where it was written.
+        // thrown, which would abandon the expansion of every file in the
+        // project and name neither the macro nor where it was written.
         if (!(error instanceof EnforestationError)) throw error;
         return Object.freeze({
           expanded: false as const,
@@ -619,8 +619,8 @@ export function invokeMacro(
     expanded: false,
     cursor: options.cursor.fork(),
     // Reported where the closest rule stopped, which is where the mistake is:
-    // a `=` written for `==` deep in a clause was reported at the macro's name,
-    // which said only that something in the whole invocation was wrong.
+    // a `=` written for `==` deep in a clause, reported at the macro's name,
+    // would say only that something in the whole invocation is wrong.
     diagnostic: expansionDiagnosticRegistry.create(noMatchingMacroRuleCode, {
       primaryOrigin: options.diagnosticOrigin(
         failure?.at ?? invocationHead.origin,

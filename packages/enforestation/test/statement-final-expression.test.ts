@@ -47,6 +47,7 @@ function setup(source: string) {
     environmentEpoch: 0 as EnvironmentEpoch,
     stopSet: StopSet.empty,
     tracker,
+    allowYield: false,
     cancellation: Object.freeze({
       isCancellationRequested: false,
       throwIfCancellationRequested() {},
