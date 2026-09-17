@@ -105,16 +105,6 @@ const typeAtoms = new Set([
 const continuationOperators = new Set(["&", "extends", "is", "|"]);
 const parameterFollowers = new Set([":", ",", "?", "?:", "="]);
 const hardTypeStops = new Set([",", ";", "="]);
-const continuationLineTokens = new Set([
-  ".",
-  "&",
-  "|",
-  "?",
-  ":",
-  "=",
-  "=>",
-  ",",
-]);
 const classModifiers = new Set([
   "abstract",
   "accessor",
@@ -623,20 +613,27 @@ const operandExpectedAfter = new Set([
 ]);
 
 /**
- * Modifiers TypeScript reads across a line break. Any other modifier word
- * ending a line is the name of a field: `readonly` alone on a line declares a
- * field called `readonly`.
+ * The words that may stand before a member's name, and those of them
+ * TypeScript reads across a line break. Any other modifier word ending a line
+ * is the member's name instead: `readonly` alone on a line declares a field
+ * called `readonly`.
  */
-const modifiersContinuingOntoNextLine = new Set(["static", "get", "set", "*"]);
+interface MemberModifiers {
+  readonly written: ReadonlySet<string>;
+  readonly continuing: ReadonlySet<string>;
+}
 
 /** Whether a line can end after `member`, the syntax of a member read so far. */
-function lineCanEndAfter(member: readonly Syntax[]): boolean {
+function lineCanEndAfter(
+  member: readonly Syntax[],
+  modifiers: MemberModifiers,
+): boolean {
   const previous = member.at(-1);
   if (!token(previous)) return true;
-  if (classMemberNameFollows(member.slice(0, -1)))
-    return !modifiersContinuingOntoNextLine.has(previous.raw);
+  if (memberNameFollows(member.slice(0, -1), modifiers))
+    return !modifiers.continuing.has(previous.raw);
   // `?` straight after a member's name marks it optional, and ends it.
-  if (previous.raw === "?" && classMemberNameFollows(member.slice(0, -2)))
+  if (previous.raw === "?" && memberNameFollows(member.slice(0, -2), modifiers))
     return true;
   // A `>` closing type arguments ends a type; any other is an operator.
   if (previous.raw === ">") {
@@ -677,22 +674,30 @@ function continuesInitializer(next: Syntax): boolean {
   );
 }
 
-const memberNameModifiers = new Set([
-  ...classModifiers,
-  "async",
-  "get",
-  "set",
-  "*",
-]);
+const classMemberModifiers: MemberModifiers = {
+  written: new Set([...classModifiers, "async", "get", "set", "*"]),
+  continuing: new Set(["static", "get", "set", "*"]),
+};
+
+/**
+ * Whether the name of a member is written next after `member`, the syntax of
+ * the member read so far: it holds only decorators and modifiers.
+ */
+function memberNameFollows(
+  member: readonly Syntax[],
+  modifiers: MemberModifiers,
+): boolean {
+  return member
+    .slice(decoratorPrefixLength(member))
+    .every((node) => token(node) && modifiers.written.has(node.raw));
+}
 
 /**
  * Whether the name of a class member is written next after `member`, the
  * syntax of the member read so far: it holds only decorators and modifiers.
  */
 export function classMemberNameFollows(member: readonly Syntax[]): boolean {
-  return member
-    .slice(decoratorPrefixLength(member))
-    .every((node) => token(node) && memberNameModifiers.has(node.raw));
+  return memberNameFollows(member, classMemberModifiers);
 }
 
 /**
@@ -716,7 +721,7 @@ export function classElementEndsBefore(
     leadingLineBreak(next) &&
     beginsClassMember(next) &&
     decoratorPrefixLength(member) !== member.length &&
-    lineCanEndAfter(member) &&
+    lineCanEndAfter(member, classMemberModifiers) &&
     !(hasInitializer(member) && continuesInitializer(next))
   );
 }
@@ -802,7 +807,54 @@ class ClassElementConsumer implements SyntaxConsumer {
  * Modifiers that may open a type member. A line beginning with one of these
  * continues the member being read rather than starting the next.
  */
-const typeMemberModifiers = new Set(["readonly", "new", "get", "set"]);
+/**
+ * The words before the name of an interface's member. A construct signature
+ * opens with `new`, and TypeScript reads `new`, `get` and `set` across a line
+ * break the way it reads a class's `static`.
+ */
+const typeMemberModifiers: MemberModifiers = {
+  written: new Set(["readonly", "new", "get", "set"]),
+  continuing: new Set(["new", "get", "set"]),
+};
+
+/** How deep in type arguments the end of `nodes` stands. */
+function typeArgumentDepth(nodes: readonly Syntax[]): number {
+  let depth = 0;
+  for (const node of nodes) {
+    if (token(node, "<")) depth += 1;
+    else if (token(node, ">") && depth > 0) depth -= 1;
+  }
+  return depth;
+}
+
+/**
+ * Whether `next` begins a new member of an interface or object type after
+ * `member`, the syntax of the member read so far: a line break before syntax
+ * that begins a member, where the line can end.
+ */
+function typeMemberEndsBefore(
+  member: readonly Syntax[],
+  next: Syntax,
+): boolean {
+  return (
+    member.length > 0 &&
+    leadingLineBreak(next) &&
+    likelyNextTypeMember(next) &&
+    lineCanEndAfter(member, typeMemberModifiers)
+  );
+}
+
+/**
+ * Whether `separator` ends the member read so far. A `,` inside type
+ * arguments belongs to them: `first: Map<string, number>` is one member.
+ */
+function separatesTypeMembers(
+  member: readonly Syntax[],
+  separator: Syntax,
+): boolean {
+  if (token(separator, ";")) return true;
+  return token(separator, ",") && typeArgumentDepth(member) === 0;
+}
 
 /**
  * Whether this node can open the next member of an interface or object type.
@@ -848,16 +900,7 @@ function memberSlice(
   while (!scan.atEnd && !context.stopSet.matches(scan)) {
     checkWork(context);
     const next = scan.peek()!;
-    const previous = nodes.at(-1);
-    const previousRaw = token(previous) ? previous.raw : "";
-    if (
-      nodes.length > 0 &&
-      leadingLineBreak(next) &&
-      likelyNextTypeMember(next) &&
-      !continuationLineTokens.has(previousRaw) &&
-      !typeMemberModifiers.has(previousRaw)
-    )
-      break;
+    if (typeMemberEndsBefore(nodes, next)) break;
     nodes.push(scan.consume()!);
     if (token(next, ";")) break;
   }
@@ -932,16 +975,8 @@ class TypeMemberConsumer implements SyntaxConsumer {
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
-      const previous = children.at(-1);
-      const previousRaw = token(previous) ? previous.raw : "";
-      if (
-        children.length > 0 &&
-        leadingLineBreak(next) &&
-        likelyNextTypeMember(next) &&
-        !continuationLineTokens.has(previousRaw) &&
-        !typeMemberModifiers.has(previousRaw)
-      )
-        break;
+      if (typeMemberEndsBefore(children, next)) break;
+      const separates = separatesTypeMembers(children, next);
       cursor.consume();
       // A member's type may itself be an object type, whose contents are
       // another member list.
@@ -952,7 +987,7 @@ class TypeMemberConsumer implements SyntaxConsumer {
           ? this.options.enforestTypeMemberBody(next, context)
           : next,
       );
-      if (token(next, ";") || token(next, ",")) break;
+      if (separates) break;
     }
     if (children.length === 0)
       return failure("typeMember", cursor, start, ["type member"], 1);

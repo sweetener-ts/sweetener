@@ -22,6 +22,7 @@ import {
   ConsumerRegistry,
   createClassElementConsumer,
   createTypeConsumer,
+  createTypeMemberConsumer,
   StopSet,
   type TypeClassElementMacroResolver,
 } from "../src/index.js";
@@ -42,15 +43,20 @@ function nodes(source: string, origins: OriginStore): readonly Syntax[] {
 
 function consume(
   source: string,
-  category: "type" | "classElement",
+  category: "type" | "classElement" | "typeMember",
   resolveMacro?: TypeClassElementMacroResolver,
   stopSet?: StopSet,
 ) {
   const origins = new OriginStore();
   const ids = createIdAllocator<SyntaxId>(60_000);
   let syntax: readonly Syntax[];
-  if (category === "classElement") {
-    const outer = nodes(`class Fixture { ${source} }`, origins);
+  if (category === "classElement" || category === "typeMember") {
+    const outer = nodes(
+      category === "classElement"
+        ? `class Fixture { ${source} }`
+        : `interface Fixture { ${source} }`,
+      origins,
+    );
     const body = outer.find(
       (item): item is GroupSyntax =>
         item.tag === "group" && item.delimiter === "brace",
@@ -66,6 +72,10 @@ function consume(
     {
       category: "classElement",
       consumer: createClassElementConsumer(options),
+    },
+    {
+      category: "typeMember",
+      consumer: createTypeMemberConsumer(options),
     },
   ]);
   const cursor = createSyntaxCursor(syntax);
@@ -90,6 +100,21 @@ function parseDiagnostics(source: string) {
       ts.ScriptKind.TS,
     ) as ts.SourceFile & { readonly parseDiagnostics: readonly ts.Diagnostic[] }
   ).parseDiagnostics;
+}
+
+/** The text of the first member TypeScript reads in an interface body. */
+function typescriptFirstTypeMember(body: string) {
+  const file = ts.createSourceFile(
+    "fragment.ts",
+    `interface Fixture { ${body} }`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const fixture = file.statements[0];
+  if (fixture === undefined || !ts.isInterfaceDeclaration(fixture))
+    throw new Error("expected an interface");
+  return fixture.members[0]?.getText(file);
 }
 
 /** The text of the first member TypeScript reads in a class body. */
@@ -336,6 +361,47 @@ describe("type and class-element consumers", () => {
     expect(parseDiagnostics(`class Fixture { ${source} }`)).toEqual([]);
     expect(typescriptFirstMember(source)).toBe(source);
     const { result } = consume(`${source} next = 1;`, "classElement");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children).trim()).toBe(source);
+  });
+
+  // An interface's members end where TypeScript ends them, by the same rule
+  // a class body's members follow.
+  test.each([
+    "first: string\nsecond: number;",
+    "first: string\n[key: string]: unknown;",
+    "first: string\n(value: number): void;",
+    "first: string\nnew (value: number): Fixture;",
+    "first?\nsecond: number;",
+    "first: Array<number>\nsecond: number;",
+    "readonly\nsecond: number;",
+  ])("ends a type member where TypeScript does: %s", (source) => {
+    expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
+    const { result } = consume(source, "typeMember");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children).trim()).toBe(
+      typescriptFirstTypeMember(source),
+    );
+    expect(result.cursor.atEnd).toBe(false);
+  });
+
+  test.each([
+    "first: keyof\nSecond;",
+    "first: A |\nB;",
+    "first: A\n| B;",
+    "first: Map<string,\nnumber>;",
+    "first: readonly\nstring[];",
+    "first: A extends\nB ? C : D;",
+    "new\n(value: number): Fixture;",
+    "get\nfirst(): number;",
+  ])("reads one type member where TypeScript does: %s", (source) => {
+    expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
+    expect(typescriptFirstTypeMember(source)).toBe(source);
+    const { result } = consume(`${source} next: number;`, "typeMember");
     expect(result.matched).toBe(true);
     if (!result.matched)
       throw new Error(result.failure.expectations.join(", "));

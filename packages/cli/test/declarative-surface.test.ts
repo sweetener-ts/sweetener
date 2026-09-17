@@ -1225,6 +1225,271 @@ ${main}
     });
   }
 
+  // A return type is a type wherever the function it belongs to is written,
+  // so a type macro in one is looked up among type macros.
+  const shaped = `export syntax list:type {
+    rule { list<$element:type> } => { readonly $element[] }
+  }`;
+
+  for (const [form, main] of [
+    [
+      "a function declaration",
+      `export function make(): { a: list<string> } {
+  return { a: ["x"] };
+}`,
+    ],
+    [
+      "a class method",
+      `export class Shapes {
+  make(): { a: list<string> } {
+    return { a: ["x"] };
+  }
+}`,
+    ],
+    [
+      "a function expression",
+      `export const make = function (): { a: list<string> } {
+  return { a: ["x"] };
+};`,
+    ],
+    [
+      "an arrow",
+      `export const make = (): { a: list<string> } => ({ a: ["x"] });`,
+    ],
+    [
+      "an object literal method",
+      `export const shapes = {
+  make(): { a: list<string> } {
+    return { a: ["x"] };
+  },
+};`,
+    ],
+    [
+      "an arrow returning a union of object types",
+      `export const make = (): { a: list<string> } | undefined => ({ a: ["x"] });`,
+    ],
+  ] as const) {
+    test(`an object type in the return type of ${form} holds types`, () => {
+      const { text, messages } = expand(
+        shaped,
+        `import { list } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("readonly string[]");
+      expect(text).not.toContain("list<");
+    });
+  }
+
+  // The `=>` of a function type stands inside the return type, so the object
+  // type after it is a type and not the function's body.
+  for (const [form, main] of [
+    [
+      "a function declaration",
+      `export function make(): () => { a: number } {
+  return () => ({ a: 1 });
+}`,
+    ],
+    [
+      "a class method",
+      `export class Shapes {
+  make(): () => { a: number } {
+    return () => ({ a: 1 });
+  }
+}`,
+    ],
+    [
+      "an arrow",
+      `export const make = (): (() => { a: number }) => () => ({ a: 1 });`,
+    ],
+  ] as const) {
+    test(`an object type after a function type's arrow in ${form} holds members`, () => {
+      const { text, messages } = expand(
+        `export syntax fields:typeMember {
+           rule { fields $name:ident; } => { $name: number; }
+         }`,
+        `import { fields } from "./macros.sts" for syntax;
+${main.replace("{ a: number }", "{ fields a; }")}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("a: number");
+      expect(text).not.toContain("fields a");
+    });
+  }
+
+  test("a type macro spanning a line break in an interface member expands", () => {
+    // A member reads on while the line cannot end: `keyof` needs the type
+    // after it, wherever it is written.
+    const { text, messages } = expand(
+      shaped,
+      `import { list } from "./macros.sts" for syntax;
+export interface Shape {
+  a: keyof
+    list<string>;
+  b: number;
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("readonly string[]");
+  });
+
+  // Type arguments hold commas of their own, and the comma that separates
+  // members is the one outside them.
+  for (const [form, main] of [
+    [
+      "an interface member",
+      `export interface Shape {
+  sizes: Map<string, list<number>>;
+}`,
+    ],
+    [
+      "an object type's member",
+      `export type Shape = { sizes: Map<string, list<number>> };`,
+    ],
+    [
+      "a method member's parameter",
+      `export interface Shape {
+  resize(sizes: Map<string, list<number>>): void;
+}`,
+    ],
+    [
+      "a member after one that ends in type arguments",
+      `export interface Shape {
+  sizes: Map<string, number>,
+  names: list<number>,
+}`,
+    ],
+  ] as const) {
+    test(`a type macro expands after a comma in the type arguments of ${form}`, () => {
+      const { text, messages } = expand(
+        `export syntax list:type {
+           rule { list<$element:type> } => { readonly $element[] }
+         }`,
+        `import { list } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("readonly number[]");
+      expect(text).not.toContain("list<number>");
+    });
+  }
+
+  // A conditional's consequent may be an arrow with a return type, which
+  // TypeScript reads only when the conditional's own `:` follows the arrow's
+  // body. Its parameter is an ordinary binding, and shadows the macro.
+  for (const [form, main] of [
+    [
+      "a conditional",
+      `declare const ready: boolean;
+export const run = ready
+  ? (twice: (value: number) => number): number => twice(1)
+  : 3;`,
+    ],
+    [
+      "a conditional inside a conditional",
+      `declare const ready: boolean;
+export const run = ready
+  ? ready
+    ? (twice: (value: number) => number): number => twice(1)
+    : 1
+  : 2;`,
+    ],
+  ] as const) {
+    test(`an arrow with a return type in the consequent of ${form} binds its parameter`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("=> twice(1)");
+    });
+  }
+
+  test("a parenthesized expression in a conditional's consequent expands", () => {
+    // Read as an arrow's parameter list, the names in it would be bound and
+    // the macro written there would not be looked up at all.
+    const { text, messages } = expand(
+      twice,
+      `import { twice } from "./macros.sts" for syntax;
+declare const ready: boolean;
+export const run = ready ? twice(21)[0] : 3;
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("[21, 21]");
+  });
+
+  // A heritage clause's arguments are a call's, so they hold expressions and
+  // bind nothing: read as a parameter list, the names in them would shadow the
+  // macros written there.
+  for (const [form, main] of [
+    [
+      "a call in a class declaration's extends clause",
+      `declare function mixin(values: readonly number[]): new () => {
+  size: number;
+};
+export class Sized extends mixin(twice(21)) {
+  report(): number {
+    return this.size;
+  }
+}`,
+    ],
+    [
+      "a call in a class expression's extends clause",
+      `declare function mixin(values: readonly number[]): new () => {
+  size: number;
+};
+export const Sized = class extends mixin(twice(21)) {};`,
+    ],
+    [
+      "a parenthesized class expression in an extends clause",
+      `export class Holder extends (class {
+  size = twice(21)[0];
+}) {}`,
+    ],
+    [
+      "a decorated class declaration",
+      `declare function deco(target: unknown, context: ClassDecoratorContext): void;
+@(deco)
+export class Decorated {
+  size = twice(21)[0];
+}`,
+    ],
+  ] as const) {
+    test(`a macro expands in ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("[21, 21]");
+      expect(text).not.toContain("twice(");
+    });
+  }
+
+  test("a parameter shadows a macro of its name in a function with a return type", () => {
+    // A parameter is an ordinary binding, and a nearer binding shadows a
+    // macro, so the body calls the parameter.
+    const { text, messages } = expand(
+      twice,
+      `import { twice } from "./macros.sts" for syntax;
+export function run(twice: (value: number) => number): number {
+  return twice(1);
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("return twice(1)");
+  });
+
   test("members with parenthesized decorators are read as members", () => {
     // `@(expr)` and `@name()` are decorators. A macro that emits members
     // written with them has its expansion read as those members, and a body

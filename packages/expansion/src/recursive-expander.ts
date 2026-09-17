@@ -533,6 +533,10 @@ export function expandMacroSyntax(
   const typePositionFollows = (preceding: readonly Syntax[]): boolean => {
     const previous = preceding.at(-1);
     if (previous?.tag !== "token") return false;
+    // What a class extends is an expression, however much the `extends` of an
+    // interface or a conditional type introduces a type.
+    if (previous.raw === "extends" && classHeritageFollows(preceding))
+      return false;
     // The tokens after which a type is written, including words that exist
     // only in a type. Without those a type macro after one of them would not
     // be looked up at all, so `keyof list<string>` would keep the macro's own
@@ -635,14 +639,46 @@ export function expandMacroSyntax(
    * Whether the next node stands in a class heritage clause. What a class
    * extends is an expression -- `class E extends make()<T> {}` -- while what an
    * interface extends, or a type parameter is constrained by, is a type. All
-   * three are written after `extends`, so the class is found by looking back
-   * for the keyword, stopping at the `<` that would make this a constraint.
+   * three are written after `extends`, so the class is found by reading back
+   * over the expression to the keyword, stopping at the `<` that would make
+   * this a constraint.
    */
   const classHeritageFollows = (preceding: readonly Syntax[]): boolean => {
-    const previous = preceding.at(-1);
-    if (previous?.tag !== "token" || previous.raw !== "extends") return false;
-    for (let at = preceding.length - 2; at >= 0; at -= 1) {
+    let at = preceding.length - 1;
+    let typeArguments = 0;
+    for (; at >= 0; at -= 1) {
       const node = preceding[at]!;
+      // What stands after `extends` is a name, what is read off it, a call, or
+      // the parentheses around any of those: `extends factory(values)(more)`.
+      if (node.tag === "group") {
+        if (node.delimiter === "brace") return false;
+        continue;
+      }
+      if (node.tag !== "token") return false;
+      if (node.raw === ">") {
+        typeArguments += 1;
+        continue;
+      }
+      if (node.raw === "<") {
+        if (typeArguments === 0) return false;
+        typeArguments -= 1;
+        continue;
+      }
+      if (typeArguments > 0) continue;
+      if (node.raw === "extends") break;
+      // What a class implements is a type, however the class reached it.
+      if (node.raw === "implements") return false;
+      if (
+        node.raw !== "." &&
+        node.raw !== "?." &&
+        node.kind !== "identifier" &&
+        node.kind !== "keyword"
+      )
+        return false;
+    }
+    if (at < 0) return false;
+    for (let before = at - 1; before >= 0; before -= 1) {
+      const node = preceding[before]!;
       if (node.tag !== "token") continue;
       if (node.raw === "class") return true;
       if (
@@ -1017,6 +1053,13 @@ export function expandMacroSyntax(
    * conditional's consequent TypeScript reads one only when the arrow is
    * followed by the conditional's own `:`, so `c ? (x): T => x : y` is an arrow
    * while in `c ? (x) : (y) => y` the consequent is `(x)`.
+   *
+   * TypeScript decides that by parsing the body and looking at the token after
+   * it; `arrowBodyEnd` instead counts the `?` and `:` written beside the body.
+   * The two agree: every group is already one node here, so a `?` or `:` at
+   * this level belongs to a conditional -- an object literal's, an
+   * annotation's and a type's are all inside a group -- and the count pairs
+   * them exactly as the grammar nests them.
    */
   const arrowAfterParameters = (
     preceding: readonly Syntax[],
@@ -1080,7 +1123,6 @@ export function expandMacroSyntax(
     after: readonly Syntax[],
     preceding: readonly Syntax[],
   ): boolean => {
-    const following = after[0];
     if (node.tag !== "group" || node.delimiter !== "parenthesis") return false;
     if (catchBinderFollows(preceding)) return true;
     // A control-flow header is not a parameter list, though it is followed by a
@@ -1092,16 +1134,13 @@ export function expandMacroSyntax(
       ["for", "while", "if", "switch", "with"].includes(previous.raw)
     )
       return false;
-    // The body may already have been enforested, in which case it arrives
-    // protected rather than as the brace it was read from.
-    if (following?.tag === "group" && following.delimiter === "brace")
-      return true;
-    if (following?.tag === "protected") return true;
-    // Read as parameters, a call's arguments or a conditional's consequent
-    // would bind whatever names they held, shadowing a macro written there.
-    return (
-      arrowAfterParameters(preceding, preceding.length, after, 0) !== undefined
-    );
+    // Read as parameters, a call's arguments -- a heritage clause's among
+    // them -- or a conditional's consequent would bind whatever names they
+    // held, shadowing a macro written there. A return type may stand between
+    // the parameters and the body, so the whole header is read rather than
+    // only what comes next. A body already enforested arrives protected rather
+    // than as the brace it was read from, which `parameterList` reads through.
+    return parameterList(preceding, node, after, 0);
   };
 
   /**
@@ -1565,11 +1604,9 @@ export function expandMacroSyntax(
         if (node.raw === "<") typeArguments += 1;
         else if (node.raw === ">" && typeArguments > 0) typeArguments -= 1;
         else if (typeArguments === 0) {
-          if (
-            statementBoundaries.has(node.raw) ||
-            node.raw === "=" ||
-            node.raw === "=>"
-          )
+          // An arrow's own `=>` was answered above, so one here belongs to a
+          // function type written in the return type: `m(): () => T {`.
+          if (statementBoundaries.has(node.raw) || node.raw === "=")
             return false;
         }
         continue;
@@ -2060,11 +2097,65 @@ export function expandMacroSyntax(
      * and runs to the end of the statement.
      */
     let expressionRegion = false;
+    /**
+     * Whether the position being walked stands in a function's return type.
+     * It opens at the `:` after a parameter list and runs to the body or the
+     * arrow that the function ends its header with; a function type written
+     * inside it has an arrow of its own, which does not end it.
+     */
+    let typeRegion = false;
+    let functionTypes = 0;
     /** Where the class member being walked begins in `output`. */
     let memberStart = 0;
     while (index < input.length) {
       const node = input[index]!;
       const walked = output.at(-1);
+      if (!typeRegion && walked?.tag === "token" && walked.raw === ":") {
+        const parameters = output.at(-2);
+        if (
+          parameters?.tag === "group" &&
+          parameters.delimiter === "parenthesis" &&
+          parameterList(
+            output.slice(0, -2),
+            parameters,
+            [walked, ...input.slice(index)],
+            0,
+          )
+        ) {
+          typeRegion = true;
+          functionTypes = 0;
+        }
+      } else if (typeRegion && walked?.tag === "token") {
+        if (walked.raw === "=>") {
+          if (functionTypes > 0) functionTypes -= 1;
+          else typeRegion = false;
+        } else if (
+          walked.raw === ";" ||
+          walked.raw === "," ||
+          walked.raw === "="
+        )
+          typeRegion = false;
+      }
+      if (typeRegion) {
+        // The brace after the whole type is the function's body.
+        if (
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          !typeOperandFollows(walked)
+        )
+          typeRegion = false;
+        // A parameter list with an arrow after it belongs to a function type
+        // written inside the return type, and that arrow is its own.
+        const after = input[index + 1];
+        if (
+          typeRegion &&
+          node.tag === "group" &&
+          node.delimiter === "parenthesis" &&
+          after?.tag === "token" &&
+          after.raw === "=>"
+        )
+          functionTypes += 1;
+      }
       // A class field's initializer is evaluated as a function of its own,
       // where `yield` is not an expression. The rest of a member -- its
       // computed name, a decorator -- is inside whatever function holds the
@@ -2527,13 +2618,29 @@ export function expandMacroSyntax(
        * written anywhere else.
        */
       const beforeMemberType = (): boolean => {
-        for (let at = output.length - 1; at >= 0; at -= 1) {
-          const walked = output[at]!;
+        // Type arguments hold commas and a `?` of their own -- `Map<string,
+        // number>`, `A extends B ? C : D` -- and none of them separates
+        // members or opens one's type. They are counted forwards, since a
+        // `<` still open at the end of what has been walked encloses
+        // everything after it.
+        let typeArguments = 0;
+        let afterMemberName = false;
+        for (const walked of output) {
           if (walked.tag !== "token") continue;
-          if (walked.raw === ";" || walked.raw === ",") return true;
-          if (walked.raw === ":" || walked.raw === "?") return false;
+          if (walked.raw === "<") {
+            typeArguments += 1;
+            continue;
+          }
+          if (walked.raw === ">") {
+            if (typeArguments > 0) typeArguments -= 1;
+            continue;
+          }
+          if (typeArguments > 0) continue;
+          if (walked.raw === ";" || walked.raw === ",") afterMemberName = false;
+          else if (walked.raw === ":" || walked.raw === "?")
+            afterMemberName = true;
         }
-        return true;
+        return !afterMemberName;
       };
       const namesMember =
         category === "typeMember" && beforeMemberType() && memberNameFollows();
@@ -2564,7 +2671,7 @@ export function expandMacroSyntax(
         resolvedMacro === undefined &&
         node.tag === "token" &&
         category !== "type" &&
-        typePositionFollows(output)
+        (typeRegion || typePositionFollows(output))
       ) {
         resolvedMacro = resolveSpelling(
           node.raw,
@@ -3332,6 +3439,7 @@ export function expandMacroSyntax(
           // a file ended the whole compilation.
           const substitutionCategory: SyntaxCategory =
             category === "type" ||
+            typeRegion ||
             (category === "expr" || expressionRegion
               ? typeFollowsInExpression(output)
               : typePositionFollows(output))
@@ -3457,6 +3565,7 @@ export function expandMacroSyntax(
           node.tag === "group" &&
           node.delimiter === "brace" &&
           category === "expr" &&
+          !typeRegion &&
           node.children.some(
             (child) => child.tag === "token" && child.raw === ":",
           )
@@ -3591,9 +3700,10 @@ export function expandMacroSyntax(
         // expression around it is categorized, so a statement macro written in
         // a template's arrow or function body resolves in the statement space.
         const typeGroupFollows =
-          category === "expr" || expressionRegion
+          typeRegion ||
+          (category === "expr" || expressionRegion
             ? typeFollowsInExpression(output)
-            : typePositionFollows(output);
+            : typePositionFollows(output));
         const bodyCategory: SyntaxCategory =
           // A group sitting among JSX children holds an expression: a braced
           // container, or a nested element.
@@ -3611,7 +3721,9 @@ export function expandMacroSyntax(
                   category === "classElement") &&
                 // A method in an object literal is written without
                 // `function`, and its body is as much a statement list. So is
-                // a class static block.
+                // a class static block. A brace inside a return type is an
+                // object type, however the type around it is written.
+                !typeRegion &&
                 (functionBodyFollows(output) ||
                   braceOpens(output) === "function" ||
                   (category === "classElement" && staticBlockFollows(output)))
@@ -3663,7 +3775,8 @@ export function expandMacroSyntax(
                           : node.tag === "group" &&
                               category !== "expr" &&
                               ((node.delimiter === "parenthesis" &&
-                                conditionFollows(output)) ||
+                                (conditionFollows(output) ||
+                                  classHeritageFollows(output))) ||
                                 initializerFollows(output) ||
                                 // An argument list, a parenthesised operand, an
                                 // index: a group reached inside an expression
