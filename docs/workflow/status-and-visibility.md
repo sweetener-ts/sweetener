@@ -110,8 +110,13 @@ Each root test command writes a JSON report:
 ```
 
 Use stable report names: `unit.json`, `conformance.json`, `property.json`,
-`incremental.json`, and `typescript.json`. The dashboard marks a report stale
-when its commit differs from the current commit.
+`incremental.json`, and `typescript.json`. The dashboard names the commit each
+report ran against, so a reader can see which ones predate the current tree.
+
+Nothing generated names the current commit. The dashboard is committed with the
+change it describes, so a value read from `git` at render time would be one
+commit behind the moment it landed, and the check that compares the file byte
+for byte could never pass again.
 
 ## Status update format
 

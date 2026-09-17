@@ -1,5 +1,4 @@
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -257,18 +256,6 @@ async function loadCheckReports() {
   return reports;
 }
 
-function gitCommit() {
-  try {
-    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return "unavailable";
-  }
-}
-
 export async function renderStatus(state, review) {
   const current = state.currentTask
     ? state.tasks.find((task) => task.id === state.currentTask)
@@ -277,15 +264,13 @@ export async function renderStatus(state, review) {
     (left, right) => left.order - right.order,
   );
   const reports = await loadCheckReports();
-  const commit = gitCommit();
   const lines = [];
 
   lines.push("# Project Status", "");
   lines.push(`Updated: ${state.updatedAt}  `);
   lines.push(`Current phase: ${state.currentPhase}  `);
   lines.push(`Current slice: ${state.currentSlice}  `);
-  lines.push(`Health: ${state.health}  `);
-  lines.push(`Repository commit: ${commit}`, "");
+  lines.push(`Health: ${state.health}  `, "");
   lines.push(state.summary, "");
 
   lines.push("## Current task", "");
@@ -340,9 +325,8 @@ export async function renderStatus(state, review) {
         report.failed > 0
           ? `${report.failed} failed`
           : `${report.passed ?? 0} passed`;
-      const stale = report.commit && report.commit !== commit ? " (stale)" : "";
       lines.push(
-        `| ${report.name} | ${result}${stale} | ${report.commit ?? "unknown"} |`,
+        `| ${report.name} | ${result} | ${report.commit ?? "unknown"} |`,
       );
     }
     lines.push("");
