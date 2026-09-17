@@ -18,7 +18,6 @@ import {
   createCaptureLeaf,
   createCaptureSequence,
   createRefinement,
-  createTokenLiteralKey,
   describeRefinement,
   evaluateRefinement,
   evaluateRefinements,
@@ -116,7 +115,7 @@ describe("declarative refinements", () => {
     ).toBe(true);
   });
 
-  it("evaluates delimiter, boundary, and selected-alternative facts", () => {
+  it("evaluates delimiter facts", () => {
     const open = token("(", "punctuation");
     const close = token(")", "punctuation");
     const grouped = createGroup({
@@ -149,28 +148,6 @@ describe("declarative refinements", () => {
         captures,
       ),
     ).toBe(true);
-
-    const identifierCaptures = record("name");
-    expect(
-      evaluateRefinements(
-        [
-          createRefinement(capture, {
-            kind: "boundary",
-            side: "following",
-            literal: createTokenLiteralKey("punctuation", ";"),
-          }),
-          createRefinement(capture, {
-            kind: "selected-alternative",
-            alternative: 2,
-          }),
-        ],
-        identifierCaptures,
-        {
-          followingTokens: new Map([[capture, token(";", "punctuation")]]),
-          selectedAlternatives: new Map([[capture, 2]]),
-        },
-      ),
-    ).toBe(true);
   });
 
   it("rejects malformed fixed predicates", () => {
@@ -182,12 +159,6 @@ describe("declarative refinements", () => {
         kind: "repetition-length",
         comparison: "equal",
         length: -1,
-      }),
-    ).toThrow(/non-negative/);
-    expect(() =>
-      createRefinement(capture, {
-        kind: "selected-alternative",
-        alternative: -1,
       }),
     ).toThrow(/non-negative/);
   });

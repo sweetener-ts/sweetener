@@ -6,7 +6,6 @@ import {
   type TokenKind,
   type TokenSyntax,
 } from "@sweetener/syntax";
-import type { LiteralKey } from "./ast.js";
 import type { CaptureRecord, CaptureValue } from "./capture-record.js";
 
 export type LengthComparison =
@@ -18,12 +17,6 @@ export type RefinementPredicate =
   | { readonly kind: "spelling-in"; readonly spellings: readonly string[] }
   | { readonly kind: "starts-with-lowercase" }
   | { readonly kind: "starts-with-uppercase" }
-  | {
-      readonly kind: "boundary";
-      readonly side: "preceding" | "following";
-      readonly literal: LiteralKey;
-    }
-  | { readonly kind: "selected-alternative"; readonly alternative: number }
   | {
       readonly kind: "repetition-length";
       readonly comparison: LengthComparison;
@@ -40,12 +33,6 @@ export type RefinementPredicate =
 export interface CaptureRefinement {
   readonly target: CaptureId;
   readonly predicate: RefinementPredicate;
-}
-
-export interface RefinementEvaluationContext {
-  readonly selectedAlternatives?: ReadonlyMap<CaptureId, number> | undefined;
-  readonly precedingTokens?: ReadonlyMap<CaptureId, TokenSyntax> | undefined;
-  readonly followingTokens?: ReadonlyMap<CaptureId, TokenSyntax> | undefined;
 }
 
 function sortedUnique(values: readonly string[]): readonly string[] {
@@ -83,16 +70,6 @@ export function createRefinement(
         spellings: sortedUnique(predicate.spellings),
       });
       break;
-    case "selected-alternative":
-      if (
-        !Number.isSafeInteger(predicate.alternative) ||
-        predicate.alternative < 0
-      )
-        throw new RangeError(
-          "Alternative index must be a non-negative safe integer",
-        );
-      normalized = Object.freeze({ ...predicate });
-      break;
     case "repetition-length":
       if (!Number.isSafeInteger(predicate.length) || predicate.length < 0)
         throw new RangeError(
@@ -107,11 +84,6 @@ export function createRefinement(
         ...predicate,
         forms: sortedUnique(predicate.forms) as readonly ExpressionForm[],
       });
-      break;
-    case "boundary":
-      if (!Object.isFrozen(predicate.literal))
-        throw new TypeError("Boundary literal must be immutable");
-      normalized = Object.freeze({ ...predicate });
       break;
     default:
       normalized = Object.freeze({ ...predicate });
@@ -179,14 +151,6 @@ function everyToken(
   });
 }
 
-function tokenMatchesLiteral(
-  token: TokenSyntax | undefined,
-  literal: LiteralKey,
-): boolean {
-  if (token === undefined || literal.kind === "binding") return false;
-  return token.kind === literal.tokenKind && token.raw === literal.raw;
-}
-
 function compareLength(
   actual: number,
   comparison: LengthComparison,
@@ -209,7 +173,6 @@ function compareLength(
 export function evaluateRefinement(
   refinement: CaptureRefinement,
   captures: CaptureRecord,
-  context: RefinementEvaluationContext = {},
 ): boolean {
   const value = captures.get(refinement.target);
   if (value === undefined) return false;
@@ -229,18 +192,6 @@ export function evaluateRefinement(
       return everyToken(value, (token) => /^\p{Ll}/u.test(token.raw));
     case "starts-with-uppercase":
       return everyToken(value, (token) => /^\p{Lu}/u.test(token.raw));
-    case "boundary":
-      return tokenMatchesLiteral(
-        predicate.side === "preceding"
-          ? context.precedingTokens?.get(refinement.target)
-          : context.followingTokens?.get(refinement.target),
-        predicate.literal,
-      );
-    case "selected-alternative":
-      return (
-        context.selectedAlternatives?.get(refinement.target) ===
-        predicate.alternative
-      );
     case "repetition-length":
       return (
         value.kind === "sequence" &&
@@ -319,10 +270,6 @@ export function describeRefinement(predicate: RefinementPredicate): string {
       return `${lengthComparisonWords[predicate.comparison]} ${String(
         predicate.length,
       )} repetitions`;
-    case "boundary":
-      return `a boundary on the ${predicate.side} side`;
-    case "selected-alternative":
-      return `alternative ${String(predicate.alternative)}`;
     case "expression-form":
       return predicate.excluded
         ? `an expression that is not ${formList(predicate.forms)}`
@@ -333,10 +280,9 @@ export function describeRefinement(predicate: RefinementPredicate): string {
 export function evaluateRefinements(
   refinements: readonly CaptureRefinement[],
   captures: CaptureRecord,
-  context: RefinementEvaluationContext = {},
 ): boolean {
   return refinements.every((refinement) =>
-    evaluateRefinement(refinement, captures, context),
+    evaluateRefinement(refinement, captures),
   );
 }
 

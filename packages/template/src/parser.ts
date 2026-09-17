@@ -119,10 +119,10 @@ function projectFieldShape(
  *
  * Counting collapses the innermost dimension to a single number and leaves
  * every dimension outside it alone, so a `#count` written inside a repetition
- * counts a different run on each turn of that repetition and drives it. It was
- * given no shape at all, on the reading that a count drives nothing -- true
- * only of the dimension it collapses. A repetition whose content was a count
- * was then refused as having no driving capture.
+ * counts a different run on each turn of that repetition and drives it. A
+ * count drives nothing only in the dimension it collapses; given no shape at
+ * all, a repetition whose content is a count would be refused as having no
+ * driving capture.
  */
 function shapeWithoutInnermost(shape: CaptureShape): CaptureShape {
   if (shape.kind !== "sequence") return shape;
@@ -236,9 +236,9 @@ class TemplateParser {
    *
    * `#` is TypeScript's own syntax as well as the template language's, and the
    * two collide on the names the operations use. A class in a template that
-   * declares `#count(value: number)` or calls `this.#count(1)` was read as the
-   * `#count` operation, which then reported that its argument was invalid and
-   * left the class unexpanded. Where a private identifier is what TypeScript
+   * declares `#count(value: number)` or calls `this.#count(1)` must not be
+   * read as the `#count` operation, which would report that its argument is
+   * invalid and leave the class unexpanded. Where a private identifier is what TypeScript
    * would read there -- after a `.`, or naming a member the class declares --
    * it is left alone.
    */
@@ -246,9 +246,9 @@ class TemplateParser {
     const previous = nodes[index - 1];
     // A declaration keyword is followed by the name it declares, never by a
     // private member. `interface #join($name, suffix: "Table") { ... }` has
-    // the shape a method has -- a name, arguments, a body -- and was read as
-    // one, so the operation was left in the output verbatim and the emitted
-    // interface was named `#join(...)`.
+    // the shape a method has -- a name, arguments, a body -- and read as one,
+    // the operation would be left in the output verbatim and the emitted
+    // interface named `#join(...)`.
     if (token(previous) && declarationNameKeywords.has(previous.raw))
       return false;
     if (token(previous, ".") || token(previous, "?.")) return true;
@@ -537,10 +537,10 @@ class TemplateParser {
             !token(hint) ||
             hint.kind !== "string-literal" ||
             typeof hint.value !== "string" ||
-            // The hint becomes the introduced name, so it has to be one. Only
-            // its emptiness was checked, and `#fresh("has space")` printed a
-            // name that was two -- reported by TypeScript as a syntax error in
-            // generated code rather than against the template that wrote it.
+            // The hint becomes the introduced name, so it has to be one, not
+            // merely non-empty: `#fresh("has space")` would print a name that
+            // is two -- reported by TypeScript as a syntax error in generated
+            // code rather than against the template that wrote it.
             !isIdentifierText(hint.value) ||
             argumentsGroup.children.length !== 1
           ) {
@@ -644,30 +644,20 @@ class TemplateParser {
           predicateGroup.children,
           1,
         );
-        // `alternative` was a second predicate, asking which of a pattern's
-        // choices a capture took. Nothing on the matching side ever recorded
-        // that, so it was always answered no and the `#else` branch was taken
-        // for every input. A syntax class with a rule per shape and an optional
-        // field for each answers the same question and does work, so the
-        // predicate that did not is gone rather than kept beside it.
-        const unsupportedAlternative =
-          token(predicateKind) && predicateKind.raw === "alternative";
         if (
           resolved === undefined ||
           !token(predicateKind) ||
           predicateKind.raw !== "present" ||
           // The predicate is the whole of the group. Reading a capture path and
-          // stopping there left whatever followed it unexamined, so
-          // `#if(present $value and then some)` was accepted as
+          // stopping there would leave whatever follows it unexamined, so
+          // `#if(present $value and then some)` would be accepted as
           // `#if(present $value)` and the rest silently discarded.
           resolved.next !== predicateGroup.children.length
         ) {
           this.#diagnostic(
             malformedTemplateCode,
             predicateCapture?.origin ?? predicateGroup.origin,
-            unsupportedAlternative
-              ? "conditional requires present $capture; to branch on which shape a capture matched, give a syntax class one rule per shape and test an optional field of it"
-              : "conditional requires present $capture",
+            "conditional requires present $capture",
           );
           elements.push(createLiteralTemplate(current));
           index = predicateIndex + 2;
@@ -947,11 +937,12 @@ class TemplateParser {
         index = next;
         continue;
       }
-      // A `#name(` that reached here names no operation the template language
-      // has. It used to be printed into the expansion as written, where `#`
-      // is TypeScript's private-identifier syntax -- so a misspelled `#coutn`
-      // was reported as "private identifiers are not allowed outside class
-      // bodies", pointing at generated code the author never wrote.
+      // A `#name(` that reaches here names no operation the template language
+      // has, and is reported as such. Printed into the expansion as written,
+      // where `#` is TypeScript's private-identifier syntax, a misspelled
+      // `#coutn` would be reported as "private identifiers are not allowed
+      // outside class bodies", pointing at generated code the author never
+      // wrote.
       if (
         operationName !== undefined &&
         operationName.length > 0 &&

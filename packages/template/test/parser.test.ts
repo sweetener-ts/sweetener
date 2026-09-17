@@ -274,21 +274,6 @@ describe("template parser", () => {
     ]);
   });
 
-  test("refuses an alternative conditional", () => {
-    // It asked which of a pattern's choices a capture took, which nothing ever
-    // recorded, so it was always answered no. A syntax class with a rule per
-    // shape answers the same question and does work.
-    const result = parse('{ #if(alternative $maybe "some") { selected } }', [
-      binding("maybe", 1, optionalShape()),
-    ]);
-    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-      "SWR2016",
-    ]);
-    expect(String(result.diagnostics[0]?.messageArguments[0])).toContain(
-      "give a syntax class one rule per shape",
-    );
-  });
-
   test("refuses a presence conditional with more than the capture in it", () => {
     const result = parse("{ #if(present $maybe and then some) { yes } }", [
       binding("maybe", 1, optionalShape()),

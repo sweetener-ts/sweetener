@@ -150,9 +150,6 @@ function parseRefinementPredicate(
         }
       : undefined;
   }
-  // `boundary` and `selected-alternative` are deliberately absent. The matcher
-  // evaluates both against context it never fills in, so a rule written with
-  // one would quietly never match. Refusing them keeps that a clear error.
   return undefined;
 }
 
@@ -172,11 +169,11 @@ export interface LowerRuleRefinementsResult {
 /**
  * Reads the `refine` clauses written on one rule.
  *
- * A macro rule takes the same clauses a syntax-class rule does, and used to
- * drop them: two rules told apart only by a refinement both matched, and the
- * first one written answered for both. `matchTest($subject, $name:ident)`
- * refined to lowercase spellings accepted `Ready` as a binder and reported
- * every arm as taken.
+ * A macro rule takes the same clauses a syntax-class rule does. Dropped, two
+ * rules told apart only by a refinement would both match, and the first one
+ * written would answer for both: `matchTest($subject, $name:ident)` refined to
+ * lowercase spellings would accept `Ready` as a binder and report every arm as
+ * taken.
  */
 export function lowerRuleRefinements(
   clauses: RuleClauses,

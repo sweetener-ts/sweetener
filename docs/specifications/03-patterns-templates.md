@@ -180,13 +180,6 @@ Version 1 supplies pure refinements:
   expression of no form; a capture that is not one expression satisfies
   neither.
 
-Two further predicates were specified and are not supplied: a literal boundary
-on either side of a capture, and a capture having matched a named alternative.
-Both are questions about the match that nothing in the matcher records, so a
-rule written with one would never match, and both are refused where they are
-written. A syntax class with one rule per shape, and an optional field for
-each, distinguishes shapes without either of them.
-
 The macro-language compiler lowers refinements into fixed IR. Macro source cannot
 call host functions.
 
@@ -233,19 +226,16 @@ The validator rejects:
 ## 11. Conditional templates and folds
 
 Conditionals inspect optional presence. They cannot inspect runtime TypeScript
-values, and they cannot ask which alternative a capture matched -- see the note
-in section 8. A template branches on the shape a capture took by naming a
-syntax class with one rule per shape and testing an optional field of it.
+values. A template branches on the shape a capture took by naming a syntax
+class with one rule per shape and testing an optional field of it.
 
-The declarative surface uses fixed predicates and syntax branches:
+The declarative surface uses one fixed predicate and syntax branches:
 
 ```text
 #if(present $maybe) { present syntax } #else { absent syntax }
-#if(alternative $value "branch-name") { selected syntax }
 ```
 
-Capture field paths are permitted in both predicates. The alternative tag is
-definition metadata produced by pattern matching, not a runtime string value.
+Capture field paths are permitted in the predicate.
 
 A fold processes one captured sequence:
 
