@@ -845,7 +845,18 @@ export function createExpansionFrontendSession(
             const bounds =
               (category === "expr" || category === "type") &&
               !writtenInSource(normalized.origin);
-            return normalized.category === category && !bounds
+            // A statement standing beside other syntax inside a statement is
+            // a substatement, not a redundant wrapping: `here: log(x);` and
+            // `while (c) log(x);` each read one statement inside another, and
+            // the syntax beside it is the label or the header that reads it.
+            // Flattened, the head of that statement stood right after the
+            // `:` or the header, where a type is written -- so a statement
+            // macro written there was refused for being declared `stmt`.
+            const substatement =
+              category === "stmt" &&
+              normalized.category === "stmt" &&
+              children.length > 1;
+            return normalized.category === category && !bounds && !substatement
               ? normalized.children
               : [normalized];
           }

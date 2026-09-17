@@ -181,9 +181,18 @@ function failure(
   });
 }
 
+/**
+ * Takes a macro's extent, leaving `cursor` just past it.
+ *
+ * A macro is measured on a fork and answers with that fork, while every other
+ * reading answers with the cursor it was given, advanced. A caller that reads
+ * on from the cursor it passed down would otherwise stand at the invocation
+ * still and read it a second time.
+ */
 function validateMacro(
   attempt: ConsumerAttempt,
   category: "type" | "classElement" | "typeMember",
+  cursor: SyntaxCursor,
   start: number,
 ): ConsumerAttempt {
   if (
@@ -194,7 +203,14 @@ function validateMacro(
       `Macro resolver returned an invalid ${category} extent`,
     );
   }
-  return attempt;
+  if (!attempt.matched || attempt.cursor === cursor) return attempt;
+  if (attempt.cursor.index < cursor.index) {
+    throw new TypeError(
+      `Macro resolver returned a ${category} extent behind the cursor`,
+    );
+  }
+  cursor.advance(attempt.cursor.index - cursor.index);
+  return Object.freeze({ ...attempt, cursor });
 }
 
 /**
@@ -267,7 +283,7 @@ class TypeConsumer implements SyntaxConsumer {
     const start = cursor.index;
     checkWork(context);
     const macro = this.options.resolveMacro?.("type", cursor, context);
-    if (macro !== undefined) return validateMacro(macro, "type", start);
+    if (macro !== undefined) return validateMacro(macro, "type", cursor, start);
     const children: Syntax[] = [];
     let expectingOperand = true;
     let conditionalDepth = 0;
@@ -732,7 +748,8 @@ class ClassElementConsumer implements SyntaxConsumer {
     const start = cursor.index;
     checkWork(context);
     const macro = this.options.resolveMacro?.("classElement", cursor, context);
-    if (macro !== undefined) return validateMacro(macro, "classElement", start);
+    if (macro !== undefined)
+      return validateMacro(macro, "classElement", cursor, start);
     const decorators = decoratorsWidth((offset) => cursor.peek(offset));
     if (token(cursor.peek(decorators), "@")) {
       return failure(
@@ -960,16 +977,16 @@ class TypeMemberConsumer implements SyntaxConsumer {
           context,
         );
         if (macro !== undefined) {
-          validateMacro(macro, "typeMember", 0);
-          if (macro.matched) {
-            cursor.advance(macro.cursor.index);
+          const taken = validateMacro(macro, "typeMember", bounded, 0);
+          if (taken.matched) {
+            cursor.advance(taken.cursor.index);
             return Object.freeze({
               matched: true,
-              syntax: macro.syntax,
+              syntax: taken.syntax,
               cursor,
             });
           }
-          return macro;
+          return taken;
         }
       }
     }

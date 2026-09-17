@@ -197,12 +197,27 @@ function arrowWidth(
   // the same way; only a parameter list needs measuring here.
   const bodyStart = parenthesizedArrowBodyStart(cursor, context);
   if (bodyStart === undefined) return undefined;
-  // Only a concise body. A block body goes to the infix `=>`: taking it here
-  // would protect a statement list as an expression, which mangles it at a
-  // call site. Written in a template, a block-bodied arrow is emitted wrongly
-  // by that route, and this cannot fix it without breaking the call site.
+  // A block body goes to the infix `=>` wherever that route can read it:
+  // taking it here would protect a statement list as an expression, which
+  // mangles it at a call site. Written in a template, a block-bodied arrow is
+  // emitted wrongly by that route, and this cannot fix it without breaking the
+  // call site.
+  //
+  // That route protects what stands to the arrow's left, so it needs an
+  // operand there. An empty parameter list is not one, and neither is the `<`
+  // a type parameter list opens with, so `() => {}` and `<T,>(v: T) => {}`
+  // could not be read at all: nothing could begin the expression, the
+  // statement holding the arrow did not parse, and the whole statement list
+  // fell back to a raw token walk where no macro beside it resolves. Those are
+  // measured here, where the arrow is read from its parameters rather than
+  // from what precedes it.
   const body = cursor.peek(bodyStart);
-  if (body?.tag === "group" && body.delimiter === "brace") return undefined;
+  if (
+    body?.tag === "group" &&
+    body.delimiter === "brace" &&
+    isPrimaryAtom(cursor.peek())
+  )
+    return undefined;
   const width = arrowBodyEnd(cursor, bodyStart, context);
   return width === undefined ? undefined : { width, bodyStart };
 }

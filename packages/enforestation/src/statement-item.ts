@@ -234,9 +234,22 @@ function checkWork(context: ConsumerContext): void {
   context.tracker.chargeMatcherSteps();
 }
 
+/**
+ * Takes a macro's extent, leaving `cursor` just past it.
+ *
+ * A macro is measured on a fork and answers with that fork, while every other
+ * reading here answers with the cursor it was given, advanced. A caller that
+ * reads on after a nested reading -- the unbraced body of a `while`, the
+ * declaration a decorator stands in front of -- reads from the cursor it
+ * passed down, so the extent has to be carried onto it. Left behind, the
+ * cursor still stood at the invocation and read it a second time: the
+ * statement after `while (c) log(x);` was the invocation again, and its
+ * expansion was emitted twice.
+ */
 function validateMacroAttempt(
   attempt: ConsumerAttempt,
   category: "stmt" | "item",
+  cursor: SyntaxCursor,
   start: number,
 ): ConsumerAttempt {
   if (
@@ -247,7 +260,14 @@ function validateMacroAttempt(
       `Macro ${category} resolver returned an invalid protected extent`,
     );
   }
-  return attempt;
+  if (!attempt.matched || attempt.cursor === cursor) return attempt;
+  if (attempt.cursor.index < cursor.index) {
+    throw new TypeError(
+      `Macro ${category} resolver returned an extent behind the cursor`,
+    );
+  }
+  cursor.advance(attempt.cursor.index - cursor.index);
+  return Object.freeze({ ...attempt, cursor });
 }
 
 function consumeExplicitSemicolon(
@@ -297,7 +317,8 @@ class StatementConsumer implements SyntaxConsumer {
       return Object.freeze({ matched: true, syntax: enforested, cursor });
     }
     const macro = this.options.resolveMacro?.("stmt", cursor, context);
-    if (macro !== undefined) return validateMacroAttempt(macro, "stmt", start);
+    if (macro !== undefined)
+      return validateMacroAttempt(macro, "stmt", cursor, start);
     const first = cursor.peek();
     if (first === undefined || context.stopSet.matches(cursor)) {
       return failure("stmt", cursor, start, ["statement"], 1);
@@ -1231,7 +1252,8 @@ class ItemConsumer implements SyntaxConsumer {
       });
     }
     const macro = this.options.resolveMacro?.("item", cursor, context);
-    if (macro !== undefined) return validateMacroAttempt(macro, "item", start);
+    if (macro !== undefined)
+      return validateMacroAttempt(macro, "item", cursor, start);
     const first = cursor.peek();
     if (first === undefined || context.stopSet.matches(cursor)) {
       return failure("item", cursor, start, ["module item"], 1);

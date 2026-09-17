@@ -1693,12 +1693,16 @@ export function expandMacroSyntax(
    * at `at`: the index just past it. Syntax a template spliced into a group
    * is not parsed, so a closure there is a run of tokens rather than one node.
    * An arrow's body runs to the next `,` or `;` standing beside it.
+   *
+   * An arrow is told apart from a `function` because the two differ in what
+   * they are: an arrow is never a generator, so `yield` is not an expression
+   * anywhere in it, while a `function*` written here opens one.
    */
   const closureEndAt = (
     nodes: readonly Syntax[],
     at: number,
   ):
-    | { readonly end: number; readonly kind: "function" | "class" }
+    | { readonly end: number; readonly kind: "function" | "class" | "arrow" }
     | undefined => {
     const token = (offset: number, raw: string) => {
       const node = nodes[offset];
@@ -1743,7 +1747,7 @@ export function expandMacroSyntax(
         : undefined;
     if (arrow === undefined) return undefined;
     const { end } = arrowBodyEnd(nodes, arrow + 1);
-    return end === arrow + 1 ? undefined : { end, kind: "function" };
+    return end === arrow + 1 ? undefined : { end, kind: "arrow" };
   };
 
   /**
@@ -2097,6 +2101,31 @@ export function expandMacroSyntax(
     readonly environment: BindingEnvironment;
   } => {
     let contexts = enclosingContexts;
+    /**
+     * `contexts` as the syntax around this walk gives them, before the arrow
+     * region below narrows them. Every other place that decides the contexts
+     * of this run writes here, so leaving an arrow restores what it found.
+     */
+    let regionContexts = enclosingContexts;
+    /**
+     * Where the arrow this walk stands inside ends, as an index into `input`;
+     * 0 when it stands in none.
+     *
+     * An arrow is never a generator, so `yield` is not an expression anywhere
+     * in one however the function around it is written. Where the arrow is a
+     * node, `contextsWithin` answers for it on the way in. Where it is only a
+     * run of tokens -- a replacement before it is parsed, a block holding a
+     * statement operator, which is walked raw by design -- there is nothing to
+     * descend into, and the generator context of the function around it
+     * reached the arrow's body: a macro declared `context generator` was
+     * admitted there and wrote a `yield` inside an arrow, which TypeScript
+     * then reports on generated code.
+     */
+    let arrowEndsAt = 0;
+    const enterRegionContexts = (next: ReadonlySet<MacroContext>) => {
+      regionContexts = next;
+      contexts = arrowEndsAt > 0 ? withYield(next, false) : next;
+    };
     let input = initialInput;
     regions.push(regionBindings(initialInput));
     const output: Syntax[] = [];
@@ -2200,10 +2229,23 @@ export function expandMacroSyntax(
       if (category === "classElement") {
         if (classElementEndsBefore(output.slice(memberStart), node)) {
           memberStart = output.length;
-          contexts = enclosingContexts;
+          enterRegionContexts(enclosingContexts);
           expressionRegion = false;
         } else if (walked?.tag === "token" && walked.raw === "=")
-          contexts = withYield(enclosingContexts, false);
+          enterRegionContexts(withYield(enclosingContexts, false));
+      }
+      // Measured only outside any arrow already open: one written inside
+      // another is inside it too, and the contexts are already narrowed.
+      if (index >= arrowEndsAt) {
+        if (arrowEndsAt > 0) {
+          arrowEndsAt = 0;
+          contexts = regionContexts;
+        }
+        const closure = closureEndAt(input, index);
+        if (closure?.kind === "arrow") {
+          arrowEndsAt = closure.end;
+          contexts = withYield(regionContexts, false);
+        }
       }
       if (walked?.tag === "token") {
         if (expressionRegionEnds.has(walked.raw)) expressionRegion = false;
@@ -3072,7 +3114,14 @@ export function expandMacroSyntax(
       }
       if (
         resolvedMacro === undefined &&
-        (category === "item" || category === "stmt")
+        (category === "item" || category === "stmt") &&
+        // A separator ends the segment before it, so no operand begins there.
+        // The walk stands on one once the statement it ended has been
+        // emitted, and reading forward from there reached the operator of the
+        // statement *after* it and offered it an operand beginning with the
+        // separator. No rule can match that, so a statement that expanded
+        // correctly still reported a refusal naming a rule nobody wrote.
+        !(node.tag === "token" && (node.raw === ";" || node.raw === ","))
       ) {
         // Infix operators dispatch from the beginning of their complete
         // expression, item, or statement rather than from the operator token.

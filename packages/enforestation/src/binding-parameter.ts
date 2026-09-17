@@ -466,6 +466,18 @@ export function bindingMacroResolver(
   return (cursor, context) => {
     const attempted = resolve("binding", cursor, context);
     if (attempted === undefined || !attempted.matched) return undefined;
+    // A macro is measured on a fork and answers with that fork; every other
+    // reading answers with the cursor it was given, advanced. A caller that
+    // reads on from the cursor it passed down would otherwise stand at the
+    // invocation still and read it a second time.
+    if (attempted.cursor !== cursor) {
+      if (attempted.cursor.index < cursor.index) {
+        throw new TypeError(
+          "Macro binding resolver returned an extent behind the cursor",
+        );
+      }
+      cursor.advance(attempted.cursor.index - cursor.index);
+    }
     return Object.freeze({
       matched: true,
       skeleton: Object.freeze({
@@ -473,7 +485,7 @@ export function bindingMacroResolver(
         names: Object.freeze([]),
         shape: "identifier" as BindingShape,
       }),
-      cursor: attempted.cursor,
+      cursor,
     });
   };
 }
