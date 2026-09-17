@@ -1336,6 +1336,127 @@ export interface Shape {
     expect(text).toContain("readonly string[]");
   });
 
+  // Type arguments nest, and each `>` closes one of them. A count that took a
+  // token for a single angle would leave the depth wrong, and with it every
+  // reading that depends on it: where a member ends, where a type is written.
+  for (const [form, main] of [
+    [
+      "an interface member",
+      `export interface Shapes {
+  sizes: Map<string, Map<string, Map<string, list<number>>>>;
+  names: list<string>;
+}`,
+    ],
+    [
+      "a class member with no semicolon after it",
+      `export class Shapes {
+  sizes!: Map<string, Map<string, Array<list<number>>>>
+  names: list<string> = [];
+}`,
+    ],
+    [
+      "a method's return type",
+      `export class Shapes {
+  make(): Map<string, Array<list<number>>> {
+    return new Map();
+  }
+}`,
+    ],
+    [
+      "a heritage clause's type arguments",
+      `declare const Base: new <T>() => object;
+export class Shapes extends Base<Map<string, list<number>>> {}`,
+    ],
+    [
+      "a generic method's constraint",
+      `export const shapes = {
+  keep<T extends Map<string, Array<list<number>>>>(value: T): T {
+    return value;
+  },
+};`,
+    ],
+  ] as const) {
+    test(`a type macro expands inside the nested type arguments of ${form}`, () => {
+      const { text, messages } = expand(
+        `export syntax list:type {
+           rule { list<$element:type> } => { readonly $element[] }
+         }`,
+        `import { list } from "./macros.sts" for syntax;
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("readonly number[]");
+      expect(text).not.toContain("list<number>");
+    });
+  }
+
+  // What a class implements, what an interface extends, and what constrains a
+  // type parameter are types, so a type macro is looked up in each of them.
+  // TypeScript takes only a name in a heritage clause, so the macro names one.
+  const sized = `export syntax sized:type {
+    rule { sized } => { Sized }
+  }`;
+  const declaresSized = `interface Sized {
+  size: number;
+}`;
+
+  for (const [form, main] of [
+    [
+      "what a class implements",
+      `export class Shape implements sized {
+  size = 1;
+}`,
+    ],
+    [
+      "a second entry of an implements clause",
+      `interface Named {
+  name: string;
+}
+export class Shape implements Named, sized {
+  name = "shape";
+  size = 1;
+}`,
+    ],
+    [
+      "what an interface extends",
+      `export interface Shape extends sized {
+  name: string;
+}`,
+    ],
+    [
+      "a type parameter's constraint",
+      `export function keep<T extends sized>(value: T): T {
+  return value;
+}`,
+    ],
+    [
+      "a type parameter's default",
+      `export function make<T extends object = sized>(value: T): T {
+  return value;
+}`,
+    ],
+    [
+      "the return type of a construct signature",
+      `export interface Factory {
+  new (): sized;
+}`,
+    ],
+  ] as const) {
+    test(`a type macro expands in ${form}`, () => {
+      const { text, messages } = expand(
+        sized,
+        `import { sized } from "./macros.sts" for syntax;
+${declaresSized}
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("Sized");
+      expect(text).not.toMatch(/\bsized\b/u);
+    });
+  }
+
   // Type arguments hold commas of their own, and the comma that separates
   // members is the one outside them.
   for (const [form, main] of [

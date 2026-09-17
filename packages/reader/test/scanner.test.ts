@@ -11,6 +11,26 @@ import {
 const sourceId = 1 as SourceId;
 
 describe("TypeScript scanner adapter", () => {
+  it("leaves each closing angle of nested type arguments its own token", () => {
+    // Every reader that counts type-argument depth relies on this: a `>` may
+    // close type arguments, so the scanner never joins two of them, and `>>`
+    // reaches a reader only as the shift operator it is written as.
+    const nested = scanTypeScript("type T = Map<string, Array<number>>;", {
+      sourceId,
+    });
+    expect(
+      nested.tokens
+        .filter(({ raw }) => raw.startsWith(">"))
+        .map(({ raw }) => raw),
+    ).toEqual([">", ">"]);
+    const shift = scanTypeScript("const shifted = value >> 2;", { sourceId });
+    expect(
+      shift.tokens
+        .filter(({ raw }) => raw.startsWith(">"))
+        .map(({ raw }) => raw),
+    ).toEqual([">", ">"]);
+  });
+
   it("normalizes standard tokens while retaining TypeScript kinds", () => {
     const result = scanTypeScript("const answer: number = 0x2a;", { sourceId });
     expect(result.tokens.map((token) => token.kind)).toEqual([

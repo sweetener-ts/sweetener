@@ -37,3 +37,18 @@ export function greaterThanTokenWidth(
   }
   return width;
 }
+
+/**
+ * How many angle brackets a token carries: one for `<` or `>`, two for `<<`,
+ * three for `>>>`, and none for anything else, `<=` and `>=` included.
+ *
+ * The scanner leaves the `>` family as single-character tokens, so that a
+ * parser can close type arguments with one of them, but it joins `<` into the
+ * shift operators, and a macro template may spell either. Counting one angle
+ * per token would leave a depth wrong wherever one token carries two.
+ */
+export function angleWidth(raw: string, character: "<" | ">"): number {
+  return raw.length > 0 && [...raw].every((item) => item === character)
+    ? raw.length
+    : 0;
+}

@@ -1,4 +1,5 @@
 import {
+  angleWidth,
   createGroup,
   createProtectedSyntax,
   createSyntaxCursor,
@@ -1020,7 +1021,7 @@ class StatementConsumer implements SyntaxConsumer {
 
 /** Whether a token is one or more `<`, which opens a type-argument region. */
 function isAngleOpen(raw: string): boolean {
-  return raw.length > 0 && [...raw].every((character) => character === "<");
+  return angleWidth(raw, "<") > 0;
 }
 
 class ItemConsumer implements SyntaxConsumer {

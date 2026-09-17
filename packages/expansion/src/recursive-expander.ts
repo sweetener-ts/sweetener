@@ -8,6 +8,7 @@ import {
   type SourceId,
 } from "@sweetener/shared";
 import {
+  angleWidth,
   createGroup,
   createMissingToken,
   createProtectedSyntax,
@@ -547,6 +548,9 @@ export function expandMacroSyntax(
       previous.raw === "satisfies"
     )
       return true;
+    // A type parameter's default is a type, unlike every other `=` written in
+    // an expression: `<T extends object = sized>`.
+    if (previous.raw === "=" && typeArgumentDepth(preceding) > 0) return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
     return typeAliasInitializerFollows(preceding);
   };
@@ -635,6 +639,23 @@ export function expandMacroSyntax(
     "declare",
   ]);
 
+  /** How many angles of `character` a node opens or closes. */
+  const angles = (node: Syntax | undefined, character: "<" | ">"): number =>
+    node?.tag === "token" ? angleWidth(node.raw, character) : 0;
+
+  /**
+   * How deep in type arguments the end of `nodes` stands, counted forwards: a
+   * `<` still open there encloses everything after it.
+   */
+  const typeArgumentDepth = (nodes: readonly Syntax[]): number => {
+    let depth = 0;
+    for (const node of nodes) {
+      depth += angles(node, "<");
+      depth = Math.max(0, depth - angles(node, ">"));
+    }
+    return depth;
+  };
+
   /**
    * Whether the next node stands in a class heritage clause. What a class
    * extends is an expression -- `class E extends make()<T> {}` -- while what an
@@ -655,13 +676,15 @@ export function expandMacroSyntax(
         continue;
       }
       if (node.tag !== "token") return false;
-      if (node.raw === ">") {
-        typeArguments += 1;
+      const closes = angles(node, ">");
+      if (closes > 0) {
+        typeArguments += closes;
         continue;
       }
-      if (node.raw === "<") {
-        if (typeArguments === 0) return false;
-        typeArguments -= 1;
+      const opens = angles(node, "<");
+      if (opens > 0) {
+        if (typeArguments < opens) return false;
+        typeArguments -= opens;
         continue;
       }
       if (typeArguments > 0) continue;
@@ -682,7 +705,7 @@ export function expandMacroSyntax(
       if (node.tag !== "token") continue;
       if (node.raw === "class") return true;
       if (
-        node.raw === "<" ||
+        angles(node, "<") > 0 ||
         node.raw === "interface" ||
         node.raw === ";" ||
         node.raw === "}"
@@ -1002,15 +1025,12 @@ export function expandMacroSyntax(
     end: number,
   ): number | undefined => {
     let at = end - 1;
-    const closing = nodes[at];
-    if (closing?.tag === "token" && closing.raw === ">") {
+    if (angles(nodes[at], ">") > 0) {
       let depth = 0;
       for (; at >= 0; at -= 1) {
         const node = nodes[at]!;
-        if (node.tag !== "token") continue;
-        if (node.raw === ">") depth += 1;
-        else if (node.raw === "<") depth -= 1;
-        if (depth === 0) break;
+        depth += angles(node, ">") - angles(node, "<");
+        if (depth <= 0) break;
       }
       if (at < 0) return undefined;
       at -= 1;
@@ -1077,9 +1097,10 @@ export function expandMacroSyntax(
     for (; arrow < following.length; arrow += 1) {
       const node = following[arrow]!;
       if (node.tag !== "token") continue;
-      if (node.raw === "<") typeArguments += 1;
-      else if (node.raw === ">" && typeArguments > 0) typeArguments -= 1;
-      else if (typeArguments === 0) {
+      const nested = angles(node, "<") - angles(node, ">");
+      if (nested !== 0) {
+        typeArguments = Math.max(0, typeArguments + nested);
+      } else if (typeArguments === 0) {
         if (node.raw === "=>") break;
         if (statementBoundaries.has(node.raw) || node.raw === "=")
           return undefined;
@@ -1443,15 +1464,12 @@ export function expandMacroSyntax(
     parameters: number,
   ): boolean => {
     let at = parameters - 1;
-    const closing = preceding[at];
-    if (closing?.tag === "token" && closing.raw === ">") {
+    if (angles(preceding[at], ">") > 0) {
       let depth = 0;
       for (; at >= 0; at -= 1) {
         const node = preceding[at]!;
-        if (node.tag !== "token") continue;
-        if (node.raw === ">") depth += 1;
-        else if (node.raw === "<") depth -= 1;
-        if (depth === 0) break;
+        depth += angles(node, ">") - angles(node, "<");
+        if (depth <= 0) break;
       }
       at -= 1;
     }
@@ -1485,9 +1503,9 @@ export function expandMacroSyntax(
     for (let at = preceding.length - 1; at >= 0; at -= 1) {
       const node = preceding[at]!;
       if (node.tag === "token") {
-        if (node.raw === ">") typeArguments += 1;
-        else if (node.raw === "<" && typeArguments > 0) typeArguments -= 1;
-        if (typeArguments > 0 || node.raw === "<") continue;
+        typeArguments += angles(node, ">");
+        typeArguments = Math.max(0, typeArguments - angles(node, "<"));
+        if (typeArguments > 0 || angles(node, "<") > 0) continue;
         if (node.raw === "class") return classBrace;
         if (
           statementBoundaries.has(node.raw) ||
@@ -1543,7 +1561,7 @@ export function expandMacroSyntax(
       opener.kind === "string-literal" ||
       opener.kind === "numeric-literal" ||
       opener.raw === "*" ||
-      opener.raw === ">"
+      angles(opener, ">") > 0
       ? functionBrace
       : otherBrace;
   };
@@ -1601,9 +1619,10 @@ export function expandMacroSyntax(
       const node = following[at]!;
       if (node.tag === "token") {
         if (at === from && node.raw !== ":") return false;
-        if (node.raw === "<") typeArguments += 1;
-        else if (node.raw === ">" && typeArguments > 0) typeArguments -= 1;
-        else if (typeArguments === 0) {
+        const nested = angles(node, "<") - angles(node, ">");
+        if (nested !== 0) {
+          typeArguments = Math.max(0, typeArguments + nested);
+        } else if (typeArguments === 0) {
           // An arrow's own `=>` was answered above, so one here belongs to a
           // function type written in the return type: `m(): () => T {`.
           if (statementBoundaries.has(node.raw) || node.raw === "=")
@@ -2627,12 +2646,9 @@ export function expandMacroSyntax(
         let afterMemberName = false;
         for (const walked of output) {
           if (walked.tag !== "token") continue;
-          if (walked.raw === "<") {
-            typeArguments += 1;
-            continue;
-          }
-          if (walked.raw === ">") {
-            if (typeArguments > 0) typeArguments -= 1;
+          const nested = angles(walked, "<") - angles(walked, ">");
+          if (nested !== 0) {
+            typeArguments = Math.max(0, typeArguments + nested);
             continue;
           }
           if (typeArguments > 0) continue;
@@ -3666,8 +3682,9 @@ export function expandMacroSyntax(
               }
               continue;
             }
-            if (child.raw === "<") typeArguments += 1;
-            else if (child.raw === ">" && typeArguments > 0) typeArguments -= 1;
+            const nested = angles(child, "<") - angles(child, ">");
+            if (nested !== 0)
+              typeArguments = Math.max(0, typeArguments + nested);
             else if (
               (child.raw === "..." && previous === undefined) ||
               (child.raw === ":" &&

@@ -3,6 +3,7 @@ import {
   createGroup,
   createProtectedSyntax,
   createSyntaxCursor,
+  angleWidth,
   createSyntaxSequence,
   isIdentifierToken,
   spanEnvelope,
@@ -194,10 +195,6 @@ function validateMacro(
     );
   }
   return attempt;
-}
-
-function angleWidth(raw: string, character: "<" | ">") {
-  return [...raw].every((item) => item === character) ? raw.length : 0;
 }
 
 /**
@@ -464,7 +461,8 @@ class TypeConsumer implements SyntaxConsumer {
 /**
  * Tokens after which a type is written: an annotation's `:`, a union or
  * intersection, type arguments, a conditional type's branches, a function
- * type's `=>`, a type operator, a predicate's `is`.
+ * type's `=>`, a type operator, a predicate's `is`, and the heritage a class
+ * implements or an interface extends.
  */
 const typeOperandHeads = new Set([
   ":",
@@ -475,6 +473,7 @@ const typeOperandHeads = new Set([
   "?",
   "=>",
   "extends",
+  "implements",
   "keyof",
   "readonly",
   "unique",
@@ -636,13 +635,11 @@ function lineCanEndAfter(
   if (previous.raw === "?" && memberNameFollows(member.slice(0, -2), modifiers))
     return true;
   // A `>` closing type arguments ends a type; any other is an operator.
-  if (previous.raw === ">") {
-    let depth = 0;
-    for (const node of member) {
-      if (token(node, "<")) depth += 1;
-      else if (token(node, ">")) depth -= 1;
-    }
-    return depth <= 0 && member.some((node) => token(node, "<"));
+  if (angleWidth(previous.raw, ">") > 0) {
+    return (
+      typeArgumentDepth(member) === 0 &&
+      member.some((node) => angles(node, "<") > 0)
+    );
   }
   return !operandExpectedAfter.has(previous.raw);
 }
@@ -654,9 +651,9 @@ function lineCanEndAfter(
 function hasInitializer(member: readonly Syntax[]): boolean {
   let depth = 0;
   for (const node of member) {
-    if (token(node, "<")) depth += 1;
-    else if (token(node, ">") && depth > 0) depth -= 1;
-    else if (depth === 0 && token(node, "=")) return true;
+    depth += angles(node, "<");
+    depth = Math.max(0, depth - angles(node, ">"));
+    if (depth === 0 && token(node, "=")) return true;
   }
   return false;
 }
@@ -817,12 +814,17 @@ const typeMemberModifiers: MemberModifiers = {
   continuing: new Set(["new", "get", "set"]),
 };
 
+/** How many angles of `character` a node opens or closes. */
+function angles(node: Syntax, character: "<" | ">"): number {
+  return token(node) ? angleWidth(node.raw, character) : 0;
+}
+
 /** How deep in type arguments the end of `nodes` stands. */
 function typeArgumentDepth(nodes: readonly Syntax[]): number {
   let depth = 0;
   for (const node of nodes) {
-    if (token(node, "<")) depth += 1;
-    else if (token(node, ">") && depth > 0) depth -= 1;
+    depth += angles(node, "<");
+    depth = Math.max(0, depth - angles(node, ">"));
   }
   return depth;
 }

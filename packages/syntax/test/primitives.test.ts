@@ -6,6 +6,7 @@ import {
 } from "@sweetener/shared";
 import { describe, expect, it } from "vitest";
 import {
+  angleWidth,
   createGroup,
   createMissingToken,
   createPrecedence,
@@ -322,5 +323,35 @@ describe("structural hashing and equality", () => {
     });
     expect(tokenLiteralEquals(left, right)).toBe(true);
     expect(tokenLiteralEquals(left, token("other"))).toBe(false);
+  });
+});
+
+describe("angle brackets", () => {
+  it("counts the angles a token carries", () => {
+    // A depth that counted one angle per token would be wrong wherever the
+    // scanner joins two, so the count is the token's, not the position's.
+    expect(angleWidth("<", "<")).toBe(1);
+    expect(angleWidth("<<", "<")).toBe(2);
+    expect(angleWidth("<<<", "<")).toBe(3);
+    expect(angleWidth(">", ">")).toBe(1);
+    expect(angleWidth(">>", ">")).toBe(2);
+    expect(angleWidth(">>>", ">")).toBe(3);
+  });
+
+  it("counts nothing for a token that only begins with one", () => {
+    for (const [raw, character] of [
+      ["<=", "<"],
+      ["<<=", "<"],
+      [">=", ">"],
+      [">>=", ">"],
+      [">>>=", ">"],
+      ["=>", ">"],
+      ["<", ">"],
+      [">", "<"],
+      ["", "<"],
+      ["a", "<"],
+    ] as const) {
+      expect(angleWidth(raw, character), `${raw} as ${character}`).toBe(0);
+    }
   });
 });
