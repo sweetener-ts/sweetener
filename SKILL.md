@@ -170,6 +170,26 @@ arrow, assignment, yield, await)` refuses those forms unparenthesized, and
   `operand arrow;` lets an unparenthesized arrow stand there, ending at the next
   use of the operator: `x |> n => n + 1 |> f`.
 
+- **A template that writes a `yield` or an `await`**: name the context the rule
+  needs, `context generator;` or `context async;`, and it is used only where
+  that is an expression.
+
+  ```ts
+  export syntax emit:stmt {
+    rule { emit $value:expr; }
+    context generator;
+    => { yield $value; }
+  }
+  ```
+
+  `yield` is an expression inside a generator's own body, `await` inside an
+  async function's own body and at the top level of a module; an `async
+function*` gives both, and a rule that writes both names both. Written
+  anywhere else — a plain function inside an async one, an arrow that is not
+  `async`, a parameter default, a class field initializer, a static block — the
+  rule is refused and reported where it was written, rather than expanding into
+  code TypeScript rejects.
+
 - **A name that begins with `$`** (`$inferSelect`, `$state`): write `$$` for
   the `$`, as in `typeof $table.$$inferSelect`. `$name` alone is a capture, in
   a pattern as in a template.

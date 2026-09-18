@@ -48,6 +48,7 @@ function setup(source: string) {
     stopSet: StopSet.empty,
     tracker,
     allowYield: false,
+    allowAwait: false,
     cancellation: Object.freeze({
       isCancellationRequested: false,
       throwIfCancellationRequested() {},

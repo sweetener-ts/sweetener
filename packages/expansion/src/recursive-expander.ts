@@ -46,6 +46,7 @@ import {
 } from "./diagnostics.js";
 import { readLetBinding, readParameterization } from "@sweetener/template";
 import {
+  asyncArrowHead,
   classElementEndsBefore,
   classMemberNameFollows,
   parameterBinder,
@@ -1751,21 +1752,52 @@ export function expandMacroSyntax(
      * inside whatever function holds it.
      */
     readonly yields: boolean | undefined;
+    /**
+     * Whether `await` is an expression inside the brace, where the brace
+     * decides that for itself: a function body by whether the function is
+     * async, and a class static block never. Undefined where the brace is
+     * inside whatever function holds it -- the body of a `for await` is, like
+     * any other block.
+     */
+    readonly awaits: boolean | undefined;
   }
-  const otherBrace: BraceHeader = { opens: "other", yields: undefined };
-  const classBrace: BraceHeader = { opens: "class", yields: undefined };
-  const interfaceBrace: BraceHeader = { opens: "interface", yields: undefined };
+  const otherBrace: BraceHeader = {
+    opens: "other",
+    yields: undefined,
+    awaits: undefined,
+  };
+  const classBrace: BraceHeader = {
+    opens: "class",
+    yields: undefined,
+    awaits: undefined,
+  };
+  const interfaceBrace: BraceHeader = {
+    opens: "interface",
+    yields: undefined,
+    awaits: undefined,
+  };
+  /**
+   * A namespace body, which TypeScript allows only at the top level of a
+   * module or of another namespace: it is inside no function, so `yield` never
+   * reaches it, and it is not the module's own top level, where `await` is an
+   * expression.
+   */
+  const namespaceBrace: BraceHeader = {
+    opens: "other",
+    yields: undefined,
+    awaits: false,
+  };
 
   /**
-   * Whether the function whose parameter list stands at `parameters` is a
-   * generator. The star is written in front of the name -- `function* name(`,
-   * `async *name(`, `static *[key](` -- or in place of one, `function* (`; a
-   * type parameter list may stand between the name and the parameters.
+   * Where the name of the function whose parameter list stands at `parameters`
+   * is written: a type parameter list between the two is read past. A function
+   * written `function* (` names itself nothing, and the star stands there
+   * instead.
    */
-  const generatorHeader = (
+  const functionNameAt = (
     preceding: readonly Syntax[],
     parameters: number,
-  ): boolean => {
+  ): number => {
     let at = parameters - 1;
     if (angles(preceding[at], ">") > 0) {
       let depth = 0;
@@ -1776,26 +1808,69 @@ export function expandMacroSyntax(
       }
       at -= 1;
     }
+    return at;
+  };
+
+  /**
+   * Whether the function whose parameter list stands at `parameters` is a
+   * generator. The star is written in front of the name -- `function* name(`,
+   * `async *name(`, `static *[key](` -- or in place of one, `function* (`.
+   */
+  const generatorHeader = (
+    preceding: readonly Syntax[],
+    parameters: number,
+  ): boolean => {
+    const at = functionNameAt(preceding, parameters);
     const star = (node: Syntax | undefined): boolean =>
       node?.tag === "token" && node.raw === "*";
     return star(preceding[at]) || star(preceding[at - 1]);
   };
 
   /**
+   * Whether the function whose parameter list stands at `parameters` is async.
+   * `async` is written in front of what names the function, with only
+   * `function` and a generator's star able to stand between the two:
+   * `async name(`, `async function* name(`, `static async *[key](`.
+   *
+   * It is never written in place of the name, so a function named `async`
+   * writes its parameter list where the name is read from and is not one.
+   */
+  const asyncHeader = (
+    preceding: readonly Syntax[],
+    parameters: number,
+  ): boolean => {
+    const spelled = (node: Syntax | undefined, raw: string): boolean =>
+      node?.tag === "token" && node.raw === raw;
+    let at = functionNameAt(preceding, parameters);
+    // `function* (` and `function (` write no name to read past.
+    if (!spelled(preceding[at], "*") && !spelled(preceding[at], "function"))
+      at -= 1;
+    for (; at >= 0; at -= 1) {
+      const node = preceding[at]!;
+      if (spelled(node, "async")) return true;
+      if (!spelled(node, "*") && !spelled(node, "function")) return false;
+    }
+    return false;
+  };
+
+  /**
    * What a brace group opens, read from what stands before it: the body of a
-   * function, arrow or method, and whether that function is a generator; the
-   * body of a class; or anything else -- a block, an object literal, a
-   * `switch`, a class static block. Only the syntax already walked is
-   * consulted, as `functionBodyFollows` does.
+   * function, arrow or method, and whether that function is a generator and
+   * whether it is async; the body of a class; or anything else -- a block, an
+   * object literal, a `switch`, a class static block. Only the syntax already
+   * walked is consulted, as `functionBodyFollows` does.
    */
   const braceHeader = (preceding: readonly Syntax[]): BraceHeader => {
     const previous = preceding.at(-1);
-    // An arrow is never a generator.
+    // An arrow is never a generator. Whether it is async is decided where the
+    // arrow begins, which is behind its parameters rather than behind its
+    // `=>`, so the body inherits what was decided on the way in.
     if (lastTokenOf(previous)?.raw === "=>")
-      return { opens: "function", yields: false };
-    // A static block is evaluated as a function of its own, where `yield` is
-    // not an expression.
-    if (staticBlockFollows(preceding)) return { opens: "other", yields: false };
+      return { opens: "function", yields: false, awaits: undefined };
+    // A static block is evaluated as a function of its own, where neither
+    // `yield` nor `await` is an expression.
+    if (staticBlockFollows(preceding))
+      return { opens: "other", yields: false, awaits: false };
     // The header is read back to where the statement or member began. A
     // class body is recognized by its keyword, which also covers
     // `class A extends mixin(B) {` with a parameter list in front of its body.
@@ -1821,6 +1896,8 @@ export function expandMacroSyntax(
         }
         if (typeArguments > 0) continue;
         if (node.raw === "class") return classBrace;
+        if (node.raw === "namespace" || node.raw === "module")
+          return namespaceBrace;
         // An interface body is a member list, and so is an object type
         // written in what the interface extends: `interface I extends
         // Pick<{ a: 1 }, "a">`. Only a module-level interface is read by the
@@ -1865,6 +1942,7 @@ export function expandMacroSyntax(
       opens: "function",
       parameters,
       yields: generatorHeader(preceding, parameters),
+      awaits: asyncHeader(preceding, parameters),
     };
     // A function, method or accessor names itself, or is `function` or `*`;
     // a computed name is a bracket group and a generic one ends in `>`.
@@ -1968,13 +2046,14 @@ export function expandMacroSyntax(
 
   /**
    * The contexts inside `node`, which stands after `preceding` and before
-   * `following` from `from` on. Whether `yield` is an expression is decided by
-   * the function it is written directly in, so a function body is a generator
-   * or not by its own header -- `function*`, `*method()` -- whatever function
-   * encloses it, and an arrow never is one. A parameter list, even a
-   * generator's, and a class static block admit no `yield`. Any other group, a
-   * block or an object literal or an argument list, is inside whatever
-   * function holds it and inherits.
+   * `following` from `from` on. Whether `yield` and `await` are expressions is
+   * decided by the function the syntax is written directly in, so a function
+   * body is a generator or not, and async or not, by its own header --
+   * `function*`, `async *method()` -- whatever function encloses it. An arrow
+   * is never a generator and is async only where it is written `async`. A
+   * parameter list, even an async generator's, and a class static block admit
+   * neither. Any other group, a block or an object literal or an argument
+   * list, is inside whatever function holds it and inherits.
    */
   const contextsWithin = (
     node: Syntax,
@@ -1982,33 +2061,51 @@ export function expandMacroSyntax(
     following: readonly Syntax[],
     from: number,
     inherited: ReadonlySet<MacroContext>,
-  ): ReadonlySet<MacroContext> =>
-    withYield(
-      inherited,
-      node.tag === "protected" && node.form === "arrow"
-        ? false
-        : braceBody(node)
-          ? braceHeader(preceding).yields
-          : parameterList(preceding, node, following, from)
-            ? false
-            : undefined,
-    );
+  ): ReadonlySet<MacroContext> => {
+    if (node.tag === "protected" && node.form === "arrow")
+      return withinArrow(inherited, asyncArrowHead(node.children));
+    if (braceBody(node)) {
+      const header = braceHeader(preceding);
+      return withAwait(withYield(inherited, header.yields), header.awaits);
+    }
+    if (parameterList(preceding, node, following, from))
+      return withAwait(withYield(inherited, false), false);
+    return inherited;
+  };
+
+  /** `contexts` inside an arrow, which is a generator in no case and async in `async`'s. */
+  const withinArrow = (
+    contexts: ReadonlySet<MacroContext>,
+    async: boolean,
+  ): ReadonlySet<MacroContext> => withAwait(withYield(contexts, false), async);
 
   /**
-   * `contexts` with `yield` an expression or not, as `yields` says; unchanged
-   * where it is undefined.
+   * `contexts` with `context` held or not, as `held` says; unchanged where it
+   * is undefined.
    */
+  const withContext = (
+    contexts: ReadonlySet<MacroContext>,
+    context: MacroContext,
+    held: boolean | undefined,
+  ): ReadonlySet<MacroContext> => {
+    if (held === undefined || contexts.has(context) === held) return contexts;
+    const changed = new Set(contexts);
+    if (held) changed.add(context);
+    else changed.delete(context);
+    return changed;
+  };
+
+  /** `contexts` with `yield` an expression or not, as `yields` says. */
   const withYield = (
     contexts: ReadonlySet<MacroContext>,
     yields: boolean | undefined,
-  ): ReadonlySet<MacroContext> => {
-    if (yields === undefined || contexts.has("generator") === yields)
-      return contexts;
-    const changed = new Set(contexts);
-    if (yields) changed.add("generator");
-    else changed.delete("generator");
-    return changed;
-  };
+  ): ReadonlySet<MacroContext> => withContext(contexts, "generator", yields);
+
+  /** `contexts` with `await` an expression or not, as `awaits` says. */
+  const withAwait = (
+    contexts: ReadonlySet<MacroContext>,
+    awaits: boolean | undefined,
+  ): ReadonlySet<MacroContext> => withContext(contexts, "async", awaits);
 
   /**
    * Where a function, arrow or class written as tokens ends, when one begins
@@ -2018,13 +2115,18 @@ export function expandMacroSyntax(
    *
    * An arrow is told apart from a `function` because the two differ in what
    * they are: an arrow is never a generator, so `yield` is not an expression
-   * anywhere in it, while a `function*` written here opens one.
+   * anywhere in it, while a `function*` written here opens one. `async` says
+   * whether the closure is async, which is what decides `await` in its body.
    */
   const closureEndAt = (
     nodes: readonly Syntax[],
     at: number,
   ):
-    | { readonly end: number; readonly kind: "function" | "class" | "arrow" }
+    | {
+        readonly end: number;
+        readonly kind: "function" | "class" | "arrow";
+        readonly async: boolean;
+      }
     | undefined => {
     const token = (offset: number, raw: string) => {
       const node = nodes[offset];
@@ -2047,14 +2149,15 @@ export function expandMacroSyntax(
     };
     // `task.class` and `task.function` name properties.
     if (token(at - 1, ".") || token(at - 1, "?.")) return undefined;
-    const start = token(at, "async") ? at + 1 : at;
+    const async = token(at, "async");
+    const start = async ? at + 1 : at;
     if (token(start, "function")) {
       const end = braceAfter(start + 1);
-      return end === undefined ? undefined : { end, kind: "function" };
+      return end === undefined ? undefined : { end, kind: "function", async };
     }
     if (at === start && token(at, "class")) {
       const end = braceAfter(at + 1);
-      return end === undefined ? undefined : { end, kind: "class" };
+      return end === undefined ? undefined : { end, kind: "class", async };
     }
     const parameters = nodes[start];
     const named =
@@ -2069,7 +2172,17 @@ export function expandMacroSyntax(
         : undefined;
     if (arrow === undefined) return undefined;
     const { end } = arrowBodyEnd(nodes, arrow + 1);
-    return end === arrow + 1 ? undefined : { end, kind: "arrow" };
+    // An arrow writes `async` in front of its type parameters as readily as in
+    // front of its parameters, so the closure can begin further back than the
+    // parameters this was asked about; `arrowHeadBefore` reads past both.
+    const head = arrowHeadBefore(nodes, start);
+    return end === arrow + 1
+      ? undefined
+      : {
+          end,
+          kind: "arrow",
+          async: head !== undefined && token(head + 1, "async"),
+        };
   };
 
   /**
@@ -2448,19 +2561,22 @@ export function expandMacroSyntax(
      * 0 when it stands in none.
      *
      * An arrow is never a generator, so `yield` is not an expression anywhere
-     * in one however the function around it is written. Where the arrow is a
-     * node, `contextsWithin` answers for it on the way in. Where it is only a
-     * run of tokens -- a replacement before it is parsed, a block holding a
-     * statement operator, which is walked raw by design -- there is nothing to
-     * descend into, and the generator context of the function around it
-     * reached the arrow's body: a macro declared `context generator` was
-     * admitted there and wrote a `yield` inside an arrow, which TypeScript
+     * in one however the function around it is written, and it is async only
+     * where it is written `async`, whatever the function around it is. Where
+     * the arrow is a node, `contextsWithin` answers for it on the way in.
+     * Where it is only a run of tokens -- a replacement before it is parsed, a
+     * block holding a statement operator, which is walked raw by design --
+     * there is nothing to descend into, and the contexts of the function
+     * around it reached the arrow's body: a macro declared `context generator`
+     * was admitted there and wrote a `yield` inside an arrow, which TypeScript
      * then reports on generated code.
      */
     let arrowEndsAt = 0;
+    /** Whether that arrow is async, which decides `await` inside it. */
+    let arrowIsAsync = false;
     const enterRegionContexts = (next: ReadonlySet<MacroContext>) => {
       regionContexts = next;
-      contexts = arrowEndsAt > 0 ? withYield(next, false) : next;
+      contexts = arrowEndsAt > 0 ? withinArrow(next, arrowIsAsync) : next;
     };
     let input = initialInput;
     regions.push(regionBindings(initialInput));
@@ -2621,31 +2737,35 @@ export function expandMacroSyntax(
           functionTypes += 1;
       }
       // A class field's initializer is evaluated as a function of its own,
-      // where `yield` is not an expression. The rest of a member -- its
-      // computed name, a decorator -- is inside whatever function holds the
-      // class. A member list the class element reader could not take whole
-      // -- one holding a decorator TypeScript rejects -- is walked as tokens,
-      // so a member ends where that reader ends one, and the initializer and
-      // the expression it began end with it.
+      // where neither `yield` nor `await` is an expression. The rest of a
+      // member -- its computed name, a decorator -- is inside whatever
+      // function holds the class. A member list the class element reader could
+      // not take whole -- one holding a decorator TypeScript rejects -- is
+      // walked as tokens, so a member ends where that reader ends one, and the
+      // initializer and the expression it began end with it.
       if (category === "classElement") {
         if (classElementEndsBefore(output.slice(memberStart), node)) {
           memberStart = output.length;
           enterRegionContexts(enclosingContexts);
           expressionRegion = false;
         } else if (walked?.tag === "token" && walked.raw === "=")
-          enterRegionContexts(withYield(enclosingContexts, false));
+          enterRegionContexts(
+            withAwait(withYield(enclosingContexts, false), false),
+          );
       }
       // Measured only outside any arrow already open: one written inside
       // another is inside it too, and the contexts are already narrowed.
       if (index >= arrowEndsAt) {
         if (arrowEndsAt > 0) {
           arrowEndsAt = 0;
+          arrowIsAsync = false;
           contexts = regionContexts;
         }
         const closure = closureEndAt(input, index);
         if (closure?.kind === "arrow") {
           arrowEndsAt = closure.end;
-          contexts = withYield(regionContexts, false);
+          arrowIsAsync = closure.async;
+          contexts = withinArrow(regionContexts, arrowIsAsync);
         }
       }
       if (walked?.tag === "token") {

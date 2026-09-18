@@ -78,7 +78,13 @@ export interface CompiledMacroRule {
   readonly failureDescription?: string | undefined;
 }
 
-export type MacroContext = "generator";
+/**
+ * A syntactic context a rule may require, named by a `context` clause: a rule
+ * whose template writes a `yield` requires `generator`, and one that writes an
+ * `await` requires `async`. Each is decided by the function boundary the
+ * invocation stands in, and an `async function*` stands in both.
+ */
+export type MacroContext = "generator" | "async";
 
 export interface CompiledMacroBinding {
   readonly binding: Binding;

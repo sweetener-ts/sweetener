@@ -2005,6 +2005,299 @@ export function* run(): Generator<number, void, unknown> {
       expect(text.replaceAll(/\s+/gu, "")).not.toContain("[yield1,yield1]");
     });
   }
+
+  // Whether `await` is an expression is decided the same way: by the function
+  // it is written directly in, which is async or not by its own header, and at
+  // the top level of a module, where `await` is one. `$value:expr` captures
+  // `await load()` only where it is one.
+  const load = "declare function load(): Promise<number>;";
+  for (const [form, main] of [
+    [
+      "an async function declaration",
+      `export async function run(): Promise<unknown> {
+  return twice(await load());
+}`,
+    ],
+    [
+      "an async method in a class",
+      `export class Pairs {
+  async run(): Promise<unknown> {
+    return twice(await load());
+  }
+}`,
+    ],
+    [
+      "a static async method in a class",
+      `export class Pairs {
+  static async run(): Promise<unknown> {
+    return twice(await load());
+  }
+}`,
+    ],
+    [
+      "an async arrow",
+      `export const run = async (): Promise<unknown> => twice(await load());`,
+    ],
+    [
+      "an async arrow with a block body",
+      `export const run = async (): Promise<unknown> => {
+  return twice(await load());
+};`,
+    ],
+    [
+      "an async method in an object literal",
+      `export const pairs = {
+  async run(): Promise<unknown> {
+    return twice(await load());
+  },
+};`,
+    ],
+    [
+      "an async function expression",
+      `export const run = async function (): Promise<unknown> {
+  return twice(await load());
+};`,
+    ],
+    [
+      "an async generator function",
+      `export async function* run(): AsyncGenerator<unknown, void, unknown> {
+  yield twice(await load());
+}`,
+    ],
+    [
+      "an async generator method",
+      `export class Pairs {
+  async *run(): AsyncGenerator<unknown, void, unknown> {
+    yield twice(await load());
+  }
+}`,
+    ],
+    // `async` is read from in front of whatever names the method, which may be
+    // computed, generic, or written after a decorator.
+    [
+      "an async method with a computed name",
+      `const key = "run";
+export class Pairs {
+  async [key](): Promise<unknown> {
+    return twice(await load());
+  }
+}`,
+    ],
+    [
+      "a generic async method",
+      `export class Pairs {
+  async run<T>(value: T): Promise<unknown> {
+    return [value, twice(await load())];
+  }
+}`,
+    ],
+    [
+      "a decorated async method",
+      `declare function logged(
+  value: unknown,
+  context: ClassMethodDecoratorContext,
+): void;
+export class Pairs {
+  @logged async run(): Promise<unknown> {
+    return twice(await load());
+  }
+}`,
+    ],
+    // `for await` is written in an async function, and its body is inside that
+    // function like any other block.
+    [
+      "the body of a for await",
+      `declare const source: AsyncIterable<number>;
+export async function run(): Promise<void> {
+  for await (const value of source) {
+    void value;
+    void twice(await load());
+  }
+}`,
+    ],
+    // `async` stands in front of an arrow's type parameters as readily as in
+    // front of its parameter list.
+    [
+      "a generic async arrow",
+      `export const run = async <T,>(value: T): Promise<unknown> => [
+  value,
+  twice(await load()),
+];`,
+    ],
+    // Every Sweetener source is a module, so the outermost position is a
+    // module's top level rather than a script's.
+    ["the top level of a module", `export const run = twice(await load());`],
+  ] as const) {
+    test(`await is an expression in ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${load}
+${main}
+`,
+      );
+      expect(messages).toEqual([]);
+      expect(text.replaceAll(/\s+/gu, "")).toContain(
+        "[awaitload(),awaitload()]",
+      );
+      expect(text).not.toContain("twice(");
+    });
+  }
+
+  // An `async function*` stands in both contexts at once: its body writes
+  // `await` and `yield` alike.
+  test("await and yield are both expressions in an async generator", () => {
+    const { text, messages } = expand(
+      twice,
+      `import { twice } from "./macros.sts" for syntax;
+${load}
+export async function* run(): AsyncGenerator<number, unknown, unknown> {
+  const awaited = twice(await load());
+  const yielded = twice(yield 1);
+  return [awaited, yielded];
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    const compact = text.replaceAll(/\s+/gu, "");
+    expect(compact).toContain("[awaitload(),awaitload()]");
+    expect(compact).toContain("[yield1,yield1]");
+  });
+
+  // TypeScript rejects `await` in a function that is not async, in a parameter
+  // initializer, in a class field initializer, and in a class static block:
+  // each of those is evaluated as a function of its own. A capture of
+  // `await load()` as an expression there is refused.
+  for (const [form, main] of [
+    [
+      "a function nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  function inner(): unknown {
+    return twice(await load());
+  }
+  return inner;
+}`,
+    ],
+    [
+      "a function expression nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  const inner = function (): unknown {
+    return twice(await load());
+  };
+  return inner;
+}`,
+    ],
+    [
+      "an arrow nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  const inner = (): unknown => twice(await load());
+  return inner;
+}`,
+    ],
+    [
+      "an arrow with a block body nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  const inner = (): unknown => {
+    return twice(await load());
+  };
+  return inner;
+}`,
+    ],
+    [
+      "a method nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  class Inner {
+    run(): unknown {
+      return twice(await load());
+    }
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "an object-literal method nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  const inner = {
+    run(): unknown {
+      return twice(await load());
+    },
+  };
+  return inner;
+}`,
+    ],
+    [
+      "a class static block inside an async function",
+      `export async function run(): Promise<unknown> {
+  class Inner {
+    static {
+      void twice(await load());
+    }
+  }
+  return Inner;
+}`,
+    ],
+    [
+      "an async function's parameter default",
+      `export async function run(
+  value: unknown = twice(await load()),
+): Promise<unknown> {
+  return value;
+}`,
+    ],
+    [
+      "an async method's parameter default",
+      `export class Pairs {
+  async run(value: unknown = twice(await load())): Promise<unknown> {
+    return value;
+  }
+}`,
+    ],
+    [
+      "a class field initializer inside an async function",
+      `export async function run(): Promise<unknown> {
+  class Inner {
+    value = twice(await load());
+  }
+  return Inner;
+}`,
+    ],
+    // `async` is written in front of the name it modifies, never in place of
+    // one, so a method named `async` writes its parameter list where that name
+    // would stand and is not async.
+    [
+      "a method named async inside an async function",
+      `export async function run(): Promise<unknown> {
+  class Inner {
+    async(): unknown {
+      return twice(await load());
+    }
+  }
+  return Inner;
+}`,
+    ],
+    // A namespace body is the top level of a namespace, not of the module
+    // around it, and TypeScript allows no `await` there.
+    [
+      "a namespace body",
+      `export namespace Values {
+  export const value = twice(await load());
+}`,
+    ],
+  ] as const) {
+    test(`await is not an expression in ${form}`, () => {
+      const { text, messages } = expand(
+        twice,
+        `import { twice } from "./macros.sts" for syntax;
+${load}
+${main}
+`,
+      );
+      expect(messages.join("\n")).toContain("No rule for macro twice");
+      expect(text.replaceAll(/\s+/gu, "")).not.toContain(
+        "[awaitload(),awaitload()]",
+      );
+    });
+  }
 });
 
 describe("#fresh", () => {

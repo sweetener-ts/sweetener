@@ -56,6 +56,12 @@ import type {
   MacroContext,
 } from "./invocation.js";
 
+/** The syntactic contexts a `context` clause may name. */
+const macroContexts: readonly MacroContext[] = Object.freeze([
+  "generator",
+  "async",
+]);
+
 function compileRuleContexts(
   clauses: readonly DefinitionClause[],
   options: CompileParsedMacrosOptions,
@@ -68,7 +74,8 @@ function compileRuleContexts(
       (syntax, index): syntax is TokenSyntax =>
         index > 0 && syntax.tag === "token" && syntax.raw !== ";",
     );
-    if (name?.raw !== "generator") {
+    const named = macroContexts.find((context) => context === name?.raw);
+    if (named === undefined) {
       const span = options.spanForOrigin(name?.origin ?? clause.origin);
       diagnostics.push(
         expansionDiagnosticRegistry.create(invalidMacroContextCode, {
@@ -83,7 +90,7 @@ function compileRuleContexts(
       );
       continue;
     }
-    if (!contexts.includes("generator")) contexts.push("generator");
+    if (!contexts.includes(named)) contexts.push(named);
   }
   return Object.freeze(contexts);
 }

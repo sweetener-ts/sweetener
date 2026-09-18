@@ -86,6 +86,7 @@ function consume(
     tracker: new ResourceTracker(createResourceBudget()),
     stopSet,
     allowYield: false,
+    allowAwait: false,
   });
   return { result, cursor, syntax, ids };
 }

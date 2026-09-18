@@ -42,6 +42,7 @@ function setup(source: string) {
     stopSet: StopSet.empty,
     tracker,
     allowYield: false,
+    allowAwait: false,
     cancellation: Object.freeze({
       isCancellationRequested: false,
       throwIfCancellationRequested() {},
@@ -62,6 +63,7 @@ function binding(source: string) {
     environmentEpoch: prepared.context.environmentEpoch,
     tracker: prepared.tracker,
     allowYield: prepared.context.allowYield,
+    allowAwait: prepared.context.allowAwait,
   });
   if (!result.matched) throw new Error(result.failure.expectations.join(", "));
   const detailed = consumer.consumeBinding(
@@ -182,6 +184,7 @@ describe("binding and parameter consumers", () => {
         environmentEpoch: prepared.context.environmentEpoch,
         tracker: prepared.tracker,
         allowYield: prepared.context.allowYield,
+        allowAwait: prepared.context.allowAwait,
       });
       expect(result.matched).toBe(false);
       expect(cursor.index).toBe(0);

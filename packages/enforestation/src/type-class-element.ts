@@ -62,6 +62,7 @@ export interface TypeClassConsumerOptions {
         block: GroupSyntax,
         context: ConsumerContext,
         allowYield: boolean,
+        allowAwait: boolean,
       ) => Syntax)
     | undefined;
   /**
@@ -583,6 +584,31 @@ function decoratorPrefixLength(children: readonly Syntax[]): number {
 }
 
 /**
+ * Whether the function these nodes head is async: a declaration, a method or
+ * an accessor, read from its start. `async` is written among the words in
+ * front of the parameter list -- `export async function name(`, `static async
+ * *[key](` -- so the words are read until that list, which is the first node
+ * that is not one, past any decorators.
+ *
+ * A function named `async` writes its parameter list or its type parameters
+ * where the name the modifier stands in front of would otherwise be, so
+ * `async(` and `async<` are a name rather than a modifier.
+ */
+export function declaresAsync(nodes: readonly Syntax[]): boolean {
+  const declaration = nodes.slice(decoratorPrefixLength(nodes));
+  for (const [index, node] of declaration.entries()) {
+    if (!token(node)) return false;
+    if (node.raw !== "async") continue;
+    const after = declaration[index + 1];
+    return !(
+      (after?.tag === "group" && after.delimiter === "parenthesis") ||
+      token(after, "<")
+    );
+  }
+  return false;
+}
+
+/**
  * Whether a class member can begin with `syntax`: a decorator, a generator's
  * `*`, a name -- a word, a private name, a string or number, or a computed
  * name in brackets.
@@ -777,6 +803,7 @@ class ClassElementConsumer implements SyntaxConsumer {
             // A generator method is written `*name() {}`, so the star appears
             // among the tokens scanned before the parameter list.
             children.some((node) => token(node, "*")),
+            declaresAsync(children),
           );
         break;
       }

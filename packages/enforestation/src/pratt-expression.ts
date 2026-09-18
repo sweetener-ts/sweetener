@@ -17,6 +17,7 @@ import {
 } from "./consumer.js";
 import {
   arrowBodyStart,
+  asyncArrowHead,
   createPrimaryExpressionConsumer,
   type PrimaryExpressionConsumerOptions,
 } from "./primary-expression.js";
@@ -321,6 +322,9 @@ function parsePrefix(
     if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);
     }
+    if (prefix.spelling === "await" && !context.consumer.allowAwait) {
+      return fail(cursor, context, ["await inside an async function"], 9);
+    }
     const operator = consumeOperator(cursor, prefix);
     const right = parseExpression(cursor, prefix.precedence, context);
     if ("matched" in right) return right;
@@ -494,12 +498,17 @@ function literalRightOperand(
 
 /**
  * The context an arrow's body is read in. An arrow is never a generator, so
- * `yield` is not an expression in its body even inside one.
+ * `yield` is not an expression in its body even inside one, and `await` is one
+ * there only when the arrow itself is written `async`.
  */
-function arrowBodyContext(context: PrattContext): PrattContext {
+function arrowBodyContext(context: PrattContext, async: boolean): PrattContext {
   return {
     ...context,
-    consumer: Object.freeze({ ...context.consumer, allowYield: false }),
+    consumer: Object.freeze({
+      ...context.consumer,
+      allowYield: false,
+      allowAwait: async,
+    }),
   };
 }
 
@@ -527,7 +536,7 @@ function arrowRightOperand(
       ...context,
       allowComma: false,
       consumer: Object.freeze({
-        ...arrowBodyContext(context).consumer,
+        ...arrowBodyContext(context, asyncArrowHead(head)).consumer,
         stopSet: context.consumer.stopSet.union(
           new StopSet([{ kind: "spelling", raw: macro.spelling }]),
         ),
@@ -662,7 +671,13 @@ function parseExpression(
         : parseExpression(
             cursor,
             rightMinimum,
-            infix.spelling === "=>" ? arrowBodyContext(context) : context,
+            // An arrow read through the infix `=>` has its parameters as the
+            // operand to its left, and `async` is never part of one: an
+            // operand spelled `async` is the parameter's own name, as in
+            // `async => body`.
+            infix.spelling === "=>"
+              ? arrowBodyContext(context, false)
+              : context,
           ));
     if ("matched" in right) return right;
     if (

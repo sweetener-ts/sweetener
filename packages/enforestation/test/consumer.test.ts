@@ -59,6 +59,7 @@ function context() {
     environmentEpoch: 4 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
     allowYield: false,
+    allowAwait: false,
   };
 }
 

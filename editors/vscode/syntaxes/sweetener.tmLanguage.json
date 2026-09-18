@@ -146,7 +146,7 @@
           "captures": { "1": { "name": "keyword.control.sweetener" } }
         },
         {
-          "match": "^\\s*(context)\\s+(generator)\\b",
+          "match": "^\\s*(context)\\s+(generator|async)\\b",
           "captures": {
             "1": { "name": "keyword.control.sweetener" },
             "2": { "name": "keyword.control.sweetener" }

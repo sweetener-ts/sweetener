@@ -13,7 +13,10 @@ parameter-definition
                       ( "{" macro-rule+ "}" | ";"? )
 recursion         ::= "rec"
 shadow-clause     ::= "shadows" "core"
-macro-rule        ::= "rule" pattern binding-clause* "=>" template
+macro-rule        ::= "rule" pattern rule-clause* "=>" template
+rule-clause       ::= binding-clause | refinement-clause | context-clause
+                      | expect-clause
+context-clause    ::= "context" ( "generator" | "async" ) ";"
 
 class-definition  ::= export? "syntax" "class" name
                       "{" field-declaration class-rule+ "}"
@@ -27,6 +30,11 @@ template          ::= "{" template-sequence "}"
 
 Macro names may use one identifier or one explicitly grouped punctuation
 sequence. Categories come from the fixed syntax-consumer registry.
+
+A context clause names a syntactic context the rule's template needs, so that
+the rule is used only where the invocation stands in it: `generator` for a
+template that writes a `yield`, `async` for one that writes an `await`. The
+expansion specification, sections 5.1 and 7, gives where each holds.
 
 A parameter definition declares a syntax parameter (section 11, and the
 expansion specification, section 15). Its rules, which are optional, give its

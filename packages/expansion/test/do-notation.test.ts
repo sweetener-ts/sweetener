@@ -92,6 +92,7 @@ function createDoHarness() {
     tracker,
     cancellation: neverCancelled,
     allowYield: false,
+    allowAwait: false,
   });
   const expression = createPrattExpressionConsumer({
     origins,

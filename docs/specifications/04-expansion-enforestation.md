@@ -167,6 +167,31 @@ expanded and then flattened into the surrounding statement list. This permits a
 single declaration macro to introduce multiple same-scope declarations without
 adding a JavaScript block scope.
 
+### 5.1 Required syntactic contexts
+
+A rule whose template writes syntax that only some positions admit names the
+context it needs:
+
+```ts
+export syntax emit:stmt {
+  rule { emit $value:expr; }
+  context generator;
+  => { yield $value; }
+}
+```
+
+There are two, and a rule may name both: `generator` for a template that writes
+a `yield`, and `async` for one that writes an `await`. A rule is selected only
+where the invocation stands in every context it names, and where it is not, the
+context is reported as `<name> context` among what the rules wanted, so the
+refusal the language promises is reported at the invocation rather than as a
+TypeScript error on generated code. A `context` clause naming anything else is
+an unknown macro context, reported when the definition is compiled.
+
+The contexts an invocation stands in are the ones section 7 gives `yield` and
+`await`, decided at the same function boundaries: an `async function*` stands
+in both, a parameter default in neither.
+
 ## 6. Progress and termination
 
 An expansion fingerprint contains:
@@ -211,7 +236,20 @@ For left-associative precedence `p`, use `(p, p + 1)`; for right-associative use
 `(p, p)`. Nonassociative operators reject another operator in the same band.
 
 `yield` is a prefix operator whose operand is an assignment expression, as in
-TypeScript: `yield a + b` yields the sum.
+TypeScript: `yield a + b` yields the sum. `await` is a prefix operator at unary
+precedence.
+
+Each is read as an operator only where TypeScript has one there, and is
+otherwise not an expression at all. The function the syntax is written directly
+in decides, by its own header and whatever encloses it: a generator's body
+admits `yield`, an async function's body admits `await`, and an `async
+function*` admits both. A function written inside either is neither unless its
+own header says so. An arrow is never a generator, and is async only where it
+is written `async`. A parameter default, a class field initializer and a class
+static block are each evaluated as a function of their own and admit neither.
+The top level of a module admits `await` -- every Sweetener source is a module,
+which is what the compiler tells TypeScript when it checks one -- while the top
+level of a namespace written in that module admits neither.
 
 A macro operator's right operand is read in one of three ways, tried in order:
 

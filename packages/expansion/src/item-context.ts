@@ -110,8 +110,10 @@ export function processItemContext(
         stopSet: StopSet.empty,
         tracker: options.tracker,
         cancellation,
-        // Module items stand outside every function, so never in a generator.
+        // Module items stand outside every function, so never in a generator;
+        // the top level of a module is where `await` is an expression.
         allowYield: false,
+        allowAwait: true,
       }),
     );
     if (!attempted.matched) {

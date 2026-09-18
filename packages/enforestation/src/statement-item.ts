@@ -32,6 +32,7 @@ import {
   createClassElementConsumer,
   consumeBalancedTypeArguments,
   createTypeConsumers,
+  declaresAsync,
   decoratorWidth,
   typeOperandFollows,
 } from "./type-class-element.js";
@@ -585,6 +586,7 @@ class StatementConsumer implements SyntaxConsumer {
     block: GroupSyntax,
     context: ConsumerContext,
     allowYield: boolean = context.allowYield,
+    allowAwait: boolean = context.allowAwait,
   ): Syntax {
     if (block.children.length === 0) return block;
     if (this.options.holdsStatementOperator?.(block.children) === true)
@@ -597,12 +599,14 @@ class StatementConsumer implements SyntaxConsumer {
       // Stop tokens belong to the enclosing construct; inside the braces the
       // statement list runs to the closing delimiter.
       stopSet: StopSet.empty,
-      // `yield` is only an expression inside a generator. A function body
-      // says for itself whether it is one; a bare block, or the body of an
-      // `if` or a `try`, is inside whatever function holds it and inherits.
-      // A generator body reached from a non-generator context that inherited
-      // would fail to enforest, and so silently skip expansion there.
+      // `yield` is only an expression inside a generator, and `await` only
+      // inside an async function. A function body says for itself whether it
+      // is either; a bare block, or the body of an `if` or a `try`, is inside
+      // whatever function holds it and inherits. A generator body reached
+      // from a non-generator context that inherited would fail to enforest,
+      // and so silently skip expansion there.
       allowYield,
+      allowAwait,
     });
     while (!inner.atEnd) {
       const before = inner.index;
@@ -1002,7 +1006,12 @@ class StatementConsumer implements SyntaxConsumer {
       ) {
         children.push(
           statementBody
-            ? this.enforestBlock(next, context, declaresGenerator(children))
+            ? this.enforestBlock(
+                next,
+                context,
+                declaresGenerator(children),
+                declaresAsync(children),
+              )
             : next,
         );
         break;
@@ -1097,8 +1106,13 @@ class ItemConsumer implements SyntaxConsumer {
     this.#type = typeConsumers.type;
     this.#classElement = createClassElementConsumer({
       ...shared,
-      enforestStatementBlock: (block, blockContext, allowYield) =>
-        this.#statement.enforestBlock(block, blockContext, allowYield),
+      enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
+        this.#statement.enforestBlock(
+          block,
+          blockContext,
+          allowYield,
+          allowAwait,
+        ),
     });
     // Like the class-element consumer, this one is not given a macro
     // resolver: a member macro is dispatched by the expander when it walks the
@@ -1399,6 +1413,7 @@ class ItemConsumer implements SyntaxConsumer {
                   body,
                   context,
                   declaresGenerator(children),
+                  declaresAsync(children),
                 )
               : bodyCategory === "classElement"
                 ? this.#enforestClassBody(body, context)
@@ -1439,13 +1454,15 @@ class ItemConsumer implements SyntaxConsumer {
  */
 export interface StatementBlockConsumer extends SyntaxConsumer {
   /**
-   * `allowYield` is given for a function body, which is or is not a generator
-   * whatever encloses it; any other block inherits it from `context`.
+   * `allowYield` and `allowAwait` are given for a function body, which is or
+   * is not a generator and is or is not async whatever encloses it; any other
+   * block inherits them from `context`.
    */
   enforestBlock(
     block: GroupSyntax,
     context: ConsumerContext,
     allowYield?: boolean,
+    allowAwait?: boolean,
   ): Syntax;
 }
 

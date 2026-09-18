@@ -65,6 +65,7 @@ function parse(
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker,
     allowYield: false,
+    allowAwait: false,
   });
   return { result, cursor, syntax, origins, ids, tracker };
 }

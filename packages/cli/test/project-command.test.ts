@@ -512,6 +512,84 @@ describe("project commands", () => {
     expect(rejected.diagnostics.map(({ code }) => code)).toContain(4001);
   });
 
+  test("derives async context for declarative macro admission", () => {
+    const project = fixture(`
+      syntax settle:stmt {
+        rule { settle $value:expr; }
+        context async;
+        => { void (await $value); }
+      }
+      export async function values(): Promise<void> { settle Promise.resolve(7); }
+    `);
+
+    const accepted = runConfiguredProjectCommand({
+      command: "check",
+      configPath: project.config,
+      writeThrough: false,
+    });
+    expect(accepted.diagnostics).toEqual([]);
+    expect(accepted.virtualFiles[0]?.generated.text).toMatch(
+      /await\s*\(?\s*Promise\.resolve\(7\)/u,
+    );
+
+    writeFileSync(
+      project.input,
+      `syntax settle:stmt {
+         rule { settle $value:expr; }
+         context async;
+         => { void (await $value); }
+       }
+       export function values(): void { settle Promise.resolve(7); }`,
+    );
+    const rejected = runConfiguredProjectCommand({
+      command: "check",
+      configPath: project.config,
+      writeThrough: false,
+    });
+    expect(rejected.diagnostics.map(({ code }) => code)).toContain(4001);
+  });
+
+  test("derives both contexts for an async generator", () => {
+    // A rule that writes a `yield` and an `await` names both contexts, and
+    // only an `async function*` stands in both at once.
+    const definition = `syntax emit:stmt {
+         rule { emit $value:expr; }
+         context generator;
+         context async;
+         => { yield await $value; }
+       }`;
+    const project = fixture(`
+      ${definition}
+      export async function* values(): AsyncGenerator<number, void, unknown> {
+        emit Promise.resolve(7);
+      }
+    `);
+
+    const accepted = runConfiguredProjectCommand({
+      command: "check",
+      configPath: project.config,
+      writeThrough: false,
+    });
+    expect(accepted.diagnostics).toEqual([]);
+    expect(accepted.virtualFiles[0]?.generated.text).toMatch(
+      /yield\s*await\s*\(?\s*Promise\.resolve\(7\)/u,
+    );
+
+    writeFileSync(
+      project.input,
+      `${definition}
+       export function* values(): Generator<number, void, unknown> {
+         emit Promise.resolve(7);
+       }`,
+    );
+    const rejected = runConfiguredProjectCommand({
+      command: "check",
+      configPath: project.config,
+      writeThrough: false,
+    });
+    expect(rejected.diagnostics.map(({ code }) => code)).toContain(4001);
+  });
+
   test("registers generated declarative definitions in source order", () => {
     const project = fixture(`
       syntax define:item {

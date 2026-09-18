@@ -64,9 +64,11 @@ function parse(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
-    // Read as though inside a generator, so `yield` parses like any other
-    // prefix operator; refusing it outside one is tested on its own.
+    // Read as though inside an async generator, so `yield` and `await` parse
+    // like any other prefix operator; refusing each where it is not an
+    // expression is tested on its own.
     allowYield: true,
+    allowAwait: true,
   });
   return { result, cursor, origins, syntax, ids };
 }
@@ -214,6 +216,7 @@ describe("Pratt expression consumer", () => {
       environmentEpoch: 0 as EnvironmentEpoch,
       tracker: new ResourceTracker(createResourceBudget()),
       allowYield: false,
+      allowAwait: false,
     });
     expect(rejected.matched).toBe(false);
     if (rejected.matched) throw new Error("yield unexpectedly matched");
@@ -224,6 +227,46 @@ describe("Pratt expression consumer", () => {
       environmentEpoch: 0 as EnvironmentEpoch,
       tracker: new ResourceTracker(createResourceBudget()),
       allowYield: true,
+      allowAwait: false,
+    });
+    expect(accepted.matched).toBe(true);
+  });
+
+  test("rejects await when the lexical context is not async", () => {
+    const origins = new OriginStore();
+    const read = readSyntax("await value", {
+      sourceId,
+      scopes: 0 as ScopeSetId,
+      originStore: origins,
+    });
+    const syntax = read.root.children.filter(
+      (node) => node.tag !== "token" || node.kind !== "end-of-file",
+    );
+    const consumer = createPrattExpressionConsumer({
+      origins,
+      allocateSyntaxId: createIdAllocator<SyntaxId>(26_000).allocate,
+    });
+    const registry = new ConsumerRegistry([{ category: "expr", consumer }]);
+    const rejected = registry.consume("expr", {
+      cursor: createSyntaxCursor(syntax),
+      phase: createPhase(0),
+      environmentEpoch: 0 as EnvironmentEpoch,
+      tracker: new ResourceTracker(createResourceBudget()),
+      allowYield: false,
+      allowAwait: false,
+    });
+    expect(rejected.matched).toBe(false);
+    if (rejected.matched) throw new Error("await unexpectedly matched");
+    expect(rejected.failure.expectations).toEqual([
+      "await inside an async function",
+    ]);
+    const accepted = registry.consume("expr", {
+      cursor: createSyntaxCursor(syntax),
+      phase: createPhase(0),
+      environmentEpoch: 0 as EnvironmentEpoch,
+      tracker: new ResourceTracker(createResourceBudget()),
+      allowYield: false,
+      allowAwait: true,
     });
     expect(accepted.matched).toBe(true);
   });
@@ -448,6 +491,7 @@ describe("Pratt expression consumer", () => {
       tracker: new ResourceTracker(createResourceBudget()),
       stopSet: new StopSet([{ kind: "token", raw: ";" }]),
       allowYield: false,
+      allowAwait: false,
     });
     if (!result.matched) throw new Error("expected expression");
     expect(printLosslessSequence(result.syntax.children)).toBe("a + b");
@@ -508,6 +552,7 @@ describe("Pratt expression consumer", () => {
       environmentEpoch: 0 as EnvironmentEpoch,
       tracker: new ResourceTracker(createResourceBudget()),
       allowYield: false,
+      allowAwait: false,
     });
     if (!result.matched) throw new Error("expected an expression");
     expect(printLosslessSequence(result.syntax.children)).toBe("(a) + b");

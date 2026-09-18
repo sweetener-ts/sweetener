@@ -282,6 +282,24 @@ describe("a rule", () => {
     expect(anyScoped(tokens, "bind", "keyword.control.sweetener")).toBe(true);
     expect(anyScoped(tokens, "expect", "keyword.control.sweetener")).toBe(true);
   });
+
+  test("scopes both syntactic contexts a rule can require", () => {
+    const tokens = paint(
+      `export syntax emit:stmt {
+  rule { emit $value:expr; }
+  context generator;
+  context async;
+  => { yield await $value; }
+}`,
+    );
+    expect(anyScoped(tokens, "context", "keyword.control.sweetener")).toBe(
+      true,
+    );
+    expect(anyScoped(tokens, "generator", "keyword.control.sweetener")).toBe(
+      true,
+    );
+    expect(anyScoped(tokens, "async", "keyword.control.sweetener")).toBe(true);
+  });
 });
 
 describe("a template operation", () => {

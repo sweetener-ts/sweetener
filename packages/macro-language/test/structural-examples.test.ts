@@ -134,6 +134,7 @@ describe("Phase 2 structural playground ports", () => {
             tracker: new ResourceTracker(createResourceBudget()),
             cancellation: neverCancelled,
             allowYield: false,
+            allowAwait: false,
           });
           if (!expression.matched) return undefined;
           return {

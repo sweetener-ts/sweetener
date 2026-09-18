@@ -44,6 +44,11 @@ export interface ConsumerContext {
   readonly cancellation: CancellationToken;
   /** Whether `yield` is an expression here, as it is only inside a generator. */
   readonly allowYield: boolean;
+  /**
+   * Whether `await` is an expression here, as it is only inside an async
+   * function and at the top level of a module.
+   */
+  readonly allowAwait: boolean;
 }
 
 export interface ConsumeRequest {
@@ -54,6 +59,7 @@ export interface ConsumeRequest {
   readonly stopSet?: StopSet | undefined;
   readonly cancellation?: CancellationToken | undefined;
   readonly allowYield: boolean;
+  readonly allowAwait: boolean;
 }
 
 export interface ConsumeSuccess extends ConsumerAttemptSuccess {
@@ -211,6 +217,7 @@ export class ConsumerRegistry {
         tracker: request.tracker,
         cancellation,
         allowYield: request.allowYield,
+        allowAwait: request.allowAwait,
       }),
     );
     cancellation.throwIfCancellationRequested();

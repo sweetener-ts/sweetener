@@ -160,6 +160,7 @@ function createHarness() {
     tracker,
     cancellation: guard.cancellation,
     allowYield: false,
+    allowAwait: false,
   });
   const consumeClass = createSyntaxClassConsumer(module.syntaxClasses, {
     builtins: {

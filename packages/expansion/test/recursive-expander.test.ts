@@ -94,6 +94,7 @@ describe("recursive declarative expansion", () => {
       tracker,
       cancellation: guard.cancellation,
       allowYield: false,
+      allowAwait: false,
     });
     const builtins = {
       token: module.classId("token")!,

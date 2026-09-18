@@ -436,9 +436,10 @@ export function createExpansionFrontendSession(
           environmentEpoch: expansionEnvironment.epoch,
           consumeClass: inContexts(
             consumeClass,
-            // The operator was read where its operands were; a `yield` among
-            // them is refused only where that reading refused one.
-            input.context.allowYield ? generatorContexts : noContexts,
+            // The operator was read where its operands were; a `yield` or an
+            // `await` among them is refused only where that reading refused
+            // one.
+            contextsOf(input.context),
           ),
           scopeStore: options.scopeStore,
           origins: options.origins,
@@ -611,8 +612,8 @@ export function createExpansionFrontendSession(
   const jsxChild = createJsxChildConsumer(shared);
   const classElement = createClassElementConsumer({
     ...shared,
-    enforestStatementBlock: (block, blockContext, allowYield) =>
-      statement.enforestBlock(block, blockContext, allowYield),
+    enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
+      statement.enforestBlock(block, blockContext, allowYield, allowAwait),
   });
   const typeMember = typeConsumers.typeMember;
   /**
@@ -641,8 +642,19 @@ export function createExpansionFrontendSession(
         nameOfClass: consumer.nameOfClass,
       },
     );
-  const generatorContexts: ReadonlySet<MacroContext> = new Set(["generator"]);
-  const noContexts: ReadonlySet<MacroContext> = new Set();
+  /**
+   * The top level of a module, which is where its items stand: `await` is an
+   * expression there and `yield` is not. Every Sweetener source is a module,
+   * as the compiler tells TypeScript when it checks one.
+   */
+  const moduleContexts: ReadonlySet<MacroContext> = new Set(["async"]);
+  /** The contexts a consumer read its input in, as a rule requires them. */
+  const contextsOf = (read: ConsumerContext): ReadonlySet<MacroContext> => {
+    const contexts = new Set<MacroContext>();
+    if (read.allowYield) contexts.add("generator");
+    if (read.allowAwait) contexts.add("async");
+    return contexts;
+  };
   const context = (
     category: SyntaxCategory,
     contexts: ReadonlySet<MacroContext> = new Set(),
@@ -655,6 +667,7 @@ export function createExpansionFrontendSession(
       tracker: options.tracker,
       cancellation: options.guard.cancellation,
       allowYield: contexts.has("generator"),
+      allowAwait: contexts.has("async"),
     });
   const requiredClass = (
     module: CompileParsedMacrosResult,
@@ -1119,7 +1132,10 @@ export function createExpansionFrontendSession(
       return protect(createSyntaxSequence(raw), "item");
     };
     while (!cursor.atEnd) {
-      const attempted = item.consume(cursor.fork(), context("item"));
+      const attempted = item.consume(
+        cursor.fork(),
+        context("item", moduleContexts),
+      );
       if (!attempted.matched || attempted.cursor.index <= cursor.index) {
         const fallback = cursor.fork();
         const raw: Syntax[] = [];
@@ -1196,6 +1212,9 @@ export function createExpansionFrontendSession(
         modules,
         syntax: prepareInput(syntax, category),
         category,
+        // A module's items are what is expanded under the item category, and
+        // they stand at its top level.
+        contexts: category === "item" ? moduleContexts : new Set(),
         consumeClass,
         consumeClassForMacro: (macro, contexts) =>
           inContexts(

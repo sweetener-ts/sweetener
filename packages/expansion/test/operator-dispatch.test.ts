@@ -168,6 +168,7 @@ function createOperatorHarness() {
     tracker,
     cancellation: neverCancelled,
     allowYield: false,
+    allowAwait: false,
   };
   const expression: { current: SyntaxConsumer | undefined } = {
     current: undefined,

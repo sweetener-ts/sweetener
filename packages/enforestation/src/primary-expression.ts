@@ -247,6 +247,22 @@ export function arrowBodyStart(
   return parenthesizedArrowBodyStart(cursor, context);
 }
 
+/**
+ * Whether the arrow whose head these nodes are -- everything up to and
+ * including its `=>` -- is async. `async` stands in front of the parameters,
+ * so an arrow whose one parameter is named `async` is `async =>` and is not
+ * one.
+ */
+export function asyncArrowHead(head: readonly Syntax[]): boolean {
+  const modifier = head[0];
+  const after = head[1];
+  return (
+    modifier?.tag === "token" &&
+    modifier.raw === "async" &&
+    !(after?.tag === "token" && after.raw === "=>")
+  );
+}
+
 function parenthesizedArrowBodyStart(
   cursor: SyntaxCursor,
   context: ConsumerContext,
@@ -476,8 +492,13 @@ function arrowChildren(
   const attempt = consumeExpression(
     createSyntaxCursor(createSyntaxSequence(body)),
     // An arrow is never a generator, so `yield` is not an expression in its
-    // body even inside one.
-    Object.freeze({ ...context, allowYield: false }),
+    // body even inside one; `await` is one there only when the arrow itself
+    // is written `async`.
+    Object.freeze({
+      ...context,
+      allowYield: false,
+      allowAwait: asyncArrowHead(raw.slice(0, arrow.bodyStart)),
+    }),
   );
   if (!attempt.matched || !attempt.cursor.atEnd) return raw;
   return [...raw.slice(0, arrow.bodyStart), attempt.syntax];

@@ -241,6 +241,39 @@ describe("declarative macro compiler", () => {
     },
   );
 
+  test("compiles the declarative syntactic contexts a rule requires", () => {
+    const origins = new OriginStore();
+    const scopes = new ScopeStore();
+    const definitionScopes = scopes.singleton(
+      scopes.freshScope("lexical", "context-definition"),
+    );
+    const parsed = parseMacroDefinitions(
+      readSyntax(
+        `export syntax emit:stmt {
+          rule { emit $value:expr; }
+          context generator;
+          context async;
+          => { yield await $value; }
+        }`,
+        { sourceId, scopes: definitionScopes, originStore: origins },
+      ).root,
+      { sourceId },
+    );
+    const compiled = compileParsedMacros(parsed, {
+      sourceId,
+      phase: createPhase(1),
+      definitionScopes,
+      allocateBindingId: createIdAllocator<BindingId>(6_000).allocate,
+      spanForOrigin: (origin) =>
+        origins.selectPrimarySource(origin)?.span ?? { start: 0, end: 0 },
+    });
+    expect(compiled.diagnostics).toEqual([]);
+    expect(compiled.macros[0]?.rules[0]?.requiredContexts).toEqual([
+      "generator",
+      "async",
+    ]);
+  });
+
   test("rejects unknown declarative syntactic contexts", () => {
     const origins = new OriginStore();
     const scopes = new ScopeStore();

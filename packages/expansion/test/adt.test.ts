@@ -146,6 +146,7 @@ function createHarness(fixturePath = fixture) {
     tracker,
     cancellation: guard.cancellation,
     allowYield: false,
+    allowAwait: false,
   });
   const consumeClass = createSyntaxClassConsumer(module.syntaxClasses, {
     builtins: {
