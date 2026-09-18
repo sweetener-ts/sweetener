@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createSweetenerSession } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+} from "@sweetener/compiler";
 import ts from "typescript";
 
 const sweetExtension = /\.s(?:ts|js)x?$/u;
@@ -71,6 +74,11 @@ export function createSweetenerHooks(
             )
             .join("\n"),
         );
+      // Nothing on this path resolves names, so a sentence expansion holds
+      // about a name it left standing is said here or nowhere. It does not
+      // refuse the module: see `SweetenerTransformResult.warnings`.
+      if (expanded.warnings.length > 0)
+        process.emitWarning(describeDiagnostics(expanded.warnings));
       // The hook must hand back something the runtime will execute, and what
       // expansion produces is TypeScript.
       const emitted = ts.transpileModule(expanded.code, {

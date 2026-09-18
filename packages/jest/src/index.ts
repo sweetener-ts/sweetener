@@ -66,6 +66,11 @@ const transformer = {
       });
       if (expanded.diagnostics.length > 0)
         throw new Error(describeDiagnostics(expanded.diagnostics));
+      // Nothing on this path resolves names, so a sentence expansion holds
+      // about a name it left standing is said here or nowhere. It does not
+      // fail the file: see `SweetenerTransformResult.warnings`.
+      if (expanded.warnings.length > 0)
+        process.emitWarning(describeDiagnostics(expanded.warnings));
       const babel = await transformAsync(expanded.code, {
         filename: expanded.virtualFilename,
         presets: [typescript],

@@ -19,9 +19,14 @@ export function describeDiagnostics(
 
 function describeDiagnostic(diagnostic: ts.Diagnostic): string {
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+  // A warning printed beside an error, on the same stream, has to say which it
+  // is; a host that reports one and then carries on otherwise reads as a host
+  // that ignored an error. Errors keep the spelling they have always had.
+  const severity =
+    diagnostic.category === ts.DiagnosticCategory.Warning ? "warning " : "";
   const code =
     diagnostic.code === undefined ? "" : `TS${String(diagnostic.code)}: `;
-  const head = `${code}${message}`;
+  const head = `${severity}${code}${message}`;
   const at = position(diagnostic.file, diagnostic.start);
   const lines = [at === undefined ? head : `${at} ${head}`];
   // The other place a diagnostic points — the rule that wanted different

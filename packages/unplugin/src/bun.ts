@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import type { BunPlugin, Loader } from "bun";
-import { createSweetenerSession } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+} from "@sweetener/compiler";
 import type { SweetenerPluginOptions } from "./plugin.js";
 
 const sweetExtension = /\.s(?:ts|js)x?$/u;
@@ -38,6 +41,11 @@ export default function sweetener(
               )
               .join("\n"),
           );
+        // Nothing on this path resolves names, so a sentence expansion
+        // holds about a name it left standing is said here or nowhere. It is
+        // a warning: see `SweetenerTransformResult.warnings`.
+        if (result.warnings.length > 0)
+          process.emitWarning(describeDiagnostics(result.warnings));
         return { contents: result.code, loader: loader(path) };
       });
     },

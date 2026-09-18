@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { createSweetenerSession } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+} from "@sweetener/compiler";
 import type {
   CompilationContext,
   JsPlugin,
@@ -33,6 +36,11 @@ export default function sweetenerFarm(
           .map(({ messageText }) => String(messageText))
           .join("\n"),
       );
+    // Nothing on this path resolves names, so a sentence expansion holds
+    // about a name it left standing is said here or nowhere. It is a warning:
+    // see `SweetenerTransformResult.warnings`.
+    if (result.warnings.length > 0)
+      context?.warn(describeDiagnostics(result.warnings));
     for (const dependency of result.dependencies)
       context?.addWatchFile(filename, dependency);
     return {

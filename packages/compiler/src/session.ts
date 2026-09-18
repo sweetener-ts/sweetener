@@ -35,6 +35,20 @@ export interface SweetenerTransformResult {
    */
   composeMap(typescriptMap: RawSourceMap): RawSourceMap | undefined;
   readonly diagnostics: readonly ts.Diagnostic[];
+  /**
+   * What expansion holds about a name it left standing in this file.
+   *
+   * A build tool expands and runs; nothing on this path resolves names, so
+   * these have nowhere else to go. Dropped, they left
+   * `node --import @sweetener/node/register ./main.sts` loading a module whose
+   * first use of the name is a `ReferenceError`, with nothing said about why.
+   *
+   * Warnings rather than errors: the claim expansion cannot make -- that
+   * nothing else defines the name -- is the one that would justify refusing to
+   * expand, and a macro spelled like a global leaves that global standing.
+   * A host reports them; it does not fail over them.
+   */
+  readonly warnings: readonly ts.Diagnostic[];
   readonly dependencies: readonly string[];
   readonly missingDependencies: readonly string[];
   readonly trace: unknown;
@@ -230,6 +244,7 @@ export function createSweetenerSession(
         }
       },
       diagnostics: Object.freeze([...expanded.diagnostics]),
+      warnings: inspected.warnings ?? Object.freeze([]),
       dependencies,
       missingDependencies: Object.freeze([]),
       trace: inspected.trace,

@@ -92,6 +92,7 @@ import type {
   ProjectExpansionOutput,
   ProjectExpansionProvider,
 } from "./project-command.js";
+import { warnAboutHeldNames } from "./unresolved-names.js";
 
 interface ParsedFile {
   readonly fileName: string;
@@ -1530,6 +1531,22 @@ export class DefaultProjectExpansionProvider
                 asTypeScriptDiagnostic(diagnostic, bySource),
               ),
           ),
+          // What is held about a name this file left standing. `expand` and a
+          // build tool's transform read an inspection and then stop; there is
+          // no checker behind either, so this is the last chance anything has
+          // to say the name is a macro's.
+          warnings: warnAboutHeldNames(
+            unresolvedNameExplanations
+              .filter(
+                ({ primaryOrigin }) => primaryOrigin.sourceId === file.sourceId,
+              )
+              .map((diagnostic) =>
+                Object.freeze({
+                  name: String(diagnostic.messageArguments[0] ?? ""),
+                  diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
+                }),
+              ),
+          ),
           generatedNames: Object.freeze(generatedNames),
           // Building a source map walks every printed region. Only the
           // build-tool transforms ask for one; `check` never does, so it is
@@ -1603,7 +1620,14 @@ export class DefaultProjectExpansionProvider
       ),
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
-          asTypeScriptDiagnostic(diagnostic, bySource),
+          // The name travels with the sentence. Every name one macro writes is
+          // reported against the invocation that wrote it, so the position
+          // alone cannot tell two of these apart; the spelling is the first
+          // thing each of these three diagnostics is given.
+          Object.freeze({
+            name: String(diagnostic.messageArguments[0] ?? ""),
+            diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
+          }),
         ),
       ),
     });

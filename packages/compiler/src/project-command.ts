@@ -23,6 +23,11 @@ import {
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
 import type { ExpansionInspectionProvider } from "./expansion-tools.js";
 import { selectSweetSources } from "./source-kind.js";
+import {
+  explainUnresolvedNames,
+  warnAboutHeldNames,
+  type UnresolvedNameExplanation,
+} from "./unresolved-names.js";
 
 export type ConfiguredProjectCommand = "check" | "build";
 
@@ -47,9 +52,11 @@ export interface ProjectExpansionOutput {
    * TypeScript's to answer, because `lib.d.ts`, an ambient declaration and a
    * `declare global` all declare names expansion never sees. Each of these is
    * written in place of the name TypeScript could not find at the same
-   * position, and dropped where TypeScript found one.
+   * position and under the same spelling, and dropped where TypeScript found
+   * one -- except in a file TypeScript does not check, where nothing answers
+   * and the sentence is said as a warning.
    */
-  readonly unresolvedNameExplanations?: readonly ts.Diagnostic[];
+  readonly unresolvedNameExplanations?: readonly UnresolvedNameExplanation[];
 }
 
 export interface ConfiguredProjectCommandResult {
@@ -380,54 +387,6 @@ function removeStaleDeclarations(
 }
 
 /**
- * What TypeScript says when it cannot resolve a name, or cannot type the
- * member a name introduces. A macro written outside the space it was declared
- * for is emitted verbatim, so this is where it surfaces.
- */
-const unresolvedNameCodes: ReadonlySet<number> = new Set([
-  2304, // Cannot find name 'X'.
-  2552, // Cannot find name 'X'. Did you mean 'Y'?
-  7008, // Member 'X' implicitly has an 'any' type.
-]);
-
-/**
- * Say what expansion knows about a name TypeScript could not resolve.
- *
- * Expansion is not the side that knows what a name means. It sees the macros
- * in scope and the bindings a module writes, and never `lib.d.ts`, an ambient
- * declaration, a `declare global`, or that a member list names members of its
- * own -- so a macro spelled `Partial` made `type Halved = Partial<{ a:
- * number }>` fail to build, over a name the standard library declares.
- *
- * TypeScript resolves every name, against the whole program. Where it reports
- * one is missing at a position expansion has something to say about, its
- * sentence is replaced by the one that names the macro: the position and the
- * name are the same, and the macro is the answer rather than a restatement of
- * the question. Where it reports nothing there, nothing is said.
- */
-function explainUnresolvedNames(
-  diagnostics: readonly ts.Diagnostic[],
-  explanations: readonly ts.Diagnostic[],
-): readonly ts.Diagnostic[] {
-  if (explanations.length === 0) return diagnostics;
-  const place = (diagnostic: ts.Diagnostic): string | undefined =>
-    diagnostic.file === undefined || diagnostic.start === undefined
-      ? undefined
-      : `${diagnostic.file.fileName}:${String(diagnostic.start)}`;
-  const byPlace = new Map(
-    explanations.flatMap((explanation) => {
-      const at = place(explanation);
-      return at === undefined ? [] : [[at, explanation] as const];
-    }),
-  );
-  return diagnostics.map((diagnostic) => {
-    if (!unresolvedNameCodes.has(diagnostic.code)) return diagnostic;
-    const at = place(diagnostic);
-    return (at === undefined ? undefined : byPlace.get(at)) ?? diagnostic;
-  });
-}
-
-/**
  * One message per place, however many copies of it the expansion produced.
  *
  * A macro that repeats its argument repeats every error in it: `twice(1)` in a
@@ -500,7 +459,22 @@ export function runConfiguredProjectCommand(options: {
   const expansionOutput: ProjectExpansionOutput = Array.isArray(expanded)
     ? { files: expanded, diagnostics: Object.freeze([]) }
     : (expanded as ProjectExpansionOutput);
-  if (expansionOutput.diagnostics.length > 0)
+  const heldExplanations = expansionOutput.unresolvedNameExplanations ?? [];
+  /**
+   * Whether expansion has a mistake of its own to report, which is why the
+   * project is not checked: over text that never finished expanding TypeScript
+   * says a great deal, all of it downstream of the expansion that failed.
+   *
+   * What is held against a position is a different matter. It is a sentence
+   * about a name expansion left standing, and it is owed to whoever wrote that
+   * name -- in this file or in any other. Ending the run here silenced every
+   * one of them over a single unrelated macro error somewhere in the project.
+   * So the program is still built when something is held, purely to ask
+   * TypeScript which of those names it resolves; nothing else it says is kept,
+   * and nothing is emitted.
+   */
+  const expansionFailed = expansionOutput.diagnostics.length > 0;
+  if (expansionFailed && heldExplanations.length === 0)
     return Object.freeze({
       command: options.command,
       exitCode: 1,
@@ -532,7 +506,10 @@ export function runConfiguredProjectCommand(options: {
   // imports one cannot be checked until they exist. Writing them only once the
   // check passed would never write them, because the check cannot pass
   // without them.
-  if (project.sweet.sourceDeclarations)
+  // Not for a project that failed to expand: the declaration would describe
+  // whatever the unexpanded text happens to read as, and be left on disk for
+  // the next build to trust.
+  if (project.sweet.sourceDeclarations && !expansionFailed)
     writeSourceDeclarations({
       virtualBySource,
       virtualFiles,
@@ -550,7 +527,9 @@ export function runConfiguredProjectCommand(options: {
       // module, so say so unless the project has an opinion.
       moduleDetection: ts.ModuleDetectionKind.Force,
       ...project.typescript.options,
-      ...(options.command === "check" ? { noEmit: true } : {}),
+      ...(options.command === "check" || expansionFailed
+        ? { noEmit: true }
+        : {}),
     },
     files: virtualFiles,
     ...(composer === undefined ? {} : { composeSourceMap: composer }),
@@ -563,22 +542,66 @@ export function runConfiguredProjectCommand(options: {
   });
   let diagnostics = [...ts.getPreEmitDiagnostics(created.program)];
   const emit =
-    options.command === "build" && diagnostics.length === 0
+    options.command === "build" && !expansionFailed && diagnostics.length === 0
       ? created.program.emit()
       : undefined;
   diagnostics.push(...(emit?.diagnostics ?? []));
-  diagnostics = [
-    ...deduplicateDiagnostics(
-      explainUnresolvedNames(
-        remapGeneratedDiagnostics({
-          diagnostics,
-          provider: expansionProvider,
-          virtualBySource,
-          target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
-        }),
-        expansionOutput.unresolvedNameExplanations ?? [],
-      ),
+  const remapped = remapGeneratedDiagnostics({
+    diagnostics,
+    provider: expansionProvider,
+    virtualBySource,
+    target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
+  });
+  const explained = explainUnresolvedNames(remapped, heldExplanations);
+  /**
+   * Whether TypeScript resolves the names in a source, which is the whole
+   * reason a sentence about one is held rather than said.
+   *
+   * A `.js` file is in the program without being checked unless `checkJs` says
+   * so, and a project that expands macros into JavaScript is the ordinary way
+   * to reach that state. Nothing on that side ever answers, so a sentence held
+   * against such a file waited for an answer that never came and was dropped:
+   * `check` reported success over `export const held = duplicate;`, a name the
+   * emitted code does not define, because the compile-time import is erased.
+   */
+  const resolvesNamesIn = (fileName: string | undefined): boolean => {
+    if (fileName === undefined) return true;
+    const virtual = virtualBySource.get(fileName);
+    // A source this command never handed to TypeScript is not a source this
+    // command can say anything about. Silence rather than a sentence nothing
+    // asked for.
+    if (virtual === undefined) return true;
+    return (
+      /\.[cm]?tsx?$/iu.test(virtual) ||
+      project.typescript.options.checkJs === true
+    );
+  };
+  const unanswered = warnAboutHeldNames(
+    heldExplanations.filter(
+      (explanation) =>
+        !explained.spoken.has(explanation) &&
+        !resolvesNamesIn(explanation.diagnostic.file?.fileName),
     ),
+  );
+  if (expansionFailed)
+    return Object.freeze({
+      command: options.command,
+      exitCode: 1,
+      diagnostics: Object.freeze([
+        ...deduplicateDiagnostics([
+          ...expansionOutput.diagnostics,
+          ...heldExplanations
+            .filter((explanation) => explained.spoken.has(explanation))
+            .map(({ diagnostic }) => diagnostic),
+          ...unanswered,
+        ]),
+      ]),
+      outputs: new Map(),
+      virtualFiles,
+      debugState: expansionProvider.debugState?.(),
+    });
+  diagnostics = [
+    ...deduplicateDiagnostics([...explained.diagnostics, ...unanswered]),
   ];
   return Object.freeze({
     command: options.command,

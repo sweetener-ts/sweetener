@@ -3,14 +3,20 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import type * as ts from "typescript";
 import { loadStandaloneProject } from "./configuration.js";
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
-import type {
-  ProjectExpansionOutput,
-  ProjectExpansionProvider,
+import {
+  warnAboutHeldNames,
+  type ProjectExpansionOutput,
+  type ProjectExpansionProvider,
 } from "./project-command.js";
 
 export interface StandaloneEmitResult {
   /** Absolute output path to expanded text. */
   readonly outputs: ReadonlyMap<string, string>;
+  /**
+   * Errors that stopped the expansion, and warnings about what it left
+   * standing. Only an error means nothing was expanded; a warning is said
+   * about output that was written.
+   */
   readonly diagnostics: readonly ts.Diagnostic[];
 }
 
@@ -61,7 +67,14 @@ export function expandStandalone(options: {
       join(outDir, relative(root, file.fileName)),
       file.generated.text,
     );
-  return Object.freeze({ outputs, diagnostics: Object.freeze([]) });
+  // There is no checker on this path, so what expansion holds about a name it
+  // left standing is all anyone will ever hear about it. See
+  // `warnAboutHeldNames`: it is said, as a warning, and the output is written
+  // either way because it is the same text either way.
+  return Object.freeze({
+    outputs,
+    diagnostics: warnAboutHeldNames(output.unresolvedNameExplanations ?? []),
+  });
 }
 
 /** Expand files and write the results under `outDir`. */

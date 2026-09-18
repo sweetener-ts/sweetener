@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { OriginStore } from "@sweetener/syntax";
 import { describe, expect, test } from "vitest";
 import type { OriginId, SourceId } from "@sweetener/shared";
@@ -206,4 +209,84 @@ test("prints the guide, without the front matter meant for agents", () => {
 test("asks for help rather than reporting an unknown command", () => {
   for (const argv of [[], ["--help"], ["-h"], ["help"]])
     expect(parseCliInvocation(argv)).toEqual({ command: "help" });
+});
+
+/**
+ * `emit` has no checker behind it, so what expansion holds about a name it
+ * left standing is all anyone will ever hear about it. It is said, and it does
+ * not stop the emit: the claim it cannot make -- that nothing else defines the
+ * name -- is the only thing between it and an error.
+ */
+test("emit says what it knows about a name left standing and still writes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-emit-cli-"));
+  mkdirSync(join(directory, "src"), { recursive: true });
+  writeFileSync(
+    join(directory, "src/macros.js"),
+    `"use sweetener";\nexport syntax duplicate:expr {\n  rule { duplicate($value:tt) } => { [$value, $value] }\n}\n`,
+  );
+  writeFileSync(
+    join(directory, "src/main.js"),
+    `"use sweetener";\nimport { duplicate } from "./macros.js" for syntax;\nexport const held = duplicate;\n`,
+  );
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const result = runCli({
+    argv: [
+      "emit",
+      join(directory, "src/main.js"),
+      "--out-dir",
+      join(directory, "out"),
+    ],
+    io: {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    },
+  });
+  expect(stderr.join("")).toContain(
+    "warning TS4024: Macro duplicate is written here as a name on its own",
+  );
+  expect(stdout.join("")).toContain("emit: success");
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(directory, "out/main.js"), "utf8")).toContain(
+    "held = duplicate",
+  );
+});
+
+/**
+ * `expand` prints the expanded source and nothing else runs afterwards, so a
+ * macro name standing in what it printed had nobody left to explain it. The
+ * sentence is said beside the output, as a warning, and the output is still
+ * printed: it is what the file expands to.
+ */
+test("expand says what it knows about a name left standing", () => {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-expand-cli-"));
+  writeFileSync(
+    join(directory, "macros.sts"),
+    `export syntax duplicate:expr {\n  rule { duplicate($value:tt) } => { [$value, $value] }\n}\n`,
+  );
+  writeFileSync(
+    join(directory, "main.sts"),
+    `import { duplicate } from "./macros.sts" for syntax;\nexport const held = duplicate;\n`,
+  );
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { noEmit: true, target: "ES2022" },
+      files: ["macros.sts", "main.sts"],
+    }),
+  );
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const result = runCli({
+    argv: ["expand", join(directory, "main.sts")],
+    io: {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    },
+  });
+  expect(stderr.join("")).toContain(
+    "warning TS4024: Macro duplicate is written here as a name on its own",
+  );
+  expect(stdout.join("")).toContain("held = duplicate");
+  expect(result.exitCode).toBe(0);
 });

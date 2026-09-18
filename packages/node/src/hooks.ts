@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createSweetenerSession } from "@sweetener/compiler";
+import {
+  createSweetenerSession,
+  describeDiagnostics,
+} from "@sweetener/compiler";
 import type { RawSourceMap } from "@sweetener/typescript-host";
 import ts from "typescript";
 
@@ -41,6 +44,11 @@ export async function load(
         .map(({ messageText }) => String(messageText))
         .join("\n"),
     );
+  // Nothing on this path resolves names, so a sentence expansion holds about a
+  // name it left standing is said here or nowhere. It does not refuse the
+  // module: see `SweetenerTransformResult.warnings`.
+  if (expanded.warnings.length > 0)
+    process.emitWarning(describeDiagnostics(expanded.warnings));
   const emitted = ts.transpileModule(expanded.code, {
     fileName: expanded.virtualFilename,
     compilerOptions: {

@@ -199,10 +199,15 @@ function at(file: ts.SourceFile, start: number): string {
 
 function renderDiagnostic(diagnostic: ts.Diagnostic): string {
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+  // A warning is a line on the same stream as an error, and a command that
+  // prints one and then reports success reads as a contradiction unless the
+  // line says which it is. Errors keep the spelling they have always had.
+  const severity =
+    diagnostic.category === ts.DiagnosticCategory.Warning ? "warning " : "";
   const head =
     diagnostic.file === undefined || diagnostic.start === undefined
-      ? `TS${String(diagnostic.code)}: ${message}`
-      : `${at(diagnostic.file, diagnostic.start)} TS${String(diagnostic.code)}: ${message}`;
+      ? `${severity}TS${String(diagnostic.code)}: ${message}`
+      : `${at(diagnostic.file, diagnostic.start)} ${severity}TS${String(diagnostic.code)}: ${message}`;
   // A diagnostic that points somewhere else as well — the rule that wanted
   // different syntax, the binding already holding a name — is most of the
   // answer, and printing only the first line threw that away.
@@ -396,7 +401,14 @@ export function runCli(options: {
     });
     for (const diagnostic of result.diagnostics)
       options.io.stderr(`${renderDiagnostic(diagnostic)}\n`);
-    if (result.diagnostics.length > 0) {
+    // Only an error means nothing was expanded. A warning here is what
+    // expansion knows about a name it left standing, which it cannot confirm
+    // without a checker and which does not make the written text wrong.
+    if (
+      result.diagnostics.some(
+        ({ category }) => category === ts.DiagnosticCategory.Error,
+      )
+    ) {
       options.io.stdout("emit: failed\n");
       return Object.freeze({ exitCode: 1 });
     }
@@ -534,6 +546,12 @@ export function runCli(options: {
         options.io.stderr(`${renderDiagnostic(diagnostic)}\n`);
       return Object.freeze({ exitCode: 1 });
     }
+    // Nothing runs after this to resolve the names in what it printed, so a
+    // macro name left standing in the expansion is said about here or nowhere.
+    // It does not stop the expansion being printed: that is what the file
+    // expands to.
+    for (const warning of inspected.warnings ?? [])
+      options.io.stderr(`${renderDiagnostic(warning)}\n`);
     if (invocation.command === "expand") {
       options.io.stdout(expansionView(inspected.generated));
     } else {

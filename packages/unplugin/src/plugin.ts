@@ -75,6 +75,11 @@ export const sweetenerUnplugin = createUnplugin<
           this.addWatchFile(dependency);
         if (result.diagnostics.length > 0)
           this.error(describeDiagnostics(result.diagnostics));
+        // Nothing on this path resolves names, so a sentence expansion holds
+        // about a name it left standing is said here or nowhere. It is a
+        // warning: see `SweetenerTransformResult.warnings`.
+        if (result.warnings.length > 0)
+          this.warn(describeDiagnostics(result.warnings));
         const emitted = stripsTypeScript.has(meta.framework)
           ? stripTypes(result, {
               filename,

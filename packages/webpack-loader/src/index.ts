@@ -59,6 +59,11 @@ export default function sweetenerLoader(
         callback(new Error(describeDiagnostics(result.diagnostics)));
         return;
       }
+      // Nothing on this path resolves names, so a sentence expansion holds
+      // about a name it left standing is said here or nowhere. It is a
+      // warning: see `SweetenerTransformResult.warnings`.
+      if (result.warnings.length > 0)
+        this.emitWarning(new Error(describeDiagnostics(result.warnings)));
       const emitted =
         options.emit === "typescript"
           ? { code: result.code, map: undefined }

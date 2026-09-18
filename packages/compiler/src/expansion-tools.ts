@@ -28,6 +28,17 @@ export interface SourceExpansionInspection {
    */
   readonly diagnostics: readonly ts.Diagnostic[];
   /**
+   * What expansion holds about a name this file left standing.
+   *
+   * Everywhere a project is checked these go to TypeScript, which resolves
+   * names and decides whether each one is true. An inspection is read by the
+   * paths that never check anything -- `expand`, `explain`, a build tool's
+   * transform -- so there they are all anyone will ever hear about the name,
+   * and they are warnings: the one claim they carry that expansion cannot
+   * make is that nothing else defines it.
+   */
+  readonly warnings?: readonly ts.Diagnostic[] | undefined;
+  /**
    * Origins behind the expansion. A language service maps an editor's position
    * through these, so an inspection that withholds them cannot drive one.
    */

@@ -6,6 +6,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { createSweetenerSession } from "../src/index.js";
 
@@ -293,5 +294,37 @@ test("does not cache an expansion that failed", async () => {
     filename: fixture.main,
   });
   expect(repaired.diagnostics).toEqual([]);
+  await session.close();
+});
+
+/**
+ * A build tool expands and runs; nothing on that path resolves names. So the
+ * sentence expansion holds about a name it left standing has nowhere else to
+ * go: dropped here, `node --import @sweetener/node/register ./main.sts` loaded
+ * a module whose first line is a `ReferenceError` and said nothing about why.
+ *
+ * It is a warning rather than an error because the claim it cannot make -- that
+ * nothing else defines the name -- is the one that would justify refusing to
+ * expand, and a macro spelled like a global leaves that global standing.
+ */
+test("says what it knows about a name it left standing", async () => {
+  const fixture = project();
+  writeFileSync(
+    fixture.main,
+    `import { duplicate } from "./macros.sts" for syntax;\nexport const held = duplicate;\n`,
+    "utf8",
+  );
+  const session = createSweetenerSession();
+  const result = await session.transform({
+    code: readFile(fixture.main),
+    filename: fixture.main,
+    configFile: fixture.config,
+  });
+
+  expect(result.diagnostics).toEqual([]);
+  expect(result.warnings.map(({ code, category }) => [code, category])).toEqual(
+    [[4024, ts.DiagnosticCategory.Warning]],
+  );
+  expect(result.code).toContain("held = duplicate");
   await session.close();
 });

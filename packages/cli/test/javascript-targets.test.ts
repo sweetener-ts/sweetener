@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
@@ -72,6 +73,105 @@ describe("JavaScript macro extensions", () => {
     expect(readFileSync(join(directory, "dist/main.js"), "utf8")).toContain(
       "[21, 21]",
     );
+  });
+
+  /**
+   * TypeScript does not check a `.js` file unless it is asked to, so nothing
+   * on that side ever answers for a name expansion left standing. Held against
+   * an answer that never comes, the sentence vanished: the project reported
+   * success and wrote `export const held = duplicate;`, a name the emitted
+   * code does not define, because the compile-time import is erased.
+   *
+   * It is said instead, as a warning -- the one claim it cannot make without a
+   * checker is that nothing else defines the name.
+   */
+  test("says what it knows about a name in a file TypeScript did not check", () => {
+    const { config } = project({
+      files: {
+        "src/macros.sjs": macroBody,
+        "src/main.sjs": `import { duplicate } from "./macros.sjs" for syntax;\nexport const held = duplicate;\n`,
+      },
+      compilerOptions: { checkJs: false, noEmit: true },
+      sweet: { macroExtensions: [".sjs"] },
+    });
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: config,
+      writeThrough: false,
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
+    expect(result.exitCode).toBe(1);
+  });
+
+  /**
+   * The same project with the checker turned on, which is what isolates the
+   * cause: TypeScript answers, and the sentence is written in place of its
+   * `Cannot find name` as an error.
+   */
+  test("lets TypeScript answer for the same name when it checks the file", () => {
+    const { config } = project({
+      files: {
+        "src/macros.sjs": macroBody,
+        "src/main.sjs": `import { duplicate } from "./macros.sjs" for syntax;\nexport const held = duplicate;\n`,
+      },
+      compilerOptions: { checkJs: true, noEmit: true },
+      sweet: { macroExtensions: [".sjs"] },
+    });
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: config,
+      writeThrough: false,
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual([[4024, ts.DiagnosticCategory.Error]]);
+    expect(result.exitCode).toBe(1);
+  });
+
+  /**
+   * The cost of saying it, and the reason it is a warning.
+   *
+   * `JSON` is a global, so the emitted `export const held = JSON;` is correct
+   * and nothing is wrong here. With no checker in this file expansion cannot
+   * know that, so it says what it knows and says it as a warning: the build
+   * still produces the file, and the sentence is a question rather than a
+   * verdict. Turn `checkJs` on and it disappears, because then TypeScript
+   * answers.
+   */
+  test("says it even about a name a global defines, where nothing can answer", () => {
+    const { config } = project({
+      files: {
+        "src/macros.sjs": `export syntax JSON:expr {\n  rule { JSON($value:tt) } => { [$value] }\n}\n`,
+        "src/main.sjs": `import { JSON } from "./macros.sjs" for syntax;\nexport const held = JSON;\nexport const made = JSON(1);\n`,
+      },
+      compilerOptions: { checkJs: false, noEmit: true },
+      sweet: { macroExtensions: [".sjs"] },
+    });
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: config,
+      writeThrough: false,
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
+    const checked = project({
+      files: {
+        "src/macros.sjs": `export syntax JSON:expr {\n  rule { JSON($value:tt) } => { [$value] }\n}\n`,
+        "src/main.sjs": `import { JSON } from "./macros.sjs" for syntax;\nexport const held = JSON;\nexport const made = JSON(1);\n`,
+      },
+      compilerOptions: { checkJs: true, noEmit: true },
+      sweet: { macroExtensions: [".sjs"] },
+    });
+    const answered = runConfiguredProjectCommand({
+      command: "check",
+      configPath: checked.config,
+      writeThrough: false,
+    });
+    expect(answered.diagnostics.map(({ code }) => code)).toEqual([]);
+    expect(answered.exitCode).toBe(0);
   });
 
   test("rejects a macro extension with no virtual-file target", () => {
@@ -199,5 +299,61 @@ describe("config-free emit", () => {
     const emitted = readFileSync(join(directory, "out/main.js"), "utf8");
     expect(emitted).toContain("[21, 21]");
     expect(emitted).not.toContain("use sweetener");
+  });
+
+  /**
+   * There is no checker on this path, so nothing else will ever speak about a
+   * macro name left standing: the name is written out and the silence is
+   * total. It is said here, and said as a warning, because the one claim
+   * expansion cannot make -- that nothing else defines the name -- is exactly
+   * the claim there is no one here to answer. The output is written either
+   * way, since it is the same text either way.
+   */
+  test("warns about a macro name left standing, and still writes the output", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-standalone-held-"));
+    mkdirSync(join(directory, "src"), { recursive: true });
+    writeFileSync(
+      join(directory, "src/macros.js"),
+      `"use sweetener";\n${macroBody}`,
+    );
+    writeFileSync(
+      join(directory, "src/main.js"),
+      `"use sweetener";\nimport { duplicate } from "./macros.js" for syntax;\nexport const held = duplicate;\n`,
+    );
+    const result = emitStandalone({
+      fileNames: [join(directory, "src/main.js")],
+      outDir: join(directory, "out"),
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
+    expect(
+      ts.flattenDiagnosticMessageText(result.diagnostics[0]?.messageText, "\n"),
+    ).toContain("Macro duplicate is written here as a name on its own");
+    expect(readFileSync(join(directory, "out/main.js"), "utf8")).toContain(
+      "held = duplicate",
+    );
+  });
+
+  /** An expansion error of its own is still an error, and still refuses. */
+  test("refuses to write output an expansion error stands in", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-standalone-error-"));
+    mkdirSync(join(directory, "src"), { recursive: true });
+    writeFileSync(
+      join(directory, "src/macros.js"),
+      `"use sweetener";\nexport syntax only:expr {\n  rule { only(1) } => { 1 }\n}\n`,
+    );
+    writeFileSync(
+      join(directory, "src/main.js"),
+      `"use sweetener";\nimport { only } from "./macros.js" for syntax;\nexport const bad = only(2);\n`,
+    );
+    const result = emitStandalone({
+      fileNames: [join(directory, "src/main.js")],
+      outDir: join(directory, "out"),
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual([[4001, ts.DiagnosticCategory.Error]]);
+    expect(result.outputs.size).toBe(0);
   });
 });

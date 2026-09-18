@@ -3723,16 +3723,16 @@ export function expandMacroSyntax(
           ? "expr"
           : undefined;
       };
-      const mismatchedSpace =
+      const spaceReadHere =
         resolvedMacro === undefined &&
         node.tag === "token" &&
         node.kind === "identifier"
           ? spaceRead()
           : undefined;
       if (
-        mismatchedSpace !== undefined &&
+        spaceReadHere !== undefined &&
         node.tag === "token" &&
-        !shadowsMacro(node.raw, mismatchedSpace)
+        !shadowsMacro(node.raw, spaceReadHere)
       ) {
         const elsewhere = (
           [
@@ -3747,7 +3747,7 @@ export function expandMacroSyntax(
           ] as const
         ).find(
           (candidate) =>
-            candidate !== mismatchedSpace &&
+            candidate !== spaceReadHere &&
             resolveSpelling(
               node.raw,
               node.span.start,
@@ -3775,7 +3775,7 @@ export function expandMacroSyntax(
                   end: source.span.end,
                   originId: node.origin,
                 },
-                messageArguments: [node.raw, elsewhere, mismatchedSpace],
+                messageArguments: [node.raw, elsewhere, spaceReadHere],
               }),
             );
         }
@@ -3797,18 +3797,25 @@ export function expandMacroSyntax(
        * Not said at all where the name is deliberately something else:
        * shadowed by an ordinary binding, naming a property or a member, or
        * spelling a core form whose interception was never authorized.
+       *
+       * Looked up in the space the position reads rather than the space around
+       * it is walked as, because the two are not the same: `type T = later;`
+       * is walked as an item and reads a type, and asking the item space for a
+       * type macro found nothing and said nothing -- leaving `Cannot find
+       * name` as the whole account of a definition three lines below.
        */
+      const spaceDefinedIn = spaceReadHere ?? category;
       if (
         resolvedMacro === undefined &&
         !namesSomethingElse &&
         node.tag === "token" &&
         node.kind === "identifier" &&
-        !shadowsMacro(node.raw, category) &&
-        lexicalModule.get(node.raw, category) !== undefined &&
+        !shadowsMacro(node.raw, spaceDefinedIn) &&
+        lexicalModule.get(node.raw, spaceDefinedIn) !== undefined &&
         !isCoreForm(
           node.raw,
-          category,
-          coreFormKind(lexicalModule.get(node.raw, category)!.binding),
+          spaceDefinedIn,
+          coreFormKind(lexicalModule.get(node.raw, spaceDefinedIn)!.binding),
         )
       ) {
         const source = options.origins.selectPrimarySource(node.origin);

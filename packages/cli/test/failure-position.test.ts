@@ -95,7 +95,12 @@ function expandOnce(source: string) {
   return {
     reported: (code: number) => read(expanded.diagnostics, code),
     held: (code: number) =>
-      read(expanded.unresolvedNameExplanations ?? [], code),
+      read(
+        (expanded.unresolvedNameExplanations ?? []).map(
+          ({ diagnostic }) => diagnostic,
+        ),
+        code,
+      ),
   };
 }
 

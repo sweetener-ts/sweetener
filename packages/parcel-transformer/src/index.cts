@@ -64,6 +64,11 @@ const transformer = new PluginAPI.Transformer({
     });
     if (result.diagnostics.length > 0)
       throw new Error(describeDiagnostics(result.diagnostics));
+    // Nothing on this path resolves names, so a sentence expansion holds
+    // about a name it left standing is said here or nowhere. It does not fail
+    // the asset: see `SweetenerTransformResult.warnings`.
+    if (result.warnings.length > 0)
+      process.emitWarning(describeDiagnostics(result.warnings));
     for (const dependency of result.dependencies)
       asset.invalidateOnFileChange(dependency);
     asset.type = result.virtualFilename.endsWith("x") ? "tsx" : "ts";

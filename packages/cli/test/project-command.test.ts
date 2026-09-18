@@ -216,9 +216,12 @@ describe("project commands", () => {
     expect(generated).toContain("beforeOperator = 1 %% 2");
     expect(generated).toMatch(/afterOperator\s*=\s*\(?\s*1\)?\s*\+\s*2/u);
     // The operator left standing is expansion's own to report: it knows what
-    // it could not read. The name left standing is not, and this project never
-    // reaches TypeScript to ask -- the operator refused it first.
-    expect(result.diagnostics.map(({ code }) => code)).toEqual([4021]);
+    // it could not read. The name left standing is not -- whether anything
+    // defines it is TypeScript's to answer -- and the operator refusing first
+    // no longer swallows the question: TypeScript is still asked which of the
+    // held names it resolves, and the sentence about the macro below is said
+    // beside the one about the operator.
+    expect(result.diagnostics.map(({ code }) => code)).toEqual([4021, 4017]);
   });
 
   /**

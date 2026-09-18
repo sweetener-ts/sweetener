@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { runConfiguredProjectCommand } from "../src/index.js";
@@ -31,6 +31,8 @@ interface Checked {
     readonly at: string;
     readonly message: string;
   }[];
+  /** Every report as `file TScode`, for a project whose files both speak. */
+  readonly reported: readonly string[];
   readonly exitCode: 0 | 1;
 }
 
@@ -75,6 +77,10 @@ function check(
       at: main.slice(start ?? 0, (start ?? 0) + 10),
       message: `TS${String(code)}: ${ts.flattenDiagnosticMessageText(messageText, "\n")}`,
     })),
+    reported: result.diagnostics.map(
+      ({ file, code }) =>
+        `${file === undefined ? "<none>" : basename(file.fileName)} TS${String(code)}`,
+    ),
     exitCode: result.exitCode,
   };
 }
@@ -147,6 +153,55 @@ describe("a macro used above its definition", () => {
       },
     ]);
     expect(exitCode).toBe(1);
+  });
+
+  /**
+   * A type written above the macro that defines it reads the type space, not
+   * the item space the declaration around it is walked as. Looking the name up
+   * in the walked space found nothing and said nothing, and the only sentence
+   * left was TypeScript's `Cannot find name`, which says nothing about the
+   * definition underneath.
+   */
+  test("the macro is named where a type below defines the name", () => {
+    const { reports, exitCode } = check({
+      "main.sts": `export type Held = nowhere;\nexport syntax nowhere:type {\n  rule { nowhere } => { number }\n}\n`,
+    });
+    expect(reports).toEqual([
+      {
+        at: "nowhere;\ne",
+        message:
+          "TS4017: Macro nowhere is defined below this point, and a macro is visible only to what follows its definition. Move the definition above this use, or into a module imported for syntax.",
+      },
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("the macro is named where a type argument below defines the name", () => {
+    const { reports, exitCode } = check({
+      "main.sts": `export type Held = ReadonlyArray<nowhere>;\nexport syntax nowhere:type {\n  rule { nowhere } => { number }\n}\n`,
+    });
+    expect(reports).toEqual([
+      {
+        at: "nowhere>;\n",
+        message:
+          "TS4017: Macro nowhere is defined below this point, and a macro is visible only to what follows its definition. Move the definition above this use, or into a module imported for syntax.",
+      },
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  /**
+   * The same claim about a type, and the same reason it is not expansion's to
+   * make: a type macro spelled like a global leaves that global standing above
+   * its definition.
+   */
+  test("nothing is said where a global type is what was written", () => {
+    const { reports, exitCode } = check({
+      "ambient.d.ts": `export {};\ndeclare global {\n  type Crated = { readonly value: number };\n}\n`,
+      "main.sts": `export type Held = Crated;\nexport syntax Crated:type {\n  rule { Crated } => { number }\n}\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
   });
 
   test("the macro is named where a member list cannot be typed", () => {
@@ -238,5 +293,146 @@ describe("a macro name written on its own", () => {
       { at: "Boxed;\n", message: sentence("Boxed", "a type is read") },
     ]);
     expect(exitCode).toBe(1);
+  });
+});
+
+/**
+ * A held sentence is spoken about the position it was held against, whatever
+ * else in the project went wrong.
+ *
+ * Expansion reporting a mistake of its own used to end the run before
+ * TypeScript was asked anything, so one macro error anywhere silenced every
+ * held sentence in the project -- the file with the error was described, and
+ * the file with the leftover macro name was not. The check is still skipped
+ * over text that never finished expanding, because everything TypeScript would
+ * say about it follows from the expansion that failed; TypeScript is asked
+ * only which of the held names it resolves, and its own diagnostics there are
+ * thrown away.
+ */
+describe("an expansion error elsewhere in the project", () => {
+  /** A file whose macro refuses the input written for it: `SWR4001`. */
+  const refuses = `export syntax only:expr {\n  rule { only(1) } => { 1 }\n}\nexport const bad = only(2);\n`;
+
+  test("does not silence the held sentence in another file", () => {
+    const { reported, exitCode } = check({
+      "other.sts": refuses,
+      "main.sts": `export const a = noop;\nexport syntax noop:expr {\n  rule { noop } => { 0 }\n}\n`,
+    });
+    expect(reported).toEqual(["other.sts TS4001", "main.sts TS4017"]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("does not silence the held sentence in the file it is in", () => {
+    const { reported, exitCode } = check({
+      "main.sts": `${refuses}export const a = noop;\nexport syntax noop:expr {\n  rule { noop } => { 0 }\n}\n`,
+    });
+    expect(reported).toEqual(["main.sts TS4001", "main.sts TS4017"]);
+    expect(exitCode).toBe(1);
+  });
+
+  /**
+   * The other half of the invariant. A held sentence is still only spoken
+   * where TypeScript could not resolve the name, so an error elsewhere does
+   * not turn it into a claim expansion was never able to make.
+   */
+  test("does not make the held sentence true where the name resolves", () => {
+    const { reported, exitCode } = check({
+      "other.sts": refuses,
+      "main.sts": `export const held = JSON;\nexport syntax JSON:expr {\n  rule { JSON } => { 1 }\n}\n`,
+    });
+    expect(reported).toEqual(["other.sts TS4001"]);
+    expect(exitCode).toBe(1);
+  });
+
+  /**
+   * Nothing TypeScript says about text that never finished expanding is
+   * reported. `only(2)` is emitted verbatim and `only` is a name the output
+   * does not define, which would be a second sentence about the same mistake.
+   */
+  test("reports nothing the unexpanded output made TypeScript say", () => {
+    const { reported } = check({
+      "other.sts": refuses,
+      "main.sts": `export const a = noop;\nexport syntax noop:expr {\n  rule { noop } => { 0 }\n}\n`,
+    });
+    expect(reported).not.toContain("other.sts TS2304");
+  });
+});
+
+/**
+ * One expansion is one position. Every name a macro writes is reported against
+ * the invocation that wrote it, so several of them share a file and an offset
+ * and can only be told apart by the name each sentence is about.
+ *
+ * Matching on the position alone let one held sentence stand in for every
+ * unresolved name in the expansion: the errors the other names earned were
+ * replaced by it and deduplicated away, and where two names were held against
+ * one position only the last of them was ever written.
+ */
+describe("several names in one expansion", () => {
+  test("keeps the errors the other names in the expansion earned", () => {
+    const { reported } = check({
+      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax trio:expr {\n  rule { trio } => { [mkOne, alpha, beta] }\n}\nexport const x = trio;\n`,
+    });
+    expect(reported).toEqual([
+      "main.sts TS4013",
+      "main.sts TS2304",
+      "main.sts TS2304",
+    ]);
+  });
+
+  test("writes a sentence for every name it holds one for", () => {
+    const { reports } = check({
+      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax mkTwo:type {\n  rule { mkTwo } => { string }\n}\nexport syntax both:item {\n  rule { both } => { export const a = mkOne; export const b = mkTwo; }\n}\nboth\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      "TS4013: Macro mkOne is declared type and cannot be written where an expr is read. Declare it expr to use it here.",
+      "TS4013: Macro mkTwo is declared type and cannot be written where an expr is read. Declare it expr to use it here.",
+    ]);
+  });
+
+  /**
+   * A shorthand property is the other way TypeScript says a name has no value:
+   * `{ mkType }` is not `Cannot find name`, it is `No value exists in scope for
+   * the shorthand property`. The sentence was held against that position and
+   * nothing ever asked for it.
+   */
+  test("names the macro where a shorthand property has no value", () => {
+    const { reports } = check({
+      "main.sts": `export syntax mkType:type {\n  rule { mkType } => { number }\n}\nexport const o = { mkType };\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      "TS4013: Macro mkType is declared type and cannot be written where an expr is read. Declare it expr to use it here.",
+    ]);
+  });
+
+  /**
+   * TypeScript finds the name, in the other space. That is the same mistake
+   * `SWR4013` is about, said in TypeScript's vocabulary and with advice --
+   * "Did you mean 'typeof Thing'?" -- that is wrong when a macro was meant.
+   */
+  test("names the macro where the name resolves in the other space", () => {
+    const { reports } = check({
+      "macros.sts": `export syntax Thing:expr {\n  rule { Thing($v:expr) } => { [$v] }\n}\n`,
+      "ambient.d.ts": `export {};\ndeclare global {\n  const Thing: number;\n}\n`,
+      "main.sts": `import { Thing } from "./macros.sts" for syntax;\nexport type T = Thing;\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      "TS4013: Macro Thing is declared expr and cannot be written where a type is read. Declare it type to use it here.",
+    ]);
+  });
+
+  /**
+   * Only that one. `SWR4024` says nothing defines the name in the emitted
+   * code, and a name TypeScript found in the other space is a name it found.
+   */
+  test("says nothing about a bare name that resolves in the other space", () => {
+    const { reports } = check({
+      "macros.sts": `export syntax Thing:expr {\n  rule { Thing($v:expr) } => { [$v] }\n}\n`,
+      "ambient.d.ts": `export {};\ndeclare global {\n  type Thing = number;\n}\n`,
+      "main.sts": `import { Thing } from "./macros.sts" for syntax;\nexport const t = Thing;\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      "TS2693: 'Thing' only refers to a type, but is being used as a value here.",
+    ]);
   });
 });
