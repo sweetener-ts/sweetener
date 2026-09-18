@@ -31,6 +31,70 @@ describe("TypeScript scanner adapter", () => {
     ).toEqual([">", ">"]);
   });
 
+  /**
+   * The same of every path that reads a `>`, because the adapter counts
+   * type-argument depth one angle at a time and carried a width for `>>` and
+   * `>>>` that nothing could produce.
+   *
+   * TypeScript's scanner emits `GreaterThanToken` per character and leaves
+   * joining them to `reScanGreaterToken`, which the parser calls where a
+   * shift or a shift-assignment is what it is reading. This adapter never
+   * calls it -- it rescans only slashes, templates, hashes and JSX -- so no
+   * token it produces carries more than one angle, whichever mode it is read
+   * in.
+   */
+  it.each([
+    ["a shift and its assignments", "a >>= b; a >>>= c; a >= d;", "standard"],
+    [
+      "a type argument closing three at once",
+      "type T = A<B<C<D>>>;",
+      "standard",
+    ],
+    [
+      "a template literal type",
+      "type U = `${Uppercase<Lowercase<'a'>>}`;",
+      "standard",
+    ],
+    [
+      "type arguments on a call",
+      "const g = f<Array<Map<K, V>>>();",
+      "standard",
+    ],
+    [
+      "a type parameter list",
+      "class C<T extends Array<Set<U>>> {}",
+      "standard",
+    ],
+    [
+      "type arguments on a JSX tag",
+      "const e = <Box<Item<T>> on={a >> b}>t</Box>;",
+      "jsx",
+    ],
+    [
+      "a generic arrow written in JSX",
+      "const x = <A<B<C>>,>(v: A) => v;",
+      "jsx",
+    ],
+    [
+      "a shift inside a JSX expression",
+      "const p = <div a={c >>> d}>{e}</div>;",
+      "jsx",
+    ],
+  ] as const)("spells every angle as one token: %s", (_, source, variant) => {
+    const scanned = scanTypeScript(source, { sourceId, variant });
+    expect(
+      scanned.tokens
+        .filter(({ kind, raw }) => kind === "punctuation" && raw.includes(">"))
+        .map(({ raw }) => raw)
+        .filter((raw) => raw !== "=>"),
+    ).toEqual(expect.arrayContaining([">"]));
+    expect(
+      scanned.tokens.filter(
+        ({ kind, raw }) => kind === "punctuation" && /^>{2,}/u.test(raw),
+      ),
+    ).toEqual([]);
+  });
+
   it("normalizes standard tokens while retaining TypeScript kinds", () => {
     const result = scanTypeScript("const answer: number = 0x2a;", { sourceId });
     expect(result.tokens.map((token) => token.kind)).toEqual([

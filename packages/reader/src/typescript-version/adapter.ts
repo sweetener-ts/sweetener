@@ -162,20 +162,6 @@ interface JsxContainer {
   depth: number;
 }
 
-/** How many `>` a merged closing-angle token spells, or zero if it is not one. */
-function closingAngleWidth(kind: ts.SyntaxKind): number {
-  switch (kind) {
-    case ts.SyntaxKind.GreaterThanToken:
-      return 1;
-    case ts.SyntaxKind.GreaterThanGreaterThanToken:
-      return 2;
-    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-      return 3;
-    default:
-      return 0;
-  }
-}
-
 function tokenLexicalMode(kind: ts.SyntaxKind, jsxMode: JsxMode): LexicalMode {
   if (kind === ts.SyntaxKind.RegularExpressionLiteral)
     return "regular-expression";
@@ -554,13 +540,16 @@ export function scanWithSupportedTypeScript(
         jsxMode = "expression";
       } else if (kind === ts.SyntaxKind.LessThanToken) {
         typeArgumentDepth += 1;
-      } else if (typeArgumentDepth > 0 && closingAngleWidth(kind) > 0) {
-        // `Array<Set<string>>` closes two at once: outside JSX text the
-        // scanner merges the run of `>` into one token.
-        typeArgumentDepth = Math.max(
-          0,
-          typeArgumentDepth - closingAngleWidth(kind),
-        );
+      } else if (
+        typeArgumentDepth > 0 &&
+        kind === ts.SyntaxKind.GreaterThanToken
+      ) {
+        // One angle per token: TypeScript's scanner emits `GreaterThanToken`
+        // per character and leaves joining a run of them to
+        // `reScanGreaterToken`, which nothing here calls. So
+        // `Array<Set<string>>` closes its two type-argument lists with two
+        // tokens, one at a time.
+        typeArgumentDepth -= 1;
       } else if (kind === ts.SyntaxKind.GreaterThanToken) {
         const container = jsxContainers.at(-1);
         if (container !== undefined) {
@@ -598,7 +587,7 @@ export function scanWithSupportedTypeScript(
       insideTypeArguments &&
       modeForToken === "tag" &&
       kind !== ts.SyntaxKind.LessThanToken &&
-      closingAngleWidth(kind) === 0
+      kind !== ts.SyntaxKind.GreaterThanToken
     ) {
       modeForToken = "standard";
     }

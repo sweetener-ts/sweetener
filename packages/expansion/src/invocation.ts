@@ -269,6 +269,25 @@ function validateCoreInterception(
   }
 }
 
+/**
+ * The tokens by which the syntax a name stands in goes on past the name: the
+ * `;` that terminates a statement, the `,` that separates it from the next
+ * entry of a list, the `.` or `?.` that reads a member of what it denotes.
+ *
+ * None of them can be the beginning of an invocation. A rule written with one
+ * reads it -- `rule { q.all }` matches the `.` and stops beyond it -- so a
+ * rule that stopped in front of one was offered nothing of the macro's. Every
+ * other token may be a macro's: an operator, a word, a literal or a group
+ * written after a name is as readily a rule's syntax as the enclosing code's,
+ * and a rule that stopped in front of one was offered something and refused it.
+ */
+const continuesEnclosingSyntax: ReadonlySet<string> = new Set([
+  ";",
+  ",",
+  ".",
+  "?.",
+]);
+
 export function invokeMacro(
   options: InvokeMacroOptions,
 ): MacroInvocationResult {
@@ -307,6 +326,29 @@ export function invokeMacro(
    * rule wanted written differently.
    */
   let anyRuleMatched = false;
+  /**
+   * Where a rule that read the macro's name and nothing more comes to a stop:
+   * the syntax written straight after the head, in the sequence the head
+   * stands in.
+   *
+   * A rule that stopped anywhere else read syntax of the macro's own -- it
+   * went into the group written after the name, or past the first thing it
+   * accepted -- and what it was still waiting for is what to report. A rule
+   * that stopped here read nothing but the name.
+   */
+  const headIdentity = options.cursor.identity;
+  const afterHeadSyntax = options.cursor.peek(1);
+  const afterHead = options.cursor.fork();
+  afterHead.advance();
+  const afterHeadIdentity = afterHead.identity;
+  /**
+   * Whether any rule read past the macro's name. Set for a rule that offered
+   * no failure at all, since nothing then says where it stopped.
+   */
+  let anyRuleReadPastHead = false;
+  const readPastHead = (failure: MatchFailure | undefined): boolean =>
+    failure === undefined ||
+    (failure.cursor !== headIdentity && failure.cursor !== afterHeadIdentity);
 
   for (const rule of orderedRules(options.macro.rules)) {
     cancellation.throwIfCancellationRequested();
@@ -327,6 +369,7 @@ export function invokeMacro(
           ? matched.failure
           : describeFailureAs(matched.failure, rule.failureDescription);
       if (failure !== undefined) failures.push(failure);
+      if (readPastHead(failure)) anyRuleReadPastHead = true;
       attempts.push(
         Object.freeze({
           rule: rule.rule,
@@ -623,18 +666,30 @@ export function invokeMacro(
     cache: "miss",
     coreInterception: options.coreInterception,
   });
-  // A macro name with nothing written after it was offered no syntax at all,
-  // and no rule read even its head. That is not a malformed invocation: the
-  // name stands on its own, as a reference to something the emitted code does
-  // not define, and reporting it as a failed match blamed the macro for
-  // wanting syntax the author never meant to write.
+  // A macro name no rule read past was offered no syntax of the macro's own,
+  // whatever stands beside it. That is not a malformed invocation: the name
+  // stands on its own, as a reference to something the emitted code does not
+  // define, and reporting it as a failed match blamed the macro for wanting
+  // syntax the author never meant to write.
+  //
+  // What may stand beside it is what the syntax around the name goes on with.
+  // `export default query;` ends the statement, `query.length` reads a member
+  // of the name, `pair(query, 1)` writes it as one argument of someone else's
+  // list -- each is a use of the name as a name, and a rule stopped in front
+  // of that token having read nothing but the name. A rule that went into the
+  // group of `query(db, 1)`, or that stopped in front of the `neither` of
+  // `choose neither` or the `=` of `state = 1;`, was offered syntax that could
+  // have been its own, and what it was still waiting for is the better answer.
   if (
     !anyRuleMatched &&
+    !anyRuleReadPastHead &&
     invocationHead.tag === "token" &&
     (invocationHead.kind === "identifier" ||
       invocationHead.kind === "jsx-identifier" ||
       invocationHead.kind === "keyword") &&
-    options.cursor.peek(1) === undefined
+    (afterHeadSyntax === undefined ||
+      (afterHeadSyntax.tag === "token" &&
+        continuesEnclosingSyntax.has(afterHeadSyntax.raw)))
   ) {
     return Object.freeze({
       expanded: false,

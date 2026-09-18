@@ -154,7 +154,7 @@ describe("a statement macro as an unbraced substatement", () => {
     expect(messages).toEqual([]);
     expect(count(text, "for (")).toBe(1);
     expect(text).toBe(
-      "export function f(): void { outer: while (true) for (let at = 0; (at < 2); (at += 1)) console.log(1); }",
+      "export function f(): void { outer: while (true) for (let at = 0; at < 2; at += 1) console.log(1); }",
     );
   });
 

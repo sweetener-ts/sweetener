@@ -85,6 +85,15 @@ a `* as` introduces is the same position written without braces. Nothing in
 either is an invocation, so a specifier list is emitted as it was written, and
 a name no binding declares is left for TypeScript to report.
 
+A macro name that no rule read past, and that nothing but a `;`, a `,`, a `.`
+or a `?.` follows, is written as a name rather than as an invocation: `export
+default twice;`, `twice.length` and `pair(twice, 1)` each use the name the way
+the syntax around it uses a name, and are reported as a name that the emitted
+code does not define rather than as a rule wanting different syntax. Anything
+else written after the name may be a rule's -- a word, a literal, an operator,
+a group -- as may a group a rule read into, and those are reported as the
+failed match they are.
+
 An item list, a statement list, a class body and a member run are each written
 with a separator that ends every unit: `;` throughout, and `,` as well in a
 member run. A macro invocation spans the separator written after it, and that

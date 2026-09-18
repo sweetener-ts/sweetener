@@ -157,6 +157,15 @@ keeps them apart -- `const list` and `type list` are both legal, and neither
 shadows the other's macro. That is the one point where this cannot follow
 Rhombus, whose expression space hides every other space.
 
+What an import binds is read from its clause: the name of a default binding,
+the name a `* as` introduces, the local name of each specifier, and the name
+an import-equals declares, each of them optionally after a `type` modifier,
+with `import "m"` binding nothing. A contextual keyword is a name where a name
+is what stands there, so `import using from "m"` binds `using` -- reading the
+word as the declaration keyword it is everywhere else bound nothing at all.
+The declaration ends where its module specifier does, so what is written after
+it in the same run is read as what it is.
+
 Resolution MUST produce the same result regardless of insertion order.
 
 ## 7. Macro invocation scopes

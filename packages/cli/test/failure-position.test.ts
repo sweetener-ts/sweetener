@@ -172,6 +172,19 @@ describe("a macro name written on its own", () => {
     ["as what a function returns", "export function f() { return query; }"],
     ["as a spread element", "export const q = [...query];"],
     ["as an object literal shorthand", "export const q = { query };"],
+    // Nothing follows the name in any of those, so the rules were offered no
+    // syntax at all. In these something does follow, and it is still not the
+    // macro's: a terminator, the `.` of a member access, the `,` of an
+    // argument list. No rule read past the name, which is what makes the name
+    // a name.
+    ["as what a module exports by default", "export default query;"],
+    ["as the object of a member access", "export const q = query.length;"],
+    ["as the object of an optional member", "export const q = query?.length;"],
+    ["as one entry of several", "export const q = [query, 1].length;"],
+    [
+      "as an argument beside another",
+      "declare function pair(a: unknown, b: number): void;\npair(query, 1);",
+    ],
   ];
   for (const [name, source] of bare) {
     test(`${name} is reported as a name, not as a failed match`, () => {
@@ -203,6 +216,35 @@ describe("a macro name written on its own", () => {
     expect(diagnose("export const q = query(db) { limit 20 };", 4024)).toEqual(
       [],
     );
+  });
+
+  /**
+   * A rule that read into the group written after the name was offered syntax
+   * of the macro's own, however it ended. What went wrong there is what the
+   * rule was still waiting for, not that the name stands alone.
+   */
+  test("a group a rule read into is still reported as a failed match", () => {
+    const source = "export const q = query(db, 1) { from users };";
+    const reported = diagnose(source);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.message).toContain("No rule for macro query accepted");
+    expect(diagnose(source, 4024)).toEqual([]);
+  });
+
+  /**
+   * Only a terminator, a separator and a member access say that the syntax
+   * around the name goes on without it. Anything else written after a name
+   * could have been a rule's: a macro may be written `q neither` or `q = 1`
+   * as readily as `q(...)`, so a rule that stopped in front of one was
+   * offered syntax it refused rather than a name standing alone.
+   */
+  test.each([
+    ["a word", "export const q = query db;"],
+    ["an operator", "export const q = (query = db);"],
+    ["a group", "export const q = query[db];"],
+  ])("%s written after the name is still a failed match", (_, source) => {
+    expect(diagnose(source, 4024)).toEqual([]);
+    expect(diagnose(source)).toHaveLength(1);
   });
 
   test("a name that only shares the spelling is left alone", () => {

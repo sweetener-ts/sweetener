@@ -297,7 +297,7 @@ const captureRows: readonly {
   {
     name: "a union under a template's keyof",
     use: "keysOf<{ a: 1 } | { b: 2 }>",
-    printed: "(keyof({ a: 1 } | { b: 2 }))",
+    printed: "(keyof ({ a: 1 } | { b: 2 }))",
     identity: "never",
   },
   {

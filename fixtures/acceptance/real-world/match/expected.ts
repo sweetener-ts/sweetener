@@ -33,7 +33,7 @@ export function describe(event: Event): string {
       && ((matched)["delta"]).length === 2 && true && true))) {
         ;
         const first = ((matched)["delta"])[0];
-const second = ((matched)["delta"])[1];
+        const second = ((matched)["delta"])[1];
           return `scroll ${first}/${second}`;
       }
       return "unknown";

@@ -114,12 +114,8 @@ const punctuators: readonly string[] = [
   "/*",
 ];
 
+/** Whether two adjacent pieces would lex as one longer punctuator. */
 function joinsIntoOne(left: string, right: string): boolean {
-  // The reader leaves `>>`, `>=` and the rest of the `>` family as separate
-  // `>` tokens so nested type arguments close, and they are printed together
-  // however they reached each other.
-  if (left.endsWith(">") && (right.startsWith(">") || right.startsWith("=")))
-    return false;
   return punctuators.some((punctuator) => {
     for (let split = 1; split < punctuator.length; split += 1)
       if (
@@ -131,18 +127,47 @@ function joinsIntoOne(left: string, right: string): boolean {
   });
 }
 
-/** Whether `(` or `[` after this text calls or indexes it. */
-function applies(text: string): boolean {
+/**
+ * Words that stand before an operand rather than ending one.
+ *
+ * `isReservedWord` leaves the contextual keywords out so they keep working as
+ * ordinary names, which is what they are wherever a binding or a reference is
+ * expected. In front of a parenthesis that is exactly the distinction that
+ * matters: `keyof (A | B)` operates on what follows it, where `values.of(1)`
+ * calls what precedes it.
+ */
+const operandHeads: ReadonlySet<string> = new Set([
+  "as",
+  "asserts",
+  "async",
+  "infer",
+  "is",
+  "keyof",
+  "of",
+  "readonly",
+  "satisfies",
+]);
+
+/**
+ * Whether `(` or `[` after this text calls or indexes it -- that is, whether
+ * an operand ends here.
+ *
+ * A word written after `.` is a property name however it is spelled, so
+ * `values.of(1)` is a call and the `<` in `Array.of<string>()` opens type
+ * arguments.
+ */
+function applies(text: string, memberName: boolean): boolean {
   if (text === ")" || text === "]" || text === ">" || text.endsWith("`"))
     return true;
   if (!/^[\p{ID_Start}$_][\p{ID_Continue}$]*$/u.test(text)) return false;
+  if (memberName) return true;
   // `this`, `super` and `import` are called; every other reserved word, and
   // the contextual ones that head an operand, stands before one.
   return (
     text === "this" ||
     text === "super" ||
     text === "import" ||
-    !(isReservedWord(text) || ["of", "async", "as", "satisfies"].includes(text))
+    !(isReservedWord(text) || operandHeads.has(text))
   );
 }
 
@@ -157,6 +182,10 @@ interface SeamContext {
   readonly conditional: boolean;
   /** Whether the `-`, `+` or `<` just printed stands before an operand. */
   readonly prefix: boolean;
+  /** Whether the word just printed was written after `.`, and so names a member. */
+  readonly memberName: boolean;
+  /** Whether the `>` just printed closed a list of type arguments. */
+  readonly closedTypeArguments: boolean;
 }
 
 /**
@@ -169,9 +198,18 @@ interface SeamContext {
  * way code is ordinarily spaced instead.
  */
 function seamSpace(left: string, right: string, context: SeamContext): string {
+  // The reader leaves `>>`, `>=` and the rest of the `>` family as separate
+  // `>` tokens so nested type arguments close, and they are printed whole
+  // however they reached each other. A `>` that did close type arguments is
+  // no part of one: the `=` after `Array<string>` opens a default, and
+  // printed against it the scanner reads a `>=` it has to take apart again.
+  if (
+    left.endsWith(">") &&
+    !context.closedTypeArguments &&
+    (right === ">" || right.startsWith("="))
+  )
+    return "";
   if (joinsIntoOne(left, right)) return " ";
-  // The `>` family arrives split, and is printed whole.
-  if (left.endsWith(">") && (right === ">" || right.startsWith("="))) return "";
   // Inside a template literal's substitution.
   if (left.endsWith("${") || (right.startsWith("}") && right.length > 1))
     return "";
@@ -187,8 +225,12 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
   if (right === ":") return context.conditional ? " " : "";
   if ([")", "]", ",", ";", ".", "?."].includes(right)) return "";
   if (right === "}") return " ";
-  if (right === "(" || right === "[") return applies(left) ? "" : " ";
-  if ((right === "!" || right === "++" || right === "--") && applies(left))
+  if (right === "(" || right === "[")
+    return applies(left, context.memberName) ? "" : " ";
+  if (
+    (right === "!" || right === "++" || right === "--") &&
+    applies(left, context.memberName)
+  )
     return "";
   return " ";
 }
@@ -321,6 +363,27 @@ export function printExpandedFile<Trace>(
   let offset = 0;
   let lastCharacter: string | undefined;
   /**
+   * The line being written: how many line breaks precede it, the whitespace it
+   * began with, and whether anything but whitespace has landed on it yet.
+   */
+  let lineNumber = 0;
+  let lineIndent = "";
+  let lineStarted = false;
+  const trackLine = (text: string) => {
+    let tail = text;
+    if (/[\n\r]/u.test(text)) {
+      const lines = text.split(/\r\n|[\n\r]/u);
+      lineNumber += lines.length - 1;
+      lineIndent = "";
+      lineStarted = false;
+      tail = lines[lines.length - 1]!;
+    }
+    if (lineStarted) return;
+    const blank = /^[^\S\r\n]*/u.exec(tail)![0];
+    lineIndent += blank;
+    if (blank.length < tail.length) lineStarted = true;
+  };
+  /**
    * The nodes that are the whole body of an arrow. An arrow's body is parsed
    * as an expression, so it arrives here as one protected node; wrapping that
    * in parentheses would print `(value: number) => (value + 1)`, which is the
@@ -416,6 +479,7 @@ export function printExpandedFile<Trace>(
     chunks.push(text);
     offset += text.length;
     lastCharacter = text[text.length - 1];
+    trackLine(text);
     entries.push(
       Object.freeze({
         generatedStart: start,
@@ -449,8 +513,12 @@ export function printExpandedFile<Trace>(
       // needs no parentheses of its own: `map(values, (n) => n * 10)`. Only a
       // comma expression, or an expression whose precedence is unknown,
       // could run into the next element.
-      const comma = (node: Syntax | undefined) =>
-        node?.tag === "token" && node.raw === ",";
+      //
+      // A `for` header's clauses stand the same way, parted by `;` instead --
+      // the only place a semicolon separates expressions inside brackets --
+      // so `for (let at = 0; at < 2; at += 1)` needs no parentheses either.
+      const separates = (node: Syntax | undefined) =>
+        node?.tag === "token" && (node.raw === "," || node.raw === ";");
       // A control statement's body follows its header on the same line.
       const heads =
         previous === undefined ||
@@ -469,8 +537,8 @@ export function printExpandedFile<Trace>(
         child.tag === "protected" &&
         child.category === "expr" &&
         (child.form !== undefined || (child.precedence ?? 0) > 10) &&
-        (previous === undefined ? list : comma(previous)) &&
-        (next === undefined ? list : comma(next))
+        (previous === undefined ? list : separates(previous)) &&
+        (next === undefined ? list : separates(next))
       )
         boundOperands.add(child);
       pending.push(child);
@@ -487,10 +555,9 @@ export function printExpandedFile<Trace>(
   const flushOpens = () => {
     for (const open of pendingOpens) {
       emit(open.text, open.origin, "grouping");
+      trackBrackets(open.text, "");
       lastPrinted = open.text;
       previousWritten = undefined;
-      brackets.push({ bracket: "(", conditional: false });
-      prefix = false;
     }
     pendingOpens.length = 0;
   };
@@ -535,13 +602,44 @@ export function printExpandedFile<Trace>(
   const jsxRegions: boolean[] = [];
   /** Whether JSX braces just opened, before the code in them. */
   let jsxCodeOpened = false;
-  /** The brackets open around what is being printed, innermost last. */
-  const brackets: { bracket: string | undefined; conditional: boolean }[] = [
-    { bracket: undefined, conditional: false },
+  /**
+   * The brackets open around what is being printed, innermost last. Each
+   * remembers the line it opened on, so a line the printer begins inside it
+   * can be indented past the line the bracket stands on. The file itself is
+   * no bracket, and its lines are already where they belong.
+   */
+  const brackets: {
+    bracket: string | undefined;
+    conditional: boolean;
+    readonly openLine: number;
+    readonly openIndent: string;
+  }[] = [
+    { bracket: undefined, conditional: false, openLine: -1, openIndent: "" },
   ];
+  /**
+   * The indentation a line the printer begins itself takes before this text:
+   * the one this block's own lines stand at, or a step past the line its
+   * bracket opened on until a line has been written inside it. A bracket's
+   * own closer stands back out at the line the bracket opened on.
+   */
+  const brokenLineIndent = (text: string): string => {
+    const innermost = brackets.at(-1)!;
+    if (text === ")" || text === "]" || text.startsWith("}"))
+      return innermost.openIndent;
+    if (lineNumber > innermost.openLine) return lineIndent;
+    return (
+      innermost.openIndent + (innermost.openIndent.includes("\t") ? "\t" : "  ")
+    );
+  };
   /** Whether the `-`, `+` or `<` last printed stands before an operand. */
   let prefix = false;
+  /** Whether the word last printed was written after `.`, and so names a member. */
+  let memberName = false;
+  /** Whether the `>` last printed closed a list of type arguments. */
+  let closedTypeArguments = false;
   const trackBrackets = (text: string, gap: string) => {
+    const before = lastPrinted;
+    const wasMemberName = memberName;
     const closes =
       text === ")" || text === "]" || text === "}" || text.startsWith("}");
     // A `<` taken for type arguments may never have closed, so a closing
@@ -551,19 +649,24 @@ export function printExpandedFile<Trace>(
         brackets.pop();
       if (brackets.length > 1) brackets.pop();
     }
-    if (text === ">" && brackets.at(-1)!.bracket === "<") brackets.pop();
-    const before = lastPrinted;
+    closedTypeArguments = text === ">" && brackets.at(-1)!.bracket === "<";
+    if (closedTypeArguments) brackets.pop();
+    // A word written after `.` is a property name, whatever it is spelled.
+    memberName = before === "." || before === "?." || before === "#";
     // `<` written against a name opens type arguments, `useState<number>`,
     // and one where an operand begins opens type parameters, `<T>(value: T)`.
     const typeArguments =
       text === "<" &&
       (before === undefined ||
-        (gap === "" && applies(before)) ||
+        (gap === "" && applies(before, wasMemberName)) ||
         ["(", ",", "=", "=>", ":", "?", "[", "{"].includes(before));
     prefix =
       ((text === "-" || text === "+") &&
         (before === undefined ||
-          !(applies(before) || /[\p{ID_Continue}"'`]$/u.test(before)))) ||
+          !(
+            applies(before, wasMemberName) ||
+            /[\p{ID_Continue}"'`]$/u.test(before)
+          ))) ||
       typeArguments;
     if (
       text === "(" ||
@@ -575,6 +678,8 @@ export function printExpandedFile<Trace>(
       brackets.push({
         bracket: text.endsWith("${") ? "{" : text,
         conditional: false,
+        openLine: lineNumber,
+        openIndent: lineIndent,
       });
     const innermost = brackets.at(-1)!;
     if (text === "?") innermost.conditional = true;
@@ -625,8 +730,8 @@ export function printExpandedFile<Trace>(
         text === "<" &&
         trivia === "" &&
         lastPrinted !== undefined &&
-        applies(lastPrinted));
-    const leading = keep
+        applies(lastPrinted, memberName));
+    const spacing = keep
       ? trivia
       : startsStatement
         ? "\n"
@@ -634,9 +739,19 @@ export function printExpandedFile<Trace>(
           jsxCodeOpened
           ? ""
           : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
-              ...brackets.at(-1)!,
+              bracket: brackets.at(-1)!.bracket,
+              conditional: brackets.at(-1)!.conditional,
               prefix,
+              memberName,
+              closedTypeArguments,
             });
+    // A line the printer begins itself carries no indentation of its own, and
+    // a unit left at column zero reads as though the block had ended. Layout
+    // the author wrote already stands where they put it.
+    const leading =
+      !keep && spacing === "\n"
+        ? `${spacing}${brokenLineIndent(text)}`
+        : spacing;
     jsxCodeOpened = false;
     // Trivia gets a region of its own so the token's region is exactly the
     // token. A region carries the token's whole source span, and a position

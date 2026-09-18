@@ -122,3 +122,102 @@ export const total = sum(1 * 2, 3);`,
     ).toContain("((1 * 2) + 3)");
   });
 });
+
+/**
+ * Where an expansion puts two pieces side by side, the gap between them is the
+ * one a person would have written: enough to keep the scanner reading each
+ * piece as itself, and no more.
+ */
+describe("the gap the printer decides", () => {
+  const boxed = `export syntax boxed:type {
+           rule { boxed<$element:type> } => { Array<$element> }
+         }`;
+
+  test("parts a closing `>` from the `=` of a type parameter default", () => {
+    // `>` and `=` reach the printer apart because `>=` is one operator and a
+    // `>` may close type arguments. Printing them together hands the scanner
+    // `>=` to take apart again, which is a hazard rather than the text a
+    // person would write.
+    expect(
+      expand(
+        boxed,
+        `import { boxed } from "./macros.sts" for syntax;
+export type Defaulted<T extends boxed<string> = boxed<string>> = T;`,
+      ),
+    ).toContain(
+      "export type Defaulted<T extends Array<string> = Array<string>>",
+    );
+  });
+
+  test("holds type arguments against the `<` that opened them", () => {
+    // `of` after `.` is a property name, so `Array.of<` opens type arguments
+    // and nothing belongs between the `<` and the type it takes.
+    expect(
+      expand(
+        boxed,
+        `import { boxed } from "./macros.sts" for syntax;
+export const called = Array.of<boxed<string>>();`,
+      ),
+    ).toContain("Array.of<Array<string>>()");
+  });
+
+  test("keeps a word operator apart from the parenthesis after it", () => {
+    // `keyof({ a: 1 } | { b: 2 })` reads as a call to `keyof`.
+    expect(
+      expand(
+        `export syntax keys:type {
+           rule { keys<$element:type> } => { keyof $element }
+         }`,
+        `import { keys } from "./macros.sts" for syntax;
+export type K = keys<{ a: 1 } | { b: 2 }>;`,
+      ),
+    ).toContain("keyof ({ a: 1 } | { b: 2 })");
+  });
+
+  test("leaves a `for` header's clauses unparenthesized", () => {
+    // A `for` clause stands between `;` and `;`, which nothing can
+    // re-associate across, so its expression needs no parentheses of its own.
+    expect(
+      expand(
+        `export syntax counted:stmt {
+           rule { counted($body:expr) } => {
+             for (let at = 0; at < 2; at += 1) { $body; }
+           }
+         }`,
+        `import { counted } from "./macros.sts" for syntax;
+counted(1 + 1);`,
+      ),
+    ).toContain("for (let at = 0; at < 2; at += 1)");
+  });
+
+  test("indents a line it begins itself", () => {
+    // The expansion ends a statement, so what the author wrote after it on the
+    // same line starts a line of its own -- at the indentation the block's
+    // lines stand at, not at column zero.
+    expect(
+      expand(
+        `export syntax fieldy:classElement {
+           rule { fieldy } => { value = 0; }
+         }`,
+        `import { fieldy } from "./macros.sts" for syntax;
+class C { fieldy; other = 1; }`,
+      ),
+    ).toContain("class C { value = 0;\n  other = 1; }");
+  });
+
+  test("indents it to where the block's own lines stand", () => {
+    expect(
+      expand(
+        `export syntax started:stmt {
+           rule { started } => { first(); }
+         }`,
+        `import { started } from "./macros.sts" for syntax;
+declare function first(): void;
+function outer() {
+    started; second();
+}
+declare function second(): void;`,
+      ),
+    ).toContain("    first();\n    second();");
+  });
+});

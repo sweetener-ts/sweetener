@@ -597,9 +597,105 @@ describe("an ordinary binding shadows a macro", () => {
       'import { twice } from "./other.js"; export const a = twice;',
       'import{twice}from"./other.js";exportconsta=twice;',
     ],
+    [
+      "a default import",
+      'import twice from "./other.js"; export const a = twice;',
+      'importtwicefrom"./other.js";exportconsta=twice;',
+    ],
+    [
+      "a renamed import specifier",
+      'import { other as twice } from "./other.js"; export const a = twice;',
+      'import{otherastwice}from"./other.js";exportconsta=twice;',
+    ],
+    [
+      "a namespace import",
+      'import * as twice from "./other.js"; export const a = twice;',
+      'import*astwicefrom"./other.js";exportconsta=twice;',
+    ],
+    [
+      "a default import written beside a specifier list",
+      'import twice, { other } from "./other.js"; export const a = twice;',
+      'importtwice,{other}from"./other.js";exportconsta=twice;',
+    ],
+    [
+      "a `using` declaration",
+      "export function f() { using twice = open(); return twice; }",
+      "exportfunctionf(){usingtwice=open();returntwice;}",
+    ],
+    [
+      "an `await using` declaration",
+      "export async function f() { await using twice = open(); return twice; }",
+      "exportasyncfunctionf(){awaitusingtwice=open();returntwice;}",
+    ],
   ])("is shadowed by %s", (_, source, expected) => {
     const expand = harness(definitions);
     expect(expand(source, "item")).toBe(expected);
+  });
+
+  /**
+   * An import declaration binds the local names its clause writes, and the
+   * clause is read as a clause: which names those are is a question about the
+   * shape of the declaration, not about a flag that stays on once an `import`
+   * has been seen.
+   *
+   * `using` names a declaration everywhere else. Read as one inside a clause,
+   * `import using from "./other.js"` bound nothing at all -- it took `from
+   * "./other.js"` for the binders of a `using` declaration -- and a macro
+   * spelled `using` went on expanding where the file had imported its own.
+   */
+  describe("an import declaration is read as a clause", () => {
+    const withUsing = `${definitions}
+      export syntax using:expr { rule { using($v:expr) } => { [$v, $v] } }`;
+
+    test.each([
+      [
+        "a default import spelled `using`",
+        'import using from "./other.js"; export const a = using(1);',
+        'importusingfrom"./other.js";exportconsta=using(1);',
+      ],
+      [
+        "a type-only default import spelled `using`",
+        'import type using from "./other.js"; export const a = using(1);',
+        'importtypeusingfrom"./other.js";exportconsta=using(1);',
+      ],
+      [
+        "a `using` written beside a specifier list",
+        'import using, { other } from "./other.js"; export const a = using(1);',
+        'importusing,{other}from"./other.js";exportconsta=using(1);',
+      ],
+      [
+        "a `using` an import-equals binds",
+        'import using = require("./other.js"); export const a = using(1);',
+        'importusing=require("./other.js");exportconsta=using(1);',
+      ],
+    ])("binds %s", (_, source, expected) => {
+      expect(harness(withUsing)(source, "item")).toBe(expected);
+    });
+
+    test.each([
+      [
+        "an import of another name leaves a macro dispatching",
+        'import using from "./other.js"; export const a = twice(1);',
+        'importusingfrom"./other.js";exportconsta=[1,1];',
+      ],
+      [
+        "a const declared after an import still binds",
+        'import other from "./other.js"; const twice = 2; export const a = twice;',
+        'importotherfrom"./other.js";consttwice=2;exportconsta=twice;',
+      ],
+      [
+        "a function declared after an import still binds",
+        'import other from "./other.js"; function twice() { return 1; } export const a = twice;',
+        'importotherfrom"./other.js";functiontwice(){return1;}exportconsta=twice;',
+      ],
+      [
+        "a side-effect import binds nothing",
+        'import "./other.js"; export const a = twice(1);',
+        'import"./other.js";exportconsta=[1,1];',
+      ],
+    ])("%s", (_, source, expected) => {
+      expect(harness(withUsing)(source, "item")).toBe(expected);
+    });
   });
 
   /** A parameter belongs to the region its function opens, not the one around it. */

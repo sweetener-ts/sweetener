@@ -18,6 +18,7 @@ import {
   createToken,
   createTrivia,
   spanEnvelope,
+  type GroupSyntax,
   type ProtectedSyntax,
   type Syntax,
   type SyntaxCategory,
@@ -1005,6 +1006,130 @@ export function expandMacroSyntax(
       values.add(spelling);
       types.add(spelling);
     };
+    /** The spelling of a node, when it is a token, for reading a clause. */
+    const spelling = (node: Syntax | undefined): string | undefined =>
+      node?.tag === "token" ? node.raw : undefined;
+
+    /**
+     * The local name a clause writes here, when a name is what stands here.
+     *
+     * A contextual keyword is a name: `using`, `type`, `from` and `as` are all
+     * legal local names, and the scanner reads each of them as a keyword
+     * rather than an identifier. Which position they stand in is what says
+     * they are names, and the clause reader below answers that.
+     */
+    const localName = (node: Syntax | undefined): string | undefined =>
+      node?.tag === "token" &&
+      (node.kind === "identifier" || node.kind === "keyword")
+        ? node.raw
+        : undefined;
+
+    /** `import { a, b as c }` binds the local name of each specifier. */
+    const bindSpecifiers = (list: GroupSyntax): void => {
+      for (const segment of bindingSegments(list.children)) {
+        const local = localName(segment.at(-1));
+        if (local !== undefined) importName(local);
+      }
+    };
+
+    /**
+     * Reads the import declaration written at `at`, binds the local names its
+     * clause writes, and answers where the declaration ends -- the index of
+     * its last node, for the walk to go on past.
+     *
+     * The clause is read as a clause. Answered instead by a flag that stayed
+     * true once an `import` had been seen, the question "am I inside an
+     * import" was still being answered with yes for everything written after
+     * it, and `using` -- a declaration keyword everywhere else -- was read as
+     * one where it names a default import, binding nothing and taking `from
+     * "m"` for its binders.
+     *
+     * A clause is `name`, `* as name`, `{ a, b as c }`, or a name written
+     * before either of the other two, each optionally after a `type` modifier;
+     * `import "m"` writes none. What follows is `from "m"`, or the `=` of an
+     * import-equals. Answers undefined where the `import` opens no declaration
+     * at all: `import("m")` and `import.meta` are expressions.
+     */
+    const readImportDeclaration = (
+      nodes: readonly Syntax[],
+      at: number,
+    ): number | undefined => {
+      let index = at + 1;
+      const head = nodes[index];
+      if (head === undefined) return undefined;
+      if (head.tag === "group" && head.delimiter === "parenthesis")
+        return undefined;
+      if (spelling(head) === ".") return undefined;
+      // `import type name from "m"` writes its modifier where the local name
+      // otherwise stands. The word is that name itself where what follows it
+      // cannot follow a modifier: `import type from "m"`, `import type =
+      // require("m")`, `import type, { a } from "m"`.
+      const afterType = spelling(nodes[index + 1]);
+      if (
+        spelling(head) === "type" &&
+        afterType !== "from" &&
+        afterType !== "=" &&
+        afterType !== ","
+      )
+        index += 1;
+      /** Binds `* as name`, and answers where it ends. */
+      const readNamespaceImport = (from: number): number => {
+        if (spelling(nodes[from + 1]) !== "as") return from + 1;
+        const alias = localName(nodes[from + 2]);
+        if (alias !== undefined) importName(alias);
+        return from + 3;
+      };
+      const clause = nodes[index];
+      const binding = localName(clause);
+      if (clause?.tag === "group" && clause.delimiter === "brace") {
+        bindSpecifiers(clause);
+        index += 1;
+      } else if (spelling(clause) === "*") {
+        index = readNamespaceImport(index);
+      } else if (binding !== undefined) {
+        // A default binding, which a specifier list or a namespace import may
+        // be written beside.
+        importName(binding);
+        index += 1;
+        if (spelling(nodes[index]) === ",") {
+          const second = nodes[index + 1];
+          if (second?.tag === "group" && second.delimiter === "brace") {
+            bindSpecifiers(second);
+            index += 2;
+          } else if (spelling(second) === "*") {
+            index = readNamespaceImport(index + 1);
+          }
+        }
+      }
+      // `from "m"`, and the attributes a module may be read with.
+      if (spelling(nodes[index]) === "from") index += 2;
+      else if (spelling(nodes[index]) === "=") {
+        // `import name = require("m")` reads a module, `import name = A.B`
+        // names one this module already has. Either ends where that name does,
+        // which is read rather than scanned to a terminator: a run of syntax
+        // need not write one, and scanning swallowed whatever came next.
+        index += 1;
+        if (localName(nodes[index]) !== undefined) index += 1;
+        const argument = nodes[index];
+        if (argument?.tag === "group" && argument.delimiter === "parenthesis")
+          index += 1;
+        else
+          while (
+            spelling(nodes[index]) === "." &&
+            localName(nodes[index + 1]) !== undefined
+          )
+            index += 2;
+      }
+      const attributes = spelling(nodes[index]);
+      if (
+        (attributes === "with" || attributes === "assert") &&
+        nodes[index + 1]?.tag === "group"
+      )
+        index += 2;
+      if (spelling(nodes[index]) === ";") index += 1;
+      return index - 1;
+    };
+
     /**
      * A statement list's entries arrive protected, so the declarations in them
      * are one level down. A brace is never entered: what it binds belongs to
@@ -1012,7 +1137,6 @@ export function expandMacroSyntax(
      */
     const collect = (
       nodes: readonly Syntax[],
-      inImport: boolean,
       // True once a statement or item node has been entered. What a
       // declaration binds belongs to the region around it, but what its
       // parameters and loop head bind belongs to the region it opens, and that
@@ -1023,7 +1147,7 @@ export function expandMacroSyntax(
       for (let at = 0; at < nodes.length; at += 1) {
         const node = nodes[at]!;
         if (node.tag === "protected") {
-          collect(node.children, inImport, true);
+          collect(node.children, true);
           continue;
         }
         if (node.tag === "group") {
@@ -1043,15 +1167,6 @@ export function expandMacroSyntax(
                 (nodes[at - 2] as TokenSyntax).raw === "#"))
           )
             continue;
-          if (inImport && node.delimiter === "brace") {
-            // `import { a, b as c }` binds the local name of each specifier.
-            for (const segment of bindingSegments(node.children)) {
-              const local = segment.at(-1);
-              if (local?.tag === "token" && local.kind === "identifier")
-                importName(local.raw);
-            }
-            continue;
-          }
           if (node.delimiter !== "parenthesis") continue;
           if (bindsParameters(node, nodes.slice(at + 1), nodes.slice(0, at)))
             // A parameter's binder stands after the modifiers of a parameter
@@ -1064,10 +1179,17 @@ export function expandMacroSyntax(
               ),
               values,
             );
-          else collect(node.children, false, nested);
+          else collect(node.children, nested);
           continue;
         }
         if (node.tag !== "token") continue;
+        // An import declaration is read as a whole, before `using` is read as
+        // the declaration keyword it is everywhere else.
+        if (node.raw === "import") {
+          const end = readImportDeclaration(nodes, at);
+          if (end !== undefined) at = end;
+          continue;
+        }
         // `# let (name = value) { body }` names the variable of a `#let`, which
         // the expansion declares itself where the body needs one.
         const afterHash =
@@ -1075,40 +1197,6 @@ export function expandMacroSyntax(
           (nodes[at - 1] as TokenSyntax).raw === "#";
         if (valueDeclarationKeywords.has(node.raw) && !afterHash) {
           addBinders(bindingSegments(nodes.slice(at + 1)), values);
-          continue;
-        }
-        // An import clause is read by the clause reader below. The `type` of
-        // `import type name from "m"` is a modifier of the clause, and reading
-        // it as the `type` of an alias bound `name` in the type namespace
-        // alone -- which is how the clause came to shadow a macro at all, and
-        // why it shadowed only a type one.
-        if (inImport) {
-          // `import name from`, `import name, { ... } from` and
-          // `import name = require(...)` all bind the name written straight
-          // after the keyword, while `import * as name` binds the one after
-          // `as`. `import type ...` writes its modifier where that name
-          // otherwise stands, and the clause's own binding is the one after
-          // it. The word is the local name itself where what follows it
-          // cannot follow a modifier: `import type from "m"`,
-          // `import type = require("m")`, `import type, { a } from "m"`.
-          const previous = nodes[at - 1];
-          const first = nodes[0];
-          const second = nodes[1];
-          const modifier =
-            first?.tag === "token" &&
-            first.raw === "type" &&
-            !(
-              second?.tag === "token" &&
-              (second.raw === "from" ||
-                second.raw === "=" ||
-                second.raw === ",")
-            );
-          if (
-            node.kind === "identifier" &&
-            (at === (modifier ? 1 : 0) ||
-              (previous?.tag === "token" && previous.raw === "as"))
-          )
-            importName(node.raw);
           continue;
         }
         const named = namedDeclarations.get(node.raw);
@@ -1120,10 +1208,6 @@ export function expandMacroSyntax(
           }
           continue;
         }
-        if (node.raw === "import") {
-          collect(nodes.slice(at + 1), true, nested);
-          return;
-        }
         // An arrow's single parameter is written without parentheses.
         const following = nodes[at + 1];
         if (
@@ -1134,7 +1218,7 @@ export function expandMacroSyntax(
           values.add(node.raw);
       }
     };
-    collect(sequence, false, false);
+    collect(sequence, false);
     return Object.freeze({ values, types });
   };
 
