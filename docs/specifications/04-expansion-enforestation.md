@@ -100,10 +100,21 @@ Expansion therefore carries the sentence to the side that resolves names, which
 writes it in place of its own report at the same position, and drops it where
 the name resolves.
 
+Two further sentences are carried the same way, because each of them claims
+that something the emitted program holds is a name nothing defines. A macro is
+visible only to what follows its definition, so a name written above it is not
+that macro -- and `export function f() { return Event; }` written above an
+expression macro spelled `Event` reads the DOM global, which is what the author
+wrote. A macro name no rule read past is a use of the name as a name -- and
+`export const held = JSON;` in a module that imports an expression macro
+spelled `JSON` reads the library one. Both are written where TypeScript reports
+the name is one it cannot find, or a member it cannot type, at the position the
+name was written, and dropped where TypeScript resolves it.
+
 A macro name that no rule read past, and that nothing but a `;`, a `,`, a `.`
 or a `?.` follows, is written as a name rather than as an invocation: `export
 default twice;`, `twice.length` and `pair(twice, 1)` each use the name the way
-the syntax around it uses a name, and are reported as a name that the emitted
+the syntax around it uses a name, and are answered as a name that the emitted
 code does not define rather than as a rule wanting different syntax. Anything
 else written after the name may be a rule's -- a word, a literal, an operator,
 a group -- as may a group a rule read into, and those are reported as the

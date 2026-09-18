@@ -215,10 +215,45 @@ describe("project commands", () => {
     expect(generated).toContain("after = 42");
     expect(generated).toContain("beforeOperator = 1 %% 2");
     expect(generated).toMatch(/afterOperator\s*=\s*\(?\s*1\)?\s*\+\s*2/u);
-    // The use above the definition is reported by expansion, which knows the
-    // macro is defined below. Left to TypeScript it is 2552, a missing name,
-    // which says nothing about the definition underneath it.
-    expect(result.diagnostics.map(({ code }) => code)).toContain(4017);
+    // The operator left standing is expansion's own to report: it knows what
+    // it could not read. The name left standing is not, and this project never
+    // reaches TypeScript to ask -- the operator refused it first.
+    expect(result.diagnostics.map(({ code }) => code)).toEqual([4021]);
+  });
+
+  /**
+   * The use above the definition is spoken by expansion, which knows the macro
+   * is defined below -- but only where TypeScript says the name is missing.
+   * Whether anything defines it is TypeScript's to answer, and a macro spelled
+   * like a global leaves that global standing above its definition. Left to
+   * TypeScript alone it is 2304, which says nothing about the definition
+   * underneath.
+   */
+  test("names the macro defined below a use TypeScript cannot resolve", () => {
+    const project = fixture(`
+      export const before = later!;
+      syntax later:expr { rule { later! } => { 42 } }
+      export const after = later!;
+    `);
+
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: project.config,
+      writeThrough: false,
+    });
+
+    expect(result.virtualFiles[0]?.generated.text).toContain("before = later!");
+    expect(
+      result.diagnostics.map(({ code, messageText }) => [
+        code,
+        String(messageText),
+      ]),
+    ).toEqual([
+      [
+        4017,
+        "Macro later is defined below this point, and a macro is visible only to what follows its definition. Move the definition above this use, or into a module imported for syntax.",
+      ],
+    ]);
   });
 
   test("recursively expands every template substitution without rewriting literal segments", () => {

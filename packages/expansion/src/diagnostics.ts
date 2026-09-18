@@ -112,7 +112,7 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "A macro is visible to what follows its definition, the way a `const` is. A name used above its definition is therefore not a macro there, and the invocation would be emitted as a call to a name the output does not define.",
+      "A macro is visible to what follows its definition, the way a `const` is. A name used above its definition is therefore not a macro there, and the invocation would be emitted as a call to a name the output does not define. Written where TypeScript reports the name is one it cannot find, or a member it cannot type, and nowhere else: what the output defines is TypeScript's to answer, since `lib.d.ts`, an ambient declaration and a `declare global` all declare names expansion cannot see, and a member list names members of its own. A macro spelled like one of those leaves an ordinary name standing above its definition, and saying it was meant as an invocation refused valid TypeScript.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} is defined below this point, and a macro is visible only to what follows its definition. Move the definition above this use, or into a module imported for syntax.`,
   },
@@ -192,7 +192,7 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "A macro name stands for the rules that expand where it is written, not for anything the emitted code defines. Written on its own, with nothing after it for any rule to match, it is a reference to a name that its compile-time import does not leave behind -- which is what is wrong, rather than that the closest rule wanted different syntax there.",
+      "A macro name stands for the rules that expand where it is written, not for anything the emitted code defines. Written on its own, with nothing after it for any rule to match, it is a reference to a name that its compile-time import does not leave behind -- which is what is wrong, rather than that the closest rule wanted different syntax there. Written where TypeScript reports the name is one it cannot find, and nowhere else: what the emitted code defines is TypeScript's to answer, since `lib.d.ts`, an ambient declaration and a `declare global` all declare names expansion cannot see. A macro spelled like one of those leaves an ordinary global standing where the name was written, and saying nothing defines it refused valid TypeScript.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} is written here as a name on its own, where ${article(String(arguments_[1] ?? "node"))} ${String(arguments_[1] ?? "node")} is read. A macro is a compile-time name, so nothing defines ${String(arguments_[0] ?? "unknown")} in the emitted code. Write an invocation its rules accept.`,
   },

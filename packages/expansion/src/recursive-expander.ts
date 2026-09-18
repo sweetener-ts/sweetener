@@ -3782,15 +3782,21 @@ export function expandMacroSyntax(
       }
       /**
        * A macro is visible to what follows its definition, the way a `const`
-       * is, so a name used above its definition is not a macro there. It is
-       * reported here: left alone, the invocation is emitted as a call to a
-       * name the output does not define, and the only report would come from
-       * TypeScript, which says the name is missing and nothing about the macro
-       * below it.
+       * is, so a name used above its definition is not a macro there. Left
+       * alone, the invocation is emitted as a call to a name the output does
+       * not define, and TypeScript says the name is missing and nothing about
+       * the macro below it -- so the sentence that names the definition is
+       * written in place of that one.
        *
-       * Not reported where the name is deliberately something else: shadowed
-       * by an ordinary binding, naming a property or a member, or spelling a
-       * core form whose interception was never authorized.
+       * Held rather than reported, for the same reason a mismatched space is.
+       * Whether the output defines the name is TypeScript's to answer, and a
+       * macro spelled `Event` or `JSON` leaves a global standing above its
+       * definition. So this goes to the side that resolves names, to be
+       * written only where that side says the name is missing.
+       *
+       * Not said at all where the name is deliberately something else:
+       * shadowed by an ordinary binding, naming a property or a member, or
+       * spelling a core form whose interception was never authorized.
        */
       if (
         resolvedMacro === undefined &&
@@ -3807,7 +3813,7 @@ export function expandMacroSyntax(
       ) {
         const source = options.origins.selectPrimarySource(node.origin);
         if (source !== undefined)
-          diagnostics.push(
+          unresolvedNameExplanations.push(
             expansionDiagnosticRegistry.create(macroNotYetVisibleCode, {
               primaryOrigin: {
                 sourceId: source.sourceId,
@@ -4329,7 +4335,13 @@ export function expandMacroSyntax(
         // Prepending retains invocation/preorder order: parent, then descendants.
         traces.unshift(result.trace);
         if (!result.expanded) {
-          diagnostics.push(result.diagnostic);
+          // A failure that claims nothing defines the name is held for the
+          // side that resolves names, the way a mismatched space is; one about
+          // the syntax written here is expansion's own to report.
+          (result.explainsUnresolvedName
+            ? unresolvedNameExplanations
+            : diagnostics
+          ).push(result.diagnostic);
           output.push(node);
           if (resolvedHeadIndex > index)
             suppressedHeadIndex = resolvedHeadIndex;

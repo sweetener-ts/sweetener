@@ -199,6 +199,21 @@ export interface MacroInvocationFailure {
   readonly expanded: false;
   readonly cursor: SyntaxCursor;
   readonly diagnostic: Diagnostic;
+  /**
+   * Whether `diagnostic` says that nothing defines the name written here,
+   * rather than that the syntax written here is not an invocation this macro
+   * accepts.
+   *
+   * The second is expansion's own to settle: it read the rules and it read
+   * what stands beside the name. The first is not. Expansion sees the macros
+   * in scope and the bindings a module writes, and never `lib.d.ts`, an
+   * ambient declaration or a `declare global`, so a name it cannot account for
+   * is not thereby a name nothing defines. A sentence of that kind is carried
+   * to the side that resolves names and written only where that side reports
+   * it cannot resolve the name -- which is why the caller must be told which
+   * kind it is holding rather than reporting every failure alike.
+   */
+  readonly explainsUnresolvedName: boolean;
   readonly trace: MacroTraceEvent;
 }
 
@@ -552,6 +567,7 @@ export function invokeMacro(
         return Object.freeze({
           expanded: false as const,
           cursor: options.cursor.fork(),
+          explainsUnresolvedName: false,
           diagnostic: expansionDiagnosticRegistry.create(
             uncategorizedExpansionCode,
             {
@@ -686,6 +702,13 @@ export function invokeMacro(
   // group of `query(db, 1)`, or that stopped in front of the `neither` of
   // `choose neither` or the `=` of `state = 1;`, was offered syntax that could
   // have been its own, and what it was still waiting for is the better answer.
+  //
+  // What the sentence then claims -- that nothing defines the name -- is not
+  // expansion's to claim. The macro's compile-time import leaves nothing
+  // behind, but `lib.d.ts`, an ambient declaration and a `declare global` each
+  // define names expansion never sees, and a macro spelled `Event` or `JSON`
+  // is an ordinary global there. So it is held for TypeScript rather than
+  // reported, and written only where TypeScript says the name is missing.
   if (
     !anyRuleMatched &&
     !anyRuleReadPastHead &&
@@ -700,6 +723,7 @@ export function invokeMacro(
     return Object.freeze({
       expanded: false,
       cursor: options.cursor.fork(),
+      explainsUnresolvedName: true,
       diagnostic: expansionDiagnosticRegistry.create(bareMacroNameCode, {
         primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
         messageArguments: [options.macro.binding.spelling, options.category],
@@ -710,6 +734,7 @@ export function invokeMacro(
   return Object.freeze({
     expanded: false,
     cursor: options.cursor.fork(),
+    explainsUnresolvedName: false,
     // Reported where the closest rule stopped, which is where the mistake is:
     // a `=` written for `==` deep in a clause, reported at the macro's name,
     // would say only that something in the whole invocation is wrong.

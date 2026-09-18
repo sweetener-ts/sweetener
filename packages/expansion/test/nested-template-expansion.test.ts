@@ -1057,15 +1057,22 @@ describe("a macro generated inside a block", () => {
 
 /**
  * A macro is visible to what follows its definition, the way a `const` is, so a
- * name used above its definition is not a macro there. Unreported, the
- * invocation is emitted as a call to a name the output does not define, and
- * only TypeScript reports it -- as a missing name, saying nothing about the
+ * name used above its definition is not a macro there. Unsaid, the invocation
+ * is emitted as a call to a name the output does not define, and only
+ * TypeScript reports it -- as a missing name, saying nothing about the
  * definition below.
+ *
+ * Whether the output defines it, though, is TypeScript's to answer and not
+ * expansion's: a macro spelled `Event` leaves a DOM global standing above its
+ * definition. So the sentence is held for the side that resolves names, to be
+ * written where that side says the name is missing.
+ * `packages/cli/test/macro-name-resolution.test.ts` is where both directions
+ * are checked, against a whole program.
  */
 describe("a macro used above its definition", () => {
   const definitions = "export syntax noop:expr { rule { noop } => { 0 } }";
 
-  test("is reported against the use", () => {
+  test("is held against the use, for TypeScript to speak", () => {
     const origins = new OriginStore();
     const scopes = new ScopeStore();
     const definitionScopes = scopes.singleton(
@@ -1110,8 +1117,13 @@ describe("a macro used above its definition", () => {
       originStore: origins,
     });
     const result = session.expand(withoutEof(use.root.children), "item");
-    expect(result.diagnostics.map(({ code }) => code)).toEqual(["SWR4017"]);
-    expect(result.diagnostics[0]?.messageArguments).toEqual(["noop"]);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.unresolvedNameExplanations.map(({ code }) => code)).toEqual([
+      "SWR4017",
+    ]);
+    expect(result.unresolvedNameExplanations[0]?.messageArguments).toEqual([
+      "noop",
+    ]);
   });
 
   test("is not reported where an ordinary binding means the name instead", () => {

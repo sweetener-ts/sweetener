@@ -212,6 +212,14 @@ export function createExpansionFrontendSession(
   const operatorDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
     [];
   /**
+   * What an operator invocation can say about a name it left standing, held
+   * for the side that resolves names. Separate from the operator list for the
+   * same reason the expander keeps its own two apart: which names a program
+   * declares is TypeScript's to answer.
+   */
+  const operatorNameExplanations: ExpandMacroSyntaxResult["diagnostics"][number][] =
+    [];
+  /**
    * Reported when recovery passed syntax through that still invokes a macro.
    * Separate from the operator list only so that resetting one per expansion
    * does not depend on the other.
@@ -517,7 +525,10 @@ export function createExpansionFrontendSession(
         });
         operatorTraces.push(result.trace);
         if (!result.expanded) {
-          operatorDiagnostics.push(result.diagnostic);
+          (result.explainsUnresolvedName
+            ? operatorNameExplanations
+            : operatorDiagnostics
+          ).push(result.diagnostic);
           const sources = invocation
             .map(({ origin }) => options.origins.selectPrimarySource(origin))
             .filter((source) => source !== undefined);
@@ -1352,6 +1363,7 @@ export function createExpansionFrontendSession(
       offeredOperatorTokens.clear();
       refusedOperatorSpans.length = 0;
       operatorDiagnostics.length = 0;
+      operatorNameExplanations.length = 0;
       recoveryDiagnostics.length = 0;
       recoveredMacroNames.clear();
       recoveredItems.length = 0;
@@ -1568,15 +1580,21 @@ export function createExpansionFrontendSession(
           };
         },
       });
+      // Everything held for TypeScript to resolve, from the expander's walk
+      // and from the operators read alongside it.
+      const explanations = [
+        ...operatorNameExplanations,
+        ...result.unresolvedNameExplanations,
+      ];
       // A name held for TypeScript to resolve counts as spoken about here.
-      // These three say what nothing else said, and a position a mismatched
-      // space explains is a position expansion has an answer for; blaming it
-      // for a macro left standing would say the wrong thing about it, and
+      // The three reports below say what nothing else said, and a position an
+      // explanation covers is a position expansion has an answer for; blaming
+      // it for a macro left standing would say the wrong thing about it, and
       // would say it whether or not the name resolves.
       const spokenFor = [
         ...operatorDiagnostics,
         ...result.diagnostics,
-        ...result.unresolvedNameExplanations,
+        ...explanations,
       ];
       reportSurvivingMacros(result.syntax, spokenFor, result.namedOrigins);
       reportUnexpandedOperators(
@@ -1619,6 +1637,7 @@ export function createExpansionFrontendSession(
         ...result,
         traces: Object.freeze([...operatorTraces, ...result.traces]),
         diagnostics: Object.freeze(uniqueDiagnostics),
+        unresolvedNameExplanations: Object.freeze(explanations),
       });
     },
   } satisfies ExpansionFrontendSession);

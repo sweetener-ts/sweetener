@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
@@ -67,7 +68,8 @@ export syntax query:expr {
 }
 `;
 
-function diagnose(source: string, code = 4001) {
+/** Expand a project holding `source`, and read one of the two channels. */
+function expandOnce(source: string) {
   const directory = mkdtempSync(join(tmpdir(), "sweet-failure-position-"));
   const text = `import { query } from "./macros.sts" for syntax;\ndeclare const db: unknown;\ndeclare const users: unknown;\ndeclare const minAge: number;\n${source}\n`;
   writeFileSync(join(directory, "macros.sts"), macros);
@@ -83,12 +85,33 @@ function diagnose(source: string, code = 4001) {
   const expanded = createDefaultProjectExpansionProvider().expandProject(
     loadSweetProject(join(directory, "tsconfig.json")),
   );
-  return expanded.diagnostics
-    .filter((diagnostic) => diagnostic.code === code)
-    .map(({ start, messageText }) => ({
-      at: text.slice(start ?? 0, (start ?? 0) + 12),
-      message: String(messageText),
-    }));
+  const read = (diagnostics: readonly ts.Diagnostic[], code: number) =>
+    diagnostics
+      .filter((diagnostic) => diagnostic.code === code)
+      .map(({ start, messageText }) => ({
+        at: text.slice(start ?? 0, (start ?? 0) + 12),
+        message: String(messageText),
+      }));
+  return {
+    reported: (code: number) => read(expanded.diagnostics, code),
+    held: (code: number) =>
+      read(expanded.unresolvedNameExplanations ?? [], code),
+  };
+}
+
+/** What expansion reports on its own account. */
+function diagnose(source: string, code = 4001) {
+  return expandOnce(source).reported(code);
+}
+
+/**
+ * What expansion writes but does not report: a sentence about what defines a
+ * name, held for TypeScript and spoken only where TypeScript says the name is
+ * missing. `packages/cli/test/macro-name-resolution.test.ts` checks both
+ * directions of that, against a whole program.
+ */
+function explain(source: string, code = 4024) {
+  return expandOnce(source).held(code);
 }
 
 describe("a macro no rule accepts is reported at the mistake", () => {
@@ -158,6 +181,12 @@ describe("a macro no rule accepts is reported at the mistake", () => {
  * macro's own fault -- "expected a parenthesised group" -- for code that never
  * meant to invoke it; what is wrong is that the name itself is not something
  * the emitted code defines.
+ *
+ * Which is a claim about the whole program, so it is written rather than
+ * reported: a macro spelled `Event` or `JSON` leaves an ordinary global
+ * standing where the name is, and TypeScript is the side that knows. These say
+ * which sentence expansion wrote and where, and `macro-name-resolution.test.ts`
+ * says where it is spoken and where it is dropped.
  */
 describe("a macro name written on its own", () => {
   const message =
@@ -187,12 +216,12 @@ describe("a macro name written on its own", () => {
     ],
   ];
   for (const [name, source] of bare) {
-    test(`${name} is reported as a name, not as a failed match`, () => {
-      const reported = diagnose(source, 4024);
-      expect(reported).toHaveLength(1);
-      // Reported at the name, which is the whole of what was written.
-      expect(reported[0]?.at.startsWith("query")).toBe(true);
-      expect(reported[0]?.message).toBe(message);
+    test(`${name} is written as a name, not as a failed match`, () => {
+      const held = explain(source);
+      expect(held).toHaveLength(1);
+      // Written at the name, which is the whole of what was written.
+      expect(held[0]?.at.startsWith("query")).toBe(true);
+      expect(held[0]?.message).toBe(message);
       expect(diagnose(source)).toEqual([]);
     });
   }
@@ -205,7 +234,7 @@ describe("a macro name written on its own", () => {
    */
   test("an export clause is left for TypeScript to resolve", () => {
     const source = "const query2 = 1;\nexport { query2 as a, query };";
-    expect(diagnose(source, 4024)).toEqual([]);
+    expect(explain(source)).toEqual([]);
     expect(diagnose(source)).toEqual([]);
   });
 
@@ -213,9 +242,7 @@ describe("a macro name written on its own", () => {
     const reported = diagnose("export const q = query(db) { limit 20 };");
     expect(reported).toHaveLength(1);
     expect(reported[0]?.message).toContain("No rule for macro query accepted");
-    expect(diagnose("export const q = query(db) { limit 20 };", 4024)).toEqual(
-      [],
-    );
+    expect(explain("export const q = query(db) { limit 20 };")).toEqual([]);
   });
 
   /**
@@ -228,7 +255,7 @@ describe("a macro name written on its own", () => {
     const reported = diagnose(source);
     expect(reported).toHaveLength(1);
     expect(reported[0]?.message).toContain("No rule for macro query accepted");
-    expect(diagnose(source, 4024)).toEqual([]);
+    expect(explain(source)).toEqual([]);
   });
 
   /**
@@ -243,22 +270,17 @@ describe("a macro name written on its own", () => {
     ["an operator", "export const q = (query = db);"],
     ["a group", "export const q = query[db];"],
   ])("%s written after the name is still a failed match", (_, source) => {
-    expect(diagnose(source, 4024)).toEqual([]);
+    expect(explain(source)).toEqual([]);
     expect(diagnose(source)).toHaveLength(1);
   });
 
   test("a name that only shares the spelling is left alone", () => {
     expect(
-      diagnose(
-        "export const o = { query: 1 };\nexport const r = o.query;",
-        4024,
-      ),
+      explain("export const o = { query: 1 };\nexport const r = o.query;"),
     ).toEqual([]);
   });
 
   test("an invocation a rule accepts still expands", () => {
-    expect(
-      diagnose("export const q = query(db) { from users };", 4024),
-    ).toEqual([]);
+    expect(explain("export const q = query(db) { from users };")).toEqual([]);
   });
 });
