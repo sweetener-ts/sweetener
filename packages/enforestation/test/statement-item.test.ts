@@ -1213,4 +1213,495 @@ describe("statement and item consumers", () => {
       }
     }
   });
+
+  /**
+   * A binder is named by any word TypeScript does not reserve.
+   *
+   * The reader labels `type`, `from`, `of` and every other contextual keyword
+   * a keyword token, as TypeScript's own scanner does, and the binding
+   * consumer had asked for the `identifier` label instead. So `let type = 1;`
+   * was refused at item level -- and an item the reader refuses drops the
+   * whole module to a raw token walk, where a macro at statement head is
+   * silently not expanded. The statement reader scans its head rather than
+   * parsing a binder, so it had always read these; the two now agree.
+   *
+   * What TypeScript reserves is the list `isIdentifierToken` already holds,
+   * strict-mode reservations included: every module is strict, and
+   * `let interface = 1;` is "Identifier expected. 'interface' is a reserved
+   * word in strict mode. Modules are automatically in strict mode." So the
+   * rule is written once, where that list is, rather than per binder position.
+   */
+  test.each([
+    "type",
+    "from",
+    "of",
+    "global",
+    "module",
+    "namespace",
+    "declare",
+    "abstract",
+    "asserts",
+    "as",
+    "is",
+    "any",
+    "unknown",
+    "never",
+    "undefined",
+    "object",
+    "string",
+    "number",
+    "boolean",
+    "bigint",
+    "symbol",
+    "satisfies",
+    "keyof",
+    "infer",
+    "readonly",
+    "unique",
+    "out",
+    "override",
+    "accessor",
+    "async",
+    "get",
+    "set",
+    "require",
+    "intrinsic",
+    "constructor",
+    "assert",
+    "using",
+    "defer",
+  ])("binds a declarator named %s at both levels", (word) => {
+    const source = `let ${word} = 1;`;
+    const whole = `${source}\nafter();`;
+    for (const category of ["stmt", "item"] as const) {
+      const { result } = parse(whole, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a declaration");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(source);
+    }
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(source);
+    expect(
+      (
+        parsed as ts.SourceFile & {
+          readonly parseDiagnostics: readonly ts.Diagnostic[];
+        }
+      ).parseDiagnostics,
+    ).toEqual([]);
+  });
+
+  /**
+   * The same word in every binder position a declarator writes, so the rule is
+   * asked once rather than per shape.
+   */
+  test.each([
+    "let type: number = 1;",
+    "const { type } = source;",
+    "const { source: type } = source;",
+    "const { ...type } = source;",
+    "const [type] = source;",
+    "const [, type = 1] = source;",
+    "let type = 1, from = 2;",
+    "let { type, from } = source;",
+    "declare let namespace: number;",
+    "export let module: number;",
+  ])("binds %j at item level", (source) => {
+    const whole = `${source}\nafter();`;
+    const { result } = parse(whole, "item");
+    expect(result.matched, source).toBe(true);
+    if (!result.matched) throw new Error("expected a declaration");
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(source);
+  });
+
+  /**
+   * A reserved word names nothing, and the item reader must go on refusing it.
+   * TypeScript refuses each of these too -- the ones reserved only in strict
+   * mode are refused because a module is strict, which the reader takes as
+   * given for every file it reads.
+   */
+  test.each([
+    "let in = 1;",
+    "let class = 1;",
+    "let function = 1;",
+    "let this = 1;",
+    "let typeof = 1;",
+    "let null = 1;",
+    "let true = 1;",
+    "let interface = 1;",
+    "let package = 1;",
+    "let private = 1;",
+    "let static = 1;",
+    "let implements = 1;",
+    "let yield = 1;",
+  ])("refuses the reserved binder %j at item level", (source) => {
+    const { result } = parse(`${source}\nafter();`, "item");
+    expect(result.matched, source).toBe(false);
+  });
+
+  /**
+   * An import or export declaration ends at the line break TypeScript ends it
+   * at.
+   *
+   * The item walk broke at a leading line break only in front of a word that
+   * begins an item, and what follows a module's imports is usually a call. So
+   * `import a from "m"` written without a `;` took the statement under it into
+   * the same item: nothing refused, nothing reported, and the macro that
+   * statement invoked was never reached -- the shape every silent reader bug
+   * found this week has.
+   *
+   * The rule is TypeScript's own: the declaration carries on across a line
+   * break only where what stands in front of the break expects more, or what
+   * stands after it continues what was written. Both halves are asked of every
+   * import and export form rather than of the one that showed the bug.
+   */
+  test.each([
+    ['import a from "m"', 'import a from "m"'],
+    ['import global from "m"', 'import global from "m"'],
+    ['import "m"', 'import "m"'],
+    ['import * as ns from "m"', 'import * as ns from "m"'],
+    ['import { a } from "m"', 'import { a } from "m"'],
+    ['import a, { b } from "m"', 'import a, { b } from "m"'],
+    ['import type { a } from "m"', 'import type { a } from "m"'],
+    ['import a = require("m")', 'import a = require("m")'],
+    ['export * from "m"', 'export * from "m"'],
+    ['export { a } from "m"', 'export { a } from "m"'],
+    ["export { a }", "export { a }"],
+    ["export default a", "export default a"],
+    ["export = a", "export = a"],
+    ["export as namespace N", "export as namespace N"],
+    // What a line break may stand inside must not change: TypeScript reads
+    // every one of these as a single declaration.
+    ['import a\nfrom "m";', 'import a\nfrom "m";'],
+    ['import a from\n"m";', 'import a from\n"m";'],
+    ['import\na from "m";', 'import\na from "m";'],
+    ['import a,\n{ b } from "m";', 'import a,\n{ b } from "m";'],
+    ['import *\nas ns from "m";', 'import *\nas ns from "m";'],
+    ['import a =\nrequire("m");', 'import a =\nrequire("m");'],
+    [
+      'import "m"\nwith { type: "json" };',
+      'import "m"\nwith { type: "json" };',
+    ],
+    ['export { a }\nfrom "m";', 'export { a }\nfrom "m";'],
+    ['export *\nfrom "m";', 'export *\nfrom "m";'],
+    ["export default a\n+ 1;", "export default a\n+ 1;"],
+    ["export = a\n+ 1;", "export = a\n+ 1;"],
+    ["export as\nnamespace N;", "export as\nnamespace N;"],
+    // `namespace` written after `export as` marks a UMD global rather than
+    // declaring a name, and TypeScript carries it across the break.
+    ["export as namespace\nN;", "export as namespace\nN;"],
+    // The `type` of a type-only import or export stands in front of a `{` or
+    // a `*` rather than a name, and carries no line-break restriction either.
+    ['export type\n{ A } from "m";', 'export type\n{ A } from "m";'],
+    ['import type\n{ A } from "m";', 'import type\n{ A } from "m";'],
+    ['export type { A }\nfrom "m";', 'export type { A }\nfrom "m";'],
+    // A `;` terminates the declaration wherever it is written, line break or
+    // no line break.
+    ['import a from "m"\n;', 'import a from "m"\n;'],
+  ])("reads the module declaration %j as %j", (source, extent) => {
+    const whole = `${source}\nafter();`;
+    const { result } = parse(whole, "item");
+    expect(result.matched, source).toBe(true);
+    if (!result.matched) throw new Error("expected a module declaration");
+    expect(printLosslessSequence(result.syntax.children), source).toBe(extent);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed), source).toBe(extent);
+    expect(
+      (
+        parsed as ts.SourceFile & {
+          readonly parseDiagnostics: readonly ts.Diagnostic[];
+        }
+      ).parseDiagnostics,
+      source,
+    ).toEqual([]);
+  });
+
+  /**
+   * A contextual keyword written behind `export` is a keyword only where what
+   * it declares is written on its own line.
+   *
+   * `declarationHead` was asked of an item's first word alone, so the `type`
+   * of `export type` and the `namespace` of `export namespace` were never
+   * asked at all. TypeScript reads each of those words alone -- it writes
+   * `type [no LineTerminator here] Identifier` -- and reads what stands under
+   * it as a statement of its own. Read as one item, that statement was
+   * swallowed, and a macro invoked there never ran.
+   *
+   * TypeScript recovers from the stray `export` by dropping it, so its first
+   * statement is the word alone; what both readers must agree about is where
+   * the item ends, which is what the second statement shows.
+   */
+  test.each([
+    ["export type\nT = A;", "export type", ["type", "T = A;", "after();"]],
+    [
+      "export namespace\nN { }",
+      "export namespace",
+      ["namespace", "N", "{ }", "after();"],
+    ],
+    [
+      "export interface\nI { }",
+      "export interface",
+      ["interface", "I", "{ }", "after();"],
+    ],
+    [
+      "export module\nM { }",
+      "export module",
+      ["module", "M", "{ }", "after();"],
+    ],
+    [
+      "export declare\nlet x = 1;",
+      "export declare",
+      ["declare", "let x = 1;", "after();"],
+    ],
+    [
+      "export abstract\nclass C { }",
+      "export abstract",
+      ["abstract", "class C { }", "after();"],
+    ],
+  ])(
+    "ends %j at the contextual keyword's own line",
+    (source, extent, statements) => {
+      const whole = `${source}\nafter();`;
+      const { result } = parse(whole, "item");
+      expect(result.matched, source).toBe(true);
+      if (!result.matched) throw new Error("expected a module item");
+      expect(printLosslessSequence(result.syntax.children), source).toBe(
+        extent,
+      );
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements.map((node) => node.getText(parsed))).toEqual(
+        statements,
+      );
+    },
+  );
+
+  /**
+   * A `;` written after a declaration's body is an empty statement, not part
+   * of the declaration.
+   *
+   * The statement reader already read it that way and the item reader did
+   * not, so the same `namespace N { };` was two nodes inside a function body
+   * and one at a module's top level. TypeScript reads two wherever it is
+   * written, and reports nothing about either.
+   */
+  test.each([
+    ["namespace N { };", "namespace N { }"],
+    ["module M { };", "module M { }"],
+    ["class C {};", "class C {}"],
+    ["enum E {};", "enum E {}"],
+    ["interface I {};", "interface I {}"],
+    ["function f() {};", "function f() {}"],
+    ["declare global { };", "declare global { }"],
+    ["export class C {};", "export class C {}"],
+  ])("reads %j as %j at both levels", (source, extent) => {
+    const whole = `${source}\nafter();`;
+    for (const category of ["stmt", "item"] as const) {
+      // `export` stands only at item level, so the exported row is asked
+      // there alone.
+      if (category === "stmt" && source.startsWith("export")) continue;
+      const { result } = parse(whole, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a declaration");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(extent);
+    }
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed), source).toBe(extent);
+    expect(parsed.statements[1]?.getText(parsed), source).toBe(";");
+    expect(
+      (
+        parsed as ts.SourceFile & {
+          readonly parseDiagnostics: readonly ts.Diagnostic[];
+        }
+      ).parseDiagnostics,
+      source,
+    ).toEqual([]);
+  });
+
+  /**
+   * `export` carries the declaration written after it, and a `;` is an empty
+   * statement rather than a declaration. TypeScript reports the `export`
+   * where it stands and reads the `;` as a statement of its own.
+   */
+  test("does not take an empty statement into an export that exports nothing", () => {
+    const whole = "export;\nafter();";
+    const { result } = parse(whole, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a module item");
+    expect(printLosslessSequence(result.syntax.children)).toBe("export");
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements.map((node) => node.getText(parsed))).toEqual([
+      ";",
+      "after();",
+    ]);
+  });
+
+  /**
+   * A module declaration and a global augmentation begin a statement, and a
+   * declaration whose head has not closed ends in front of one.
+   *
+   * The statement reader dispatches on `module` and on the `global` of an
+   * augmentation -- both stand wherever a declaration does, inside a function
+   * body as readily as at a module's top level -- but the walk that scans a
+   * declaration's head knew neither. So it read straight past the line break
+   * and took the whole declaration written under it into the one above:
+   * `function f()` and the `module M { }` under it were one statement, where
+   * TypeScript reads two. Both walks now ask the one question the dispatch
+   * asks.
+   */
+  test.each([
+    "function f()\nmodule M { }",
+    "function f()\nglobal { }",
+    "namespace N\nmodule M { }",
+    "interface I\nglobal { }",
+    "type T\nmodule M { }",
+    "enum E\nmodule M { }",
+    "class C\nglobal { }",
+  ])("does not read %j as one statement", (source) => {
+    const statement = parse(source, "stmt").result;
+    const item = parse(source, "item").result;
+    const read = (result: typeof statement) =>
+      result.matched
+        ? printLosslessSequence(result.syntax.children)
+        : undefined;
+    // Whatever either reader makes of a declaration left without a body, it
+    // is not the two declarations together -- and both make the same of it.
+    expect(read(statement), source).not.toBe(source);
+    expect(read(item), source).toBe(read(statement));
+    // TypeScript reads what is written under the break as its own statement.
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements.length, source).toBeGreaterThan(1);
+  });
+
+  /**
+   * `global` and `module` name things as readily as they declare them, and
+   * neither reader may take one for a declaration where no body stands after
+   * it.
+   */
+  test.each([
+    ["global.value = 1;", "global.value = 1;"],
+    ["let x = 1\nglobal.value = 2;", "let x = 1"],
+  ])("reads %j as %j at both levels", (source, extent) => {
+    for (const category of ["stmt", "item"] as const) {
+      const { result } = parse(source, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a statement");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(extent);
+    }
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed), source).toBe(extent);
+  });
+
+  /**
+   * An instantiation expression -- `y<string>`, a generic value with its type
+   * arguments supplied and no call after them -- is an expression TypeScript
+   * reads, and both readers had refused it.
+   *
+   * A `<...>` after an operand was taken for type arguments only where a call
+   * or a tagged template followed, and read as a comparison otherwise. So
+   * `const f = y<string>;` was refused, which drops the module holding it to a
+   * raw token walk and leaves every macro in it unexpanded.
+   *
+   * TypeScript settles the ambiguity by what stands after the `>`: a `(` or a
+   * template makes it a call, a `<`, `>`, `+` or `-` makes it a comparison,
+   * and otherwise it is the type arguments wherever a line break, a binary
+   * operator, or something that cannot begin an operand follows them.
+   */
+  test.each([
+    ["const f = y<string>;", "const f = y<string>;"],
+    ["const g = y<A, B>;", "const g = y<A, B>;"],
+    ["y<A>;", "y<A>;"],
+    ["y<A>.b;", "y<A>.b;"],
+    ["f(y<A>);", "f(y<A>);"],
+    ["const k = [y<A>];", "const k = [y<A>];"],
+    // Nothing else may change: a call, a tagged template and a comparison are
+    // what TypeScript reads them as still.
+    ["y<A>(x);", "y<A>(x);"],
+    ["y<A>`t`;", "y<A>`t`;"],
+    ["a < b > c;", "a < b > c;"],
+    ["const h = y<A> + 1;", "const h = y<A> + 1;"],
+    ["const i = y<A> - 1;", "const i = y<A> - 1;"],
+    // A line break after the type arguments settles it for the instantiation,
+    // and the name written under it is a statement of its own.
+    ["y<A>", "y<A>"],
+  ])(
+    "reads the instantiation expression %j as %j at both levels",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a statement");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed), source).toBe(extent);
+    },
+  );
 });

@@ -656,4 +656,53 @@ describe("the separator after an item, statement or class member macro", () => {
     const { expand } = harness(definitions);
     expect(expand("nowhere;")).toBe("constgenerated=1;");
   });
+
+  /**
+   * A class, enum or interface body written at statement level is a member
+   * list, and the members in it are reached.
+   *
+   * Only a function, namespace or module body was enforested there, so a class
+   * declared inside a function body stayed an opaque token tree: a member
+   * macro written among its members was never dispatched, and the expander
+   * walked its tokens under the statement category instead. The same class one
+   * line further out, at a module's top level, expanded.
+   */
+  test("keeps an invocation that contains a comma whole in a function body", () => {
+    const { expand } = harness(definitions);
+    expect(
+      expand(
+        "function f() { interface Parser {\n  head: string;\n  overloaded parse over string, number\n  tail: string;\n} }",
+      ),
+    ).toBe(
+      "functionf(){interfaceParser{head:string;parse(value:string):string;parse(value:number):number;tail:string;}}",
+    );
+  });
+
+  test("expands a class member macro in a class inside a function body", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { class C { fieldy; } }")).toBe(
+      "functionf(){classC{readonlyname:string;}}",
+    );
+  });
+
+  test("expands a member macro in an interface inside a function body", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { interface I { timestamps } }")).toBe(
+      "functionf(){interfaceI{readonlycreatedAt:string;readonlyupdatedAt:string;}}",
+    );
+  });
+
+  test("expands a class member macro in a class inside a block", () => {
+    const { expand } = harness(definitions);
+    expect(expand("function f() { { class C { fieldy; } } }")).toBe(
+      "functionf(){{classC{readonlyname:string;}}}",
+    );
+  });
+
+  test("expands a class member macro in a class inside a namespace body", () => {
+    const { expand } = harness(definitions);
+    expect(expand("namespace N { class C { fieldy; } }")).toBe(
+      "namespaceN{classC{readonlyname:string;}}",
+    );
+  });
 });

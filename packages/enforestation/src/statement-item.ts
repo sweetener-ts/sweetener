@@ -20,7 +20,10 @@ import {
   type SyntaxConsumer,
   type MacroExtentResolver,
 } from "./consumer.js";
-import { operandExpectedAfter } from "./core-operators.js";
+import {
+  expressionContinuedBy,
+  operandExpectedAfter,
+} from "./core-operators.js";
 import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
@@ -206,13 +209,52 @@ const contextualHeads = new Set([
 ]);
 
 /**
+ * Whether the `namespace` written with `previous` in front of it marks a UMD
+ * global rather than declaring one.
+ *
+ * `export as namespace N` gives a module the name it is known by when it is
+ * loaded as a script. The word declares nothing, no body stands after it, and
+ * TypeScript reads it across a line break -- so a reader that took it for a
+ * namespace declaration waited for a body that never came and swallowed
+ * whatever was written under it.
+ */
+function umdNamespace(previous: string | undefined, word: string): boolean {
+  return word === "namespace" && previous === "as";
+}
+
+/**
+ * Whether the `type` written with `previous` in front of it marks an import or
+ * export type-only, rather than opening a type alias.
+ *
+ * `import type { A } from "m"` and `export type * from "m"` write the word in
+ * front of the clause rather than in front of a name, and TypeScript carries
+ * it across a line break there: it is `type [no LineTerminator here]
+ * Identifier` that a type alias is written with, and no name follows this one.
+ */
+function typeOnlyClause(
+  previous: string | undefined,
+  word: string,
+  following: Syntax | undefined,
+): boolean {
+  return (
+    word === "type" &&
+    (previous === "import" || previous === "export") &&
+    (braceGroup(following) || raw(following) === "*")
+  );
+}
+
+/**
  * Whether the word at `offset` heads a declaration, rather than being a name
  * spelled like a keyword.
  */
 function declarationHead(cursor: SyntaxCursor, offset = 0): boolean {
+  const word = raw(cursor.peek(offset));
+  if (word === undefined || !contextualHeads.has(word)) return true;
+  if (noLineTerminatorAfter(cursor, offset)) return true;
+  const previous = offset > 0 ? raw(cursor.peek(offset - 1)) : undefined;
   return (
-    !contextualHeads.has(raw(cursor.peek(offset)) ?? "") ||
-    noLineTerminatorAfter(cursor, offset)
+    umdNamespace(previous, word) ||
+    typeOnlyClause(previous, word, cursor.peek(offset + 1))
   );
 }
 
@@ -287,6 +329,13 @@ function createAliasBodyTracker(declaresType: boolean) {
    */
   let typeArguments = 0;
   return Object.freeze({
+    /**
+     * Whether the walk stands inside the alias's body, where it is the type
+     * grammar that says what a line break ends and no other rule may.
+     */
+    readsBody(): boolean {
+      return inBody;
+    },
     /** Whether the alias's body ends in front of `next`. */
     endsBefore(previous: Syntax | undefined, next: Syntax): boolean {
       return (
@@ -354,6 +403,21 @@ function annotationExtent(
   return width;
 }
 
+/**
+ * The words that begin a statement, so that a declaration whose head has not
+ * closed ends at a line break in front of one rather than reading on into it.
+ *
+ * `module` is among them because the statement reader dispatches on it: a
+ * module declaration stands wherever a declaration does, inside a function
+ * body as readily as at a module's top level. Left out, an unterminated
+ * declaration read the one written under it into itself -- `function f()` and
+ * the `module M { }` under it were one statement, where TypeScript reads two.
+ *
+ * `global` is not a word of this list, because it declares only where the body
+ * of a global augmentation stands after it and is an ordinary name everywhere
+ * else -- `global.value = 1;` is an assignment. It is asked for by
+ * `beginsStatement` instead, which is what every reader here asks.
+ */
 const statementStarts = new Set([
   "abstract",
   "async",
@@ -373,6 +437,7 @@ const statementStarts = new Set([
   "import",
   "interface",
   "let",
+  "module",
   "namespace",
   "operator",
   "rec",
@@ -410,6 +475,101 @@ const itemStarts = new Set([
   "using",
 ]);
 
+/**
+ * The words an import or export declaration is written with that expect more
+ * after them, so that a line break in front of the next node ends nothing.
+ *
+ * The operators are not listed here: `as`, `*`, `=` and `,` are read from the
+ * expression table, which is where a line break after an operator is already
+ * decided.
+ */
+const moduleHeadWords = new Set([
+  "import",
+  "export",
+  "from",
+  "default",
+  "with",
+  "assert",
+]);
+
+/**
+ * What may carry an import or export declaration on across a line break: the
+ * `from` of a specifier, the `with` or `assert` of an import attributes
+ * clause, the `;` that terminates the declaration wherever it is written, and
+ * everything that carries an expression on -- `export default a` and
+ * `export = a` are written with expressions, and TypeScript reads `export
+ * default a` and the `+ 1;` under it as one declaration.
+ */
+const moduleItemContinuedBy = new Set([
+  ...expressionContinuedBy,
+  "from",
+  "with",
+  "assert",
+  ";",
+]);
+
+/**
+ * Whether the words the walk has read expect more, `previous` being the last
+ * of them.
+ *
+ * Both the lookahead that decides whether an item ends at a body and the walk
+ * that reads it ask this, so that neither ends the item where the other would
+ * carry it on.
+ */
+function headExpectsMore(previous: string | undefined): boolean {
+  if (previous === undefined) return false;
+  return moduleHeadWords.has(previous) || operandExpectedAfter.has(previous);
+}
+
+/**
+ * Whether an import or export declaration carries on across the line break in
+ * front of `next`, `children` being what the walk has read of it.
+ *
+ * TypeScript terminates these declarations by the ordinary rule: a `;`, or the
+ * line break that stands for one. The walk had no such rule and broke at a
+ * leading line break only in front of a word that begins an item -- and what
+ * follows a module's imports is usually a call, which begins none. So
+ * `import a from "m"` written without a `;` took the statement under it into
+ * the same item: nothing was refused and nothing reported, while the macro
+ * that statement invoked was never reached.
+ *
+ * The question is asked of both sides of the break, because either can carry
+ * the declaration on: `import a` and the `from "m";` under it are one
+ * declaration, and so are `import a from` and the `"m";` under it.
+ */
+function moduleItemContinues(
+  children: readonly Syntax[],
+  next: Syntax,
+): boolean {
+  const previous = raw(children.at(-1));
+  if (headExpectsMore(previous)) return true;
+  if (previous !== undefined) {
+    const before = raw(children.at(-2));
+    if (
+      umdNamespace(before, previous) ||
+      typeOnlyClause(before, previous, next)
+    )
+      return true;
+  }
+  return moduleItemContinuedBy.has(raw(next) ?? "");
+}
+
+/**
+ * Whether the `export` the walk has read exports nothing, `next` being what
+ * stands after it.
+ *
+ * TypeScript writes `export` in front of a declaration, a `{ … }` clause, a
+ * `*`, a `default`, an `=` or an `as namespace`. A `;` is an empty statement
+ * and none of those, so TypeScript reports the `export` where it stands and
+ * reads the `;` as the statement it is. Taken into the export, that `;` was
+ * never read as a statement at all.
+ */
+function exportsNothing(children: readonly Syntax[], next: Syntax): boolean {
+  return (
+    children.length === 1 && token(children[0], "export") && token(next, ";")
+  );
+}
+
 const blockItemHeads = new Set([
   "class",
   "enum",
@@ -422,6 +582,36 @@ const blockItemHeads = new Set([
   "rec",
   "syntax",
 ]);
+
+/**
+ * Whether a statement begins at `offset`.
+ *
+ * Both walks that scan a declaration's head ask this of the node a line break
+ * stands in front of: where a statement begins there, the declaration above it
+ * has ended, however incomplete its head was left.
+ */
+function beginsStatement(cursor: SyntaxCursor, offset = 0): boolean {
+  return (
+    statementStarts.has(raw(cursor.peek(offset)) ?? "") ||
+    globalAugmentation(cursor, offset)
+  );
+}
+
+/**
+ * Whether a module item begins at `offset`.
+ *
+ * This is the question the item reader's own dispatch asks, and the walks that
+ * scan an item's head ask it here rather than each testing the word list for
+ * itself: a contextual keyword heads a declaration only where what it declares
+ * is written on its own line, and `global` only where a body stands after it.
+ */
+function beginsItem(cursor: SyntaxCursor, offset = 0): boolean {
+  return (
+    (itemStarts.has(raw(cursor.peek(offset)) ?? "") &&
+      declarationHead(cursor, offset)) ||
+    globalAugmentation(cursor, offset)
+  );
+}
 
 function raw(syntax: Syntax | undefined): string | undefined {
   return syntax?.tag === "token" ? syntax.raw : undefined;
@@ -614,13 +804,93 @@ function requireTerminator(
 
 class StatementConsumer implements SyntaxConsumer {
   readonly #expression: SyntaxConsumer;
+  readonly #classElement: SyntaxConsumer;
+  readonly #typeMember: SyntaxConsumer;
 
   constructor(readonly options: StatementItemConsumerOptions) {
     this.#expression = createPrattExpressionConsumer({
       ...options,
       allowComma: true,
     });
+    const shared = {
+      origins: options.origins,
+      allocateSyntaxId: options.allocateSyntaxId,
+    };
+    this.#classElement = createClassElementConsumer({
+      ...shared,
+      enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
+        this.enforestBlock(block, blockContext, allowYield, allowAwait),
+    });
+    this.#typeMember = createTypeConsumers({
+      ...shared,
+      ...(options.resolveMacro === undefined
+        ? {}
+        : { resolveTypeMemberMacro: options.resolveMacro }),
+    }).typeMember;
     Object.freeze(this);
+  }
+
+  /**
+   * Enforest a class body as a list of class elements.
+   *
+   * Protecting the raw body as `classElement` would never run the element
+   * consumer over it, so a method body would never be reached and macros
+   * inside methods would be left unexpanded.
+   *
+   * A body that does not enforest is returned unchanged; TypeScript reports
+   * anything genuinely malformed.
+   */
+  enforestClassBody(body: GroupSyntax, context: ConsumerContext): Syntax {
+    return this.#enforestMembers(body, context, "classElement");
+  }
+
+  /**
+   * Enforest a brace body as a list of type members.
+   *
+   * Without this the body stays an opaque token tree and the expander walks
+   * its children under the enclosing category, where a macro written among the
+   * members resolves as an item, produces members, and is reported as having
+   * expanded to something that is not one item.
+   *
+   * A body that does not enforest is returned unchanged; TypeScript reports
+   * anything genuinely malformed.
+   */
+  enforestTypeMembers(body: GroupSyntax, context: ConsumerContext): Syntax {
+    return this.#enforestMembers(body, context, "typeMember");
+  }
+
+  /**
+   * A brace body read as a list of members of `category`. A body that does not
+   * read as one is returned exactly as it was, which is what keeps a body this
+   * consumer does not model from failing the declaration that holds it.
+   */
+  #enforestMembers(
+    body: GroupSyntax,
+    context: ConsumerContext,
+    category: "classElement" | "typeMember",
+  ): Syntax {
+    if (body.children.length === 0) return body;
+    const consumer =
+      category === "classElement" ? this.#classElement : this.#typeMember;
+    let inner = createSyntaxCursor(body.children);
+    const members: Syntax[] = [];
+    const memberContext = Object.freeze({
+      ...context,
+      category,
+      stopSet: StopSet.empty,
+    });
+    while (!inner.atEnd) {
+      const before = inner.index;
+      const attempt = consumer.consume(inner, memberContext);
+      if (!attempt.matched || attempt.cursor.index <= before) return body;
+      members.push(attempt.syntax);
+      inner = attempt.cursor;
+    }
+    return createGroup({
+      ...body,
+      id: this.options.allocateSyntaxId(),
+      children: createSyntaxSequence(members),
+    });
   }
 
   consume(cursor: SyntaxCursor, context: ConsumerContext): ConsumerAttempt {
@@ -727,7 +997,7 @@ class StatementConsumer implements SyntaxConsumer {
     // A global augmentation is a module declaration, and its body is a
     // statement list as a namespace's is.
     if (globalAugmentation(cursor, modifiers))
-      return this.#consumeScanned(cursor, context, start, true, true);
+      return this.#consumeScanned(cursor, context, start, true, "stmt");
     if (
       [
         "function",
@@ -742,13 +1012,26 @@ class StatementConsumer implements SyntaxConsumer {
       ].includes(declared ?? "") &&
       declarationHead(cursor, modifiers)
     ) {
-      // Only a function or namespace body is a statement list. A class, enum,
-      // or interface body is a member list and needs its own consumer, so it
-      // stays opaque here.
-      const statementBody = ["function", "namespace", "module"].includes(
+      // A function, namespace or module body is a statement list; a class
+      // body is an element list and an interface body a member list. Each is
+      // read as what it is, by the same consumers the item reader uses.
+      //
+      // Left opaque, a class or interface written inside a function body was
+      // walked by the expander as raw tokens under the enclosing category:
+      // that reaches a macro at the head of a member but splits an invocation
+      // that holds a `,` of its own, and the half after the comma was emitted
+      // as it was written. The same declaration one level out, at a module's
+      // top level, expanded whole.
+      const bodyCategory = ["function", "namespace", "module"].includes(
         declared ?? "",
-      );
-      return this.#consumeScanned(cursor, context, start, true, statementBody);
+      )
+        ? ("stmt" as const)
+        : declared === "class"
+          ? ("classElement" as const)
+          : declared === "interface"
+            ? ("typeMember" as const)
+            : undefined;
+      return this.#consumeScanned(cursor, context, start, true, bodyCategory);
     }
     // A type alias stands in a function body as readily as it does at a
     // module's top level, and its body after the `=` is a type. Refused here,
@@ -756,7 +1039,14 @@ class StatementConsumer implements SyntaxConsumer {
     // statement it cannot read falls back to a raw token walk, so a single
     // alias silently stopped every macro around it from expanding.
     if (declared === "type" && declarationHead(cursor, modifiers))
-      return this.#consumeScanned(cursor, context, start, false, false, true);
+      return this.#consumeScanned(
+        cursor,
+        context,
+        start,
+        false,
+        undefined,
+        true,
+      );
     // `import` and `export` are refused. TypeScript parses both in a function
     // body and rejects them afterwards, as a grammar error rather than a parse
     // error -- so nothing it accepts is lost by refusing them, and reading
@@ -1344,7 +1634,7 @@ class StatementConsumer implements SyntaxConsumer {
       if (
         children.length > 1 &&
         leadingLineBreak(next) &&
-        statementStarts.has(raw(next) ?? "")
+        beginsStatement(cursor)
       )
         break;
       const spelling = raw(next);
@@ -1373,7 +1663,8 @@ class StatementConsumer implements SyntaxConsumer {
     context: ConsumerContext,
     start: number,
     endsAtBlock: boolean,
-    statementBody = false,
+    bodyCategory:
+      "stmt" | "classElement" | "typeMember" | undefined = undefined,
     declaresType = false,
   ): ConsumerAttempt {
     const children: Syntax[] = [];
@@ -1384,7 +1675,7 @@ class StatementConsumer implements SyntaxConsumer {
       if (
         children.length > 0 &&
         leadingLineBreak(next) &&
-        statementStarts.has(raw(next) ?? "")
+        beginsStatement(cursor)
       )
         break;
       // An alias's body is a type, and a type ends at a line break the type
@@ -1414,14 +1705,18 @@ class StatementConsumer implements SyntaxConsumer {
         !typeOperandFollows(children.at(-1))
       ) {
         children.push(
-          statementBody
+          bodyCategory === "stmt"
             ? this.enforestBlock(
                 next,
                 context,
                 declaresGenerator(children),
                 declaresAsync(children),
               )
-            : next,
+            : bodyCategory === "classElement"
+              ? this.enforestClassBody(next, context)
+              : bodyCategory === "typeMember"
+                ? this.enforestTypeMembers(next, context)
+                : next,
         );
         break;
       }
@@ -1484,14 +1779,16 @@ function isAngleOpen(raw: string): boolean {
 }
 
 class ItemConsumer implements SyntaxConsumer {
-  readonly #classElement: SyntaxConsumer;
-  readonly #typeMember: SyntaxConsumer;
   readonly #statement: StatementConsumer;
   readonly #expression: SyntaxConsumer;
   readonly #binding: SyntaxConsumer;
   readonly #type: SyntaxConsumer;
 
   constructor(readonly options: StatementItemConsumerOptions) {
+    // A class body and an interface body are read by the statement reader's
+    // own consumers. The two readers meet the same members: a declaration
+    // written inside a function body is the declaration written at a module's
+    // top level, and reading it twice over would let the two disagree.
     this.#statement = new StatementConsumer(options);
     this.#expression = createPrattExpressionConsumer({
       ...options,
@@ -1507,95 +1804,13 @@ class ItemConsumer implements SyntaxConsumer {
         ? {}
         : { resolveMacro: bindingMacroResolver(options.resolveMacro) }),
     });
-    const typeConsumers = createTypeConsumers({
+    this.#type = createTypeConsumers({
       ...shared,
       ...(options.resolveMacro === undefined
         ? {}
         : { resolveTypeMemberMacro: options.resolveMacro }),
-    });
-    this.#type = typeConsumers.type;
-    this.#classElement = createClassElementConsumer({
-      ...shared,
-      enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
-        this.#statement.enforestBlock(
-          block,
-          blockContext,
-          allowYield,
-          allowAwait,
-        ),
-    });
-    // Like the class-element consumer, this one is not given a macro
-    // resolver: a member macro is dispatched by the expander when it walks the
-    // protected body, not while the body is first read.
-    this.#typeMember = typeConsumers.typeMember;
+    }).type;
     Object.freeze(this);
-  }
-
-  /**
-   * Enforest a class body as a list of class elements.
-   *
-   * Protecting the raw body as `classElement` would never run the element
-   * consumer over it, so a method body would never be reached and macros
-   * inside methods would be left unexpanded.
-   *
-   * A body that does not enforest is returned unchanged; TypeScript reports
-   * anything genuinely malformed.
-   */
-  #enforestClassBody(body: GroupSyntax, context: ConsumerContext): Syntax {
-    if (body.children.length === 0) return body;
-    let inner = createSyntaxCursor(body.children);
-    const elements: Syntax[] = [];
-    const elementContext = Object.freeze({
-      ...context,
-      category: "classElement" as const,
-      stopSet: StopSet.empty,
-    });
-    while (!inner.atEnd) {
-      const before = inner.index;
-      const attempt = this.#classElement.consume(inner, elementContext);
-      if (!attempt.matched || attempt.cursor.index <= before) return body;
-      elements.push(attempt.syntax);
-      inner = attempt.cursor;
-    }
-    return createGroup({
-      ...body,
-      id: this.options.allocateSyntaxId(),
-      children: createSyntaxSequence(elements),
-    });
-  }
-
-  /**
-   * Enforest an interface body as a list of type members.
-   *
-   * Without this the body stays an opaque token tree and the expander walks
-   * its children under the enclosing item category, where a macro written
-   * among the members resolves as an item, produces members, and is reported
-   * as having expanded to something that is not one item.
-   *
-   * A body that does not enforest is returned unchanged; TypeScript reports
-   * anything genuinely malformed.
-   */
-  #enforestTypeMembers(body: GroupSyntax, context: ConsumerContext): Syntax {
-    if (body.children.length === 0) return body;
-    let inner = createSyntaxCursor(body.children);
-    const members: Syntax[] = [];
-    const memberContext = Object.freeze({
-      ...context,
-      category: "typeMember" as const,
-      stopSet: StopSet.empty,
-    });
-    while (!inner.atEnd) {
-      const before = inner.index;
-      const attempt = this.#typeMember.consume(inner, memberContext);
-      if (!attempt.matched || attempt.cursor.index <= before) return body;
-      members.push(attempt.syntax);
-      inner = attempt.cursor;
-    }
-    return createGroup({
-      ...body,
-      id: this.options.allocateSyntaxId(),
-      children: createSyntaxSequence(members),
-    });
   }
 
   #consumeVariable(
@@ -1748,10 +1963,7 @@ class ItemConsumer implements SyntaxConsumer {
     }
     const variable = this.#consumeVariable(cursor.fork(), context, start);
     if (variable !== undefined) return variable;
-    if (
-      (itemStarts.has(raw(first) ?? "") && declarationHead(cursor)) ||
-      globalAugmentation(cursor)
-    ) {
+    if (beginsItem(cursor)) {
       const children: Syntax[] = [];
       // Only this item's own head decides whether it ends at a block, so the
       // lookahead stops where the consumption loop below stops. Reading on into
@@ -1765,7 +1977,8 @@ class ItemConsumer implements SyntaxConsumer {
         if (
           offset > 0 &&
           leadingLineBreak(node) &&
-          itemStarts.has(raw(node) ?? "")
+          beginsItem(cursor, offset) &&
+          !headExpectsMore(raw(cursor.peek(offset - 1)))
         )
           break;
         const word = raw(node);
@@ -1776,17 +1989,42 @@ class ItemConsumer implements SyntaxConsumer {
         // keyword. Taken for a head word, `import global from "m"` would
         // conclude it ends at a block and fail for having no body.
         if (word === "global" && !globalAugmentation(cursor, offset)) continue;
+        // The `namespace` of `export as namespace N` declares nothing and has
+        // no body. Taken for a head word, the declaration would end at a brace
+        // that never comes.
+        if (offset > 0 && umdNamespace(raw(cursor.peek(offset - 1)), word))
+          continue;
+        // A contextual keyword that does not head what stands under it is a
+        // name, and the item ends where the word stands. Asked of the first
+        // word alone, `export type` and `export namespace` were unguarded:
+        // the item read on past the line break and swallowed the declaration
+        // TypeScript reads there as one of its own.
+        if (!declarationHead(cursor, offset)) break;
         headWords.push(word);
       }
       const endsAtBlock = headWords.some((word) => blockItemHeads.has(word));
+      // An import or export declaration, or a type alias: an item with no
+      // body of its own, which ends at a line break rather than at a brace.
+      const moduleItem = !endsAtBlock;
       const alias = createAliasBodyTracker(declaresAlias(headWords));
+      /**
+       * Whether the item is whole where the walk left it, because what stands
+       * under it cannot belong to it. Such an item needs no terminator: what
+       * ended it is the next item rather than a `;` this one was missing.
+       */
+      let whole = false;
       while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
         checkWork(context);
         const next = cursor.peek()!;
+        if (exportsNothing(children, next)) {
+          whole = true;
+          break;
+        }
         if (
           children.length > 0 &&
           leadingLineBreak(next) &&
-          itemStarts.has(raw(next) ?? "")
+          beginsItem(cursor) &&
+          !headExpectsMore(raw(children.at(-1)))
         ) {
           break;
         }
@@ -1801,6 +2039,18 @@ class ItemConsumer implements SyntaxConsumer {
         // type and TypeScript does carry it across a break, so only the body
         // of an alias is asked.
         if (alias.endsBefore(children.at(-1), next)) break;
+        // An item with no body of its own is terminated by a `;` or by the
+        // line break that stands for one, wherever TypeScript terminates it.
+        // A type alias's body is asked of the tracker above instead, which
+        // knows the type grammar this does not.
+        if (
+          moduleItem &&
+          !alias.readsBody() &&
+          children.length > 0 &&
+          leadingLineBreak(next) &&
+          !moduleItemContinues(children, next)
+        )
+          break;
         // A brace inside a `<...>` region is an object type, not the body of
         // the declaration being read.
         if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
@@ -1826,13 +2076,6 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (
         endsAtBlock &&
-        braceGroup(children.at(-1)) &&
-        token(cursor.peek(), ";")
-      ) {
-        children.push(cursor.consume()!);
-      }
-      if (
-        endsAtBlock &&
         !token(children.at(-1), ";") &&
         !braceGroup(children.at(-1)) &&
         !braceGroup(children.at(-2))
@@ -1840,6 +2083,7 @@ class ItemConsumer implements SyntaxConsumer {
         return failure("item", cursor, start, ["declaration body"], 40);
       }
       if (
+        !whole &&
         !token(children.at(-1), ";") &&
         children.at(-1)?.tag !== "group" &&
         !asiAllowed(cursor)
@@ -1881,9 +2125,9 @@ class ItemConsumer implements SyntaxConsumer {
                   declaresAsync(children),
                 )
               : bodyCategory === "classElement"
-                ? this.#enforestClassBody(body, context)
+                ? this.#statement.enforestClassBody(body, context)
                 : bodyCategory === "typeMember"
-                  ? this.#enforestTypeMembers(body, context)
+                  ? this.#statement.enforestTypeMembers(body, context)
                   : body,
           ]);
         }

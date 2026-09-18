@@ -1,5 +1,6 @@
 import type { SyntaxId } from "@sweetener/shared";
 import {
+  angleWidth,
   createPrecedence,
   createProtectedSyntax,
   createSyntaxCursor,
@@ -623,6 +624,98 @@ function outputOrigin(origins: OriginStore, syntax: readonly Syntax[]) {
   return unique.length === 1 ? unique[0]! : origins.composed(unique);
 }
 
+/**
+ * The words that begin an expression although they are reserved: every one
+ * TypeScript lists as the head of a left-hand-side expression or of a unary
+ * one. Every word it does not reserve begins an expression too, as the name it
+ * is.
+ */
+const expressionHeadWords = new Set([
+  "await",
+  "class",
+  "delete",
+  "false",
+  "function",
+  "import",
+  "new",
+  "null",
+  "super",
+  "this",
+  "true",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+/**
+ * The punctuation an expression begins with: the prefix operators, the `@` of
+ * a decorated class expression, and the `<` of a type assertion.
+ */
+const expressionHeadPunctuation = new Set([
+  "!",
+  "+",
+  "++",
+  "-",
+  "--",
+  "~",
+  "@",
+  "<",
+]);
+
+/** Whether an expression can begin at `syntax`. */
+function beginsExpression(syntax: Syntax): boolean {
+  if (syntax.tag !== "token") return true;
+  if (syntax.kind === "keyword")
+    return expressionHeadWords.has(syntax.raw) || isIdentifierToken(syntax);
+  if (syntax.kind === "punctuation")
+    return expressionHeadPunctuation.has(syntax.raw);
+  return syntax.kind !== "end-of-file" && syntax.kind !== "unknown";
+}
+
+/**
+ * Whether a call or a tagged template stands after a `<...>` that has closed,
+ * so that the angles hold the type arguments of that call.
+ */
+function callFollowsTypeArguments(following: Syntax | undefined): boolean {
+  if (following === undefined) return false;
+  if (following.tag === "group")
+    return (
+      following.delimiter === "parenthesis" ||
+      following.delimiter === "template"
+    );
+  return (
+    following.tag === "token" && following.kind === "no-substitution-template"
+  );
+}
+
+/**
+ * Whether a `<...>` that has closed holds type arguments rather than being a
+ * pair of comparisons, `following` being what stands after it and no call
+ * standing there.
+ *
+ * This is where an instantiation expression is told from `a < b > c`, and the
+ * rule is TypeScript's: a `<` after a type argument list never makes sense and
+ * a `>` is ambiguous with a re-scanned `>>`, so both disqualify it, and so do
+ * `+` and `-`, which read as arithmetic on the comparison. Otherwise the
+ * angles hold type arguments wherever a line break, a binary operator, or
+ * something that cannot begin an operand follows them.
+ */
+function typeArgumentsFollow(following: Syntax | undefined): boolean {
+  if (following === undefined) return true;
+  const spelling = following.tag === "token" ? following.raw : undefined;
+  if (spelling !== undefined) {
+    if (
+      angleWidth(spelling, "<") > 0 ||
+      angleWidth(spelling, ">") > 0 ||
+      spelling === "+" ||
+      spelling === "-"
+    )
+      return false;
+    if (expressionContinuedBy.has(spelling)) return true;
+  }
+  return leadingLineBreak(following) || !beginsExpression(following);
+}
+
 function consumePostfix(
   cursor: SyntaxCursor,
   context: ConsumerContext,
@@ -667,14 +760,19 @@ function consumePostfix(
       typeArguments === undefined
         ? undefined
         : cursor.peek(typeArguments.width);
-    if (
-      typeArguments !== undefined &&
-      following?.tag === "group" &&
-      (following.delimiter === "parenthesis" ||
-        following.delimiter === "template")
-    ) {
-      cursor.advance(typeArguments.width + 1);
-      return undefined;
+    if (typeArguments !== undefined) {
+      if (callFollowsTypeArguments(following)) {
+        cursor.advance(typeArguments.width + 1);
+        return undefined;
+      }
+      // An instantiation expression: a generic value with its type arguments
+      // supplied and no call after them. The type arguments are taken and the
+      // operand read on from, so `const f = y<string>;` reads as the
+      // declaration TypeScript reads rather than being refused.
+      if (typeArgumentsFollow(following)) {
+        cursor.advance(typeArguments.width);
+        return undefined;
+      }
     }
   }
   if (

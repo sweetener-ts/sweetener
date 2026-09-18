@@ -14,6 +14,7 @@ import type {
 } from "@sweetener/shared";
 import {
   createProtectedSyntax,
+  isIdentifierToken,
   spanEnvelope,
   createSyntaxCursor,
   createSyntaxSequence,
@@ -142,8 +143,52 @@ function token(
   return syntax?.tag === "token" && (raw === undefined || syntax.raw === raw);
 }
 
+/**
+ * Whether `syntax` is a word that may name a binding.
+ *
+ * TypeScript's scanner labels every contextual keyword -- `type`, `from`,
+ * `of`, `namespace` and the rest -- a keyword rather than an identifier, and
+ * the reader keeps that labelling. Asking for the `identifier` label alone
+ * refused `let type = 1;` at item level, which TypeScript reads: an item the
+ * reader refuses drops its whole module to a raw token walk, where a macro at
+ * statement head is silently not expanded.
+ *
+ * Which words are reserved is one rule for the whole grammar, and it is
+ * written once where `isIdentifierToken` holds it -- strict-mode reservations
+ * included, because every module is strict.
+ */
 function identifier(syntax: Syntax | undefined): syntax is TokenSyntax {
-  return token(syntax) && syntax.kind === "identifier";
+  return token(syntax) && isIdentifierToken(syntax);
+}
+
+/**
+ * What may stand immediately after a parameter's binder: the `?` of an
+ * optional parameter, the `:` that opens its annotation and the `=` that opens
+ * its default. A word that is also a modifier is the binder itself where one
+ * of these follows it, or where nothing does.
+ */
+const binderFollowedBy = new Set(["?", ":", "="]);
+
+/**
+ * How many modifier words stand in front of a parameter's binder.
+ *
+ * A modifier word is a modifier only where a binder follows it. `readonly`,
+ * `out` and `override` are contextual keywords, and TypeScript reads
+ * `function f(readonly) {}` and `function f(readonly?: A) {}` as a parameter
+ * named `readonly`. Counted as a modifier there, the word left no binder
+ * behind it and the whole parameter list was refused.
+ */
+function parameterModifierWidth(segment: readonly Syntax[]): number {
+  let offset = 0;
+  while (true) {
+    const modifier = segment[offset];
+    if (!token(modifier) || !parameterModifiers.has(modifier.raw)) break;
+    const following = segment[offset + 1];
+    if (following === undefined) break;
+    if (token(following) && binderFollowedBy.has(following.raw)) break;
+    offset += 1;
+  }
+  return offset;
 }
 
 /**
@@ -153,12 +198,7 @@ function identifier(syntax: Syntax | undefined): syntax is TokenSyntax {
  * finds neither an identifier nor a pattern at its head.
  */
 export function parameterBinder(segment: readonly Syntax[]): readonly Syntax[] {
-  let offset = 0;
-  while (true) {
-    const modifier = segment[offset];
-    if (!token(modifier) || !parameterModifiers.has(modifier.raw)) break;
-    offset += 1;
-  }
+  let offset = parameterModifierWidth(segment);
   if (token(segment[offset], "...")) offset += 1;
   return segment.slice(offset);
 }
@@ -397,14 +437,10 @@ function parseParameter(
   context: ConsumerContext,
 ): ParameterSkeleton | undefined {
   if (segment.length === 0) return undefined;
-  let offset = 0;
-  const modifiers: TokenSyntax[] = [];
-  while (true) {
-    const modifier = segment[offset];
-    if (!token(modifier) || !parameterModifiers.has(modifier.raw)) break;
-    modifiers.push(modifier);
-    offset += 1;
-  }
+  const modifiers = segment
+    .slice(0, parameterModifierWidth(segment))
+    .filter((node) => token(node));
+  let offset = modifiers.length;
   const rest = token(segment[offset], "...");
   if (rest) offset += 1;
   const thisParameter = token(segment[offset], "this");

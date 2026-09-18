@@ -298,4 +298,100 @@ describe("binding and parameter consumers", () => {
       expect(parsed.parseDiagnostics, source).toEqual([]);
     }
   });
+
+  /**
+   * A binder is named by any word TypeScript does not reserve, in a parameter
+   * list as in a declarator.
+   *
+   * The reader labels a contextual keyword a keyword token, as TypeScript's
+   * scanner does, and this consumer had asked for the `identifier` label.
+   * Every parameter named for one was refused, and with it the whole parameter
+   * list -- so a method written `render(type: Kind)` left its class body
+   * unread and the macros among its members unexpanded.
+   */
+  test.each([
+    ["(type)", ["type"]],
+    ["(from, of)", ["from", "of"]],
+    ["({ type })", ["type"]],
+    ["([type])", ["type"]],
+    ["(...type)", ["type"]],
+    ["(public type: Kind)", ["type"]],
+    ["(type?: Kind)", ["type"]],
+    ["(type: Kind = fallback)", ["type"]],
+    // A modifier word names a parameter where no binder follows it, and
+    // TypeScript reads `function f(readonly) {}` as a parameter so named.
+    ["(readonly)", ["readonly"]],
+    ["(readonly: Kind)", ["readonly"]],
+    ["(readonly?: Kind)", ["readonly"]],
+    ["(readonly = 1)", ["readonly"]],
+    ["(out, override)", ["out", "override"]],
+    ["(readonly readonly: Kind)", ["readonly"]],
+  ])("names the parameters of %s", (source, names) => {
+    const prepared = setup(source);
+    const result = consumeParameterList(
+      createSyntaxCursor(prepared.syntax),
+      prepared.context,
+      prepared.options,
+    );
+    expect(result, source).toBeDefined();
+    expect(result?.skeleton.names.map(({ spelling }) => spelling)).toEqual(
+      names,
+    );
+    const parsed = ts.createSourceFile(
+      "binding.ts",
+      `function run${source} {}`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    ) as ts.SourceFile & {
+      readonly parseDiagnostics: readonly ts.Diagnostic[];
+    };
+    expect(parsed.parseDiagnostics, source).toEqual([]);
+  });
+
+  test.each([
+    ["type", ["type"]],
+    ["{ type }", ["type"]],
+    ["{ source: type }", ["type"]],
+    ["{ ...type }", ["type"]],
+    ["[type, from]", ["type", "from"]],
+    ["{ type = 1 }", ["type"]],
+  ])("names the binding %s", (source, names) => {
+    const prepared = setup(source);
+    const result = createBindingConsumer(prepared.options).consumeBinding(
+      createSyntaxCursor(prepared.syntax),
+      prepared.context,
+    );
+    expect(result.matched, source).toBe(true);
+    if (!result.matched) throw new Error("expected a binding");
+    expect(result.skeleton.names.map(({ spelling }) => spelling)).toEqual(
+      names,
+    );
+  });
+
+  /**
+   * A reserved word names no binding. The strict-mode reservations are among
+   * them because every module is strict: TypeScript answers `let interface`
+   * with "Identifier expected. 'interface' is a reserved word in strict mode.
+   * Modules are automatically in strict mode."
+   */
+  test.each([
+    "in",
+    "class",
+    "function",
+    "this",
+    "typeof",
+    "interface",
+    "package",
+    "static",
+    "yield",
+    "implements",
+  ])("refuses the reserved binder %s", (word) => {
+    const prepared = setup(word);
+    const result = createBindingConsumer(prepared.options).consumeBinding(
+      createSyntaxCursor(prepared.syntax),
+      prepared.context,
+    );
+    expect(result.matched, word).toBe(false);
+  });
 });
