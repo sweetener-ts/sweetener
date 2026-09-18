@@ -5,7 +5,6 @@ export * from "./definition-context.js";
 export * from "./diagnostics.js";
 export * from "./invocation.js";
 export * from "./progress.js";
-export * from "./item-context.js";
 export * from "./macro-extent.js";
 export * from "./core-shadowing.js";
 export * from "./compile-macros.js";

@@ -24,6 +24,7 @@ export const unexpandedOperatorCode = diagnosticCode("SWR4021");
 export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
 export const uncopiableClosureCode = diagnosticCode("SWR4023");
 export const bareMacroNameCode = diagnosticCode("SWR4024");
+export const unreadItemCode = diagnosticCode("SWR4025");
 
 /**
  * The indefinite article for a space's name. The spaces a macro can be
@@ -144,6 +145,16 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "A macro is dispatched only in the category it declares. A name written where another category is read is left alone, which emits it verbatim, so the mismatch is reported here rather than as whatever TypeScript makes of the leftover name.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} is declared ${String(arguments_[1] ?? "unknown")} and cannot be written where ${article(String(arguments_[2] ?? "node"))} ${String(arguments_[2] ?? "node")} is read. Declare it ${String(arguments_[2] ?? "unknown")} to use it here.`,
+  },
+  {
+    code: unreadItemCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "warning",
+    documentation:
+      "An item the enforester cannot read is recovered as written and expansion carries on, which is how syntax the reader is not meant to read -- a macro written after its first operand, an operator in an initializer -- reaches the expander at all. It is also how a declaration the reader disagrees with TypeScript about passes through: the item's structure is lost, and nothing said so. Reported where the run begins at a word that begins a declaration and nothing else, where expansion went on to rewrite nothing in it, and where no other diagnostic speaks about it -- so a recovery that did its job, or one another diagnostic already describes, stays quiet. A warning rather than an error: the item is usually valid TypeScript that the reader does not yet handle, and passing it through is only wrong when something in it needed expanding, which `SWR4012` reports for itself.",
+    format: (arguments_) =>
+      `Sweetener could not read this item, so it was passed through as written and no macro in it was expanded. Its reader expected ${String(arguments_[0] ?? "something else")}. TypeScript may well accept the item as written -- a reader that cannot read it is a gap in Sweetener rather than a mistake here.`,
   },
   {
     code: unreadableItemCode,

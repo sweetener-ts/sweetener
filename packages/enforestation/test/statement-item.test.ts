@@ -635,6 +635,132 @@ describe("statement and item consumers", () => {
   });
 
   /**
+   * A type alias's body is a type, and it ends where the type grammar says a
+   * line break ends one.
+   *
+   * The walk that reads a declaration whose head is scanned knows nothing of
+   * types, so it read `type T = A` and the `extends B ? C : D;` written under
+   * it as one item -- where TypeScript, which writes
+   * `CheckType [no LineTerminator here] extends`, reads two. The question is
+   * the one a declarator's annotation already asks, so the body after the `=`
+   * asks it too.
+   *
+   * The `extends` of a class's or an interface's heritage is written in a
+   * declaration's header rather than in a type, and TypeScript does carry it
+   * across a line break. Nothing here may change that, so both are held.
+   */
+  test.each([
+    // A conditional type's `extends` may not begin a line.
+    ["type T = A\nextends B ? C : D;", "type T = A"],
+    ["export type T = A\nextends B ? C : D;", "export type T = A"],
+    ["declare type T = A\nextends B ? C : D;", "declare type T = A"],
+    // The `=` that opens the body is the one outside the type parameters, so
+    // a parameter's default does not open it early.
+    ["type T<A = B> = A\nextends C ? D : E;", "type T<A = B> = A"],
+    // An array type's `[` and a type argument's `<` may not begin a line
+    // either, and `keyof` takes the type after it rather than the one before.
+    ["type T = A\n[];", "type T = A"],
+    ["type T = A\n<B>;", "type T = A"],
+    ["type T = A\nkeyof B;", "type T = A"],
+    // A body that genuinely carries on across the break is one item, whether
+    // the operator ends the line before or begins the line after.
+    ["type T = A extends\nB ? C : D;", "type T = A extends\nB ? C : D;"],
+    ["type T =\nA;", "type T =\nA;"],
+    ["type T = A |\nB;", "type T = A |\nB;"],
+    ["type T = A\n| B;", "type T = A\n| B;"],
+    ["type T = A\n& B;", "type T = A\n& B;"],
+    ["type T = A.\nB;", "type T = A.\nB;"],
+    ["type T = A\n.B;", "type T = A\n.B;"],
+    ["type T = { a: A }\n& B;", "type T = { a: A }\n& B;"],
+    ["type T = (a: A)\n=> B;", "type T = (a: A)\n=> B;"],
+    ["type T = A\n;", "type T = A\n;"],
+    // A `<` still open encloses whatever is written under it.
+    ["type T = Array<\nA\n>;", "type T = Array<\nA\n>;"],
+    // A heritage clause is not a type, and TypeScript carries it across the
+    // break in both directions.
+    ["class C extends A\n{ }", "class C extends A\n{ }"],
+    ["class C\nextends A { }", "class C\nextends A { }"],
+    ["interface I extends A\n{ }", "interface I extends A\n{ }"],
+    ["interface I\nextends A { }", "interface I\nextends A { }"],
+    // `type` is also written where it declares nothing, and no `=` opens a
+    // body there.
+    ['export type { A } from "m";', 'export type { A } from "m";'],
+    ['import type { A } from "m";', 'import type { A } from "m";'],
+  ])("reads the module item %j as %j", (source, extent) => {
+    const whole = `${source}\nafter();`;
+    const { result } = parse(whole, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a module item");
+    expect(printLosslessSequence(result.syntax.children)).toBe(extent);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+  });
+
+  /**
+   * `declare` marks the declaration after it ambient, and TypeScript reads an
+   * ambient declaration wherever a declaration stands -- inside a function
+   * body as well as at a module's top level.
+   *
+   * Only the item reader had taken it. At statement level the `declare` of
+   * `declare let x: A;` was a reference to a name spelled `declare`, and the
+   * declaration written after it left that reference with nothing terminating
+   * it, so the statement was refused for want of a `;`.
+   *
+   * It is a modifier only where it is written on the declaration's own line:
+   * TypeScript writes `declare [no LineTerminator here] Declaration`, and
+   * reads `declare` and the `let x = 1;` under it as two statements. The item
+   * reader had been taking that `declare` too.
+   */
+  test.each([
+    ["declare let x: A;", "declare let x: A;"],
+    ["declare const x: A;", "declare const x: A;"],
+    ["declare var x: A;", "declare var x: A;"],
+    ["declare let x: A, y: B;", "declare let x: A, y: B;"],
+    ["declare let x!: A;", "declare let x!: A;"],
+    ["declare function f(): void;", "declare function f(): void;"],
+    ["declare class C {}", "declare class C {}"],
+    ["declare enum E { A }", "declare enum E { A }"],
+    ["declare const enum E { A }", "declare const enum E { A }"],
+    ["declare namespace N { }", "declare namespace N { }"],
+    ["declare let x: A\nfoo();", "declare let x: A"],
+    // A name spelled `declare` is a name wherever no declaration follows it on
+    // the same line.
+    ["declare;", "declare;"],
+    ["declare = 1;", "declare = 1;"],
+    ["declare(1);", "declare(1);"],
+    ["declare: foo();", "declare: foo();"],
+    ["declare\nlet x = 1;", "declare"],
+  ])(
+    "reads the ambient declaration %j as %j at statement level and at item level",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a declaration");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  /**
    * The same boundary inside the function that admits each word as an
    * operator.
    *

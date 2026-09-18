@@ -4,6 +4,7 @@ import {
   unexpandedOperatorCode,
   unparameterizedSyntaxParameterCode,
   unreadableItemCode,
+  unreadItemCode,
 } from "./diagnostics.js";
 import {
   bindingMacroResolver,
@@ -17,6 +18,7 @@ import {
   createTypeConsumers,
   StopSet,
   type ConsumerContext,
+  type ConsumerFailure,
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
 import type {
@@ -120,6 +122,34 @@ export interface CreateExpansionFrontendSessionOptions {
   readonly allocateBindingId: () => BindingId;
   readonly allocateInvocationId: () => InvocationId;
 }
+
+/**
+ * The words that begin a module item and nothing else.
+ *
+ * Recovery ends the damage where one of them begins a line, so that a file
+ * whose remaining semicolons all sit inside braces does not have the whole
+ * rest of itself swallowed by one unreadable item. The same set says which
+ * recovered runs are worth reporting: a run beginning at one of these words is
+ * a declaration the reader should have read, while syntax written in some
+ * other shape -- a macro invoked after its first operand, say -- begins with
+ * whatever that operand begins with.
+ */
+const definiteItemStarts: ReadonlySet<string> = new Set([
+  "abstract",
+  "class",
+  "const",
+  "declare",
+  "enum",
+  "export",
+  "function",
+  "import",
+  "interface",
+  "let",
+  "module",
+  "namespace",
+  "type",
+  "var",
+]);
 
 /**
  * The text of syntax for a diagnostic, spaced where the source spaced it. The
@@ -918,6 +948,16 @@ export function createExpansionFrontendSession(
    */
   const recoveredMacroNames = new Map<OriginId, string>();
 
+  /**
+   * The runs recovery passed through, each with what the reader wanted where
+   * it stopped. Whether a run is worth reporting is not known until expansion
+   * has finished with it, so the failure is kept rather than discarded.
+   */
+  const recoveredItems: {
+    readonly nodes: readonly Syntax[];
+    readonly failure: ConsumerFailure;
+  }[] = [];
+
   const noteRecoveredMacros = (raw: readonly Syntax[]): void => {
     const spellings = macroSpellingsInScope();
     if (spellings.size === 0) return;
@@ -979,6 +1019,91 @@ export function createExpansionFrontendSession(
         for (const child of node.children) visit(child as Syntax);
     };
     for (const node of syntax) visit(node);
+  };
+
+  /**
+   * What recovery could not read, said where nothing else says anything.
+   *
+   * Recovery is how syntax the reader is not meant to read reaches the
+   * expander -- a macro written after its first operand, an operator standing
+   * in an initializer -- so a word on every recovery would be a word on most
+   * files that use macros at all. It is also how a declaration the reader
+   * disagrees with TypeScript about reaches the output, and that has been
+   * silent: the item's structure is lost, whatever is written in it is passed
+   * through as written, and the only sign was `SWR4012` when a macro spelling
+   * happened to survive into the output.
+   *
+   * Reported where all three hold:
+   *
+   *  - the run begins at a word that begins a declaration and nothing else, so
+   *    it is a declaration rather than syntax written in some other shape;
+   *  - every node of the run still stands in the expanded syntax, so nothing
+   *    in it was macro syntax that expansion went on to rewrite -- recovery
+   *    bought nothing here;
+   *  - nothing already reported speaks about the run, so an unexpanded macro
+   *    or operator in it is described once, in its own words.
+   */
+  const reportUnreadItems = (
+    syntax: SyntaxSequence,
+    reportedAlready: readonly ExpandMacroSyntaxResult["diagnostics"][number][],
+  ): void => {
+    if (recoveredItems.length === 0) return;
+    // The tokens the expansion is written with, each by where it was written
+    // and what it says. An origin alone is not enough: a macro's expansion
+    // carries the origin of the invocation it replaced, so `logit` and the
+    // `console.log(1);` it expanded to answer to the same one.
+    const written = (node: Syntax): string =>
+      JSON.stringify([node.origin, node.tag === "token" ? node.raw : ""]);
+    const survived = new Set<string>();
+    const collect = (node: Syntax): void => {
+      if (node.tag === "token") survived.add(written(node));
+      if ("children" in node)
+        for (const child of node.children) collect(child as Syntax);
+    };
+    for (const node of syntax) collect(node);
+    for (const { nodes, failure } of recoveredItems) {
+      const head = nodes[0];
+      if (head === undefined) continue;
+      if (!definiteItemStarts.has(rawText(head) ?? "")) continue;
+      const tokens: Syntax[] = [];
+      const flatten = (node: Syntax): void => {
+        if (node.tag === "token") tokens.push(node);
+        if ("children" in node)
+          for (const child of node.children) flatten(child as Syntax);
+      };
+      for (const node of nodes) flatten(node);
+      if (!tokens.every((node) => survived.has(written(node)))) continue;
+      const first = originOfSyntax(head);
+      const spans = tokens
+        .map((node) => originOfSyntax(node))
+        .filter(({ sourceId }) => sourceId === first.sourceId);
+      const run = {
+        sourceId: first.sourceId,
+        start: Math.min(...spans.map(({ start }) => start)),
+        end: Math.max(...spans.map(({ end }) => end)),
+        originId: first.originId,
+      };
+      if (reportedAlready.some((diagnostic) => mentions(diagnostic, run)))
+        continue;
+      // Where the reader stopped, which is what its failure counted nodes to.
+      // A run recovery ended before that point is named at its last node
+      // rather than past its end.
+      const stopped =
+        nodes[Math.min(failure.progress, nodes.length - 1)] ?? head;
+      const expected = failure.expectations.join(" or ");
+      recoveryDiagnostics.push(
+        expansionDiagnosticRegistry.create(unreadItemCode, {
+          primaryOrigin: run,
+          messageArguments: [expected],
+          relatedOrigins: [
+            {
+              message: `The reader expected ${expected} here.`,
+              origin: originOfSyntax(stopped),
+            },
+          ],
+        }),
+      );
+    }
   };
 
   /**
@@ -1083,22 +1208,6 @@ export function createExpansionFrontendSession(
     if (category !== "item") return syntax;
     const cursor = createSyntaxCursor(syntax);
     const prepared: ProtectedSyntax[] = [];
-    const definiteItemStarts = new Set([
-      "abstract",
-      "class",
-      "const",
-      "declare",
-      "enum",
-      "export",
-      "function",
-      "import",
-      "interface",
-      "let",
-      "module",
-      "namespace",
-      "type",
-      "var",
-    ]);
     const fallbackItem = (raw: readonly Syntax[]): ProtectedSyntax => {
       const variableKeyword = raw.findIndex(
         (node) =>
@@ -1158,6 +1267,13 @@ export function createExpansionFrontendSession(
         if (raw.length === 0)
           throw new TypeError("source file contains an unenforestable item");
         noteRecoveredMacros(raw);
+        if (!attempted.matched)
+          recoveredItems.push(
+            Object.freeze({
+              nodes: Object.freeze([...raw]),
+              failure: attempted.failure,
+            }),
+          );
         cursor.advance(fallback.index - cursor.index);
         prepared.push(fallbackItem(raw));
         continue;
@@ -1206,6 +1322,7 @@ export function createExpansionFrontendSession(
       operatorDiagnostics.length = 0;
       recoveryDiagnostics.length = 0;
       recoveredMacroNames.clear();
+      recoveredItems.length = 0;
       const result = expandMacroSyntax({
         module: options.module,
         sourceId: options.sourceId,
@@ -1429,6 +1546,14 @@ export function createExpansionFrontendSession(
         new Set([...result.offeredOperators, ...offeredOperatorTokens]),
         [...operatorDiagnostics, ...recoveryDiagnostics, ...result.diagnostics],
       );
+      // Last of the three, so that an item holding a macro or an operator
+      // either of them speaks about is described in those words rather than as
+      // an item that could not be read.
+      reportUnreadItems(result.syntax, [
+        ...operatorDiagnostics,
+        ...recoveryDiagnostics,
+        ...result.diagnostics,
+      ]);
       const diagnosticKeys = new Set<string>();
       const uniqueDiagnostics = [
         ...operatorDiagnostics,

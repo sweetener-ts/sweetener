@@ -161,6 +161,61 @@ describe("production expansion frontend session", () => {
     expect(result.traces).toHaveLength(1);
   });
 
+  /**
+   * An item the reader could not read says so.
+   *
+   * Recovery passes such an item through as written and expansion carries on,
+   * which is how a macro written after its first operand reaches the expander
+   * at all -- and also how a declaration the reader disagrees with TypeScript
+   * about reached the output in silence. Every item-level parse bug found so
+   * far was invisible for exactly that reason.
+   */
+  test("says what it could not read when a recovered item expanded nothing", () => {
+    // `<A>y` is a type assertion, which TypeScript reads and this reader does
+    // not. Nothing in the declaration is macro syntax, so recovery bought
+    // nothing here and nothing else reports it.
+    const result = harness()("export const x = <A>y;", "item");
+
+    expect(
+      result.diagnostics.map(({ code, severity }) => ({ code, severity })),
+    ).toEqual([{ code: "SWR4025", severity: "warning" }]);
+    const reported = result.diagnostics[0];
+    if (reported === undefined) throw new Error("expected a diagnostic");
+    expect(reported.messageArguments).toEqual(["variable initializer"]);
+    expect(reported.relatedOrigins).toHaveLength(1);
+    // The whole item is named, and the place the reader stopped is named
+    // under it.
+    expect(reported.primaryOrigin.start).toBe(0);
+    expect(reported.primaryOrigin.end).toBe("export const x = <A>y;".length);
+    expect(reported.relatedOrigins[0]?.origin.start).toBeGreaterThan(
+      reported.primaryOrigin.start,
+    );
+  });
+
+  /**
+   * A recovery that did its job says nothing. The reader is not meant to read
+   * an operator's operands or a macro written after its first one, so a word
+   * on every recovery would be a word on most files that use macros.
+   */
+  test.each([
+    // An operator in an initializer: the declaration is recovered and the
+    // expander goes on to expand it.
+    "export const piped = 21 |> double;",
+    // An item macro's own expansion replaces the item.
+    "makeAnswer",
+  ])("says nothing about the recovery that expanded %j", (source) => {
+    expect(harness()(source, "item").diagnostics).toEqual([]);
+  });
+
+  /**
+   * A run that does not begin where a declaration begins is not a declaration
+   * the reader got wrong -- it is syntax written in some other shape, and
+   * TypeScript reports it if it is not a program at all.
+   */
+  test("says nothing about a recovered run that begins no declaration", () => {
+    expect(harness()("Box holds 1;", "item").diagnostics).toEqual([]);
+  });
+
   test("registers and invokes a generated expression macro later in the file", () => {
     const result = harness()(
       "define answer; export const result = answer!;",

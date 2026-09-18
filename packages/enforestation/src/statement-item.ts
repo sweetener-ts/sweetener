@@ -144,8 +144,8 @@ function definiteAssignment(next: Syntax | undefined): boolean {
 }
 
 /**
- * Whether the `const` at the cursor opens a declarator, rather than being the
- * `const` of `const enum`.
+ * Whether the `const` written at `offset` opens a declarator, rather than
+ * being the `const` of `const enum`.
  *
  * `const enum E {}` is an enum declaration; the word after the `const` is the
  * keyword `enum`, not a binder. A reader that takes every `const` for a
@@ -153,8 +153,28 @@ function definiteAssignment(next: Syntax | undefined): boolean {
  * statement reader survives only because it scans its head, while the item
  * reader parses one and refused the whole declaration.
  */
-function declaresVariable(cursor: SyntaxCursor): boolean {
-  return !(raw(cursor.peek()) === "const" && raw(cursor.peek(1)) === "enum");
+function declaresVariable(cursor: SyntaxCursor, offset = 0): boolean {
+  return !(
+    raw(cursor.peek(offset)) === "const" &&
+    raw(cursor.peek(offset + 1)) === "enum"
+  );
+}
+
+/**
+ * Whether the word at `offset` is the `declare` that marks the declaration
+ * after it ambient, rather than a name spelled `declare`.
+ *
+ * TypeScript writes `declare [no LineTerminator here] Declaration`, so
+ * `declare` and the `let x = 1;` written under it are two statements, the
+ * first of them a reference to a name. Both readers of a declaration ask it
+ * here rather than each deciding for itself: an ambient declaration stands
+ * wherever a declaration does, inside a function body as well as at a module's
+ * top level.
+ */
+function ambientDeclaration(cursor: SyntaxCursor, offset = 0): boolean {
+  if (raw(cursor.peek(offset)) !== "declare") return false;
+  const declared = cursor.peek(offset + 1);
+  return declared !== undefined && !leadingLineBreak(declared);
 }
 
 /**
@@ -545,12 +565,20 @@ class StatementConsumer implements SyntaxConsumer {
       if (!context.allowAwait) return awaitRefusal("stmt", cursor, start);
       return this.#consumeVariable(cursor, context, start, 2);
     }
+    // How many words of `declare let x: A;` stand in front of the declaration
+    // itself. An ambient declaration is read here as it is at item level, and
+    // is dispatched by what it declares rather than by the `declare`: read as
+    // a name, the `declare` was a statement of its own and the declaration
+    // under it left it with no terminator, so the whole thing was refused.
+    const ambient = ambientDeclaration(cursor) ? 1 : 0;
     // What this declaration declares, which for `const enum` is an enum: its
     // body is a member list rather than an initializer, and the word after the
     // `const` is a keyword rather than a binder.
-    const declared = declaresVariable(cursor) ? keyword : "enum";
+    const declared = declaresVariable(cursor, ambient)
+      ? raw(cursor.peek(ambient))
+      : "enum";
     if (["const", "let", "var", "using"].includes(declared ?? "")) {
-      return this.#consumeVariable(cursor, context, start, 1);
+      return this.#consumeVariable(cursor, context, start, 1 + ambient);
     }
     if (
       [
@@ -1406,7 +1434,9 @@ class ItemConsumer implements SyntaxConsumer {
     start: number,
   ): ConsumerAttempt | undefined {
     const children: Syntax[] = [];
-    while (raw(cursor.peek()) === "export" || raw(cursor.peek()) === "declare")
+    // `export` carries a declaration across a line break; `declare` does not,
+    // and the rule is asked where both readers ask it.
+    while (raw(cursor.peek()) === "export" || ambientDeclaration(cursor))
       children.push(cursor.consume()!);
     const declaration = raw(cursor.peek());
     if (declaration === "await" && raw(cursor.peek(1)) === "using") {
@@ -1569,6 +1599,22 @@ class ItemConsumer implements SyntaxConsumer {
         if (word !== undefined) headWords.push(word);
       }
       const endsAtBlock = headWords.some((word) => blockItemHeads.has(word));
+      // Whether this declaration is a type alias, whose body after the `=` is
+      // a type. `export` and `declare` stand in front of one; `import type A
+      // = require("m")` and `export type { A }` declare no alias, and their
+      // first word is not `type`.
+      const declaresType =
+        headWords.find((word) => word !== "export" && word !== "declare") ===
+        "type";
+      /** Whether the walk has passed the `=` that opens the alias's body. */
+      let typeBody = false;
+      /**
+       * How deep in type parameters the walk stands. The `=` of a parameter's
+       * default is written inside them, and does not open the body; a `<`
+       * still open encloses whatever is written under it, so a line break
+       * there ends nothing.
+       */
+      let typeArguments = 0;
       while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
         checkWork(context);
         const next = cursor.peek()!;
@@ -1576,6 +1622,24 @@ class ItemConsumer implements SyntaxConsumer {
           children.length > 0 &&
           leadingLineBreak(next) &&
           itemStarts.has(raw(next) ?? "")
+        ) {
+          break;
+        }
+        // The alias's body is a type, and a type ends at a line break the type
+        // grammar does not carry across: TypeScript writes
+        // `CheckType [no LineTerminator here] extends`, so `type T = A` and
+        // the `extends B ? C : D;` written under it are two items. Nothing
+        // else in this walk knows the type grammar, and reading straight past
+        // the break took both as one item -- a parse the host compiler does
+        // not share, and one that swallows whatever the next item invokes. A
+        // heritage clause's `extends` is written in a header rather than in a
+        // type and TypeScript does carry it across a break, so only the body
+        // of an alias is asked.
+        if (
+          typeBody &&
+          typeArguments === 0 &&
+          leadingLineBreak(next) &&
+          !headContinues(children.at(-1), next, true)
         ) {
           break;
         }
@@ -1590,6 +1654,17 @@ class ItemConsumer implements SyntaxConsumer {
           }
         }
         children.push(cursor.consume()!);
+        if (declaresType) {
+          const spelling = raw(next);
+          if (spelling !== undefined) {
+            typeArguments += angleWidth(spelling, "<");
+            typeArguments = Math.max(
+              0,
+              typeArguments - angleWidth(spelling, ">"),
+            );
+            if (typeArguments === 0 && spelling === "=") typeBody = true;
+          }
+        }
         if (token(next, ";")) break;
         // A brace where a return type is written is an object type; the body
         // is the brace after the whole type.
