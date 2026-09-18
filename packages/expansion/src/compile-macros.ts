@@ -627,6 +627,18 @@ export function compileParsedMacros(
   const classIds = new Map(
     parsed.classBindings.map(({ name, classId }) => [name, classId]),
   );
+  // Macros by the spelling they answer to, in the order they were declared, so
+  // a lookup reads only the macros spelled the way the name being resolved is.
+  // A walk asks this of every name it passes, once for each space that name
+  // could be read in, and scanning the whole module for each of those made the
+  // lookup the largest single cost of expanding a file.
+  const macrosBySpelling = new Map<string, CompiledMacroBinding[]>();
+  for (const macro of macros) {
+    const spelt = macrosBySpelling.get(macro.binding.spelling);
+    if (spelt === undefined)
+      macrosBySpelling.set(macro.binding.spelling, [macro]);
+    else spelt.push(macro);
+  }
   return Object.freeze({
     definitionScopes: options.definitionScopes,
     macros: frozenMacros,
@@ -636,12 +648,12 @@ export function compileParsedMacros(
     syntaxClasses: classes.registry,
     diagnostics: Object.freeze(diagnostics),
     classId: (name: string) => classIds.get(name),
-    get: (spelling: string, category?: CompiledMacroBinding["category"]) =>
-      frozenMacros.find(
-        (macro) =>
-          macro.binding.spelling === spelling &&
-          (category === undefined || macro.category === category),
-      ),
+    get: (spelling: string, category?: CompiledMacroBinding["category"]) => {
+      const spelt = macrosBySpelling.get(spelling);
+      if (spelt === undefined) return undefined;
+      if (category === undefined) return spelt[0];
+      return spelt.find((macro) => macro.category === category);
+    },
   });
 }
 

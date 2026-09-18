@@ -113,7 +113,13 @@ export function createSyntaxSequence(
   for (const child of syntax) {
     requireFrozenSyntax(child, "Syntax sequence child");
   }
-  return Object.freeze([...syntax]);
+  // A frozen array whose children are all frozen -- which the loop above has
+  // just established -- is already what this would build, and nothing can
+  // write to it afterwards, so it is handed back rather than copied. Copying
+  // it anyway rebuilt and re-froze an array for every group descended into,
+  // every cursor taken over a sequence and every sequence a template
+  // produced, each of which passes a sequence this already made.
+  return Object.isFrozen(syntax) ? syntax : Object.freeze([...syntax]);
 }
 
 function base(fields: SyntaxBaseFields): SyntaxBaseFields {
