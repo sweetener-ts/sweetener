@@ -5,6 +5,7 @@ import {
   createSyntaxCursor,
   createSyntaxSequence,
   isIdentifierToken,
+  leadingLineBreak,
   spanEnvelope,
   type OriginStore,
   type Precedence,
@@ -126,8 +127,10 @@ function expressionMarkerWidth(cursor: SyntaxCursor): number | undefined {
 
 function functionExpressionWidth(cursor: SyntaxCursor): number | undefined {
   let offset = 0;
-  const first = cursor.peek(offset);
-  if (first?.tag === "token" && first.raw === "async") offset += 1;
+  // `async` modifies the `function` after it only on the same line; alone on
+  // its line it is an ordinary name, as it is in front of an arrow's
+  // parameters.
+  if (asyncModifies(cursor.peek(0), cursor.peek(1))) offset += 1;
   const keyword = cursor.peek(offset);
   if (keyword?.tag !== "token" || keyword.raw !== "function") return undefined;
   offset += 1;
@@ -282,43 +285,48 @@ function asyncNamedArrowBodyStart(cursor: SyntaxCursor): number | undefined {
 }
 
 /**
- * Whether the `async` at the cursor modifies what follows it rather than being
- * an ordinary name. The grammar allows no line break between `async` and the
- * parameters it modifies, so `async` alone on its line is a name and the arrow
- * written under it is one of its own: TypeScript reads no `await` in the body
- * of `async \n v => await load()`.
+ * Whether `modifier` is an `async` that modifies `modified` rather than an
+ * ordinary name standing beside it. The grammar allows no line break between
+ * `async` and what it modifies, so `async` alone on its line is a name and the
+ * arrow written under it is one of its own: TypeScript reads no `await` in the
+ * body of `async \n v => await load()`.
+ *
+ * Every reader of an arrow asks this -- the one that measures an arrow from
+ * its head and the one that walks a closure written as loose tokens -- so it
+ * is stated here once, over the two nodes rather than over either's way of
+ * reaching them.
  */
-function asyncArrowModifier(cursor: SyntaxCursor): boolean {
-  const head = cursor.peek();
-  return (
-    head?.tag === "token" &&
-    head.raw === "async" &&
-    !leadingLineBreak(cursor.peek(1))
-  );
-}
-
-function leadingLineBreak(syntax: Syntax | undefined): boolean {
-  const first = syntax?.tag === "group" ? syntax.open : syntax;
-  return (
-    first?.tag === "token" &&
-    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
-  );
-}
-
-/**
- * Whether the arrow whose head these nodes are -- everything up to and
- * including its `=>` -- is async. `async` stands in front of the parameters,
- * so an arrow whose one parameter is named `async` is `async =>` and is not
- * one.
- */
-export function asyncArrowHead(head: readonly Syntax[]): boolean {
-  const modifier = head[0];
-  const after = head[1];
+export function asyncModifies(
+  modifier: Syntax | undefined,
+  modified: Syntax | undefined,
+): boolean {
   return (
     modifier?.tag === "token" &&
     modifier.raw === "async" &&
-    !(after?.tag === "token" && after.raw === "=>")
+    !leadingLineBreak(modified)
   );
+}
+
+/** Whether the `async` at the cursor modifies the parameters after it. */
+function asyncArrowModifier(cursor: SyntaxCursor): boolean {
+  return asyncModifies(cursor.peek(), cursor.peek(1));
+}
+
+/**
+ * Whether the arrow these nodes are is async: `async` written in front of its
+ * parameters, with no line break between the two.
+ *
+ * The nodes arrive in either of two shapes. Measured from its head an arrow is
+ * flat -- `async`, the parameters, `=>`, the body -- while read through the
+ * infix `=>` it is one operand, `=>` and the body, with the parameters already
+ * protected. Both are answered by the same question, because `async` is the
+ * modifier only where parameters rather than the `=>` stand after it: an arrow
+ * whose one parameter is itself named `async` is `async =>`, in either shape.
+ */
+export function asyncArrowHead(head: readonly Syntax[]): boolean {
+  const after = head[1];
+  if (after?.tag === "token" && after.raw === "=>") return false;
+  return asyncModifies(head[0], after);
 }
 
 function parenthesizedArrowBodyStart(
@@ -373,36 +381,75 @@ function parenthesizedArrowBodyStart(
   return undefined;
 }
 
+export interface ArrowBodyExtent {
+  /** The offset just past the body. */
+  readonly end: number;
+  /** Whether a conditional's `:` is what ended it. */
+  readonly conditional: boolean;
+}
+
 /**
- * Where an arrow's body ends, which is the end of an expression rather than
- * one node. Taking a single node made `(x) => x + 1` parse as
- * `((x) => x) + 1`, and the `+ 1` moved outside the function.
+ * Where a concise arrow body beginning at `from` ends, among the nodes `nodeAt`
+ * reads by offset. A body is the end of an expression rather than one node:
+ * taking a single node made `(x) => x + 1` parse as `((x) => x) + 1`, and the
+ * `+ 1` moved outside the function.
+ *
+ * It ends at a `,` or `;` standing beside it, or at a `:` paired with no `?` of
+ * its own -- the `:` of a conditional written around the arrow. Every group is
+ * one node here, so a `?` or `:` at this level belongs to a conditional: an
+ * object literal's, an annotation's and a type's are all inside a group, and
+ * `??` and `?.` are each one token. Counting the `?` written beside the body
+ * pairs them exactly as the grammar nests them, so `(v) => v ? 1 : 2` keeps its
+ * own alternate; ending at the first `:` left `: 2` outside the arrow.
+ *
+ * `stopsBefore` is where the surrounding parse ends: an arrow that is a pipe's
+ * operand ends where the pipe continues. It is not asked while a conditional is
+ * pending, because a pending `?` puts the body inside a consequent that runs to
+ * its own `:` -- which is the very boundary the surrounding parse would report
+ * when the arrow is itself a conditional's consequent.
+ *
+ * Both readers of an arrow ask this, one over a cursor and one over an array,
+ * so it is stated here once, over an offset either can answer.
  */
+export function arrowBodyExtent(
+  nodeAt: (offset: number) => Syntax | undefined,
+  from: number,
+  stopsBefore: (offset: number) => boolean = () => false,
+): ArrowBodyExtent {
+  let conditionals = 0;
+  for (let offset = from; ; offset += 1) {
+    const node = nodeAt(offset);
+    if (node === undefined) return { end: offset, conditional: false };
+    if (offset > from && conditionals === 0 && stopsBefore(offset))
+      return { end: offset, conditional: false };
+    if (node.tag !== "token") continue;
+    if (node.raw === "?") conditionals += 1;
+    else if (node.raw === ":") {
+      if (conditionals === 0) return { end: offset, conditional: true };
+      conditionals -= 1;
+    } else if (node.raw === "," || node.raw === ";")
+      return { end: offset, conditional: false };
+  }
+}
+
+/** Where the body of the arrow at the cursor ends, or undefined where it is empty. */
 function arrowBodyEnd(
   cursor: SyntaxCursor,
   bodyStart: number,
   context: ConsumerContext,
 ): number | undefined {
-  if (cursor.peek(bodyStart) === undefined) return undefined;
-  let offset = bodyStart;
   const at = cursor.fork();
-  at.advance(bodyStart);
-  while (true) {
-    const node = cursor.peek(offset);
-    if (node === undefined) break;
-    // What the surrounding parse stops at ends the body too: an arrow that
-    // is a pipe's operand ends where the pipe continues.
-    if (offset > bodyStart && context.stopSet.matches(at)) break;
-    // Groups are already balanced, so only a separator at this level ends it.
-    if (
-      node.tag === "token" &&
-      (node.raw === "," || node.raw === ";" || node.raw === ":")
-    )
-      break;
-    offset += 1;
-    at.advance();
-  }
-  return offset === bodyStart ? undefined : offset;
+  const origin = at.mark();
+  const { end } = arrowBodyExtent(
+    (offset) => cursor.peek(offset),
+    bodyStart,
+    (offset) => {
+      at.reset(origin);
+      at.advance(offset);
+      return context.stopSet.matches(at);
+    },
+  );
+  return end === bodyStart ? undefined : end;
 }
 
 function isPropertyName(syntax: Syntax | undefined): boolean {

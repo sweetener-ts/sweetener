@@ -46,11 +46,14 @@ import {
 } from "./diagnostics.js";
 import { readLetBinding, readParameterization } from "@sweetener/template";
 import {
+  arrowBodyExtent,
   asyncArrowHead,
+  asyncModifies,
   classElementEndsBefore,
   classMemberNameFollows,
   parameterBinder,
   typeOperandFollows,
+  type ArrowBodyExtent,
 } from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
 import { separatesList } from "./macro-extent.js";
@@ -1378,11 +1381,8 @@ export function expandMacroSyntax(
    * while in `c ? (x) : (y) => y` the consequent is `(x)`.
    *
    * TypeScript decides that by parsing the body and looking at the token after
-   * it; `arrowBodyEnd` instead counts the `?` and `:` written beside the body.
-   * The two agree: every group is already one node here, so a `?` or `:` at
-   * this level belongs to a conditional -- an object literal's, an
-   * annotation's and a type's are all inside a group -- and the count pairs
-   * them exactly as the grammar nests them.
+   * it; `arrowBodyExtent` instead counts the `?` and `:` written beside the
+   * body, which comes to the same reading.
    */
   const arrowAfterParameters = (
     preceding: readonly Syntax[],
@@ -1416,27 +1416,15 @@ export function expandMacroSyntax(
   };
 
   /**
-   * Where a concise arrow body starting at `from` in `nodes` ends: at a `,` or
-   * `;` beside it, or at a `:` that belongs to a conditional around the arrow
-   * rather than to one in its body. `conditional` says which it was.
+   * Where a concise arrow body starting at `from` in `nodes` ends. The rule is
+   * the enforester's, asked here over an array instead of a cursor; there is
+   * no surrounding parse to stop for, because a closure walked as tokens is
+   * bounded by whatever holds it.
    */
   const arrowBodyEnd = (
     nodes: readonly Syntax[],
     from: number,
-  ): { readonly end: number; readonly conditional: boolean } => {
-    let conditionals = 0;
-    for (let at = from; at < nodes.length; at += 1) {
-      const node = nodes[at]!;
-      if (node.tag !== "token") continue;
-      if (node.raw === "?") conditionals += 1;
-      else if (node.raw === ":") {
-        if (conditionals === 0) return { end: at, conditional: true };
-        conditionals -= 1;
-      } else if (node.raw === "," || node.raw === ";")
-        return { end: at, conditional: false };
-    }
-    return { end: nodes.length, conditional: false };
-  };
+  ): ArrowBodyExtent => arrowBodyExtent((at) => nodes[at], from);
 
   /**
    * Whether a parenthesis group holds names being bound rather than an
@@ -2149,7 +2137,10 @@ export function expandMacroSyntax(
     };
     // `task.class` and `task.function` name properties.
     if (token(at - 1, ".") || token(at - 1, "?.")) return undefined;
-    const async = token(at, "async");
+    // `async` modifies what is written after it on the same line; left alone
+    // on its own line it is an ordinary name, and the closure under it is one
+    // of its own. The enforestation route reads it by the same rule.
+    const async = asyncModifies(nodes[at], nodes[at + 1]);
     const start = async ? at + 1 : at;
     if (token(start, "function")) {
       const end = braceAfter(start + 1);
@@ -2181,7 +2172,9 @@ export function expandMacroSyntax(
       : {
           end,
           kind: "arrow",
-          async: head !== undefined && token(head + 1, "async"),
+          async:
+            head !== undefined &&
+            asyncModifies(nodes[head + 1], nodes[head + 2]),
         };
   };
 

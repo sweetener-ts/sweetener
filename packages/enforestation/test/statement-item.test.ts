@@ -323,6 +323,70 @@ describe("statement and item consumers", () => {
     }
   });
 
+  /**
+   * Where a variable statement written without a semicolon ends.
+   *
+   * The declarator loop read whatever followed the initializer as loose tokens
+   * until a `;`, so `const h = async` and the arrow written under it were one
+   * statement -- and the arrow, swallowed, was never read as the plain arrow it
+   * is. TypeScript ends the declaration at the line break, because nothing on
+   * the next line can continue the initializer.
+   *
+   * The boundary is the line break, not the shape of what follows it: an
+   * initializer that genuinely continues on the next line -- an operator
+   * carried over, an unclosed group -- has been read by the expression parse
+   * before this is asked, so what is left after it starts a statement of its
+   * own.
+   */
+  test.each([
+    // The `async` of a restricted production: with a line break after it, it
+    // is an ordinary name and the arrow under it is its own statement.
+    ["const h = async\nv => f();", "const h = async"],
+    ["const h = async\nfunction () { return 1; };", "const h = async"],
+    // Any other initializer the next line cannot continue ends the same way.
+    ["const x = a\nb;", "const x = a"],
+    ["const x = a\n++b;", "const x = a"],
+    ["var x = 1\nx++;", "var x = 1"],
+    ["const { a } = b\nc();", "const { a } = b"],
+    ["using r = acquire()\nuse(r);", "using r = acquire()"],
+    [
+      "const f = function ()\n{ return 1; }\ng();",
+      "const f = function ()\n{ return 1; }",
+    ],
+    ["const x = class\n{}\ng();", "const x = class\n{}"],
+    // An initializer that does continue on the next line is one statement, and
+    // so is a declarator list broken across lines.
+    ["const x = a +\nb;", "const x = a +\nb;"],
+    ["const x = {\n a: 1\n};", "const x = {\n a: 1\n};"],
+    ["const x = f(\n1\n);", "const x = f(\n1\n);"],
+    ["const x = a\n(b);", "const x = a\n(b);"],
+    ["const x = a\n[b];", "const x = a\n[b];"],
+    ["const x = a\n.b;", "const x = a\n.b;"],
+    ["const x = a\n? b : c;", "const x = a\n? b : c;"],
+    ["const x = a\n&& b;", "const x = a\n&& b;"],
+    ["const x = a\n`t`;", "const x = a\n`t`;"],
+    ["const x = a\ninstanceof B;", "const x = a\ninstanceof B;"],
+    ["const x = a\n, y = b;", "const x = a\n, y = b;"],
+    ["const a = 1,\nb = 2;", "const a = 1,\nb = 2;"],
+    ["let x\n= 1;", "let x\n= 1;"],
+    ["const x: number\n= 1;", "const x: number\n= 1;"],
+    ["let x: Array<\nnumber\n> = [];", "let x: Array<\nnumber\n> = [];"],
+  ])("ends the statement of %j at %j, as TypeScript does", (source, extent) => {
+    const whole = `${source}\nafter();`;
+    const { result } = parse(whole, "stmt");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a variable statement");
+    expect(printLosslessSequence(result.syntax.children)).toBe(extent);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+  });
+
   test("reconstructed representative extents parse with pinned TypeScript", () => {
     const statements = [
       "if (ready) run(); else stop();",

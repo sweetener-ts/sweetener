@@ -225,4 +225,115 @@ export function g(): unknown { total <- 1; ${statement} return [total, handler];
     expect(messages).toEqual([refusal]);
     expect(text).toContain("awaitonly(");
   });
+
+  // A conditional written as an arrow's concise body keeps its own `:`. The
+  // arrow was measured by stopping at the first `:` beside its body, so the
+  // alternate fell outside the arrow: the consequent got the arrow's async
+  // context and the alternate got the enclosing function's, and the two
+  // branches of one expression disagreed.
+  const conditionals: readonly (readonly [string, string, string])[] = [
+    [
+      "a conditional body",
+      "const handler = async (v: number) => v ? awaitonly(1) : awaitonly(2);",
+      "async (v: number) => v ? (await 1) : (await 2)",
+    ],
+    [
+      "a conditional nested in the consequent",
+      "const handler = async (v: number) => v ? v ? awaitonly(1) : 2 : awaitonly(3);",
+      "async (v: number) => v ? v ? (await 1) : 2 : (await 3)",
+    ],
+    [
+      "a conditional nested in the alternate",
+      "const handler = async (v: number) => v ? awaitonly(1) : v ? awaitonly(2) : 3;",
+      "async (v: number) => v ? (await 1) : v ? (await 2) : 3",
+    ],
+    [
+      "an object-literal body holding a conditional",
+      "const handler = async (v: number) => ({ a: v ? awaitonly(1) : awaitonly(2) });",
+      "async (v: number) => ({ a: v ? (await 1) : (await 2) })",
+    ],
+  ];
+
+  for (const [name, statement, expansion] of conditionals) {
+    test(`reaches the whole of ${name}, in a block that parses`, () => {
+      const { text, messages } = expand(
+        `export function g(): unknown { const total = 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(expansion);
+    });
+
+    test(`reaches the whole of ${name}, in a block walked as tokens`, () => {
+      const { text, messages } = expand(
+        `export function g(): unknown { total <- 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(expansion);
+    });
+  }
+
+  // The same extent read from the other side: a plain arrow inside an async
+  // function admits no `await` anywhere in its body, alternate included. The
+  // alternate used to fall outside the arrow, where the function's own context
+  // reached it and the macro was admitted against what TypeScript says.
+  const plainInsideAsync: readonly (readonly [string, string])[] = [
+    [
+      "a conditional body",
+      "const handler = (v: number) => v ? awaitonly(1) : awaitonly(2);",
+    ],
+    [
+      // Each branch is an arrow of its own, and a plain one.
+      "a conditional whose branches are arrows",
+      "const handler = (v: number) => v ? () => awaitonly(1) : () => awaitonly(2);",
+    ],
+  ];
+
+  for (const [name, statement] of plainInsideAsync) {
+    test(`is refused throughout ${name} of a plain arrow inside an async function, in a block that parses`, () => {
+      const { text, messages } = expand(
+        `export async function g(): Promise<unknown> { const total = 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([refusal, refusal]);
+      expect(text).toContain(statement.slice("const handler = ".length, -1));
+    });
+
+    test(`is refused throughout ${name} of a plain arrow inside an async function, in a block walked as tokens`, () => {
+      const { text, messages } = expand(
+        `export async function g(): Promise<unknown> { total <- 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([refusal, refusal]);
+      expect(text).toContain(statement.slice("const handler = ".length, -1));
+    });
+  }
+
+  // `async` modifies the parameters written after it on the same line. With a
+  // line break between them TypeScript reads an ordinary name, ends the
+  // declaration there, and reads the arrow under it as a plain one of its own
+  // -- admitting no `await` even inside an async function.
+  const separatedAsync = `const async = 1;
+  const handler = async
+  v => awaitonly(v);`;
+
+  test("is refused in the arrow under an `async` left on its own line, in a block that parses", () => {
+    const { text, messages } = expand(
+      `export async function g(): Promise<unknown> {
+  ${separatedAsync}
+  return [async, handler];
+}`,
+    );
+    expect(messages).toEqual([refusal]);
+    expect(text).toContain("awaitonly(v)");
+  });
+
+  test("is refused in the arrow under an `async` left on its own line, in a block walked as tokens", () => {
+    const { text, messages } = expand(
+      `export async function g(): Promise<unknown> {
+  total <- 1;
+  ${separatedAsync}
+  return [total, async, handler];
+}`,
+    );
+    expect(messages).toEqual([refusal]);
+    expect(text).toContain("awaitonly(v)");
+  });
 });

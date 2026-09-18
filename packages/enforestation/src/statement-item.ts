@@ -4,6 +4,7 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  leadingLineBreak,
   type GroupSyntax,
   type OriginStore,
   type ProtectedSyntax,
@@ -172,14 +173,6 @@ function consumeDecorator(
   if (!attempt.matched || !attempt.cursor.atEnd) return undefined;
   cursor.advance(width);
   return [nodes[0]!, attempt.syntax];
-}
-
-function leadingLineBreak(syntax: Syntax | undefined): boolean {
-  const first = syntax?.tag === "group" ? syntax.open : syntax;
-  return (
-    first?.tag === "token" &&
-    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
-  );
 }
 
 function originFor(origins: OriginStore, children: readonly Syntax[]) {
@@ -946,10 +939,23 @@ class StatementConsumer implements SyntaxConsumer {
     const children: Syntax[] = [];
     for (let index = 0; index < headWidth; index += 1)
       children.push(cursor.consume()!);
+    let initialized = false;
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
       if (token(next, ";")) break;
+      // A declarator ends where its initializer does, so only another
+      // declarator may follow one. Anything else on the next line begins a
+      // statement of its own: whatever could have continued the initializer
+      // across the line break -- an operator carried over, an unclosed group,
+      // a call, a member access -- the expression parse has already taken, so
+      // a line break here is where TypeScript ends the declaration too.
+      //
+      // `const h = async` and the `v => f()` written under it are two
+      // statements, the second of them a plain arrow. Read as one, the arrow
+      // was swallowed as loose tokens and never measured at all, so its body
+      // was left in whatever context held the declaration.
+      if (initialized && !token(next, ",") && asiAllowed(cursor)) break;
       if (token(next, "=")) {
         children.push(cursor.consume()!);
         const expression = this.#expression.consume(cursor, {
@@ -967,8 +973,10 @@ class StatementConsumer implements SyntaxConsumer {
         if (!expression.matched)
           return failure("stmt", cursor, start, ["variable initializer"], 40);
         children.push(expression.syntax);
+        initialized = true;
         continue;
       }
+      initialized = false;
       if (
         children.length > 1 &&
         leadingLineBreak(next) &&

@@ -248,3 +248,16 @@ export function createRootSyntax(options: CreateRootSyntaxOptions): RootSyntax {
     children: createSyntaxSequence(options.children),
   });
 }
+
+/**
+ * Whether a line break stands in front of `syntax`, which is what every
+ * `[no LineTerminator here]` in the grammar asks about. A group begins at its
+ * opening delimiter, which is where the trivia in front of it is written.
+ */
+export function leadingLineBreak(syntax: Syntax | undefined): boolean {
+  const first = syntax?.tag === "group" ? syntax.open : syntax;
+  return (
+    first?.tag === "token" &&
+    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
+  );
+}

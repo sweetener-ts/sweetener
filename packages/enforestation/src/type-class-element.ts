@@ -6,6 +6,7 @@ import {
   angleWidth,
   createSyntaxSequence,
   isIdentifierToken,
+  leadingLineBreak,
   spanEnvelope,
   type GroupSyntax,
   type OriginStore,
@@ -124,14 +125,6 @@ function token(
   raw?: string,
 ): syntax is TokenSyntax {
   return syntax?.tag === "token" && (raw === undefined || syntax.raw === raw);
-}
-
-function leadingLineBreak(syntax: Syntax | undefined): boolean {
-  const first = syntax?.tag === "group" ? syntax.open : syntax;
-  return (
-    first?.tag === "token" &&
-    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
-  );
 }
 
 function checkWork(context: ConsumerContext): void {

@@ -9,11 +9,17 @@ import {
   type SourceId,
   type SyntaxId,
 } from "@sweetener/shared";
-import { createSyntaxCursor, OriginStore } from "@sweetener/syntax";
+import {
+  createSyntaxCursor,
+  OriginStore,
+  type Syntax,
+} from "@sweetener/syntax";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
+  asyncArrowHead,
   ConsumerRegistry,
+  createPrattExpressionConsumer,
   createPrimaryExpressionConsumer,
   primaryExpressionPrecedence,
   StopSet,
@@ -189,6 +195,17 @@ describe("arrow extent", () => {
     // not beside the operand the infix route would protect.
     "(x: number): number => { return x; }",
     "async (): Promise<number> => { return 1; }",
+    // A conditional written as the body keeps its own `:`. Ending the body at
+    // the first `:` measured `(v) => v ? 1` and left `: 2` outside the arrow,
+    // where the alternate stood in whatever function held the arrow.
+    "(v) => v ? 1 : 2",
+    "(v) => v ? a ? b : c : d",
+    "(v) => v ? (a) => a : (b) => b",
+    "async (v) => v ? 1 : 2",
+    "(v: number): number => v ? 1 : 2",
+    // An object literal is one node, so the `:` written in it is not beside
+    // the body at all.
+    "(v) => ({ a: v ? 1 : 2 })",
   ])("measures %s as one arrow", (source) => {
     const { result } = consume(source);
     expect(result.matched).toBe(true);
@@ -228,6 +245,10 @@ describe("arrow extent", () => {
     "async (v) => v + 1",
     "(x: number): number => { return x; }",
     "async (): Promise<number> => { return 1; }",
+    "(v) => v ? 1 : 2",
+    "(v) => v ? a ? b : c : d",
+    "(v) => v ? (a) => a : (b) => b",
+    "(v) => ({ a: v ? 1 : 2 })",
   ])("agrees with TypeScript on the extent of %s", (expression) => {
     const output = printed(expression);
     const transpiled = ts.transpileModule(`const result = ${output};`, {
@@ -240,5 +261,93 @@ describe("arrow extent", () => {
       ),
     ).toEqual([]);
     expect(output).toBe(expression);
+  });
+});
+
+/**
+ * Whether an arrow's nodes say it is async, which is what decides whether
+ * `await` is an expression in its body.
+ *
+ * The nodes arrive in either of two shapes. Measured from its head an arrow is
+ * flat -- `async`, the parameters, `=>`, the body -- while read through the
+ * infix `=>` it is one operand, `=>` and the body, with the parameters already
+ * protected. The question is the same in both: whether the leading `async`
+ * stands in front of parameters, rather than being the one parameter itself or
+ * an ordinary name on a line of its own.
+ */
+describe("asyncArrowHead", () => {
+  function tokens(source: string): readonly Syntax[] {
+    const read = readSyntax(source, {
+      sourceId,
+      scopes: 0 as ScopeSetId,
+      originStore: new OriginStore(),
+    });
+    expect(read.diagnostics).toEqual([]);
+    return read.root.children.filter(
+      (node) => node.tag !== "token" || node.kind !== "end-of-file",
+    );
+  }
+
+  /** The nodes the infix `=>` builds an arrow from: one operand, then `=>`. */
+  function infixArrow(source: string): readonly Syntax[] {
+    const origins = new OriginStore();
+    const read = readSyntax(source, {
+      sourceId,
+      scopes: 0 as ScopeSetId,
+      originStore: origins,
+    });
+    expect(read.diagnostics).toEqual([]);
+    const ids = createIdAllocator<SyntaxId>(11_000);
+    const registry = new ConsumerRegistry([
+      {
+        category: "expr",
+        consumer: createPrattExpressionConsumer({
+          origins,
+          allocateSyntaxId: () => ids.allocate(),
+        }),
+      },
+    ]);
+    const result = registry.consume("expr", {
+      cursor: createSyntaxCursor(
+        read.root.children.filter(
+          (node) => node.tag !== "token" || node.kind !== "end-of-file",
+        ),
+      ),
+      phase: createPhase(0),
+      environmentEpoch: 0 as EnvironmentEpoch,
+      tracker: new ResourceTracker(createResourceBudget()),
+      allowYield: false,
+      allowAwait: false,
+    });
+    if (!result.matched) throw new Error("expected an arrow");
+    if (result.syntax.tag !== "protected" || result.syntax.form !== "arrow")
+      throw new Error("expected the infix `=>` to have read the arrow");
+    expect(result.syntax.children[1]).toMatchObject({ raw: "=>" });
+    return result.syntax.children;
+  }
+
+  test.each([
+    ["async v => v", true],
+    ["async (v) => v", true],
+    ["async <T,>(v: T) => v", true],
+    // `async` is the one parameter, not a modifier.
+    ["async => async", false],
+    ["v => v", false],
+    // The grammar allows no line break between `async` and the parameters it
+    // modifies, so this `async` is an ordinary name and the arrow under it is
+    // one of its own.
+    ["async\nv => v", false],
+  ])("reads the flat head of %s as async: %s", (source, expected) => {
+    expect(asyncArrowHead(tokens(source))).toBe(expected);
+  });
+
+  test.each([
+    ["v => v", false],
+    ["(v) => v", false],
+    // The one operand in front of the `=>` is the parameter, whatever it is
+    // spelled: `async` here names the parameter and modifies nothing.
+    ["async => async", false],
+  ])("reads the infix head of %s as async: %s", (source, expected) => {
+    expect(asyncArrowHead(infixArrow(source))).toBe(expected);
   });
 });

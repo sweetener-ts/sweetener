@@ -199,6 +199,41 @@ describe("Pratt expression consumer", () => {
     );
   });
 
+  /**
+   * A conditional written as an arrow's concise body keeps its own `:`. The
+   * arrow was measured by stopping at the first `:` beside its body, so the
+   * alternate fell outside the arrow: `(v) => v ? 1 : 2` was read as
+   * `(v) => v ? 1` with `: 2` left for whatever held it.
+   */
+  test.each([
+    "(v) => v ? 1 : 2",
+    "async (v) => v ? 1 : 2",
+    "(v: number): number => v ? 1 : 2",
+    "(v) => v ? a ? b : c : d",
+    "(v) => v ? (a) => a : (b) => b",
+    // The arrow is a conditional's consequent, so the `:` after its body is
+    // that conditional's and ends the body, while the `:` of the conditional
+    // written inside the body is the body's own.
+    "c ? (v) => v ? 1 : 2 : d",
+    "c ? (x) => x : d",
+    "[(v) => v ? 1 : 2, 3]",
+  ])("reads %s whole", (source) => {
+    const { result } = parse(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    expect(result.cursor.atEnd).toBe(true);
+    const transpiled = ts.transpileModule(`const result = ${source};`, {
+      compilerOptions: { strict: false, target: ts.ScriptTarget.ESNext },
+      reportDiagnostics: true,
+    });
+    expect(
+      (transpiled.diagnostics ?? []).filter(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      ),
+    ).toEqual([]);
+  });
+
   test("rejects yield when the lexical context is not a generator", () => {
     const origins = new OriginStore();
     const read = readSyntax("yield value", {
