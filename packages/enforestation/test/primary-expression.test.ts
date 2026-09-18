@@ -165,3 +165,80 @@ describe("primary and postfix expressions", () => {
     },
   );
 });
+
+/**
+ * How far an arrow reaches, which this consumer measures from the arrow's head
+ * rather than from the operand before its `=>`.
+ *
+ * The infix `=>` reads an arrow by protecting what stands to its left as the
+ * parameters, so it reads exactly the heads that are one operand and then
+ * `=>`: `v => …` and `(v) => …`. Every other head has to be measured here. In
+ * `async v => …` the head is two operands and only the name would stand to the
+ * arrow's left, so that route dropped the `async`, the statement holding the
+ * arrow did not parse, and the block fell back to a raw token walk.
+ */
+describe("arrow extent", () => {
+  test.each([
+    "async v => v + 1",
+    "async v => { return v; }",
+    "async v => async w => v + w",
+    "async (v) => v + 1",
+    "() => {}",
+    "<T,>(value: T) => { return value; }",
+    // A return type stands between the parameters and the `=>`, so the `=>` is
+    // not beside the operand the infix route would protect.
+    "(x: number): number => { return x; }",
+    "async (): Promise<number> => { return 1; }",
+  ])("measures %s as one arrow", (source) => {
+    const { result } = consume(source);
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an arrow");
+    expect(result.syntax.form).toBe("arrow");
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    expect(result.cursor.atEnd).toBe(true);
+  });
+
+  test.each([
+    // The infix `=>` reads these, and reads the body the same way.
+    ["v => v + 1", "v"],
+    ["(x: number) => { return x; }", "(x: number)"],
+    // An arrow whose one parameter is itself named `async`.
+    ["async => async", "async"],
+    // `async` modifies what is written on its own line; with a line break
+    // after it, it is an ordinary name and the arrow is the one after it.
+    ["async\nv => v", "async"],
+    // TypeScript reads this one as the call it looks like, and then reports
+    // the `=>` after it.
+    ["async\n(v) => v", "async\n(v)"],
+    // `async` standing as an ordinary name.
+    ["async(1)", "async(1)"],
+    ["async + 1", "async"],
+    ["async.then", "async.then"],
+  ])("leaves %s to the surrounding parse, taking %s", (source, taken) => {
+    const { result } = consume(source);
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an expression");
+    expect(result.syntax.form).toBeUndefined();
+    expect(printLosslessSequence(result.syntax.children)).toBe(taken);
+  });
+
+  test.each([
+    "async v => v + 1",
+    "async v => ({ v })",
+    "async (v) => v + 1",
+    "(x: number): number => { return x; }",
+    "async (): Promise<number> => { return 1; }",
+  ])("agrees with TypeScript on the extent of %s", (expression) => {
+    const output = printed(expression);
+    const transpiled = ts.transpileModule(`const result = ${output};`, {
+      compilerOptions: { strict: false, target: ts.ScriptTarget.ESNext },
+      reportDiagnostics: true,
+    });
+    expect(
+      (transpiled.diagnostics ?? []).filter(
+        (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+      ),
+    ).toEqual([]);
+    expect(output).toBe(expression);
+  });
+});

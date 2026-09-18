@@ -229,6 +229,26 @@ function failure(
   });
 }
 
+/**
+ * The refusal a statement head spelled with `await` gets where `await` is not
+ * an expression: the same one the `await` operator reports, because it is the
+ * same rule -- TypeScript allows each only inside an async function and at the
+ * top level of a module.
+ */
+function awaitRefusal(
+  category: "stmt" | "item",
+  cursor: SyntaxCursor,
+  start: number,
+): ConsumerAttempt {
+  return failure(
+    category,
+    cursor,
+    start,
+    ["await inside an async function"],
+    9,
+  );
+}
+
 function checkWork(context: ConsumerContext): void {
   context.cancellation.throwIfCancellationRequested();
   context.tracker.checkDeadline();
@@ -386,16 +406,14 @@ class StatementConsumer implements SyntaxConsumer {
     ) {
       return this.#consumeRestricted(cursor, context, start, keyword!);
     }
-    if (
-      ["const", "let", "var", "using"].includes(keyword ?? "") ||
-      (keyword === "await" && raw(cursor.peek(1)) === "using")
-    ) {
-      return this.#consumeVariable(
-        cursor,
-        context,
-        start,
-        keyword === "await" ? 2 : 1,
-      );
+    if (keyword === "await" && raw(cursor.peek(1)) === "using") {
+      // `await using` suspends the function it is written in, so it stands
+      // only where `await` is an expression.
+      if (!context.allowAwait) return awaitRefusal("stmt", cursor, start);
+      return this.#consumeVariable(cursor, context, start, 2);
+    }
+    if (["const", "let", "var", "using"].includes(keyword ?? "")) {
+      return this.#consumeVariable(cursor, context, start, 1);
     }
     if (
       [
@@ -656,9 +674,12 @@ class StatementConsumer implements SyntaxConsumer {
   ): ConsumerAttempt {
     const keyword = cursor.consume()!;
     const children: Syntax[] = [keyword];
-    // `for await (const item of items)`.
-    if (token(keyword, "for") && token(cursor.peek(), "await"))
+    // `for await (const item of items)`, which awaits each step and so stands
+    // only where `await` is an expression.
+    if (token(keyword, "for") && token(cursor.peek(), "await")) {
+      if (!context.allowAwait) return awaitRefusal("stmt", cursor, start);
       children.push(cursor.consume()!);
+    }
     if (!this.#consumeHeader(cursor, children, raw(keyword)!, context)) {
       return failure(
         "stmt",
@@ -1198,6 +1219,10 @@ class ItemConsumer implements SyntaxConsumer {
       children.push(cursor.consume()!);
     const declaration = raw(cursor.peek());
     if (declaration === "await" && raw(cursor.peek(1)) === "using") {
+      // The same rule as at statement level: `await using` suspends the
+      // function it is written in, and a module's top level is where `await`
+      // is an expression outside one.
+      if (!context.allowAwait) return awaitRefusal("item", cursor, start);
       children.push(cursor.consume()!, cursor.consume()!);
     } else if (["const", "let", "var", "using"].includes(declaration ?? "")) {
       children.push(cursor.consume()!);

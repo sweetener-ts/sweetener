@@ -85,6 +85,26 @@ describe("a statement list holding a block-bodied arrow", () => {
       "const handler = (first: number) => { return first; };",
     ],
     ["with a concise body", "const handler = () => 1;"],
+    // A return type stands between the parameters and the `=>`, so the `=>`
+    // is not beside the operand the infix reading would protect.
+    [
+      "with a return type and a parameter",
+      "const handler = (first: number): number => { return first; };",
+    ],
+    [
+      "async with a return type",
+      "const handler = async (): Promise<void> => {};",
+    ],
+    // `async v => …` puts two operands in front of the `=>`, of which only the
+    // name would be taken, so that reading dropped the `async`.
+    [
+      "async with an unparenthesized parameter",
+      "const handler: (v: number) => Promise<number> = async v => { return v; };",
+    ],
+    [
+      "async with an unparenthesized parameter and a concise body",
+      "const handler: (v: number) => Promise<number> = async v => v;",
+    ],
     ["inside a call", "[1].forEach(() => {});"],
     ["immediately invoked", "(() => {})();"],
   ];

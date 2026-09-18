@@ -1971,6 +1971,11 @@ ${main}
     ],
     ["an arrow", "inner", "const inner = () => twice(yield 1);"],
     [
+      "an unparenthesized async arrow",
+      "inner",
+      "const inner = async value => twice(yield 1);",
+    ],
+    [
       "an arrow with a block body",
       "inner",
       "const inner = () => { return twice(yield 1); };",
@@ -2115,6 +2120,17 @@ export async function run(): Promise<void> {
   }
 }`,
     ],
+    // An arrow whose one parameter is written without parentheses is read
+    // from its head: `async` and the name are two operands, and only the name
+    // stands beside the `=>` for the infix reading to protect.
+    [
+      "an unparenthesized async arrow inside a plain function",
+      `type Handler = (value: number) => Promise<unknown>;
+export function run(): unknown {
+  const inner: Handler = async value => [value, twice(await load())];
+  return inner;
+}`,
+    ],
     // `async` stands in front of an arrow's type parameters as readily as in
     // front of its parameter list.
     [
@@ -2127,6 +2143,17 @@ export async function run(): Promise<void> {
     // Every Sweetener source is a module, so the outermost position is a
     // module's top level rather than a script's.
     ["the top level of a module", `export const run = twice(await load());`],
+    // `for await` awaits each step of the iteration, so it stands exactly
+    // where the `await` operator does: a module's top level is one such place.
+    [
+      "a for await at the top level of a module",
+      `declare const source: AsyncIterable<number>;
+for await (const value of source) {
+  void value;
+  void twice(await load());
+}
+export const run = 1;`,
+    ],
   ] as const) {
     test(`await is an expression in ${form}`, () => {
       const { text, messages } = expand(
@@ -2191,6 +2218,13 @@ export async function* run(): AsyncGenerator<number, unknown, unknown> {
       "an arrow nested inside an async function",
       `export async function run(): Promise<unknown> {
   const inner = (): unknown => twice(await load());
+  return inner;
+}`,
+    ],
+    [
+      "an unparenthesized arrow nested inside an async function",
+      `export async function run(): Promise<unknown> {
+  const inner = value => twice(await load());
   return inner;
 }`,
     ],

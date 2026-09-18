@@ -35,6 +35,13 @@ function parse(
   source: string,
   resolveMacroOperator?: MacroOperatorResolver,
   allowComma = false,
+  // Read as though inside an async generator, so `yield` and `await` parse
+  // like any other prefix operator; a caller testing where each is an
+  // expression says so for itself.
+  contexts: { readonly allowYield: boolean; readonly allowAwait: boolean } = {
+    allowYield: true,
+    allowAwait: true,
+  },
 ) {
   const origins = new OriginStore();
   const read = readSyntax(source, {
@@ -64,11 +71,8 @@ function parse(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker: new ResourceTracker(createResourceBudget()),
-    // Read as though inside an async generator, so `yield` and `await` parse
-    // like any other prefix operator; refusing each where it is not an
-    // expression is tested on its own.
-    allowYield: true,
-    allowAwait: true,
+    allowYield: contexts.allowYield,
+    allowAwait: contexts.allowAwait,
   });
   return { result, cursor, origins, syntax, ids };
 }
@@ -510,6 +514,10 @@ describe("Pratt expression consumer", () => {
     ["a ? b : c", "conditional"],
     ["x => x + 1", "arrow"],
     ["(x: number) => x + 1", "arrow"],
+    ["async v => v + 1", "arrow"],
+    ["async v => { return v; }", "arrow"],
+    // An arrow whose one parameter is itself named `async`.
+    ["async => async", "arrow"],
     ["a += b", "assignment"],
     ["a ??= b", "assignment"],
     ["yield a", "yield"],
@@ -632,5 +640,94 @@ describe("Pratt expression consumer", () => {
       expect(result.syntax.form).toBe("arrow");
       expect(operatorAt(result.syntax)).toBe("=>");
     });
+  });
+});
+
+/**
+ * An arrow written with one unparenthesized parameter.
+ *
+ * `v => …` is read by the infix `=>`, which protects the name to its left as
+ * the parameters. `async v => …` cannot be: `async` and the name are two
+ * operands, only the name stands beside the `=>`, and the `async` was left
+ * behind as an operand of its own. The statement holding the arrow then did
+ * not parse at all, and the block fell back to a raw token walk.
+ */
+describe("an unparenthesized arrow", () => {
+  test.each([
+    "async v => v + 1",
+    "async v => { return v; }",
+    "async v => async w => v + w",
+    "v => async w => w",
+    "[1].map(async v => v + 1)",
+    "async => async",
+  ])("reads %s whole", (source) => {
+    const { result } = parse(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.cursor.atEnd).toBe(true);
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
+  // `async` modifies the parameters written after it on the same line. With a
+  // line break between them it is an ordinary name, and TypeScript reads the
+  // arrow after it as one of its own.
+  test("is not one when a line break follows `async`", () => {
+    const { result } = parse("async\nv => v");
+    if (!result.matched) throw new Error("expected an expression");
+    expect(result.syntax.form).toBeUndefined();
+    expect(printLosslessSequence(result.syntax.children)).toBe("async");
+    expect(result.cursor.peek()).toMatchObject({ raw: "v" });
+  });
+
+  test.each(["async(1)", "async + 1", "async.then(f)", "async"])(
+    "reads %s as the ordinary name it is",
+    (source) => {
+      const { result } = parse(source);
+      if (!result.matched)
+        throw new Error(result.failure.expectations.join(", "));
+      expect(result.syntax.form).toBeUndefined();
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    },
+  );
+
+  // An arrow is async by its own header, so `await` is an expression in the
+  // body of `async v => …` wherever the arrow is written, and in the body of
+  // `v => …` nowhere. An arrow is never a generator, so `yield` is an
+  // expression in neither.
+  test("reads its body in the contexts the arrow's own header gives", () => {
+    const outside = { allowYield: false, allowAwait: false };
+    const asyncArrow = parse(
+      "async v => await load()",
+      undefined,
+      false,
+      outside,
+    ).result;
+    if (!asyncArrow.matched)
+      throw new Error(asyncArrow.failure.expectations.join(", "));
+    expect(asyncArrow.syntax.children).toHaveLength(4);
+    expect((asyncArrow.syntax.children[3] as ProtectedSyntax).form).toBe(
+      "await",
+    );
+    const inside = { allowYield: true, allowAwait: true };
+    // A body this cannot read is kept as the tokens it was written with, so
+    // `yield` inside the arrow never becomes the expression it is not.
+    const generator = parse(
+      "async v => yield 1",
+      undefined,
+      false,
+      inside,
+    ).result;
+    if (!generator.matched)
+      throw new Error(generator.failure.expectations.join(", "));
+    expect(generator.syntax.children.map(({ tag }) => tag)).toEqual([
+      "token",
+      "token",
+      "token",
+      "token",
+      "token",
+    ]);
+    expect(
+      parse("v => await load()", undefined, false, inside).result.matched,
+    ).toBe(false);
   });
 });

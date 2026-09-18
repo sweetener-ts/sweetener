@@ -31,6 +31,12 @@ function parse(
   source: string,
   category: "stmt" | "item",
   resolveMacro?: StatementItemMacroResolver,
+  // Read as though inside a plain function, where neither `yield` nor `await`
+  // is an expression; a caller testing where either is one says so for itself.
+  contexts: { readonly allowYield: boolean; readonly allowAwait: boolean } = {
+    allowYield: false,
+    allowAwait: false,
+  },
 ) {
   const origins = new OriginStore();
   const read = readSyntax(source, {
@@ -64,8 +70,8 @@ function parse(
     phase: createPhase(0),
     environmentEpoch: 0 as EnvironmentEpoch,
     tracker,
-    allowYield: false,
-    allowAwait: false,
+    allowYield: contexts.allowYield,
+    allowAwait: contexts.allowAwait,
   });
   return { result, cursor, syntax, origins, ids, tracker };
 }
@@ -158,13 +164,62 @@ describe("statement and item consumers", () => {
   test.each([
     "using resource = acquire();",
     "@sealed class DecoratedBox { value: number; }",
-    "await using resource = acquireAsync();",
   ])("consumes explicit resource-management statement %s", (source) => {
     const { result } = parse(source, "stmt");
     expect(result.matched).toBe(true);
     if (!result.matched) throw new Error("expected using declaration");
     expect(result.cursor.atEnd).toBe(true);
     expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
+  // `await using` and the `await` of `for await` suspend the function they are
+  // written in exactly as the `await` operator does, so TypeScript allows them
+  // only where it allows that -- inside an async function and at the top level
+  // of a module. Taken as a statement head without asking, each parsed in a
+  // plain function, where TypeScript rejects it.
+  const awaiting = [
+    "await using resource = acquireAsync();",
+    "for await (const value of source) { use(value); }",
+  ];
+
+  test.each(awaiting)(
+    "consumes %s where `await` is an expression",
+    (source) => {
+      const { result } = parse(source, "stmt", undefined, {
+        allowYield: false,
+        allowAwait: true,
+      });
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected an awaiting statement");
+      expect(result.cursor.atEnd).toBe(true);
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    },
+  );
+
+  test.each(awaiting)("refuses %s where `await` is not one", (source) => {
+    const { result } = parse(source, "stmt");
+    expect(result.matched).toBe(false);
+    if (result.matched) throw new Error("expected a refusal");
+    expect(result.failure.expectations).toContain(
+      "await inside an async function",
+    );
+  });
+
+  test("reads a module-level `await using` by the same rule", () => {
+    const source = "await using resource = acquireAsync();";
+    const allowed = parse(source, "item", undefined, {
+      allowYield: false,
+      allowAwait: true,
+    }).result;
+    expect(allowed.matched).toBe(true);
+    if (!allowed.matched) throw new Error("expected a using item");
+    expect(printLosslessSequence(allowed.syntax.children)).toBe(source);
+    const refused = parse(source, "item").result;
+    expect(refused.matched).toBe(false);
+    if (refused.matched) throw new Error("expected a refusal");
+    expect(refused.failure.expectations).toContain(
+      "await inside an async function",
+    );
   });
 
   test.each(["return 1 + ;", "break 1 + ;", "continue 1 + ;"])(

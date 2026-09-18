@@ -88,6 +88,26 @@ describe("a generator-only macro inside an arrow", () => {
       "const handler = (v) => genonly(v);",
     ],
     ["a block body", "const handler = () => { return genonly(1); };"],
+    // `async v => …` is read from its head rather than from the operand before
+    // its `=>`, where only the name stands and the `async` would be dropped.
+    // Read that way the arrow was not one at all, its statement did not parse,
+    // and the generator's own context reached the body.
+    [
+      "an unparenthesized parameter and a concise body",
+      "const handler = v => genonly(v);",
+    ],
+    [
+      "an unparenthesized async parameter and a concise body",
+      "const handler = async v => genonly(v);",
+    ],
+    [
+      "an unparenthesized async parameter and a block body",
+      "const handler = async v => { return genonly(v); };",
+    ],
+    [
+      "a nested unparenthesized async arrow",
+      "const handler = async v => async w => genonly(w);",
+    ],
     [
       "a concise body after a type annotation",
       "const handler: () => number = () => genonly(1);",
@@ -133,6 +153,21 @@ describe("a generator-only macro inside an arrow", () => {
     expect(messages).toEqual([]);
     expect(text).toBe(
       "export function* g(): Generator<number> { const total = 1; const handler = () => total; yield (yield handler()); }",
+    );
+  });
+
+  test("is still admitted after an unparenthesized async arrow's body ends", () => {
+    // The parameter is typed by an alias rather than by a function type
+    // written beside it, so that the annotation holds no `=>` of its own.
+    const alias = "type Handler = (v: number) => Promise<number>;";
+    const declaration = "const handler: Handler = async v => v;";
+    const { text, messages } = expand(
+      `${alias}
+export function* g(): Generator<number> { ${declaration} yield genonly(1); void handler; }`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toBe(
+      `${alias} export function* g(): Generator<number> { ${declaration} yield (yield 1); void handler; }`,
     );
   });
 

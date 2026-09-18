@@ -89,6 +89,14 @@ describe("an async-only macro inside an arrow", () => {
     ],
     ["a block body", "const handler = () => { return awaitonly(1); };"],
     [
+      "an unparenthesized parameter and a concise body",
+      "const handler = v => awaitonly(v);",
+    ],
+    [
+      "an unparenthesized parameter and a block body",
+      "const handler = v => { return awaitonly(v); };",
+    ],
+    [
       "a concise body after a type annotation",
       "const handler: () => number = () => awaitonly(1);",
     ],
@@ -154,6 +162,53 @@ describe("an async-only macro inside an arrow", () => {
     expect(messages).toEqual([]);
     expect(text).toContain("async () => (await total)");
   });
+
+  // `async v => …` is read from its head rather than from the operand before
+  // its `=>`, where only the name stands and the `async` would be dropped.
+  // Read that way the arrow was not one at all, its statement did not parse,
+  // and the plain function around it refused the `await` the arrow admits.
+  //
+  // The parameter is typed by an alias rather than by a function type written
+  // beside it, so that the annotation holds no `=>` of its own.
+  const aliases = `type Handler = (v: number) => Promise<number>;
+type Nested = (v: number) => Promise<(w: number) => Promise<number>>;`;
+  const unparenthesized: readonly (readonly [string, string, string])[] = [
+    [
+      "a concise body",
+      "const handler: Handler = async v => awaitonly(v);",
+      "async v => (await v)",
+    ],
+    [
+      "a block body",
+      "const handler: Handler = async v => { return awaitonly(v); };",
+      "async v => { return (await v); }",
+    ],
+    [
+      "a nested unparenthesized async arrow",
+      "const handler: Nested = async v => async w => awaitonly(v + w);",
+      "async v => async w => (await (v + w))",
+    ],
+  ];
+
+  for (const [name, statement, expansion] of unparenthesized) {
+    test(`is admitted in an unparenthesized async arrow with ${name}, in a block that parses`, () => {
+      const { text, messages } = expand(
+        `${aliases}
+export function g(): unknown { const total = 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(expansion);
+    });
+
+    test(`is admitted in an unparenthesized async arrow with ${name}, in a block walked as tokens`, () => {
+      const { text, messages } = expand(
+        `${aliases}
+export function g(): unknown { total <- 1; ${statement} return [total, handler]; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(expansion);
+    });
+  }
 
   test("is still admitted in a function written inside an async one, when that function is async", () => {
     const { text, messages } = expand(

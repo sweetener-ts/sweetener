@@ -193,9 +193,13 @@ function arrowWidth(
   cursor: SyntaxCursor,
   context: ConsumerContext,
 ): ArrowExtent | undefined {
-  // A single named parameter is left to the infix `=>`, which reads the body
-  // the same way; only a parameter list needs measuring here.
-  const bodyStart = parenthesizedArrowBodyStart(cursor, context);
+  // `v => body` is left to the infix `=>`, which reads the body the same way.
+  // `async v => body` cannot be: `async` and the name are two operands, only
+  // the name stands beside the `=>`, and that route would read the `async` as
+  // an operand of its own and leave the arrow behind.
+  const bodyStart =
+    asyncNamedArrowBodyStart(cursor) ??
+    parenthesizedArrowBodyStart(cursor, context);
   if (bodyStart === undefined) return undefined;
   // A block body goes to the infix `=>` wherever that route can read it:
   // taking it here would protect a statement list as an expression, which
@@ -203,23 +207,35 @@ function arrowWidth(
   // emitted wrongly by that route, and this cannot fix it without breaking the
   // call site.
   //
-  // That route protects what stands to the arrow's left, so it needs an
-  // operand there. An empty parameter list is not one, and neither is the `<`
-  // a type parameter list opens with, so `() => {}` and `<T,>(v: T) => {}`
-  // could not be read at all: nothing could begin the expression, the
-  // statement holding the arrow did not parse, and the whole statement list
-  // fell back to a raw token walk where no macro beside it resolves. Those are
-  // measured here, where the arrow is read from its parameters rather than
-  // from what precedes it.
+  // That route reads only the arrows `infixArrowReadsHead` names, so
+  // `() => {}`, `<T,>(v: T) => {}` and `(v): T => {}` could not be read at
+  // all: nothing could begin the expression, the statement holding the arrow
+  // did not parse, and the whole statement list fell back to a raw token walk
+  // where no macro beside it resolves. Those are measured here, where the
+  // arrow is read from its parameters rather than from what precedes it.
   const body = cursor.peek(bodyStart);
   if (
     body?.tag === "group" &&
     body.delimiter === "brace" &&
-    isPrimaryAtom(cursor.peek())
+    infixArrowReadsHead(cursor, bodyStart)
   )
     return undefined;
   const width = arrowBodyEnd(cursor, bodyStart, context);
   return width === undefined ? undefined : { width, bodyStart };
+}
+
+/**
+ * Whether the infix `=>` can read the arrow whose body begins at `bodyStart`.
+ *
+ * That route protects what stands to the arrow's left as its parameters, so it
+ * reads exactly the heads that are one operand and then `=>`: `v => …` and
+ * `(v) => …`. Nothing an expression can begin with stands in front of the `=>`
+ * of `() => …` or `<T,>(v: T) => …`; a return type stands between the
+ * parameters and the `=>` of `(v): T => …`; and `async v => …` puts two
+ * operands there, of which only the name would be taken.
+ */
+function infixArrowReadsHead(cursor: SyntaxCursor, bodyStart: number): boolean {
+  return bodyStart === 2 && isPrimaryAtom(cursor.peek());
 }
 
 /**
@@ -231,20 +247,62 @@ export function arrowBodyStart(
   cursor: SyntaxCursor,
   context: ConsumerContext,
 ): number | undefined {
-  const namedAt = (offset: number) => {
-    const name = cursor.peek(offset);
-    const arrow = cursor.peek(offset + 1);
-    return (
-      name?.tag === "token" &&
-      (name.kind === "identifier" || name.raw === "async") &&
-      arrow?.tag === "token" &&
-      arrow.raw === "=>"
-    );
-  };
-  if (namedAt(0)) return 2;
+  return (
+    bareNamedArrowBodyStart(cursor) ??
+    asyncNamedArrowBodyStart(cursor) ??
+    parenthesizedArrowBodyStart(cursor, context)
+  );
+}
+
+/** Whether the node at `offset` is a name and the one after it is `=>`. */
+function namedArrowFollows(cursor: SyntaxCursor, offset: number): boolean {
+  const name = cursor.peek(offset);
+  const arrow = cursor.peek(offset + 1);
+  return (
+    name?.tag === "token" &&
+    (name.kind === "identifier" || name.raw === "async") &&
+    arrow?.tag === "token" &&
+    arrow.raw === "=>"
+  );
+}
+
+/**
+ * Where the body of `v => …` begins, the arrow whose one parameter is a bare
+ * name. `async => …` is this arrow, with a parameter named `async`.
+ */
+function bareNamedArrowBodyStart(cursor: SyntaxCursor): number | undefined {
+  return namedArrowFollows(cursor, 0) ? 2 : undefined;
+}
+
+/** Where the body of `async v => …` begins. */
+function asyncNamedArrowBodyStart(cursor: SyntaxCursor): number | undefined {
+  return asyncArrowModifier(cursor) && namedArrowFollows(cursor, 1)
+    ? 3
+    : undefined;
+}
+
+/**
+ * Whether the `async` at the cursor modifies what follows it rather than being
+ * an ordinary name. The grammar allows no line break between `async` and the
+ * parameters it modifies, so `async` alone on its line is a name and the arrow
+ * written under it is one of its own: TypeScript reads no `await` in the body
+ * of `async \n v => await load()`.
+ */
+function asyncArrowModifier(cursor: SyntaxCursor): boolean {
   const head = cursor.peek();
-  if (head?.tag === "token" && head.raw === "async" && namedAt(1)) return 3;
-  return parenthesizedArrowBodyStart(cursor, context);
+  return (
+    head?.tag === "token" &&
+    head.raw === "async" &&
+    !leadingLineBreak(cursor.peek(1))
+  );
+}
+
+function leadingLineBreak(syntax: Syntax | undefined): boolean {
+  const first = syntax?.tag === "group" ? syntax.open : syntax;
+  return (
+    first?.tag === "token" &&
+    first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
+  );
 }
 
 /**
@@ -268,8 +326,7 @@ function parenthesizedArrowBodyStart(
   context: ConsumerContext,
 ): number | undefined {
   let offset = 0;
-  const head = cursor.peek();
-  if (head?.tag === "token" && head.raw === "async") {
+  if (asyncArrowModifier(cursor)) {
     const after = cursor.peek(1);
     // `async` alone is an ordinary identifier; only a parameter list or type
     // parameters after it begin an arrow.
