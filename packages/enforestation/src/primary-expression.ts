@@ -86,10 +86,10 @@ const literalKeywords = new Set([
  * 1` and `const x = yield;` are both legal TypeScript outside one.
  *
  * The expression parser offers them here only where no operand of their own
- * stands after them -- a `yield` cannot take one across a line break, and an
- * `await` outside an async function takes only what is written on its line --
- * so the word left alone is read as the name it is rather than as an operator
- * with nothing to apply.
+ * stands beside them -- a `yield` cannot take one across a line break, and
+ * outside the function that admits it either word takes only an identifier, a
+ * keyword or a literal written on its line -- so the word left alone is read
+ * as the name it is rather than as an operator with nothing to apply.
  */
 const suspendingWords = new Set(["await", "yield"]);
 

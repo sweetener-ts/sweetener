@@ -417,6 +417,21 @@ describe("statement and item consumers", () => {
     ["const h = () => a\ninstanceof B;", "const h = () => a\ninstanceof B;"],
     ["const r = c ? (x): T => x : y;", "const r = c ? (x): T => x : y;"],
     ["const f = (x): T => x;", "const f = (x): T => x;"],
+    // `await` and `yield` with no operand of their own are the names they
+    // also are, whatever stands after them: TypeScript reads one as an
+    // operator only where the next token on its line can be nothing but its
+    // operand, and an operator, a punctuator or a group is never that.
+    ["const x = await;", "const x = await;"],
+    ["const x = yield;", "const x = yield;"],
+    ["const x = yield * 2;", "const x = yield * 2;"],
+    ["const x = await ? 1 : 2;", "const x = await ? 1 : 2;"],
+    ["const x = await + 1;", "const x = await + 1;"],
+    ["const x = await - 1;", "const x = await - 1;"],
+    ["const x = await * 2;", "const x = await * 2;"],
+    ["const x = await (v);", "const x = await (v);"],
+    ["const x = await [v];", "const x = await [v];"],
+    ["const x = yield + 1;", "const x = yield + 1;"],
+    ["const x = yield ? 1 : 2;", "const x = yield ? 1 : 2;"],
   ])("ends the statement of %j at %j, as TypeScript does", (source, extent) => {
     const whole = `${source}\nafter();`;
     const { result } = parse(whole, "stmt");
@@ -460,6 +475,106 @@ describe("statement and item consumers", () => {
       ts.ScriptKind.TS,
     );
     expect(parsed.statements[0]?.getText(parsed)).toBe("const x = async v");
+  });
+
+  /**
+   * One declaration, read the same way at statement level and at item level.
+   *
+   * A declarator's head ends at a line break by one rule, and the two readers
+   * had two answers for it. The statement reader walks the head and asks
+   * `headContinues` at each break; the item reader handed the annotation
+   * straight to the type consumer, which reads a type wherever it is written
+   * and so read on past the break. `let x: A` and the `foo();` under it were
+   * refused outright at item level -- and a module whose item list refuses is
+   * walked as raw tokens, so every macro written in the file is left
+   * unexpanded and nothing is reported.
+   *
+   * The question the two now share is asked of the type grammar when it is
+   * asked inside an annotation: a line cannot end after `keyof`, `infer`,
+   * `unique`, `readonly`, `extends` or the `import` of `import("m").A` any
+   * more than it can after `|`.
+   */
+  test.each([
+    // A head is a binder and a `: type`, and nothing else stands in one.
+    ["let x\nfoo();", "let x"],
+    ["let x, y\nfoo();", "let x, y"],
+    ["let x: A\nfoo();", "let x: A"],
+    ["let x: A[]\nfoo();", "let x: A[]"],
+    ["let x: { a: number }\nfoo();", "let x: { a: number }"],
+    // An array type's `[` is written on the type's own line, so the `[b]`
+    // under this annotation begins a statement rather than indexing `A`.
+    ["let x: A\n[b] = c;", "let x: A"],
+    // An annotation that genuinely carries on across the break is one head,
+    // whether the operator ends the line before or begins the line after.
+    ["let x: A |\nB = c;", "let x: A |\nB = c;"],
+    ["let x: A\n| B = c;", "let x: A\n| B = c;"],
+    ["let x: A &\nB = c;", "let x: A &\nB = c;"],
+    ["let x: A\n& B = c;", "let x: A\n& B = c;"],
+    ["let x: A.\nB = 1;", "let x: A.\nB = 1;"],
+    ["let x: A\n.B = 1;", "let x: A\n.B = 1;"],
+    ["let x: (a: A)\n=> B = f;", "let x: (a: A)\n=> B = f;"],
+    ["let x: Array<\nnumber\n> = [];", "let x: Array<\nnumber\n> = [];"],
+    ["let x: A<B>\n= 1;", "let x: A<B>\n= 1;"],
+    ["let x: A[\n0] = 1;", "let x: A[\n0] = 1;"],
+    ["let x: {\na: number\n} = y;", "let x: {\na: number\n} = y;"],
+    ["let x\n: A = 1;", "let x\n: A = 1;"],
+    ["const x: number\n= 1;", "const x: number\n= 1;"],
+    // The words the type grammar writes a type after: a line cannot end
+    // between one and the type it takes.
+    ["let x: typeof\nfoo = 1;", "let x: typeof\nfoo = 1;"],
+    ["let x: keyof\nA = 1;", "let x: keyof\nA = 1;"],
+    ["let x: readonly\nA[] = [];", "let x: readonly\nA[] = [];"],
+    ["let x: unique\nsymbol = 1;", "let x: unique\nsymbol = 1;"],
+    ["let x: infer\nA = 1;", "let x: infer\nA = 1;"],
+    ["let x: A extends\nB ? C : D = e;", "let x: A extends\nB ? C : D = e;"],
+    ['let x: import\n("m").A = 1;', 'let x: import\n("m").A = 1;'],
+    // An initializer ends by the same rule, and both readers already agreed
+    // about that.
+    ["const x = 1\nfoo();", "const x = 1"],
+    ["const x = a +\nb;", "const x = a +\nb;"],
+    ["let x: A = 1, y: B = 2;", "let x: A = 1, y: B = 2;"],
+  ])(
+    "reads %j as %j at statement level and at item level",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a declaration");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  test("ends an exported declaration's head at the same line break", () => {
+    // Only the item reader sees `export`, so the shape that made the bug
+    // visible in a real module has no statement-level twin.
+    const whole = "export let x: A\nfoo();";
+    const { result } = parse(whole, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an exported declaration");
+    expect(printLosslessSequence(result.syntax.children)).toBe(
+      "export let x: A",
+    );
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe("export let x: A");
   });
 
   /**

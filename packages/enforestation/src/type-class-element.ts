@@ -494,6 +494,23 @@ const typeOperandHeads = new Set([
 ]);
 
 /**
+ * Spellings a line cannot end after inside a type, because the type is not
+ * finished: the ones an expression cannot end after -- `typeof` and the `new`
+ * of a constructor type are written in both grammars -- the tokens the type
+ * grammar writes a type after, and the `import` of `import("m").A`, which is
+ * no type until its argument is written.
+ *
+ * A class member's annotation and a declarator's are the same type grammar
+ * read in two places, so the reader of each asks this one question of what it
+ * last read.
+ */
+export const typeOperandExpectedAfter: ReadonlySet<string> = new Set([
+  ...expressionOperandExpectedAfter,
+  ...typeOperandHeads,
+  "import",
+]);
+
+/**
  * Whether what is written after `previous` is a type. A brace group there is
  * an object type, not the body of the declaration whose header holds it:
  * `m(): { a: number } {`, `(): () => { a: number } {`, `value is { a: number }
@@ -628,16 +645,6 @@ function beginsClassMember(syntax: Syntax): boolean {
 }
 
 /**
- * Spellings a line cannot end after here: the ones an expression cannot end
- * after, and the operators of the type grammar, which a member's annotation
- * is written in.
- */
-const operandExpectedAfter = new Set([
-  ...expressionOperandExpectedAfter,
-  ...typeOperandHeads,
-]);
-
-/**
  * The words that may stand before a member's name, and those of them
  * TypeScript reads across a line break. Any other modifier word ending a line
  * is the member's name instead: `readonly` alone on a line declares a field
@@ -667,7 +674,7 @@ function lineCanEndAfter(
       member.some((node) => angles(node, "<") > 0)
     );
   }
-  return !operandExpectedAfter.has(previous.raw);
+  return !typeOperandExpectedAfter.has(previous.raw);
 }
 
 /**

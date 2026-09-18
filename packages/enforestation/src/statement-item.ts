@@ -36,6 +36,7 @@ import {
   createTypeConsumers,
   declaresAsync,
   decoratorWidth,
+  typeOperandExpectedAfter,
   typeOperandFollows,
 } from "./type-class-element.js";
 
@@ -90,18 +91,66 @@ const annotationContinuedBy = new Set([
  * last read, and where `next` is one of the few things that may stand in a
  * head at all -- inside the annotation, one of the few that may stand in a
  * type.
+ *
+ * Inside the annotation both halves are the type grammar's: a line cannot end
+ * after `keyof`, `infer` or `extends` any more than after `|`, and it is the
+ * type reader that says so.
+ *
+ * This is the one question both readers of a declaration ask. The statement
+ * reader walks the head and asks it at each line break; the item reader asks
+ * it of the annotation before handing it to the type consumer, which reads a
+ * type wherever it is written and would otherwise read straight past the
+ * break.
  */
 function headContinues(
   previous: Syntax | undefined,
   next: Syntax,
   annotated: boolean,
 ): boolean {
-  if (previous?.tag === "token" && operandExpectedAfter.has(previous.raw))
+  const expectsOperand = annotated
+    ? typeOperandExpectedAfter
+    : operandExpectedAfter;
+  if (previous?.tag === "token" && expectsOperand.has(previous.raw))
     return true;
   if (next.tag !== "token") return false;
   return annotated
     ? annotationContinuedBy.has(next.raw)
     : headContinuedBy.has(next.raw);
+}
+
+/**
+ * How many nodes the type annotation standing at the cursor may span before a
+ * line break ends the declarator's head, `colon` being the `:` that opened it.
+ *
+ * A `<` still open encloses whatever is written under it, so
+ * `let x: Array<\nnumber\n>` is one annotation however its lines are broken --
+ * the same allowance the statement reader makes as it walks a head.
+ */
+function annotationExtent(
+  cursor: SyntaxCursor,
+  colon: Syntax,
+  context: ConsumerContext,
+): number {
+  let typeArguments = 0;
+  let width = 0;
+  while (width < cursor.remainingLength) {
+    checkWork(context);
+    const next = cursor.peek(width)!;
+    const previous = width === 0 ? colon : cursor.peek(width - 1)!;
+    if (
+      typeArguments === 0 &&
+      leadingLineBreak(next) &&
+      !headContinues(previous, next, true)
+    )
+      break;
+    const spelling = raw(next);
+    if (spelling !== undefined) {
+      typeArguments += angleWidth(spelling, "<");
+      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+    }
+    width += 1;
+  }
+  return width;
 }
 
 const statementStarts = new Set([
@@ -1335,8 +1384,19 @@ class ItemConsumer implements SyntaxConsumer {
         return failure("item", cursor, start, ["variable binding"], 40);
       children.push(binding.syntax);
       if (token(cursor.peek(), ":")) {
-        children.push(cursor.consume()!);
-        const type = this.#type.consume(cursor, {
+        const colon = cursor.consume()!;
+        children.push(colon);
+        // The type consumer reads a type wherever it is written and knows
+        // nothing of where a declarator's head ends, so it is given only the
+        // nodes the head reaches: `let x: A` and the `foo();` under it are two
+        // items, and reading the annotation on across the break refused the
+        // whole declaration -- which left the module's item list to be walked
+        // as raw tokens, its macros unexpanded and nothing reported.
+        const width = annotationExtent(cursor, colon, context);
+        const annotation = createSyntaxCursor(
+          Array.from({ length: width }, (_, offset) => cursor.peek(offset)!),
+        );
+        const type = this.#type.consume(annotation, {
           ...context,
           category: "type",
           stopSet: context.stopSet.union(
@@ -1351,6 +1411,7 @@ class ItemConsumer implements SyntaxConsumer {
         if (!type.matched)
           return failure("item", cursor, start, ["variable type"], 40);
         children.push(type.syntax);
+        cursor.advance(type.cursor.index);
       }
       if (token(cursor.peek(), "=")) {
         children.push(cursor.consume()!);

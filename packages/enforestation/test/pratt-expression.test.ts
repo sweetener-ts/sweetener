@@ -805,3 +805,210 @@ describe("an unparenthesized arrow", () => {
     ).toBe(false);
   });
 });
+
+describe("a suspending word", () => {
+  /**
+   * Where `await` and `yield` are words and where they are operators.
+   *
+   * Outside the function that admits it, either word is an ordinary name --
+   * `const await = 1` is legal TypeScript -- and TypeScript reads it as the
+   * operator only where the token beside it, on its line, can be nothing but
+   * its operand: an identifier, a keyword, or a number, bigint or string.
+   * Every other token is read as what follows the name. So `await + 1` adds,
+   * `await * 2` multiplies, `await ? 1 : 2` chooses, `await (v)` calls,
+   * `await [v]` indexes, `` await `t` `` tags a template, `await ++x`
+   * increments, and `await` written alone is the name itself.
+   *
+   * `+` begins an operand of its own, which is what made `await + 1` read as
+   * an `await` applied to `+1`. That is not a difference an extent comparison
+   * catches -- the two readings span the same text -- so what is asserted
+   * here is the tree: the word is read exactly as an ordinary name written in
+   * its place is, and TypeScript is asked for its own reading of the same
+   * text.
+   */
+  const outsideTheFunction = { allowYield: false, allowAwait: false };
+
+  /** The syntax tree, with each protected node named by its form. */
+  function shape(syntax: Syntax): string {
+    if (syntax.tag === "token") return syntax.raw;
+    const children = syntax.children.map(shape).join(" ");
+    if (syntax.tag === "group") return `${syntax.delimiter}(${children})`;
+    if (syntax.tag === "protected") return `${syntax.form ?? ""}[${children}]`;
+    throw new Error(`unexpected ${syntax.tag} syntax in an expression`);
+  }
+
+  /**
+   * Whether TypeScript reads the leading `await` or `yield` of `source` as
+   * the operator or as a name, asked of the declaration `const x = source;`
+   * written inside a plain function.
+   */
+  function typeScriptReads(source: string): "name" | "operator" {
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      `function plain() { const x = ${source}; }`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const declaration = parsed.statements[0];
+    if (
+      declaration === undefined ||
+      !ts.isFunctionDeclaration(declaration) ||
+      declaration.body === undefined
+    )
+      throw new Error("expected a function declaration");
+    const statement = declaration.body.statements[0];
+    if (statement === undefined || !ts.isVariableStatement(statement))
+      throw new Error("expected a variable statement");
+    let node = statement.declarationList.declarations[0]?.initializer;
+    // The word heads the initializer, so it is the leftmost leaf of whatever
+    // was built over it.
+    while (node !== undefined) {
+      if (ts.isAwaitExpression(node) || ts.isYieldExpression(node))
+        return "operator";
+      if (ts.isBinaryExpression(node)) node = node.left;
+      else if (ts.isConditionalExpression(node)) node = node.condition;
+      else if (ts.isPostfixUnaryExpression(node)) node = node.operand;
+      else if (ts.isTaggedTemplateExpression(node)) node = node.tag;
+      else if (
+        ts.isCallExpression(node) ||
+        ts.isElementAccessExpression(node) ||
+        ts.isPropertyAccessExpression(node) ||
+        ts.isNonNullExpression(node)
+      )
+        node = node.expression;
+      else break;
+    }
+    return "name";
+  }
+
+  test.each([
+    "await",
+    "await + 1",
+    "await - 1",
+    "await * 2",
+    "await ++y",
+    "await --y",
+    "await ? 1 : 2",
+    "await (y)",
+    "await [y]",
+    "await `t`",
+    "await .b",
+    "await = 1",
+    "await < 1",
+    "await && 1",
+    "await !",
+    "yield",
+    "yield + 1",
+    "yield - 1",
+    "yield * 2",
+    "yield ++y",
+    "yield --y",
+    "yield ? 1 : 2",
+    "yield (y)",
+    "yield [y]",
+    "yield `t`",
+    "yield .b",
+    "yield = 1",
+    "yield < 1",
+    "yield && 1",
+    "yield !",
+  ])("reads %j as the name the word also is, as TypeScript does", (source) => {
+    const word = source.startsWith("await") ? "await" : "yield";
+    const read = parse(source, undefined, false, outsideTheFunction).result;
+    if (!read.matched) throw new Error(read.failure.expectations.join(", "));
+    // An ordinary name written in the word's place is the whole expectation:
+    // the reading must not depend on which of the three words was written.
+    const plain = parse(
+      source.replace(word, "name"),
+      undefined,
+      false,
+      outsideTheFunction,
+    ).result;
+    if (!plain.matched) throw new Error(plain.failure.expectations.join(", "));
+    expect(shape(read.syntax).replace(word, "_")).toBe(
+      shape(plain.syntax).replace("name", "_"),
+    );
+    expect(read.cursor.index).toBe(plain.cursor.index);
+    expect(typeScriptReads(source)).toBe("name");
+  });
+
+  test.each([
+    "await v",
+    "await 1",
+    "await 1n",
+    "await 's'",
+    "await true",
+    "await typeof x",
+    "await new X()",
+    "await void 0",
+    "await instanceof B",
+    "yield v",
+    "yield 1",
+    "yield 1n",
+    "yield 's'",
+    "yield true",
+    "yield typeof x",
+    "yield new X()",
+    "yield void 0",
+    "yield instanceof B",
+  ])("refuses %j, where an operand does stand beside the word", (source) => {
+    const result = parse(source, undefined, false, outsideTheFunction).result;
+    expect(result.matched).toBe(false);
+    if (result.matched) throw new Error("expected a refusal");
+    expect(result.failure.expectations).toEqual([
+      source.startsWith("await")
+        ? "await inside an async function"
+        : "yield inside a generator",
+    ]);
+    // TypeScript reads the operator here too, and reports it as one written
+    // where it is not allowed rather than as a name.
+    expect(typeScriptReads(source)).toBe("operator");
+  });
+
+  test.each([
+    ["await + 1", "await", { allowYield: false, allowAwait: true }],
+    ["await - 1", "await", { allowYield: false, allowAwait: true }],
+    ["await ++y", "await", { allowYield: false, allowAwait: true }],
+    ["await (y)", "await", { allowYield: false, allowAwait: true }],
+    ["await [y]", "await", { allowYield: false, allowAwait: true }],
+    ["await `t`", "await", { allowYield: false, allowAwait: true }],
+    ["yield + 1", "yield", { allowYield: true, allowAwait: false }],
+    ["yield - 1", "yield", { allowYield: true, allowAwait: false }],
+    ["yield * 2", "yield", { allowYield: true, allowAwait: false }],
+    ["yield ++y", "yield", { allowYield: true, allowAwait: false }],
+    ["yield (y)", "yield", { allowYield: true, allowAwait: false }],
+    ["yield [y]", "yield", { allowYield: true, allowAwait: false }],
+  ])(
+    "reads %j as the %s operator inside the function that admits it",
+    (source, form, contexts) => {
+      const result = parse(source, undefined, false, contexts).result;
+      if (!result.matched)
+        throw new Error(result.failure.expectations.join(", "));
+      expect(result.syntax.form).toBe(form);
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+      expect(result.cursor.atEnd).toBe(true);
+    },
+  );
+
+  test("reads `await + 1` as a sum outside async and as an await inside it", () => {
+    const outside = parse(
+      "await + 1",
+      undefined,
+      false,
+      outsideTheFunction,
+    ).result;
+    if (!outside.matched)
+      throw new Error(outside.failure.expectations.join(", "));
+    expect(outside.syntax.form).toBeUndefined();
+    expect(shape(outside.syntax)).toBe("[[await] + [1]]");
+    const inside = parse("await + 1", undefined, false, {
+      allowYield: false,
+      allowAwait: true,
+    }).result;
+    if (!inside.matched)
+      throw new Error(inside.failure.expectations.join(", "));
+    expect(inside.syntax.form).toBe("await");
+    expect(shape(inside.syntax)).toBe("await[await [+ [1]]]");
+  });
+});

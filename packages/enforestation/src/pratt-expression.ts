@@ -304,6 +304,29 @@ function checkWork(context: PrattContext): void {
 }
 
 /**
+ * Whether `node` can be nothing but the operand of the `await` or `yield`
+ * written in front of it, outside the function that admits the word.
+ *
+ * TypeScript decides this by the token itself rather than by what it could
+ * begin: an identifier, a keyword, or a number, bigint or string standing on
+ * the word's own line is its operand, and every other token is read as what
+ * follows the name. So `await + 1` and `await * 2` are both sums of the name
+ * -- even though `+` also begins an operand of its own -- while `await (v)`
+ * calls, `await [v]` indexes, `` await `t` `` tags a template, `await ++x`
+ * increments, and `await` written alone is the name itself.
+ */
+function suspendedOperandBegins(node: Syntax | undefined): boolean {
+  if (node?.tag !== "token" || leadingLineBreak(node)) return false;
+  return (
+    node.kind === "identifier" ||
+    node.kind === "keyword" ||
+    node.kind === "numeric-literal" ||
+    node.kind === "bigint-literal" ||
+    node.kind === "string-literal"
+  );
+}
+
+/**
  * Whether the `yield` or `await` at the cursor stands alone, with no operand
  * of its own after it, so that the word is read as the ordinary word it also
  * is rather than as the operator.
@@ -312,26 +335,33 @@ function checkWork(context: PrattContext): void {
  * [no LineTerminator here] AssignmentExpression` -- so a line break after it
  * ends it wherever it is written, inside a generator as readily as outside
  * one. `await` carries no such restriction inside an async function, where it
- * reaches the next line; outside one TypeScript reads it as an operator only
- * where what it would take stands on its line, and as a name otherwise.
+ * reaches the next line.
  *
  * `await` and `yield` are ordinary identifiers in the code that does not
  * suspend -- `const await = 1` is legal TypeScript -- and that is what
  * `const x = yield\nv;` ends the declaration at the line break for: the
- * initializer is the name, and `v;` is the statement under it. Where an
- * operand does stand beside the word, using it outside the function that
- * admits it stays the refusal it was.
+ * initializer is the name, and `v;` is the statement under it. Outside the
+ * function that admits it the word is that name wherever no operand of its
+ * own stands beside it, so `const x = await;` and `const x = await + 1;` are
+ * a name and a sum. Where an operand does stand there, using the word outside
+ * the function that admits it stays the refusal it was.
  */
 function suspendingWordAlone(
   cursor: SyntaxCursor,
   operator: PrattOperator,
   context: PrattContext,
 ): boolean {
+  const next = cursor.peek(1);
   // `yield*` is one operator of two tokens, and the line break the grammar
   // forbids is the one between `yield` and the whole of what follows it.
-  if (operator.spelling === "yield") return leadingLineBreak(cursor.peek(1));
+  if (operator.spelling === "yield") {
+    return (
+      leadingLineBreak(next) ||
+      (!context.consumer.allowYield && !suspendedOperandBegins(next))
+    );
+  }
   if (operator.spelling === "await")
-    return !context.consumer.allowAwait && leadingLineBreak(cursor.peek(1));
+    return !context.consumer.allowAwait && !suspendedOperandBegins(next);
   return false;
 }
 
