@@ -171,10 +171,10 @@ describe("production expansion frontend session", () => {
    * far was invisible for exactly that reason.
    */
   test("says what it could not read when a recovered item expanded nothing", () => {
-    // `<A>y` is a type assertion, which TypeScript reads and this reader does
-    // not. Nothing in the declaration is macro syntax, so recovery bought
-    // nothing here and nothing else reports it.
-    const result = harness()("export const x = <A>y;", "item");
+    // `y<A>` is an instantiation expression, which TypeScript reads and this
+    // reader does not. Nothing in the declaration is macro syntax, so recovery
+    // bought nothing here and nothing else reports it.
+    const result = harness()("export const x = y<A>;", "item");
 
     expect(
       result.diagnostics.map(({ code, severity }) => ({ code, severity })),
@@ -186,7 +186,7 @@ describe("production expansion frontend session", () => {
     // The whole item is named, and the place the reader stopped is named
     // under it.
     expect(reported.primaryOrigin.start).toBe(0);
-    expect(reported.primaryOrigin.end).toBe("export const x = <A>y;".length);
+    expect(reported.primaryOrigin.end).toBe("export const x = y<A>;".length);
     expect(reported.relatedOrigins[0]?.origin.start).toBeGreaterThan(
       reported.primaryOrigin.start,
     );

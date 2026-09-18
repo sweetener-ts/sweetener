@@ -23,6 +23,7 @@ import {
   type PrimaryExpressionConsumerOptions,
 } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
+import { consumeBalancedTypeArguments } from "./type-class-element.js";
 
 export {
   coreExpressionOperators,
@@ -32,6 +33,7 @@ export {
 } from "./core-operators.js";
 import {
   coreExpressionOperators,
+  unaryPrecedence,
   type PrattAssociativity,
   type PrattFixity,
 } from "./core-operators.js";
@@ -425,13 +427,78 @@ function parsePrefix(
       mixingFamily: undefined,
     };
   }
+  const operandStart = cursor.index;
   const attempt = context.primary.consume(cursor, context.consumer);
-  if (!attempt.matched) return attempt;
+  if (!attempt.matched) {
+    // The primary consumer read no operand, and a `<` standing where the
+    // operand began is the one thing that still can be one. Asked only where
+    // the cursor has not moved: a failure that read part of an operand --
+    // `a?.` with no member after it -- leaves the cursor past what it read,
+    // and a `<` reached that way begins no operand at all. Read from there,
+    // the `a?.` in front of it was dropped from the declaration outright.
+    const assertion =
+      cursor.index === operandStart
+        ? parseTypeAssertion(cursor, context)
+        : undefined;
+    return assertion ?? attempt;
+  }
   return {
     syntax: attempt.syntax,
     cursor: attempt.cursor,
     outerPrecedence: attempt.syntax.precedence ?? 1_000,
     unparenthesizedPrefix: false,
+    mixingFamily: undefined,
+  };
+}
+
+/**
+ * A prefix type assertion -- `<A>value` -- as the `<...>` it is written with
+ * and the operand it applies to, or undefined where none stands at the cursor.
+ *
+ * TypeScript writes `TypeAssertion: < Type > UnaryExpression`, and reads one
+ * only where JSX is off: in a `.tsx` file a `<` in an operand position opens
+ * an element instead. The consumers are never told which file they are reading
+ * and do not need to be, because the reader has already settled it. Reading a
+ * `.stsx` file it groups the element -- `<A>y` arrives as one `jsx-element`
+ * node, with the diagnostic TypeScript reports for it -- so a `<` still
+ * standing here as a token was read from a `.sts` file, where the assertion is
+ * what TypeScript reads too.
+ *
+ * A generic arrow's type parameters are written with the same `<...>`, and
+ * TypeScript resolves the ambiguity in the arrow's favour. The primary
+ * consumer reads the arrow, so this is asked only where it read nothing.
+ */
+function parseTypeAssertion(
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | undefined {
+  if (tokenSpelling(cursor) !== "<") return undefined;
+  const region = consumeBalancedTypeArguments(cursor, context.consumer);
+  if (region === undefined) return undefined;
+  const working = cursor.fork();
+  const asserted: Syntax[] = [];
+  for (let taken = 0; taken < region.width; taken += 1)
+    asserted.push(working.consume()!);
+  // The type between the angles is kept as it was written. Its extent is
+  // already fixed by the angles that close it, which is the whole of what this
+  // reader needs; the type consumer is asked after `as`, where nothing else
+  // says where the type ends.
+  const operand = parseExpression(working, unaryPrecedence, context);
+  if ("matched" in operand) return undefined;
+  // Measured on a fork, so that a `<` this cannot read leaves the cursor where
+  // the primary consumer's own failure is reported from. The extent has to be
+  // carried onto the cursor the caller passed down, which is the one it reads
+  // on from.
+  cursor.advance(operand.cursor.index - cursor.index);
+  return {
+    syntax: protect(
+      context.options,
+      [...asserted, operand.syntax],
+      unaryPrecedence,
+    ),
+    cursor,
+    outerPrecedence: unaryPrecedence,
+    unparenthesizedPrefix: true,
     mixingFamily: undefined,
   };
 }

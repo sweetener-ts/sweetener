@@ -25,6 +25,15 @@ function operators(
   );
 }
 
+/**
+ * What a prefix operator binds its operand at. A prefix type assertion binds
+ * at the same strength -- TypeScript writes
+ * `TypeAssertion: < Type > UnaryExpression`, which is exactly the operand `!`
+ * and `typeof` take -- and is read outside this table, so the number is named
+ * here rather than written twice.
+ */
+export const unaryPrecedence = 160;
+
 export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
   ...operators(["++", "--"], "postfix", 170, "none"),
   ...operators(
@@ -42,7 +51,7 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
       "--",
     ],
     "prefix",
-    160,
+    unaryPrecedence,
     "right",
   ),
   // `yield` takes a whole assignment expression, so `yield a + b` yields the

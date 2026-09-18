@@ -821,6 +821,360 @@ describe("statement and item consumers", () => {
     },
   );
 
+  /**
+   * A global augmentation is a module declaration, and it ends at its body.
+   *
+   * `global` stood in neither keyword set, so the walk that scans a
+   * declaration's head never saw the brace after it as a body: it ran past the
+   * closing brace to the next `;` and took whatever was written under the
+   * augmentation into the same item. Nothing was refused and nothing was
+   * reported -- the item simply held one statement too many, and that
+   * statement was never read as one, so a macro invoked there was never
+   * expanded.
+   *
+   * TypeScript reads `global` and the block after it as a module declaration
+   * wherever a declaration stands, and carries no line-break restriction with
+   * it: `global` and a block written under it are one declaration. Written in
+   * front of anything else the word is a name, and `global.x = 1` is an
+   * assignment -- so it is the body that makes the declaration, not the word.
+   */
+  test.each([
+    [
+      "declare global { interface Window {} }",
+      "declare global { interface Window {} }",
+    ],
+    ["global { interface Window {} }", "global { interface Window {} }"],
+    ["global { }", "global { }"],
+    ["global\n{ }", "global\n{ }"],
+    // The rest of the family already ended at its body, and must go on doing
+    // so -- including a `global` written inside one.
+    [
+      'declare module "x" { export const a: number; }',
+      'declare module "x" { export const a: number; }',
+    ],
+    [
+      "declare namespace N { const a: number; }",
+      "declare namespace N { const a: number; }",
+    ],
+    ["namespace N { const a = 1; }", "namespace N { const a = 1; }"],
+    ["module N { const a = 1; }", "module N { const a = 1; }"],
+    [
+      'declare module "x" { global { interface Window {} } }',
+      'declare module "x" { global { interface Window {} } }',
+    ],
+    ["namespace N { global { } }", "namespace N { global { } }"],
+    // A name spelled `global` is a name wherever no body follows it.
+    ["global;", "global;"],
+    ["global = 1;", "global = 1;"],
+    ["global(1);", "global(1);"],
+    ["global.x = 1;", "global.x = 1;"],
+    ["global\n.x = 1;", "global\n.x = 1;"],
+  ])(
+    "reads the global augmentation %j as %j at statement level and at item level",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a declaration");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  test("reads an exported global augmentation as one module item", () => {
+    // Only the item reader sees `export`, so this shape has no
+    // statement-level twin.
+    const whole = "export declare global { }\nafter();";
+    const { result } = parse(whole, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a module declaration");
+    expect(printLosslessSequence(result.syntax.children)).toBe(
+      "export declare global { }",
+    );
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(
+      "export declare global { }",
+    );
+  });
+
+  /**
+   * The declarations TypeScript reads inside a function body, read there too.
+   *
+   * A type alias, an abstract class and a global augmentation all stand in a
+   * function body, and the statement reader refused every one of them: `type`
+   * and `abstract` were never dispatched to the walk that scans a
+   * declaration's head, so they fell to the expression path and failed for
+   * want of a terminator. A refused statement costs the block that holds it
+   * its structure -- the whole block falls back to a raw token walk -- so a
+   * single type alias anywhere in a function silently took the statements
+   * around it with it.
+   *
+   * `import` and `export` are the two TypeScript reads there and rejects
+   * afterwards, and they stay refused; see the note on the statement reader's
+   * declaration dispatch.
+   */
+  test.each([
+    ["type T = A;", "type T = A;"],
+    ["type T<A> = A;", "type T<A> = A;"],
+    ["type T = { a: number };", "type T = { a: number };"],
+    ["declare type T = A;", "declare type T = A;"],
+    ["abstract class C {}", "abstract class C {}"],
+    ["declare abstract class C {}", "declare abstract class C {}"],
+    [
+      "declare global { interface Window {} }",
+      "declare global { interface Window {} }",
+    ],
+    // An alias's body is a type, and it ends where the type grammar ends one.
+    // The item reader already asked that question; the statement reader asks
+    // the same one.
+    ["type T = A\nextends B ? C : D;", "type T = A"],
+    ["type T = A\n[];", "type T = A"],
+    ["type T = A\n<B>;", "type T = A"],
+    ["type T = A\nkeyof B;", "type T = A"],
+    ["type T<A = B> = A\nextends C ? D : E;", "type T<A = B> = A"],
+    ["type T =\nA;", "type T =\nA;"],
+    ["type T = A |\nB;", "type T = A |\nB;"],
+    ["type T = A\n| B;", "type T = A\n| B;"],
+    ["type T = Array<\nA\n>;", "type T = Array<\nA\n>;"],
+    // A name spelled `type` or `abstract` is a name.
+    ["type;", "type;"],
+    ["type = 1;", "type = 1;"],
+    ["abstract;", "abstract;"],
+    ["abstract = 1;", "abstract = 1;"],
+  ])(
+    "reads %j as %j in a function body, as TypeScript does",
+    (source, extent) => {
+      const body = `${source}\nafter();`;
+      const { result } = parse(body, "stmt");
+      expect(result.matched, source).toBe(true);
+      if (!result.matched) throw new Error("expected a statement");
+      expect(printLosslessSequence(result.syntax.children), source).toBe(
+        extent,
+      );
+      const whole = `function enclosing() {\n${body}\n}`;
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const declaration = parsed.statements[0];
+      if (
+        !ts.isFunctionDeclaration(declaration!) ||
+        declaration.body === undefined
+      )
+        throw new Error("expected a function declaration");
+      expect(declaration.body.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  /**
+   * A contextual keyword heads a declaration only where the name it declares
+   * is written on its own line.
+   *
+   * `type`, `interface`, `namespace` and `module` are names as readily as they
+   * are keywords, and TypeScript writes each of them
+   * `keyword [no LineTerminator here] Identifier`: `type` and the `T = A;`
+   * under it are two statements, the first of them a reference to a name.
+   * Both readers had been taking the word for a keyword wherever it stood and
+   * swallowing the statement under it -- the same silent mis-parse the missing
+   * `global` caused, arrived at from the other side.
+   *
+   * The reserved words carry no such restriction, and `class` and the `C { }`
+   * written under it are one declaration however the lines fall. `global` is
+   * contextual and carries none either, because what follows it is a body
+   * rather than a name. Both are held here.
+   */
+  test.each([
+    ["type\nT = A;", "type"],
+    ["namespace\nN { }", "namespace"],
+    ["module\nN { }", "module"],
+    ["declare\nlet x = 1;", "declare"],
+    ["abstract\nclass C { }", "abstract"],
+    // Must not change: a reserved word needs nothing on its own line.
+    ["class\nC { }", "class\nC { }"],
+    ["enum\nE { }", "enum\nE { }"],
+    ["function\nf() { }", "function\nf() { }"],
+    ["let\nx = 1;", "let\nx = 1;"],
+    ["const\nx = 1;", "const\nx = 1;"],
+    ["var\nx = 1;", "var\nx = 1;"],
+    ["global\n{ }", "global\n{ }"],
+  ])(
+    "reads %j as %j at statement level and at item level, as TypeScript does",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a statement");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  /**
+   * `interface` obeys the same rule, and what is left of it cannot be read.
+   *
+   * TypeScript reads `interface` and the `I { }` written under it as two
+   * statements, the first of them a reference to a name -- but `interface` is
+   * reserved under strict mode, and every module is strict, so that name is
+   * one it only recovers to and reports. There is no reading of it here to
+   * hold, and the declaration is refused instead of swallowing the `I { }`
+   * under it.
+   */
+  test.each(["stmt", "item"] as const)(
+    "refuses an interface whose name is written on the next line: %s",
+    (category) => {
+      const { result } = parse("interface\nI { }\nafter();", category);
+      expect(result.matched).toBe(false);
+    },
+  );
+
+  /**
+   * A prefix type assertion is an operand, and `<A>y` is one.
+   *
+   * It was refused at both levels, and the declaration around it with it, so a
+   * `.sts` file with one `<A>y` in it lost the structure of whatever block or
+   * module held it and every macro written there went unexpanded.
+   *
+   * TypeScript reads the assertion only where JSX is off, and the reader has
+   * already settled that: in `.stsx` it groups the same text into a
+   * `jsx-element`, so a `<` still standing here as a token was read from a
+   * `.sts` file. The row below with the arrow in it is the ambiguity
+   * TypeScript resolves in the arrow's favour, and it is held unchanged.
+   */
+  test.each([
+    ["let x = <A>y;", "let x = <A>y;"],
+    ["let x = <const>y;", "let x = <const>y;"],
+    ["let x = <A[]>y;", "let x = <A[]>y;"],
+    ["let x = <A<B>>y;", "let x = <A<B>>y;"],
+    ["let x = <{ a: number }>y;", "let x = <{ a: number }>y;"],
+    // `TypeAssertion: < Type > UnaryExpression`, so the assertion takes what
+    // `!` would: the member access, and not the sum.
+    ["let x = <A>y.z;", "let x = <A>y.z;"],
+    ["let x = <A>y + 1;", "let x = <A>y + 1;"],
+    ["let x = <A><B>y;", "let x = <A><B>y;"],
+    ["f(<A>y);", "f(<A>y);"],
+    ["const x = <A>y;", "const x = <A>y;"],
+    // An assertion is a unary expression, so it stands to the left of `**`
+    // only in parentheses -- the rule the reader already applies to `-x ** 2`.
+    ["let x = (<A>y) ** 2;", "let x = (<A>y) ** 2;"],
+    // Must not change: a generic arrow is written with the same `<...>`, and
+    // TypeScript reads the arrow.
+    ["let x = <A>(v) => v;", "let x = <A>(v) => v;"],
+    ["let x = <A, B>(v) => v;", "let x = <A, B>(v) => v;"],
+    ["let x = a < b;", "let x = a < b;"],
+    ["let x = a < b > c;", "let x = a < b > c;"],
+  ])(
+    "reads %j as %j at statement level and at item level, as TypeScript does",
+    (source, extent) => {
+      const whole = `${source}\nafter();`;
+      for (const category of ["stmt", "item"] as const) {
+        const { result } = parse(whole, category);
+        expect(result.matched, `${category}: ${source}`).toBe(true);
+        if (!result.matched) throw new Error("expected a statement");
+        expect(
+          printLosslessSequence(result.syntax.children),
+          `${category}: ${source}`,
+        ).toBe(extent);
+      }
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
+
+  test.each(["stmt", "item"] as const)(
+    "refuses an unparenthesized type assertion before '**': %s",
+    (category) => {
+      // TypeScript reports "A type assertion expression is not allowed in the
+      // left-hand side of an exponentiation expression" for this, and the rule
+      // it comes from is the one the reader already applies to `-x ** 2`.
+      const { result } = parse("const x = <A>y ** 2;", category);
+      expect(result.matched).toBe(false);
+    },
+  );
+
+  test.each(["stmt", "item"] as const)(
+    "refuses an optional chain with no member rather than reading past it: %s",
+    (category) => {
+      // `a?.` has nothing after it that can be a member, and the primary
+      // consumer reports that with the cursor already past the `?.`. The `<`
+      // it then stands at begins no operand, and reading a type assertion
+      // from there dropped the `a?.` in front of it out of the declaration
+      // without a word.
+      const { result } = parse("const x = a?.<A>b;", category);
+      expect(result.matched).toBe(false);
+    },
+  );
+
+  test("leaves a prefix type assertion to the reader in a jsx source", () => {
+    // Nothing here refuses the assertion in a `.stsx` file, because nothing
+    // here ever sees one: the reader groups `<A>y` into a jsx-element and
+    // reports it, exactly as TypeScript's `.tsx` parser does. That grouping is
+    // what keeps the rule above from firing where JSX is on, so it is held.
+    const origins = new OriginStore();
+    const read = readSyntax("let x = <A>y;", {
+      sourceId,
+      scopes: 0 as ScopeSetId,
+      originStore: origins,
+      variant: "jsx",
+    });
+    expect(read.diagnostics.length).toBeGreaterThan(0);
+    const grouped = read.root.children.find(
+      (node) => node.tag === "group" && node.delimiter === "jsx-element",
+    );
+    expect(grouped).toBeDefined();
+    const parsed = ts.createSourceFile(
+      "fixture.tsx",
+      "let x = <A>y;",
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const diagnostics = (
+      parsed as ts.SourceFile & {
+        readonly parseDiagnostics: readonly ts.Diagnostic[];
+      }
+    ).parseDiagnostics;
+    expect(diagnostics.length).toBeGreaterThan(0);
+  });
+
   test("reconstructed representative extents parse with pinned TypeScript", () => {
     const statements = [
       "if (ready) run(); else stop();",

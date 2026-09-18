@@ -161,20 +161,162 @@ function declaresVariable(cursor: SyntaxCursor, offset = 0): boolean {
 }
 
 /**
+ * Whether what follows the word at `offset` is written on that word's own
+ * line, so that the word is the keyword it looks like rather than a name
+ * spelled that way.
+ *
+ * A contextual keyword is a name as readily as it is a keyword, and TypeScript
+ * settles which by a line break and nothing else: it writes
+ * `declare [no LineTerminator here] Declaration`,
+ * `abstract [no LineTerminator here] class` and
+ * `type [no LineTerminator here] Identifier`, and reads `declare` and the
+ * `let x = 1;` written under it as two statements, the first of them a
+ * reference to a name.
+ *
+ * Both readers of a declaration ask it here rather than each deciding for
+ * itself: these declarations stand wherever a declaration does, inside a
+ * function body as well as at a module's top level.
+ */
+function noLineTerminatorAfter(cursor: SyntaxCursor, offset = 0): boolean {
+  const following = cursor.peek(offset + 1);
+  return following !== undefined && !leadingLineBreak(following);
+}
+
+/**
+ * The words that modify the declaration written after them rather than
+ * declaring anything themselves.
+ */
+const declarationModifiers = new Set(["abstract", "declare"]);
+
+/**
+ * The contextual keywords that head a declaration only where the name they
+ * declare is written on their own line.
+ *
+ * The reserved words carry no such restriction, and TypeScript reads `class`
+ * and the `C { }` written under it as one declaration. `global` is contextual
+ * and carries none either, because what follows it is a body rather than a
+ * name.
+ */
+const contextualHeads = new Set([
+  ...declarationModifiers,
+  "interface",
+  "module",
+  "namespace",
+  "type",
+]);
+
+/**
+ * Whether the word at `offset` heads a declaration, rather than being a name
+ * spelled like a keyword.
+ */
+function declarationHead(cursor: SyntaxCursor, offset = 0): boolean {
+  return (
+    !contextualHeads.has(raw(cursor.peek(offset)) ?? "") ||
+    noLineTerminatorAfter(cursor, offset)
+  );
+}
+
+/**
  * Whether the word at `offset` is the `declare` that marks the declaration
  * after it ambient, rather than a name spelled `declare`.
- *
- * TypeScript writes `declare [no LineTerminator here] Declaration`, so
- * `declare` and the `let x = 1;` written under it are two statements, the
- * first of them a reference to a name. Both readers of a declaration ask it
- * here rather than each deciding for itself: an ambient declaration stands
- * wherever a declaration does, inside a function body as well as at a module's
- * top level.
  */
 function ambientDeclaration(cursor: SyntaxCursor, offset = 0): boolean {
-  if (raw(cursor.peek(offset)) !== "declare") return false;
-  const declared = cursor.peek(offset + 1);
-  return declared !== undefined && !leadingLineBreak(declared);
+  return (
+    raw(cursor.peek(offset)) === "declare" &&
+    noLineTerminatorAfter(cursor, offset)
+  );
+}
+
+/**
+ * How many modifier words stand in front of the declaration at `offset`: the
+ * `declare` that marks it ambient and the `abstract` that marks a class.
+ */
+function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
+  let width = 0;
+  while (
+    declarationModifiers.has(raw(cursor.peek(offset + width)) ?? "") &&
+    noLineTerminatorAfter(cursor, offset + width)
+  )
+    width += 1;
+  return width;
+}
+
+/**
+ * Whether the `global` written at `offset` opens a global augmentation, rather
+ * than being a name spelled `global`.
+ *
+ * TypeScript reads `global` and the block after it as a module declaration
+ * wherever a declaration stands, and carries no line-break restriction with
+ * it: what follows the word is a body rather than a name, so `global` and a
+ * block written under it are one declaration. Written in front of anything
+ * else the word is a name, and `global.x = 1` is an assignment -- so it is the
+ * body that makes the declaration, not the word.
+ *
+ * Without this the walk that scans a declaration's head never saw the brace as
+ * a body. It ran past the closing brace to the next `;` and took whatever was
+ * written under the augmentation into the same item: nothing refused, nothing
+ * reported, and that statement never read as one.
+ */
+function globalAugmentation(cursor: SyntaxCursor, offset = 0): boolean {
+  return (
+    raw(cursor.peek(offset)) === "global" && braceGroup(cursor.peek(offset + 1))
+  );
+}
+
+/**
+ * Where a type alias's body ends, for the walks that scan a declaration's
+ * head.
+ *
+ * `type T = A` and the `extends B ? C : D;` written under it are two
+ * declarations: TypeScript writes `CheckType [no LineTerminator here] extends`,
+ * and an alias's body after the `=` is a type like any other. Neither scanning
+ * walk knows the type grammar, so both ask this and both get the same answer.
+ *
+ * `declaresType` is false where the declaration is no alias at all --
+ * `import type A = require("m")` and `export type { A }` declare none -- and
+ * the tracker then ends nothing.
+ */
+function createAliasBodyTracker(declaresType: boolean) {
+  /** Whether the walk has passed the `=` that opens the alias's body. */
+  let inBody = false;
+  /**
+   * How deep in type parameters the walk stands. The `=` of a parameter's
+   * default is written inside them and does not open the body; a `<` still
+   * open encloses whatever is written under it, so a line break there ends
+   * nothing.
+   */
+  let typeArguments = 0;
+  return Object.freeze({
+    /** Whether the alias's body ends in front of `next`. */
+    endsBefore(previous: Syntax | undefined, next: Syntax): boolean {
+      return (
+        inBody &&
+        typeArguments === 0 &&
+        leadingLineBreak(next) &&
+        !headContinues(previous, next, true)
+      );
+    },
+    /** Takes a node the walk has read. */
+    take(node: Syntax): void {
+      if (!declaresType) return;
+      const spelling = raw(node);
+      if (spelling === undefined) return;
+      typeArguments += angleWidth(spelling, "<");
+      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+      if (typeArguments === 0 && spelling === "=") inBody = true;
+    },
+  });
+}
+
+/**
+ * Whether the words at the head of a declaration open a type alias. `export`
+ * and `declare` stand in front of one; `import type A = require("m")` and
+ * `export type { A }` declare no alias, and their first word is not `type`.
+ */
+function declaresAlias(headWords: readonly string[]): boolean {
+  return (
+    headWords.find((word) => word !== "export" && word !== "declare") === "type"
+  );
 }
 
 /**
@@ -272,6 +414,7 @@ const blockItemHeads = new Set([
   "class",
   "enum",
   "function",
+  "global",
   "interface",
   "module",
   "namespace",
@@ -565,21 +708,26 @@ class StatementConsumer implements SyntaxConsumer {
       if (!context.allowAwait) return awaitRefusal("stmt", cursor, start);
       return this.#consumeVariable(cursor, context, start, 2);
     }
-    // How many words of `declare let x: A;` stand in front of the declaration
-    // itself. An ambient declaration is read here as it is at item level, and
-    // is dispatched by what it declares rather than by the `declare`: read as
-    // a name, the `declare` was a statement of its own and the declaration
-    // under it left it with no terminator, so the whole thing was refused.
-    const ambient = ambientDeclaration(cursor) ? 1 : 0;
+    // How many words of `declare abstract class C {}` stand in front of the
+    // declaration itself. A modified declaration is read here as it is at item
+    // level, and is dispatched by what it declares rather than by its
+    // modifiers: read as a name, the `declare` was a statement of its own and
+    // the declaration under it left it with no terminator, so the whole thing
+    // was refused.
+    const modifiers = modifierWidth(cursor);
     // What this declaration declares, which for `const enum` is an enum: its
     // body is a member list rather than an initializer, and the word after the
     // `const` is a keyword rather than a binder.
-    const declared = declaresVariable(cursor, ambient)
-      ? raw(cursor.peek(ambient))
+    const declared = declaresVariable(cursor, modifiers)
+      ? raw(cursor.peek(modifiers))
       : "enum";
     if (["const", "let", "var", "using"].includes(declared ?? "")) {
-      return this.#consumeVariable(cursor, context, start, 1 + ambient);
+      return this.#consumeVariable(cursor, context, start, 1 + modifiers);
     }
+    // A global augmentation is a module declaration, and its body is a
+    // statement list as a namespace's is.
+    if (globalAugmentation(cursor, modifiers))
+      return this.#consumeScanned(cursor, context, start, true, true);
     if (
       [
         "function",
@@ -591,7 +739,8 @@ class StatementConsumer implements SyntaxConsumer {
         "operator",
         "rec",
         "syntax",
-      ].includes(declared ?? "")
+      ].includes(declared ?? "") &&
+      declarationHead(cursor, modifiers)
     ) {
       // Only a function or namespace body is a statement list. A class, enum,
       // or interface body is a member list and needs its own consumer, so it
@@ -601,6 +750,20 @@ class StatementConsumer implements SyntaxConsumer {
       );
       return this.#consumeScanned(cursor, context, start, true, statementBody);
     }
+    // A type alias stands in a function body as readily as it does at a
+    // module's top level, and its body after the `=` is a type. Refused here,
+    // it cost the block that held it its structure -- a block with one
+    // statement it cannot read falls back to a raw token walk, so a single
+    // alias silently stopped every macro around it from expanding.
+    if (declared === "type" && declarationHead(cursor, modifiers))
+      return this.#consumeScanned(cursor, context, start, false, false, true);
+    // `import` and `export` are refused. TypeScript parses both in a function
+    // body and rejects them afterwards, as a grammar error rather than a parse
+    // error -- so nothing it accepts is lost by refusing them, and reading
+    // them here would mean a second copy of the module-item reader: `export`
+    // stands in front of every declaration there is, and its `default`, its
+    // `=`, its `{ … }` and its alias bodies would all have to be read again.
+    // The item reader is the one that knows them.
     return this.#consumeExpression(cursor, context, start);
   }
 
@@ -1211,8 +1374,10 @@ class StatementConsumer implements SyntaxConsumer {
     start: number,
     endsAtBlock: boolean,
     statementBody = false,
+    declaresType = false,
   ): ConsumerAttempt {
     const children: Syntax[] = [];
+    const alias = createAliasBodyTracker(declaresType);
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
@@ -1222,6 +1387,10 @@ class StatementConsumer implements SyntaxConsumer {
         statementStarts.has(raw(next) ?? "")
       )
         break;
+      // An alias's body is a type, and a type ends at a line break the type
+      // grammar does not carry across. The item reader asks the same question
+      // of the same tracker.
+      if (alias.endsBefore(children.at(-1), next)) break;
       // A `<...>` region holds type parameters or type arguments, and a brace
       // inside one is an object type: `class E extends make()<{ a: string }>`,
       // or `class C<T extends { a: string }>`. Taking the first brace as the
@@ -1257,6 +1426,7 @@ class StatementConsumer implements SyntaxConsumer {
         break;
       }
       children.push(next);
+      alias.take(next);
       if (token(next, ";")) break;
     }
     if (
@@ -1578,7 +1748,10 @@ class ItemConsumer implements SyntaxConsumer {
     }
     const variable = this.#consumeVariable(cursor.fork(), context, start);
     if (variable !== undefined) return variable;
-    if (itemStarts.has(raw(first) ?? "")) {
+    if (
+      (itemStarts.has(raw(first) ?? "") && declarationHead(cursor)) ||
+      globalAugmentation(cursor)
+    ) {
       const children: Syntax[] = [];
       // Only this item's own head decides whether it ends at a block, so the
       // lookahead stops where the consumption loop below stops. Reading on into
@@ -1596,25 +1769,17 @@ class ItemConsumer implements SyntaxConsumer {
         )
           break;
         const word = raw(node);
-        if (word !== undefined) headWords.push(word);
+        if (word === undefined) continue;
+        // `global` heads a declaration only where the body of a global
+        // augmentation stands after it; anywhere else the word is a name, and
+        // the name in a head is what the declaration declares rather than a
+        // keyword. Taken for a head word, `import global from "m"` would
+        // conclude it ends at a block and fail for having no body.
+        if (word === "global" && !globalAugmentation(cursor, offset)) continue;
+        headWords.push(word);
       }
       const endsAtBlock = headWords.some((word) => blockItemHeads.has(word));
-      // Whether this declaration is a type alias, whose body after the `=` is
-      // a type. `export` and `declare` stand in front of one; `import type A
-      // = require("m")` and `export type { A }` declare no alias, and their
-      // first word is not `type`.
-      const declaresType =
-        headWords.find((word) => word !== "export" && word !== "declare") ===
-        "type";
-      /** Whether the walk has passed the `=` that opens the alias's body. */
-      let typeBody = false;
-      /**
-       * How deep in type parameters the walk stands. The `=` of a parameter's
-       * default is written inside them, and does not open the body; a `<`
-       * still open encloses whatever is written under it, so a line break
-       * there ends nothing.
-       */
-      let typeArguments = 0;
+      const alias = createAliasBodyTracker(declaresAlias(headWords));
       while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
         checkWork(context);
         const next = cursor.peek()!;
@@ -1635,14 +1800,7 @@ class ItemConsumer implements SyntaxConsumer {
         // heritage clause's `extends` is written in a header rather than in a
         // type and TypeScript does carry it across a break, so only the body
         // of an alias is asked.
-        if (
-          typeBody &&
-          typeArguments === 0 &&
-          leadingLineBreak(next) &&
-          !headContinues(children.at(-1), next, true)
-        ) {
-          break;
-        }
+        if (alias.endsBefore(children.at(-1), next)) break;
         // A brace inside a `<...>` region is an object type, not the body of
         // the declaration being read.
         if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
@@ -1654,17 +1812,7 @@ class ItemConsumer implements SyntaxConsumer {
           }
         }
         children.push(cursor.consume()!);
-        if (declaresType) {
-          const spelling = raw(next);
-          if (spelling !== undefined) {
-            typeArguments += angleWidth(spelling, "<");
-            typeArguments = Math.max(
-              0,
-              typeArguments - angleWidth(spelling, ">"),
-            );
-            if (typeArguments === 0 && spelling === "=") typeBody = true;
-          }
-        }
+        alias.take(next);
         if (token(next, ";")) break;
         // A brace where a return type is written is an object type; the body
         // is the brace after the whole type.
@@ -1708,7 +1856,11 @@ class ItemConsumer implements SyntaxConsumer {
             ? "typeMember"
             : headWords.includes("function")
               ? "stmt"
-              : headWords.includes("module") || headWords.includes("namespace")
+              : // A global augmentation's body is a module body, and holds the
+                // same items a namespace's does.
+                headWords.includes("global") ||
+                  headWords.includes("module") ||
+                  headWords.includes("namespace")
                 ? "item"
                 : undefined;
         if (bodyCategory !== undefined) {
