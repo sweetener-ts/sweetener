@@ -1370,6 +1370,71 @@ describe("statement and item consumers", () => {
   });
 
   /**
+   * An arrow's one unparenthesized parameter is named by the same rule every
+   * other binder is. The two readers of such an arrow -- the one that measures
+   * it from its head and the one that walks a closure written as loose tokens
+   * -- had each asked for the `identifier` label and then written `async` back
+   * in as a special case, which is the one contextual keyword of thirty-eight.
+   * So `const g = async type => type;` was refused at item level while the
+   * statement reader, which scans its head, took it.
+   */
+  test.each([
+    "type",
+    "from",
+    "of",
+    "declare",
+    "readonly",
+    "async",
+    "get",
+    "using",
+    "namespace",
+    "accessor",
+    "satisfies",
+    "as",
+    "is",
+    "keyof",
+  ])("reads an unparenthesized async arrow named %s at both levels", (word) => {
+    const source = `const g = async ${word} => ${word};`;
+    const whole = `${source}\nafter();`;
+    for (const category of ["stmt", "item"] as const) {
+      const { result } = parse(whole, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a declaration");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(source);
+    }
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(source);
+    expect(
+      (
+        parsed as ts.SourceFile & {
+          readonly parseDiagnostics: readonly ts.Diagnostic[];
+        }
+      ).parseDiagnostics,
+    ).toEqual([]);
+  });
+
+  /**
+   * A reserved word names no parameter either, so the arrow is no arrow and
+   * the item is refused -- as TypeScript refuses it.
+   */
+  test.each(["async yield => 1;", "async interface => 1;"])(
+    "refuses %j, whose reserved word names no parameter",
+    (source) => {
+      const { result } = parse(`const g = ${source}\nafter();`, "item");
+      expect(result.matched, source).toBe(false);
+    },
+  );
+
+  /**
    * A reserved word names nothing, and the item reader must go on refusing it.
    * TypeScript refuses each of these too -- the ones reserved only in strict
    * mode are refused because a module is strict, which the reader takes as

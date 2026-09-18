@@ -2098,10 +2098,22 @@ class ItemConsumer implements SyntaxConsumer {
       ) {
         return failure("item", cursor, start, ["module-item terminator"], 30);
       }
-      const body = token(children.at(-1), ";")
-        ? children.at(-2)
-        : children.at(-1);
-      if (body?.tag === "group" && body.delimiter === "brace") {
+      const bodyIndex = token(children.at(-1), ";")
+        ? children.length - 2
+        : children.length - 1;
+      const body = children[bodyIndex];
+      // A brace where a return type is written is an object type, which the
+      // walk above already refused to end the declaration at. A declaration
+      // with no body at all -- an ambient one, an overload signature -- ends
+      // with that annotation, and taking it for the body read the type's
+      // members as a statement list: a member's name stood at statement head,
+      // where a name spelled like a macro is dispatched. The rule is the same
+      // one, asked of the node the body was settled on.
+      if (
+        body?.tag === "group" &&
+        body.delimiter === "brace" &&
+        !typeOperandFollows(children[bodyIndex - 1])
+      ) {
         const bodyCategory = headWords.includes("class")
           ? "classElement"
           : headWords.includes("interface")
@@ -2116,9 +2128,6 @@ class ItemConsumer implements SyntaxConsumer {
                 ? "item"
                 : undefined;
         if (bodyCategory !== undefined) {
-          const bodyIndex = token(children.at(-1), ";")
-            ? children.length - 2
-            : children.length - 1;
           children[bodyIndex] = protect(bodyCategory, this.options, [
             // A function body is a statement list and a class body is an
             // element list; both are enforested as such. Protecting the raw

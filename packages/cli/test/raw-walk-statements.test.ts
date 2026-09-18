@@ -126,6 +126,75 @@ describe("a block walked as raw tokens", () => {
     expect(text).toContain("const held: number = ((value) * 2);");
   });
 
+  /**
+   * A brace standing where an expression does is an object literal, and the
+   * key of each member names it. The rule that says so had been asked only
+   * where the run being walked was itself an expression, so in a block walked
+   * as tokens a key spelled like a macro was dispatched and the literal was
+   * rewritten into syntax TypeScript cannot read.
+   */
+  const literals: readonly (readonly [string, string])[] = [
+    ["an initializer", "const o = { twice: 1 }; recorded.push(o.twice);"],
+    [
+      "an initializer after an annotation",
+      "const o: { twice: number } = { twice: 1 }; recorded.push(o.twice);",
+    ],
+    [
+      "a returned literal",
+      "const o = ((): { twice: number } => ({ twice: 1 }))(); recorded.push(o.twice);",
+    ],
+    [
+      "an argument",
+      "recorded.push(((held: { twice: number }) => held.twice)({ twice: 1 }));",
+    ],
+    [
+      "a nested literal",
+      "const o = { held: { twice: 1 } }; recorded.push(o.held.twice);",
+    ],
+    [
+      "a method's name",
+      "const o = { twice(v: number) { return v; } }; recorded.push(o.twice(1));",
+    ],
+  ];
+  for (const [name, statement] of literals) {
+    test(`keeps the key of an object literal written as ${name}`, () => {
+      const { text, messages } = expand(
+        "export function f(source: number) {\n" +
+          "  value <- source;\n" +
+          `  ${statement}\n` +
+          "  recorded.push(value);\n" +
+          "}\n",
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("twice");
+      expect(text).not.toContain(") * 2");
+    });
+  }
+
+  test("still expands a computed key in a block walked as tokens", () => {
+    const { text, messages } = expand(
+      "export function f(source: number) {\n" +
+        "  value <- source;\n" +
+        "  const o = { [twice(value)]: 1 };\n" +
+        "  recorded.push(o[2] ?? 0);\n" +
+        "}\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("[(value) * 2]: 1");
+  });
+
+  test("still expands a member's value in a block walked as tokens", () => {
+    const { text, messages } = expand(
+      "export function f(source: number) {\n" +
+        "  value <- source;\n" +
+        "  const o = { held: twice(value) };\n" +
+        "  recorded.push(o.held);\n" +
+        "}\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("held: ((value) * 2)");
+  });
+
   test("leaves the label a break names alone", () => {
     const { text, messages } = expand(
       "export function f(source: number) {\n" +

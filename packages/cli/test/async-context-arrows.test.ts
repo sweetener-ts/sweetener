@@ -479,4 +479,96 @@ export function g(): unknown { total <- 1; ${statement} return [total, handler];
     expect(messages).toEqual([refusal]);
     expect(text).toContain("awaitonly(v)");
   });
+
+  /**
+   * An arrow whose one unparenthesized parameter is spelled by a contextual
+   * keyword. `type`, `of` and `from` are keyword tokens to the scanner and
+   * ordinary names to the grammar, and the walk had asked for the `identifier`
+   * label rather than for the rule that says which words may name a binding.
+   * So the closure was not recognized as one and its body inherited the
+   * context of the function around it.
+   */
+  test.each([["type"], ["of"], ["from"], ["readonly"], ["async"]])(
+    "reads an async arrow whose parameter is spelled `%s` by its own header",
+    (name) => {
+      const { text, messages } = expand(
+        `type Handler = (v: number) => Promise<number>;
+export function g(): unknown { total <- 1; const handler: Handler = async ${name} => awaitonly(${name}); return [total, handler]; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(`async ${name} => (await ${name})`);
+    },
+  );
+
+  test.each([["type"], ["of"], ["from"], ["readonly"]])(
+    "reads a plain arrow whose parameter is spelled `%s` by its own header",
+    (name) => {
+      const { text, messages } = expand(
+        `export async function g(): Promise<unknown> { total <- 1; const handler = ${name} => awaitonly(${name}); return [total, handler]; }`,
+      );
+      expect(messages).toEqual([refusal]);
+      expect(text).toContain(`${name} => awaitonly(${name})`);
+    },
+  );
+});
+
+/**
+ * A private method's body is a function body of its own.
+ *
+ * `#m` is one token of its own kind, and the rule that reads what a brace
+ * opens listed every kind of name a method may carry but that one. So a
+ * private method's brace was never a function brace: its parameters bound
+ * nothing, and its body inherited whether the syntax around it was async and
+ * whether it was a generator.
+ */
+describe("a macro written in a private method's body", () => {
+  test("is refused where the method is not async, at a module's top level", () => {
+    const { text, messages } = expand(
+      "export class C { #m(): number { return awaitonly(1); } }",
+    );
+    expect(messages).toEqual([refusal]);
+    expect(text).toContain("awaitonly(1)");
+  });
+
+  test("is refused where the method is not async, in a block walked as tokens", () => {
+    const { text, messages } = expand(
+      "export function g(): unknown { total <- 1; class C { #m(): number { return awaitonly(1); } } return [total, C]; }",
+    );
+    expect(messages).toEqual([refusal]);
+    expect(text).toContain("awaitonly(1)");
+  });
+
+  test("is refused in a plain private method of an async function's class", () => {
+    const { text, messages } = expand(
+      "export async function g(): Promise<unknown> { total <- 1; class C { #m(): number { return awaitonly(1); } } return [total, C]; }",
+    );
+    expect(messages).toEqual([refusal]);
+    expect(text).toContain("awaitonly(1)");
+  });
+
+  test("is admitted where the private method is async", () => {
+    const { text, messages } = expand(
+      "export class C { async #m(): Promise<number> { return awaitonly(1); } }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("return (await 1)");
+  });
+
+  test("is admitted in a private generator method", () => {
+    const { text, messages } = expand(
+      "export class C { *#m(): Generator<number> { yieldonly(1); } }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("(yield 1)");
+  });
+
+  test("is refused in a private method that is no generator", () => {
+    const { text, messages } = expand(
+      "export class C { #m(): number { yieldonly(1); return 1; } }",
+    );
+    expect(messages).toEqual([
+      "No rule for macro yieldonly accepted this input: generator context.",
+    ]);
+    expect(text).toContain("yieldonly(1)");
+  });
 });

@@ -67,3 +67,28 @@ export function isIdentifierToken(token: TokenSyntax): boolean {
   if (token.kind === "identifier") return true;
   return token.kind === "keyword" && !reservedWords.has(token.raw);
 }
+
+/**
+ * The kinds of token that name a member: a word, reserved or not, a private
+ * name, or a string, number or bigint literal key. A computed name is a
+ * bracket group rather than a token and is not one of these.
+ *
+ * A property, a method, an accessor and a class field are all named this way,
+ * so every reader that asks what a name may be spelled with asks this rather
+ * than listing the kinds again — `#m` is one token of its own kind, and the
+ * list it was left out of decided that a private method's brace was not a
+ * function body at all.
+ */
+const propertyNameKinds: ReadonlySet<TokenSyntax["kind"]> = new Set([
+  "identifier",
+  "keyword",
+  "private-identifier",
+  "string-literal",
+  "numeric-literal",
+  "bigint-literal",
+]);
+
+/** Whether this token may stand where TypeScript expects a member's name. */
+export function isPropertyNameToken(token: TokenSyntax): boolean {
+  return propertyNameKinds.has(token.kind);
+}

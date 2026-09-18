@@ -91,6 +91,50 @@ describe("a group in an expression holds an expression", () => {
     expect(generated).not.toMatch(/\btwice\b/u);
   });
 
+  /**
+   * The complement of the rule above: a brace written where the type
+   * arguments of an expression are is an object type, and each name in it
+   * names a member. Walked as an object literal -- which asks only that the
+   * brace hold a `:` -- the `;` between two members separated nothing, so the
+   * second member was read as the continuation of the first and its name was
+   * dispatched.
+   */
+  test.each([
+    [
+      "a member past a semicolon",
+      "export const m = new Map<string, { b: string; twice: number }>();",
+    ],
+    [
+      "a member past a comma",
+      "export const m = new Map<string, { b: string, twice: number }>();",
+    ],
+    ["the only member", "export const s = new Set<{ twice: number }>();"],
+    [
+      "a member of a call's type argument",
+      "declare function make<T>(): T;\nexport const v = make<{ b: string; twice: number }>();",
+    ],
+    [
+      "a member of a nested object type",
+      "export const m = new Map<string, { b: { twice: number } }>();",
+    ],
+    [
+      "a method signature",
+      "export const s = new Set<{ b: string; twice(): number }>();",
+    ],
+  ])("keeps %s of an object type in type arguments", (_position, source) => {
+    const { generated, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(generated).toMatch(/\btwice\b/u);
+  });
+
+  test("a type macro still reads inside an object type in type arguments", () => {
+    const { generated, messages } = expand(
+      "declare function make<T>(): T;\nexport const v = make<{ b: pair(number); c: number }>();",
+    );
+    expect(messages).toEqual([]);
+    expect(generated).toContain("b: [number, number]");
+  });
+
   test("a group after `as` or `satisfies` still holds a type", () => {
     const { generated, messages } = expand(
       "export const value = [1, 1] as (pair(number));\nexport const other = [2, 2] satisfies (pair(number));",

@@ -90,6 +90,30 @@ describe("a name that shadows a macro", () => {
       "a statement label",
       "export function f() { twice: for (;;) { break twice; } }",
     ],
+    // A method names itself with a property name, and a private name is one:
+    // `#m` is a single token of its own kind, which the rule that reads a
+    // brace's header had left out, so the parameters of a private method bound
+    // nothing at all.
+    [
+      "a private method's parameter",
+      "export class C { #m(twice: (v: number) => number) { return twice(1); } }",
+    ],
+    [
+      "a generic private method's parameter",
+      "export class C { #m<T>(twice: (v: T) => T, v: T) { return twice(v); } }",
+    ],
+    [
+      "a static private method's parameter",
+      "export class C { static #m(twice: (v: number) => number) { return twice(1); } }",
+    ],
+    [
+      "an async private method's parameter",
+      "export class C { async #m(twice: (v: number) => number) { return twice(1); } }",
+    ],
+    [
+      "a method named by a bigint literal, in its parameter",
+      "export class C { 1n(twice: (v: number) => number) { return twice(1); } }",
+    ],
     [
       "a namespace import",
       'import * as twice from "./other.js";\nexport const p = twice.twice;',
@@ -101,7 +125,13 @@ describe("a name that shadows a macro", () => {
   ];
   for (const [name, source] of shadowing) {
     test(`${name} is not dispatched as one`, () => {
-      expect(expand(source).messages).toEqual([]);
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      // A name the macro was dispatched on is gone from the emitted text, and
+      // the replacement stands where it was written; a name that shadowed the
+      // macro is still spelled out.
+      expect(text).toContain("twice");
+      expect(text).not.toContain("[1, 1]");
     });
   }
 
@@ -368,6 +398,114 @@ describe("a name a member list writes", () => {
       expect(text).toContain("twice");
     });
   }
+});
+
+/**
+ * A name an enum member writes.
+ *
+ * An enum body is a list of members, each named and each optionally given a
+ * value; the name is a name there as surely as a property's is. Walked as the
+ * items or statements around it, the name stood at the head of one and was
+ * dispatched, which rewrote a declaration that never mentioned the macro into
+ * syntax TypeScript cannot read.
+ */
+describe("a name an enum member writes", () => {
+  const enums: readonly (readonly [string, string])[] = [
+    ["an enum member with a value", "export enum E { twice = 1 }"],
+    ["an enum member with no value", "export enum E { twice }"],
+    ["an enum member after another", "export enum E { first = 1, twice = 2 }"],
+    [
+      "an enum member before another",
+      "export enum E { twice = 1, second = 2 }",
+    ],
+    ["a member of a const enum", "export const enum E { twice = 1 }"],
+    ["a member of an ambient enum", "export declare enum E { twice = 1 }"],
+    [
+      "a member of an enum in a namespace",
+      "export namespace N { export enum E { twice = 1 } }",
+    ],
+    [
+      "a member of an enum in a function body",
+      "export function f() { enum E { twice = 1 } return E; }",
+    ],
+  ];
+  for (const [name, source] of enums) {
+    test(`${name} keeps its name`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("twice");
+      expect(text).not.toContain("[1, 1]");
+    });
+  }
+
+  test("a member's value is still an expression", () => {
+    const { text, messages } = expand("export enum E { first = twice(1)[0] }");
+    expect(messages).toEqual([]);
+    expect(text).toContain("[1, 1][0]");
+  });
+
+  test("a string-valued member keeps its name", () => {
+    const { text, messages } = expand('export enum E { twice = "twice" }');
+    expect(messages).toEqual([]);
+    expect(text).toContain('twice = "twice"');
+  });
+});
+
+/**
+ * A brace written where a return type stands is an object type, and the body
+ * is the brace after the whole type. A declaration with no body at all — an
+ * ambient one, an overload signature — has no later brace to settle on, and
+ * the annotation was taken for the body: its members were read at statement
+ * head, where a name is dispatched.
+ */
+describe("a bodiless signature's object-type return annotation", () => {
+  const signatures: readonly (readonly [string, string])[] = [
+    [
+      "an ambient function declaration",
+      "export declare function f(): { readonly twice: number };",
+    ],
+    [
+      "an ambient function declaration with a plain member",
+      "export declare function f(): { twice: number };",
+    ],
+    [
+      "an ambient function declaration with a method member",
+      "export declare function f(): { twice(): number };",
+    ],
+    [
+      "an overload signature",
+      "export declare function f(): { readonly twice: number };\nexport declare function f(v: number): { readonly twice: number };",
+    ],
+    [
+      "an ambient function in a namespace",
+      "export namespace N { export function f(): { readonly twice: number }; }",
+    ],
+  ];
+  for (const [name, source] of signatures) {
+    test(`${name} reads its annotation as a type`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("twice");
+      expect(text).not.toContain("[1, 1]");
+    });
+  }
+
+  test("a declaration that does have a body still reads one", () => {
+    const { text, messages } = expand(
+      "export function f(): { readonly twice: number } { return { twice: twice(1)[0] }; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("readonly twice: number");
+    expect(text).toContain("[1, 1][0]");
+  });
+
+  test("a member macro still reads in the annotation", () => {
+    const { text, messages } = expand(
+      "export declare function f(): { boxedMember };",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("readonly at: number;");
+  });
 });
 
 /**

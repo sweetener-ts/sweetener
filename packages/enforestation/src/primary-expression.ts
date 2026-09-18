@@ -277,13 +277,22 @@ export function arrowBodyStart(
   );
 }
 
-/** Whether the node at `offset` is a name and the one after it is `=>`. */
+/**
+ * Whether the node at `offset` is a name and the one after it is `=>`.
+ *
+ * An arrow's one unparenthesized parameter is named by the rule every binder
+ * is named by: any word TypeScript does not reserve. Asked for the
+ * `identifier` label instead, with `async` written back in as the one
+ * exception, this refused `async type => type` and the thirty-seven other
+ * contextual keywords -- and a refused arrow is not read as a closure at all,
+ * so its body inherited whatever function stood around it.
+ */
 function namedArrowFollows(cursor: SyntaxCursor, offset: number): boolean {
   const name = cursor.peek(offset);
   const arrow = cursor.peek(offset + 1);
   return (
     name?.tag === "token" &&
-    (name.kind === "identifier" || name.raw === "async") &&
+    isIdentifierToken(name) &&
     arrow?.tag === "token" &&
     arrow.raw === "=>"
   );
@@ -322,7 +331,7 @@ export function asyncNamedArrow(
   return (
     asyncModifies(modifier, name) &&
     name?.tag === "token" &&
-    (name.kind === "identifier" || name.raw === "async") &&
+    isIdentifierToken(name) &&
     arrow?.tag === "token" &&
     arrow.raw === "=>" &&
     !leadingLineBreak(arrow)

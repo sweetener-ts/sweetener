@@ -6,6 +6,7 @@ import {
   angleWidth,
   createSyntaxSequence,
   isIdentifierToken,
+  isPropertyNameToken,
   leadingLineBreak,
   spanEnvelope,
   type GroupSyntax,
@@ -650,14 +651,7 @@ function beginsClassMember(syntax: Syntax): boolean {
   if (syntax.tag === "group") return syntax.delimiter === "bracket";
   if (syntax.tag !== "token") return false;
   return (
-    syntax.raw === "@" ||
-    syntax.raw === "*" ||
-    syntax.kind === "identifier" ||
-    syntax.kind === "keyword" ||
-    syntax.kind === "private-identifier" ||
-    syntax.kind === "string-literal" ||
-    syntax.kind === "numeric-literal" ||
-    syntax.kind === "bigint-literal"
+    syntax.raw === "@" || syntax.raw === "*" || isPropertyNameToken(syntax)
   );
 }
 

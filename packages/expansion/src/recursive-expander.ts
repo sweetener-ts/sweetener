@@ -17,6 +17,8 @@ import {
   createSyntaxSequence,
   createToken,
   createTrivia,
+  isIdentifierToken,
+  isPropertyNameToken,
   spanEnvelope,
   type GroupSyntax,
   type ProtectedSyntax,
@@ -1894,7 +1896,7 @@ export function expandMacroSyntax(
     previous?.tag === "token" && previous.raw === "static";
 
   interface BraceHeader {
-    readonly opens: "function" | "class" | "interface" | "other";
+    readonly opens: "function" | "class" | "interface" | "enum" | "other";
     /** Where a function's parameter list stands in what precedes the brace. */
     readonly parameters?: number;
     /**
@@ -1927,6 +1929,16 @@ export function expandMacroSyntax(
     opens: "interface",
     yields: undefined,
     awaits: undefined,
+  };
+  /**
+   * An enum body, which holds a list of named members rather than statements,
+   * items or an object literal's entries. Nothing in it suspends: a member's
+   * value is a constant expression, which no `yield` or `await` may stand in.
+   */
+  const enumBrace: BraceHeader = {
+    opens: "enum",
+    yields: false,
+    awaits: false,
   };
   /**
    * A namespace body, which TypeScript allows only at the top level of a
@@ -2052,6 +2064,9 @@ export function expandMacroSyntax(
         // namespace, a `declare global`, a function body, an item recovery
         // swallowed -- is recognized as the member list it is.
         if (node.raw === "interface") return interfaceBrace;
+        // An enum body is a member list too, and `const enum` and `declare
+        // enum` are read past on the way back to the keyword that says so.
+        if (node.raw === "enum") return enumBrace;
         if (
           statementBoundaries.has(node.raw) ||
           node.raw === "=" ||
@@ -2102,20 +2117,14 @@ export function expandMacroSyntax(
       lastTokenOf(nodeAt(run, parameters - 2))?.raw === "for"
     )
       return otherBrace;
-    return opener.kind === "identifier" ||
-      opener.kind === "keyword" ||
-      opener.kind === "string-literal" ||
-      opener.kind === "numeric-literal" ||
+    return isPropertyNameToken(opener) ||
       opener.raw === "*" ||
       angles(opener, ">") > 0
       ? functionBrace
       : otherBrace;
   };
 
-  const braceOpens = (
-    run: SyntaxRun,
-    end: number,
-  ): "function" | "class" | "interface" | "other" =>
+  const braceOpens = (run: SyntaxRun, end: number): BraceHeader["opens"] =>
     braceHeader(run, end).opens;
 
   /** Whether a node is a brace group, or a protected body holding only one. */
@@ -2306,8 +2315,11 @@ export function expandMacroSyntax(
       return end === undefined ? undefined : { end, kind: "class", async };
     }
     const parameters = nodes[start];
-    const named =
-      parameters?.tag === "token" && parameters.kind === "identifier";
+    // An arrow's one unparenthesized parameter is named by the rule every
+    // binder is named by, which the enforester's reader of the same arrow
+    // asks: any word TypeScript does not reserve, `type` and `of` and
+    // `readonly` included.
+    const named = parameters?.tag === "token" && isIdentifierToken(parameters);
     const listed =
       parameters?.tag === "group" && parameters.delimiter === "parenthesis";
     if (!named && !listed) return undefined;
@@ -2771,6 +2783,41 @@ export function expandMacroSyntax(
     let suppressPending = suppressHead;
     let suppressedHeadIndex: number | undefined;
     /**
+     * `syntax` walked as the expression it is: enforested first, so that a
+     * macro in it is dispatched in the expression space and the operators
+     * around it bind as they would anywhere else. Every brace this walk reads
+     * as a list of members -- an object literal, an enum body -- hands over
+     * the part of each member that is an expression this way, so the two
+     * agree about what a member's value is.
+     */
+    const expandAsExpression = (
+      syntax: readonly Syntax[],
+      /** Whether `syntax` is a whole member, whose head may name it. */
+      wholeMember = false,
+    ): Syntax[] => {
+      if (syntax.length === 0) return [];
+      const enforested = options.enforestExpression?.({
+        syntax: createSyntaxSequence(syntax),
+        contexts,
+        lexicalModule,
+      });
+      const nested = visit(
+        enforested === undefined
+          ? createSyntaxSequence(syntax)
+          : createSyntaxSequence([enforested]),
+        currentEnvironment,
+        "expr",
+        parentInvocation,
+        lexicalModule,
+        contexts,
+        false,
+        recursiveBinding,
+        wholeMember,
+      );
+      currentEnvironment = nested.environment;
+      return [...nested.syntax];
+    };
+    /**
      * Whether the position being walked stands inside an expression. A
      * replacement is walked before it is parsed, so the category of a position
      * in it cannot be read from the one token in front of it: `f(inner(2))`,
@@ -2805,6 +2852,55 @@ export function expandMacroSyntax(
     let typeAliasRegion = false;
     /** Whether the position being walked stands inside a type. */
     const inTypeRegion = (): boolean => typeRegion || typeAliasRegion;
+    /**
+     * Whether the node about to be walked stands among the type arguments of
+     * an expression: the `{ at: number }` of `new Map<string, { at: number
+     * }>()` or of `make<{ at: number }>()`.
+     *
+     * Every token a type is written after is an expression's too, so a rule
+     * that read only what stands in front of the position would take the
+     * brace of `f(a < b, { a: 1 })` for an object type. Three questions
+     * together say a type-argument list rather than a comparison: a `<`
+     * behind that nothing has closed, the `>` that closes it written ahead,
+     * and a `,` or that `<` directly in front, which is where a type operand
+     * stands. TypeScript resolves the same ambiguity by parsing the candidate
+     * list and reading what follows it; over loose tokens these are the
+     * questions the walk can answer.
+     */
+    const typeArgumentsEnclose = (at: number): boolean => {
+      const previous = output.at(-1);
+      if (
+        previous?.tag !== "token" ||
+        (previous.raw !== "," && angles(previous, "<") === 0)
+      )
+        return false;
+      // How many `<` behind stand open. No type-argument list spans a
+      // statement boundary, which is where the scan back stops.
+      let closed = 0;
+      let depth = 0;
+      for (let back = output.length - 1; back >= 0; back -= 1) {
+        const node = output[back]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ";" || node.raw === "}") break;
+        closed += angles(node, ">");
+        const opens = angles(node, "<");
+        if (opens > closed) {
+          depth = opens - closed;
+          break;
+        }
+        closed -= opens;
+      }
+      if (depth === 0) return false;
+      for (let forward = at + 1; forward < input.length; forward += 1) {
+        const node = input[forward]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ";") return false;
+        depth += angles(node, "<");
+        depth -= angles(node, ">");
+        if (depth <= 0) return true;
+      }
+      return false;
+    };
     /** Where the class member being walked begins in `output`. */
     let memberStart = 0;
     /**
@@ -2819,6 +2915,7 @@ export function expandMacroSyntax(
      */
     const typeFollows = (): boolean =>
       inTypeRegion() ||
+      typeArgumentsEnclose(index) ||
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
         : typePositionHere());
@@ -4626,44 +4723,72 @@ export function expandMacroSyntax(
           index += 1;
           continue;
         }
+        // An enum body holds named members, each of them a name and, where
+        // one is written, the value after its `=`. Walked as the items or
+        // statements around it, the name stood at the head of one and was
+        // dispatched: a declaration that never mentioned the macro was
+        // rewritten into syntax TypeScript cannot read, or reported against.
         if (
           node.tag === "group" &&
           node.delimiter === "brace" &&
-          category === "expr" &&
-          !inTypeRegion() &&
+          braceOpens(walkedRun, output.length) === "enum"
+        ) {
+          const children: Syntax[] = [];
+          let member: Syntax[] = [];
+          const expandMember = () => {
+            if (member.length === 0) return;
+            const equals = member.findIndex(
+              (child) => child.tag === "token" && child.raw === "=",
+            );
+            // What names the member, which means itself: a word or a string
+            // key. A check for invocations left in the output is told so, or
+            // it blames the member for a call that was never written.
+            for (const name of equals < 0 ? member : member.slice(0, equals))
+              if (name.tag === "token" && name.kind === "identifier")
+                namedOrigins.add(name.origin);
+            children.push(
+              ...(equals < 0 ? member : member.slice(0, equals + 1)),
+              ...(equals < 0
+                ? []
+                : expandAsExpression(member.slice(equals + 1))),
+            );
+            member = [];
+          };
+          for (const child of node.children) {
+            if (child.tag === "token" && child.raw === ",") {
+              expandMember();
+              children.push(child);
+            } else member.push(child);
+          }
+          expandMember();
+          output.push(
+            createGroup({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children: createSyntaxSequence(children),
+            }),
+          );
+          index += 1;
+          continue;
+        }
+        // A brace holds an object literal where the walk reads it as an
+        // expression: the run itself is one, or the brace stands after the `=`
+        // of an initializer or a default, whatever the run around it is
+        // categorized as. Asked only of the run's own category, a literal
+        // written in a block walked as tokens was descended into as an
+        // expression all the same -- and there the key of each member stood
+        // at the head of an expression and was dispatched as a macro.
+        if (
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          (category === "expr" || initializerFollows(output)) &&
+          !typeFollows() &&
           node.children.some(
             (child) => child.tag === "token" && child.raw === ":",
           )
         ) {
           const children: Syntax[] = [];
           let member: Syntax[] = [];
-          const expandExpression = (
-            syntax: readonly Syntax[],
-            /** Whether `syntax` is a whole member, whose head may name it. */
-            wholeMember = false,
-          ): Syntax[] => {
-            if (syntax.length === 0) return [];
-            const enforested = options.enforestExpression?.({
-              syntax: createSyntaxSequence(syntax),
-              contexts,
-              lexicalModule,
-            });
-            const nested = visit(
-              enforested === undefined
-                ? createSyntaxSequence(syntax)
-                : createSyntaxSequence([enforested]),
-              currentEnvironment,
-              "expr",
-              parentInvocation,
-              lexicalModule,
-              contexts,
-              false,
-              recursiveBinding,
-              wholeMember,
-            );
-            currentEnvironment = nested.environment;
-            return [...nested.syntax];
-          };
           const expandMember = () => {
             if (member.length === 0) return;
             const colon = member.findIndex(
@@ -4705,10 +4830,10 @@ export function expandMacroSyntax(
               });
               children.push(
                 ...key,
-                ...expandExpression(member.slice(colon + 1)),
+                ...expandAsExpression(member.slice(colon + 1)),
               );
             } else {
-              children.push(...expandExpression(member, true));
+              children.push(...expandAsExpression(member, true));
             }
             member = [];
           };

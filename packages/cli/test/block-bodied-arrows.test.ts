@@ -130,3 +130,80 @@ describe("a statement list holding a block-bodied arrow", () => {
     );
   });
 });
+
+/**
+ * The same arrow written as the value of an object literal's member.
+ *
+ * An arrow whose head is one operand and whose body is a block is read through
+ * the infix `=>`, which protects its parameter list as an expression; the
+ * reading is unwrapped where the item reader hands its items to the expander,
+ * and the object literal's own route handed its members over without it. So
+ * the parameters were walked as an expression: a parameter spelled like a
+ * macro was dispatched in binder position, and the arrow no longer parsed.
+ */
+describe("a block-bodied arrow written as an object literal's member", () => {
+  const alias = "type Fn = (v: number) => number;";
+  const binders: readonly (readonly [string, string])[] = [
+    [
+      "one parameter",
+      "export const o = { handler: (twice: Fn) => { return twice(1); } };",
+    ],
+    [
+      "an unparenthesized parameter",
+      "export const o: { handler: (twice: Fn) => number } = { handler: twice => { return twice(1); } };",
+    ],
+    [
+      "two parameters",
+      "export const o = { handler: (twice: Fn, v: number) => { return twice(v); } };",
+    ],
+    [
+      "a rest parameter",
+      "export const o = { handler: (...twice: Fn[]) => { return twice[0]!(1); } };",
+    ],
+    [
+      "a destructured parameter",
+      "export const o = { handler: ({ twice }: { twice: Fn }) => { return twice(1); } };",
+    ],
+    [
+      "a return type",
+      "export const o = { handler: (twice: Fn): number => { return twice(1); } };",
+    ],
+    [
+      "an async parameter list",
+      "export const o = { handler: async (twice: Fn) => { return twice(1); } };",
+    ],
+    [
+      "a concise body",
+      "export const o = { handler: (twice: Fn) => twice(1) };",
+    ],
+    [
+      "a nested arrow",
+      "export const o = { handler: (twice: Fn) => { return () => { return twice(1); }; } };",
+    ],
+  ];
+  for (const [name, statement] of binders) {
+    test(`binds ${name} rather than dispatching it`, () => {
+      const { text, messages } = expand(`${alias}\n${statement}`);
+      expect(messages).toEqual([]);
+      expect(text).toMatch(/\btwice\b/u);
+      // Nothing the macro would have written: its replacement is a sum.
+      expect(text).not.toContain(" + ");
+    });
+  }
+
+  test("still expands a macro in a block-bodied arrow's body", () => {
+    const { text, messages } = expand(
+      "export const o = { handler: (v: number) => { return twice(v); } };",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("return (v + v);");
+  });
+
+  test("still expands a macro in a block-bodied arrow with no parameters", () => {
+    const { text, messages } = expand(
+      "export const o = { handler: () => { return twice(1); } };",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("return (1 + 1);");
+  });
+});

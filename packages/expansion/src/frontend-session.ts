@@ -1524,8 +1524,15 @@ export function createExpansionFrontendSession(
               ...context("expr", contexts),
               stopSet: StopSet.empty,
             });
+            // Normalized, as the items handed over by `prepareInput` are. A
+            // block-bodied arrow whose head is one operand is read through the
+            // infix `=>`, which protects its parameter list as an expression;
+            // left that way the walk found no parameter list in front of the
+            // `=>` and walked the binders in it as the expression they had
+            // been wrapped as. Both routes into the expander hand it the same
+            // shape, or the two disagree about what a reading means.
             return attempted.matched && attempted.cursor.atEnd
-              ? attempted.syntax
+              ? normalizeProtectedInput(attempted.syntax)
               : undefined;
           } finally {
             enforestingModule = restore;
