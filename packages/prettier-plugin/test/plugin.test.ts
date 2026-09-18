@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { format } from "prettier";
 import { describe, expect, test } from "vitest";
@@ -6,8 +6,7 @@ import plugin, {
   formatSweetener,
   formatSweetenerWithPrettier,
 } from "../src/index.js";
-
-const repositoryRoot = resolve(import.meta.dirname, "../../..");
+import { languageTourRoot, languageTourSources } from "./language-tour.js";
 
 describe("Sweetener Prettier plugin", () => {
   test("registers and formats .sts files through Prettier", async () => {
@@ -30,32 +29,20 @@ if (!($condition)) $body
 `);
   });
 
-  // Formatting every file of the tour twice takes most of a default timeout on
-  // an idle machine, and more than one when the machine is busy. A test that
-  // fails under load is noise, and noise is eventually ignored.
-  test(
-    "is idempotent across the language-tour corpus",
-    { timeout: 180_000 },
-    async () => {
-      const tourRoot = resolve(repositoryRoot, "examples/language-tour");
-      const names = (await readdir(tourRoot, { recursive: true }))
-        .filter((name) => /\.stsx?$/u.test(name))
-        .sort();
-
-      for (const name of names) {
-        const source = await readFile(resolve(tourRoot, name), "utf8");
-        const once = await format(source, {
-          filepath: name,
-          plugins: [plugin],
-        });
-        const twice = await format(once, {
-          filepath: name,
-          plugins: [plugin],
-        });
-        expect(twice, name).toBe(once);
-      }
-    },
-  );
+  test("is idempotent across the language-tour corpus", async () => {
+    for (const name of languageTourSources()) {
+      const source = await readFile(resolve(languageTourRoot, name), "utf8");
+      const once = await format(source, {
+        filepath: name,
+        plugins: [plugin],
+      });
+      const twice = await format(once, {
+        filepath: name,
+        plugins: [plugin],
+      });
+      expect(twice, name).toBe(once);
+    }
+  });
 
   test("preserves whitespace with runtime meaning", () => {
     const source =

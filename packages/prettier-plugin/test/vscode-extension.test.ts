@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import plugin from "../src/index.js";
+import { languageTourRoot, languageTourSources } from "./language-tour.js";
 
 /**
  * The editor extension's manifest and the shape of its grammar.
@@ -182,16 +183,12 @@ describe("the VS Code extension", () => {
   test("matches the syntax in the checked-in examples", () => {
     const root = resolve(import.meta.dirname, "../../..");
     const sources = [
-      "examples/macro-suite/macros.sts",
-      "examples/macro-suite/showcase.sts",
-      ...readdirSync(join(root, "examples/language-tour"), {
-        recursive: true,
-        encoding: "utf8",
-      })
-        .filter((entry) => entry.endsWith(".sts") || entry.endsWith(".stsx"))
-        .map((entry) => join("examples/language-tour", entry)),
+      ...["macros.sts", "showcase.sts"].map((name) =>
+        join(root, "examples/macro-suite", name),
+      ),
+      ...languageTourSources().map((name) => join(languageTourRoot, name)),
     ]
-      .map((relative) => readFileSync(join(root, relative), "utf8"))
+      .map((fileName) => readFileSync(fileName, "utf8"))
       .join("\n");
     for (const [name, rule] of rules(grammar)) {
       const expression = rule.match ?? rule.begin;

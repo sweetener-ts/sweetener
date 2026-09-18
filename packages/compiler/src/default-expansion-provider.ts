@@ -728,6 +728,9 @@ export class DefaultProjectExpansionProvider
     const byPath = new Map<string, ParsedFile>();
     const bySource = new Map<SourceId, ParsedFile>();
     const diagnostics: Diagnostic[] = [];
+    // Held for TypeScript rather than reported here. See
+    // `ProjectExpansionOutput.unresolvedNameExplanations`.
+    const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
     const packageManifests = new Map<string, MacroPackageManifest>();
     const loadFile = (
@@ -1375,9 +1378,15 @@ export class DefaultProjectExpansionProvider
       const runtime = runtimeSyntax(file, origins);
       const result =
         runtime.length === 0
-          ? { syntax: runtime, traces: [], diagnostics: [] }
+          ? {
+              syntax: runtime,
+              traces: [],
+              diagnostics: [],
+              unresolvedNameExplanations: [],
+            }
           : session.expand(runtime, "item");
       diagnostics.push(...result.diagnostics);
+      unresolvedNameExplanations.push(...result.unresolvedNameExplanations);
       invocationCount += result.traces.length;
 
       const invokedOwners = [
@@ -1589,6 +1598,11 @@ export class DefaultProjectExpansionProvider
       files: Object.freeze(virtualFiles),
       diagnostics: Object.freeze(
         diagnostics.map((diagnostic) =>
+          asTypeScriptDiagnostic(diagnostic, bySource),
+        ),
+      ),
+      unresolvedNameExplanations: Object.freeze(
+        unresolvedNameExplanations.map((diagnostic) =>
           asTypeScriptDiagnostic(diagnostic, bySource),
         ),
       ),

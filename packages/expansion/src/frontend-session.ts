@@ -1568,24 +1568,26 @@ export function createExpansionFrontendSession(
           };
         },
       });
-      reportSurvivingMacros(
-        result.syntax,
-        [...operatorDiagnostics, ...result.diagnostics],
-        result.namedOrigins,
-      );
+      // A name held for TypeScript to resolve counts as spoken about here.
+      // These three say what nothing else said, and a position a mismatched
+      // space explains is a position expansion has an answer for; blaming it
+      // for a macro left standing would say the wrong thing about it, and
+      // would say it whether or not the name resolves.
+      const spokenFor = [
+        ...operatorDiagnostics,
+        ...result.diagnostics,
+        ...result.unresolvedNameExplanations,
+      ];
+      reportSurvivingMacros(result.syntax, spokenFor, result.namedOrigins);
       reportUnexpandedOperators(
         result.syntax,
         new Set([...result.offeredOperators, ...offeredOperatorTokens]),
-        [...operatorDiagnostics, ...recoveryDiagnostics, ...result.diagnostics],
+        [...spokenFor, ...recoveryDiagnostics],
       );
       // Last of the three, so that an item holding a macro or an operator
       // either of them speaks about is described in those words rather than as
       // an item that could not be read.
-      reportUnreadItems(result.syntax, [
-        ...operatorDiagnostics,
-        ...recoveryDiagnostics,
-        ...result.diagnostics,
-      ]);
+      reportUnreadItems(result.syntax, [...spokenFor, ...recoveryDiagnostics]);
       const diagnosticKeys = new Set<string>();
       const uniqueDiagnostics = [
         ...operatorDiagnostics,

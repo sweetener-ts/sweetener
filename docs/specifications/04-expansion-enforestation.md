@@ -66,7 +66,8 @@ itself — a bare name, or a name in front of a brace. Past the member's first
 `:` the member's type is read the way a type is read anywhere else, so a `type`
 macro in an annotation still applies. A name standing in a member position that
 resolves to no `typeMember` macro but does resolve in another category is
-reported rather than emitted verbatim, because a leftover name there becomes an
+answered for by the category it was declared for rather than left to be read as
+whatever the leftover name makes, because a leftover name there becomes an
 implicitly-typed member rather than a syntax error.
 
 A brace written among type arguments is an object type wherever it stands, so
@@ -84,6 +85,20 @@ export of a module, or the local binding an export clause re-exports. The name
 a `* as` introduces is the same position written without braces. Nothing in
 either is an invocation, so a specifier list is emitted as it was written, and
 a name no binding declares is left for TypeScript to report.
+
+A macro written outside the space it was declared for is emitted verbatim, and
+what expansion has to say about it -- that the name is a macro of another space
+-- is written where TypeScript reports the name is one it cannot find, or a
+member it cannot type, and nowhere else. Which names a program declares is
+TypeScript's to answer and never expansion's: `lib.d.ts`, an ambient
+declaration and a `declare global` all declare names expansion cannot see, and
+a member list names members of its own, so a macro spelled `Partial`, `Event`
+or `Box` is an ordinary name wherever one of those declares it. Saying
+otherwise refused `export type Halved = Partial<{ a: number }>` in a module
+holding an expression macro spelled `Partial`, which is valid TypeScript.
+Expansion therefore carries the sentence to the side that resolves names, which
+writes it in place of its own report at the same position, and drops it where
+the name resolves.
 
 A macro name that no rule read past, and that nothing but a `;`, a `,`, a `.`
 or a `?.` follows, is written as a name rather than as an invocation: `export

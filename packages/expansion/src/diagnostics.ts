@@ -142,7 +142,7 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "A macro is dispatched only in the category it declares. A name written where another category is read is left alone, which emits it verbatim, so the mismatch is reported here rather than as whatever TypeScript makes of the leftover name.",
+      "A macro is dispatched only in the category it declares. A name written where another category is read is left alone and emitted verbatim, so the mismatch is said in these words rather than in whatever TypeScript makes of the leftover name. Written where TypeScript reports the name is one it cannot find, or a member it cannot type, and nowhere else: which names a program declares is TypeScript's to answer, since `lib.d.ts`, an ambient declaration and a `declare global` all declare names expansion cannot see, and a member list names members of its own. A macro spelled like one of those is an ordinary name there, and saying otherwise refused valid TypeScript.",
     format: (arguments_) =>
       `Macro ${String(arguments_[0] ?? "unknown")} is declared ${String(arguments_[1] ?? "unknown")} and cannot be written where ${article(String(arguments_[2] ?? "node"))} ${String(arguments_[2] ?? "node")} is read. Declare it ${String(arguments_[2] ?? "unknown")} to use it here.`,
   },

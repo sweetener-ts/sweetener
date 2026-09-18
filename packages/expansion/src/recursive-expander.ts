@@ -209,6 +209,18 @@ export interface ExpandMacroSyntaxResult {
   readonly environment: BindingEnvironment;
   readonly traces: readonly MacroTraceEvent[];
   readonly diagnostics: readonly Diagnostic[];
+  /**
+   * What this expansion can say about a name it left alone because the macro
+   * spelled that way is declared for another space.
+   *
+   * These are not diagnostics. Whether anything defines the name is
+   * TypeScript's to answer: it reads `lib.d.ts`, every ambient declaration and
+   * every `declare global`, and it knows that a member list names members of
+   * its own, none of which the expander can see. So each of these is carried
+   * to the side that resolves names, and written only where that side reports
+   * it cannot resolve the name written there.
+   */
+  readonly unresolvedNameExplanations: readonly Diagnostic[];
   readonly generatedDefinitionTraces: readonly GeneratedDefinitionsTrace[];
   readonly generatedModules: readonly CompileParsedMacrosResult[];
   readonly expansionEnvironment: ExpansionEnvironment | undefined;
@@ -324,6 +336,7 @@ export function expandMacroSyntax(
 ): ExpandMacroSyntaxResult {
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
+  const unresolvedNameExplanations: Diagnostic[] = [];
   const offeredOperators = new Set<Syntax["origin"]>();
   const namedOrigins = new Set<Syntax["origin"]>();
   const generatedDefinitionTraces: GeneratedDefinitionsTrace[] = [];
@@ -3675,10 +3688,11 @@ export function expandMacroSyntax(
       }
       /**
        * The space this position reads, where it reads one space and a bare
-       * name written there could be nothing but an invocation of it. A macro
-       * declared for another space is left alone and emitted verbatim, which
-       * TypeScript reports as a name it cannot find, as an implicitly-typed
-       * member, or -- when it is not asking for either -- as nothing at all.
+       * name written there could be nothing but an invocation of a macro
+       * declared for it. A macro declared for another space is left alone and
+       * emitted verbatim, which TypeScript reports as a name it cannot find,
+       * as an implicitly-typed member, or -- when it is not asking for either
+       * -- as nothing at all.
        *
        * Not asked where a bare name is ordinary syntax: a member list names
        * members, a declaration names what it binds, a qualified name names a
@@ -3743,8 +3757,17 @@ export function expandMacroSyntax(
         );
         if (elsewhere !== undefined) {
           const source = options.origins.selectPrimarySource(node.origin);
+          // Held rather than reported. The expander knows the macros and the
+          // bindings this module writes; it does not know `lib.d.ts`, an
+          // ambient declaration, a `declare global`, or that a member list
+          // names members of its own, so a name it cannot account for is not
+          // thereby a name nothing defines. Reporting on its own knowledge
+          // refused `type Halved = Partial<{ a: number }>` in a module holding
+          // a macro spelled `Partial`. The sentence goes to the side that
+          // resolves names, to be written where that side says the name is
+          // missing.
           if (source !== undefined)
-            diagnostics.push(
+            unresolvedNameExplanations.push(
               expansionDiagnosticRegistry.create(wrongCategoryMacroCode, {
                 primaryOrigin: {
                   sourceId: source.sourceId,
@@ -5232,6 +5255,7 @@ export function expandMacroSyntax(
       [...traces].sort((left, right) => left.invocationId - right.invocationId),
     ),
     diagnostics: Object.freeze(diagnostics),
+    unresolvedNameExplanations: Object.freeze(unresolvedNameExplanations),
     generatedDefinitionTraces: Object.freeze(generatedDefinitionTraces),
     generatedModules: Object.freeze(activeModules.slice(1)),
     expansionEnvironment: activeExpansionEnvironment,

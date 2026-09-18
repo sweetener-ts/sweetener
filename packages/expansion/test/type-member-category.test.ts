@@ -83,7 +83,11 @@ function harness(definitionText: string) {
   });
   const run = (
     source: string,
-  ): { text: string; diagnostics: readonly Diagnostic[] } => {
+  ): {
+    text: string;
+    diagnostics: readonly Diagnostic[];
+    unresolvedNameExplanations: readonly Diagnostic[];
+  } => {
     const read = readSyntax(source, {
       sourceId: invocationSource,
       scopes: scopes.singleton(scopes.freshScope("lexical", "type-member-use")),
@@ -91,7 +95,11 @@ function harness(definitionText: string) {
     });
     expect(read.diagnostics).toEqual([]);
     const result = session.expand(withoutEof(read.root.children), "item");
-    return { text: compact(result.syntax), diagnostics: result.diagnostics };
+    return {
+      text: compact(result.syntax),
+      diagnostics: result.diagnostics,
+      unresolvedNameExplanations: result.unresolvedNameExplanations,
+    };
   };
   return {
     expand: (source: string) => {
@@ -100,6 +108,7 @@ function harness(definitionText: string) {
       return result.text;
     },
     diagnose: (source: string) => run(source).diagnostics,
+    explain: (source: string) => run(source).unresolvedNameExplanations,
   };
 }
 
@@ -279,16 +288,22 @@ describe("the typeMember category", () => {
   /**
    * Without the category a macro written here is dispatched as an item and
    * blamed for expanding to something that is not one item. With it, a name
-   * that resolves in no member space but does resolve elsewhere is reported
-   * against the category it was declared for, rather than left to become an
-   * implicitly-typed member TypeScript may not even complain about.
+   * that resolves in no member space but does resolve elsewhere is answered
+   * for by the category it was declared for.
+   *
+   * Held rather than reported, because a bare name in a member list is a
+   * member of its own: `interface Row { nowhere }` declares an implicitly
+   * typed member, which TypeScript accepts outright unless `noImplicitAny` is
+   * on. So the sentence goes to TypeScript, to be written where TypeScript
+   * says there is something to write it about.
    */
-  test("reports a macro declared for another category", () => {
-    const { diagnose } = harness(definitions);
-    const diagnostics = diagnose("interface Row { nowhere }");
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]?.code).toBe("SWR4013");
-    expect(diagnostics[0]?.messageArguments).toEqual([
+  test("holds a macro declared for another category for TypeScript", () => {
+    const { diagnose, explain } = harness(definitions);
+    expect(diagnose("interface Row { nowhere }")).toEqual([]);
+    const explanations = explain("interface Row { nowhere }");
+    expect(explanations).toHaveLength(1);
+    expect(explanations[0]?.code).toBe("SWR4013");
+    expect(explanations[0]?.messageArguments).toEqual([
       "nowhere",
       "item",
       "typeMember",
@@ -296,8 +311,9 @@ describe("the typeMember category", () => {
   });
 
   test("does not report an ordinary member that shares a macro name", () => {
-    const { diagnose } = harness(definitions);
+    const { diagnose, explain } = harness(definitions);
     expect(diagnose("interface Row { nowhere: string; }")).toEqual([]);
+    expect(explain("interface Row { nowhere: string; }")).toEqual([]);
   });
 });
 

@@ -88,7 +88,11 @@ function harness(definitionText: string) {
     });
     expect(read.diagnostics).toEqual([]);
     const result = session.expand(withoutEof(read.root.children), category);
-    return { text: compact(result.syntax), diagnostics: result.diagnostics };
+    return {
+      text: compact(result.syntax),
+      diagnostics: result.diagnostics,
+      unresolvedNameExplanations: result.unresolvedNameExplanations,
+    };
   };
   return Object.assign(
     (source: string, category: "expr" | "stmt" | "item" | "type") => {
@@ -791,17 +795,28 @@ describe("an ordinary binding shadows a macro", () => {
 
   /**
    * `type A = name;` reads a type, so no expression macro is looked up there.
-   * The name is a macro of another space rather than a type nobody declared,
-   * so the mismatch is reported here instead of reaching TypeScript as a name
-   * it cannot find.
+   * The name is left as written, and what expansion has to say about it -- that
+   * a macro of another space is spelled that way -- is held rather than
+   * reported: whether `twice` is a type here is TypeScript's to answer, since
+   * `lib.d.ts`, an ambient declaration and a `declare global` all declare types
+   * expansion cannot see. The sentence is written where TypeScript says it
+   * cannot find the name, and nowhere else.
    */
-  test("reports an expression macro written in a type alias", () => {
+  test("holds an expression macro written in a type alias for TypeScript", () => {
     const expand = harness(definitions);
-    const { text, diagnostics } = expand.run("export type A = twice;", "item");
+    const { text, diagnostics, unresolvedNameExplanations } = expand.run(
+      "export type A = twice;",
+      "item",
+    );
     expect(text).toBe("exporttypeA=twice;");
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]?.code).toBe("SWR4013");
-    expect(diagnostics[0]?.messageArguments).toEqual(["twice", "expr", "type"]);
+    expect(diagnostics).toEqual([]);
+    expect(unresolvedNameExplanations).toHaveLength(1);
+    expect(unresolvedNameExplanations[0]?.code).toBe("SWR4013");
+    expect(unresolvedNameExplanations[0]?.messageArguments).toEqual([
+      "twice",
+      "expr",
+      "type",
+    ]);
   });
 });
 

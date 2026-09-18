@@ -38,6 +38,18 @@ export interface ProjectExpansionProvider {
 export interface ProjectExpansionOutput {
   readonly files: readonly VirtualTypeScriptFile[];
   readonly diagnostics: readonly ts.Diagnostic[];
+  /**
+   * What expansion can say about a name it left alone, for the places
+   * TypeScript reports it cannot resolve one.
+   *
+   * These are not diagnostics of their own. Expansion knows the macros in
+   * scope and the bindings a module writes; which names a program declares is
+   * TypeScript's to answer, because `lib.d.ts`, an ambient declaration and a
+   * `declare global` all declare names expansion never sees. Each of these is
+   * written in place of the name TypeScript could not find at the same
+   * position, and dropped where TypeScript found one.
+   */
+  readonly unresolvedNameExplanations?: readonly ts.Diagnostic[];
 }
 
 export interface ConfiguredProjectCommandResult {
@@ -368,6 +380,54 @@ function removeStaleDeclarations(
 }
 
 /**
+ * What TypeScript says when it cannot resolve a name, or cannot type the
+ * member a name introduces. A macro written outside the space it was declared
+ * for is emitted verbatim, so this is where it surfaces.
+ */
+const unresolvedNameCodes: ReadonlySet<number> = new Set([
+  2304, // Cannot find name 'X'.
+  2552, // Cannot find name 'X'. Did you mean 'Y'?
+  7008, // Member 'X' implicitly has an 'any' type.
+]);
+
+/**
+ * Say what expansion knows about a name TypeScript could not resolve.
+ *
+ * Expansion is not the side that knows what a name means. It sees the macros
+ * in scope and the bindings a module writes, and never `lib.d.ts`, an ambient
+ * declaration, a `declare global`, or that a member list names members of its
+ * own -- so a macro spelled `Partial` made `type Halved = Partial<{ a:
+ * number }>` fail to build, over a name the standard library declares.
+ *
+ * TypeScript resolves every name, against the whole program. Where it reports
+ * one is missing at a position expansion has something to say about, its
+ * sentence is replaced by the one that names the macro: the position and the
+ * name are the same, and the macro is the answer rather than a restatement of
+ * the question. Where it reports nothing there, nothing is said.
+ */
+function explainUnresolvedNames(
+  diagnostics: readonly ts.Diagnostic[],
+  explanations: readonly ts.Diagnostic[],
+): readonly ts.Diagnostic[] {
+  if (explanations.length === 0) return diagnostics;
+  const place = (diagnostic: ts.Diagnostic): string | undefined =>
+    diagnostic.file === undefined || diagnostic.start === undefined
+      ? undefined
+      : `${diagnostic.file.fileName}:${String(diagnostic.start)}`;
+  const byPlace = new Map(
+    explanations.flatMap((explanation) => {
+      const at = place(explanation);
+      return at === undefined ? [] : [[at, explanation] as const];
+    }),
+  );
+  return diagnostics.map((diagnostic) => {
+    if (!unresolvedNameCodes.has(diagnostic.code)) return diagnostic;
+    const at = place(diagnostic);
+    return (at === undefined ? undefined : byPlace.get(at)) ?? diagnostic;
+  });
+}
+
+/**
  * One message per place, however many copies of it the expansion produced.
  *
  * A macro that repeats its argument repeats every error in it: `twice(1)` in a
@@ -509,12 +569,15 @@ export function runConfiguredProjectCommand(options: {
   diagnostics.push(...(emit?.diagnostics ?? []));
   diagnostics = [
     ...deduplicateDiagnostics(
-      remapGeneratedDiagnostics({
-        diagnostics,
-        provider: expansionProvider,
-        virtualBySource,
-        target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
-      }),
+      explainUnresolvedNames(
+        remapGeneratedDiagnostics({
+          diagnostics,
+          provider: expansionProvider,
+          virtualBySource,
+          target: project.typescript.options.target ?? ts.ScriptTarget.Latest,
+        }),
+        expansionOutput.unresolvedNameExplanations ?? [],
+      ),
     ),
   ];
   return Object.freeze({

@@ -1,11 +1,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
-import {
-  createDefaultProjectExpansionProvider,
-  loadSweetProject,
-} from "../src/index.js";
+import { runConfiguredProjectCommand } from "../src/index.js";
 
 /**
  * A macro is dispatched only in the space it declares.
@@ -17,6 +15,14 @@ import {
  * space the macro was declared for; the type and expression spaces say the
  * same thing, so which space a name belongs to is one rule rather than one per
  * reader.
+ *
+ * Which names a program defines, though, is TypeScript's to answer and never
+ * the expander's: `lib.d.ts`, an ambient declaration and a `declare global`
+ * each declare names the expander cannot see, and a member list names members
+ * of its own. So the sentence is written where TypeScript reports it cannot
+ * find the name, or cannot type the member the name introduces, and nowhere
+ * else -- which is why these run the whole `check` rather than expansion
+ * alone. Where the name resolves, nothing is said and the program builds.
  */
 
 const macros = `
@@ -40,37 +46,56 @@ export syntax mkMember:typeMember {
 interface Expansion {
   readonly text: string;
   readonly reports: readonly string[];
+  readonly exitCode: 0 | 1;
 }
 
-function expand(source: string): Expansion {
+/** Build a project out of the given files and run `check` over it. */
+function check(
+  files: Readonly<Record<string, string>>,
+  compilerOptions: Readonly<Record<string, unknown>> = {},
+): Expansion {
   const directory = mkdtempSync(join(tmpdir(), "sweet-macro-space-"));
-  writeFileSync(join(directory, "macros.sts"), macros);
+  for (const [name, text] of Object.entries(files))
+    writeFileSync(join(directory, name), text);
+  const configPath = join(directory, "tsconfig.json");
   writeFileSync(
-    join(directory, "main.sts"),
-    `import { mkItem, mkStmt, mkExpr, mkType, mkMember } from "./macros.sts" for syntax;\n${source}\n`,
-  );
-  writeFileSync(
-    join(directory, "tsconfig.json"),
+    configPath,
     JSON.stringify({
-      compilerOptions: { noEmit: true, strict: false, target: "ES2022" },
+      compilerOptions: {
+        noEmit: true,
+        strict: false,
+        target: "ES2022",
+        lib: ["ES2022", "DOM"],
+        ...compilerOptions,
+      },
       sweet: { macroExtensions: [".sts"] },
-      files: ["macros.sts", "main.sts"],
+      files: Object.keys(files),
     }),
   );
-  const provider = createDefaultProjectExpansionProvider();
-  const expanded = provider.expandProject(
-    loadSweetProject(join(directory, "tsconfig.json")),
-  );
-  const generated = expanded.files.find(({ fileName }) =>
+  const result = runConfiguredProjectCommand({
+    command: "check",
+    configPath,
+    writeThrough: false,
+  });
+  const generated = result.virtualFiles.find(({ fileName }) =>
     fileName.endsWith("main.ts"),
   )?.generated.text;
   if (generated === undefined) throw new Error("main.ts was not generated");
   return {
     text: generated,
-    reports: expanded.diagnostics.map(
-      ({ code, messageText }) => `TS${String(code)}: ${String(messageText)}`,
+    reports: result.diagnostics.map(
+      ({ code, messageText }) =>
+        `TS${String(code)}: ${ts.flattenDiagnosticMessageText(messageText, "\n")}`,
     ),
+    exitCode: result.exitCode,
   };
+}
+
+function expand(source: string): Expansion {
+  return check({
+    "macros.sts": macros,
+    "main.sts": `import { mkItem, mkStmt, mkExpr, mkType, mkMember } from "./macros.sts" for syntax;\n${source}\n`,
+  });
 }
 
 /** The one report a mismatched space makes, or a description of what came out. */
@@ -142,6 +167,25 @@ describe("a macro written where another space is read", () => {
     const { text } = expand("export type T = mkItem;");
     expect(text).not.toContain("export const thing");
   });
+
+  /**
+   * A member list is the place TypeScript may ask for nothing: a bare name
+   * there is a member of its own, implicitly typed, which is an error only
+   * under `noImplicitAny`. Where it does ask, the macro is what the sentence
+   * is about.
+   */
+  test("an expression macro in a member list, under noImplicitAny", () => {
+    const { reports } = check(
+      {
+        "macros.sts": macros,
+        "main.sts": `import { mkExpr } from "./macros.sts" for syntax;\nexport interface I { mkExpr }\n`,
+      },
+      { strict: true },
+    );
+    expect(reports).toEqual([
+      "TS4013: Macro mkExpr is declared expr and cannot be written where a typeMember is read. Declare it typeMember to use it here.",
+    ]);
+  });
 });
 
 describe("a macro written where its own space is read", () => {
@@ -165,7 +209,7 @@ describe("a macro written where its own space is read", () => {
 
   test("a statement macro in a block", () => {
     const { text, reports } = expand(
-      "export function f(): void { mkStmt; counted; }",
+      "export function f(): void { const counted = 2; mkStmt; counted; }",
     );
     expect(reports).toEqual([]);
     // The name the template binds is renamed away from the caller's own
@@ -184,5 +228,91 @@ describe("a macro written where its own space is read", () => {
       "export interface Shape { mkType: number; }\nexport const mkItem = 1;",
     );
     expect(reports).toEqual([]);
+  });
+});
+
+/**
+ * A macro's spelling is not reserved, and the expander is not the side that
+ * knows what a name means. It sees this module's declarations and its imports;
+ * it never sees `lib.d.ts`, an ambient declaration, a `declare global`, or the
+ * members an interface declares. Reporting a mismatched space on its own
+ * knowledge therefore refused valid TypeScript whenever a macro was spelled
+ * like something the program already had.
+ */
+describe("a name TypeScript resolves is not a mismatched space", () => {
+  test("a library type against an expression macro of the same name", () => {
+    const { text, reports, exitCode } = check({
+      "macros.sts": `export syntax Partial:expr {\n  rule { Partial($value:expr) } => { [$value, $value] }\n}\n`,
+      "main.sts": `import { Partial } from "./macros.sts" for syntax;\nexport type Halved = Partial<{ a: number }>;\nexport const doubled = Partial(1);\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+    expect(text).toContain("Partial<{ a: number }>");
+    expect(text).toContain("[1, 1]");
+  });
+
+  test("a library type against a statement macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Record:stmt {\n  rule { Record } => { let counted = 1; }\n}\n`,
+      "main.sts": `import { Record } from "./macros.sts" for syntax;\nexport type R = Record<string, number>;\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("a library type against an item macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Omit:item {\n  rule { Omit } => { export const thing = 1; }\n}\n`,
+      "main.sts": `import { Omit } from "./macros.sts" for syntax;\nexport type O = Omit<{ a: number }, "a">;\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("a global value against a type macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Event:type {\n  rule { Event } => { string }\n}\n`,
+      "main.sts": `import { Event } from "./macros.sts" for syntax;\nexport const constructed = Event;\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("a global value against a member macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Element:typeMember {\n  rule { Element } => { readonly at: number; }\n}\n`,
+      "main.sts": `import { Element } from "./macros.sts" for syntax;\nexport const constructed = Element;\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("an interface member against a class-element macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax held:classElement {\n  rule { held } => { readonly at = 1; }\n}\n`,
+      "main.sts": `import { held } from "./macros.sts" for syntax;\nexport interface I { held }\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("an ambient declaration against an expression macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Box:expr {\n  rule { Box($value:expr) } => { [$value] }\n}\n`,
+      "ambient.d.ts": `declare type Box<T> = { readonly value: T };\n`,
+      "main.sts": `import { Box } from "./macros.sts" for syntax;\nexport type Held = Box<number>;\nexport const boxed = Box(1);\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+
+  test("a declare global type against an expression macro of the same name", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax Crate:expr {\n  rule { Crate($value:expr) } => { [$value] }\n}\n`,
+      "ambient.d.ts": `export {};\ndeclare global {\n  type Crate<T> = { readonly value: T };\n}\n`,
+      "main.sts": `import { Crate } from "./macros.sts" for syntax;\nexport type Held = Crate<number>;\nexport const boxed = Crate(1);\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
   });
 });
