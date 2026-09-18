@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import {
+  benchmarkComparisonBasis,
   benchmarkEnvironment,
+  benchmarkWorkload,
   compareBenchmarkReports,
   runBenchmarkScenario,
   selectBenchmarkScenarios,
@@ -29,6 +32,13 @@ function parseArguments(arguments_) {
     baseline: undefined,
     relative: 0.15,
     absoluteMs: 2,
+    // One scenario per process. Fourteen scenarios sharing one heap let an
+    // early one pay for the ones behind it: with `expansion/project-scale`
+    // ahead of them, `hygiene/fresh-scopes` measured 12 percent slow and
+    // `matcher/dense-choice` 27 percent, against 1 percent fast and 10 percent
+    // when each ran alone. Isolation costs about half a second of setup per
+    // scenario and makes every row mean the same thing.
+    isolation: "process",
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -43,7 +53,13 @@ function parseArguments(arguments_) {
       options.baseline = value === "auto" ? "auto" : resolve(value);
     else if (argument === "--relative") options.relative = Number(value);
     else if (argument === "--absolute-ms") options.absoluteMs = Number(value);
-    else throw new TypeError(`Unknown benchmark argument ${argument}`);
+    else if (argument === "--isolation") {
+      if (value !== "process" && value !== "inline")
+        throw new TypeError(
+          `--isolation takes process or inline, not ${value}`,
+        );
+      options.isolation = value;
+    } else throw new TypeError(`Unknown benchmark argument ${argument}`);
   }
   if (!Number.isSafeInteger(options.warmups) || options.warmups < 0)
     throw new RangeError("warmups must be a non-negative integer");
@@ -76,25 +92,95 @@ const scenarios = selectBenchmarkScenarios(
   options.scenarios,
 );
 const startingEnvironment = benchmarkEnvironment(ts.version);
-if (startingEnvironment.loadAverage > startingEnvironment.logicalCpus / 2)
+// A child spawned per scenario would repeat this warning fourteen times for a
+// condition the run as a whole is under, so only the process a person started
+// says it.
+const spawnedPerScenario = "SWEETENER_BENCHMARK_SCENARIO_PROCESS";
+if (
+  process.env[spawnedPerScenario] === undefined &&
+  startingEnvironment.loadAverage > startingEnvironment.logicalCpus / 2
+)
   process.stderr.write(
     `Warning: load average is ${startingEnvironment.loadAverage.toFixed(2)} on ` +
       `${String(startingEnvironment.logicalCpus)} logical CPUs. Timings taken now vary ` +
       `far more between runs than most real regressions do, so treat both baselines ` +
       `and comparisons from this run as provisional.\n`,
   );
-const results = [];
-for (const scenario of scenarios) {
-  const result = await runBenchmarkScenario(scenario, {
-    warmups: options.warmups,
-    samples: options.samples,
-    collectGarbage: globalThis.gc,
-  });
-  results.push(result);
-  process.stdout.write(
-    `${result.id}: p50 ${result.statistics.p50Ms.toFixed(2)} ms, p95 ${result.statistics.p95Ms.toFixed(2)} ms\n`,
-  );
+/** One child per scenario, run under this process's own Node flags so
+ * `--expose-gc` reaches it. Each child measures a single scenario on a heap
+ * nothing else has touched and writes its report to a scratch file. */
+async function runIsolated(scenarioIds) {
+  const scratch = mkdtempSync(join(tmpdir(), "sweetener-benchmark-"));
+  const results = [];
+  try {
+    for (const id of scenarioIds) {
+      const reportPath = join(scratch, `${id.replaceAll("/", "-")}.json`);
+      execFileSync(
+        process.execPath,
+        [
+          ...process.execArgv,
+          fileURLToPath(import.meta.url),
+          "--scenario",
+          id,
+          "--isolation",
+          "inline",
+          "--warmups",
+          String(options.warmups),
+          "--samples",
+          String(options.samples),
+          "--output",
+          reportPath,
+        ],
+        {
+          cwd: repositoryRoot,
+          stdio: ["ignore", "ignore", "inherit"],
+          env: { ...process.env, [spawnedPerScenario]: "1" },
+        },
+      );
+      const child = JSON.parse(await readFile(reportPath, "utf8"));
+      for (const result of child.results) {
+        results.push(result);
+        process.stdout.write(`${describeResult(result)}\n`);
+      }
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+  return results;
 }
+
+function describeResult(result) {
+  const { p50Ms, p95Ms } = result.statistics;
+  const workload = benchmarkWorkload(result);
+  const perUnit =
+    workload === undefined
+      ? ""
+      : `, ${((p50Ms * 1e6) / workload.units).toFixed(1)} ns/${workload.unit} ` +
+        `over ${workload.units.toLocaleString("en-US")} ` +
+        `${workload.units === 1 ? workload.unit : workload.counter}`;
+  return `${result.id}: p50 ${p50Ms.toFixed(2)} ms, p95 ${p95Ms.toFixed(2)} ms${perUnit}`;
+}
+
+/** Every selected scenario on one heap, in one process, in the given order.
+ * Kept for debugging a single scenario; its numbers depend on what ran before. */
+async function runInline(selected) {
+  const measured = [];
+  for (const scenario of selected) {
+    const result = await runBenchmarkScenario(scenario, {
+      warmups: options.warmups,
+      samples: options.samples,
+      collectGarbage: globalThis.gc,
+    });
+    measured.push(result);
+    process.stdout.write(`${describeResult(result)}\n`);
+  }
+  return measured;
+}
+
+const results =
+  options.isolation === "process"
+    ? await runIsolated(scenarios.map(({ id }) => id))
+    : await runInline(scenarios);
 const git = (arguments_) =>
   execFileSync("git", arguments_, {
     cwd: repositoryRoot,
@@ -135,6 +221,40 @@ if (options.baseline !== undefined) {
         `Run under Node ${baselineMajor ?? "?"}, or record a baseline for Node ${candidateMajor ?? "?"} ` +
         `at benchmarks/baselines/node${candidateMajor ?? "?"}.json.`,
     );
+  // Say what each row was compared as, not only which rows failed. A per-byte
+  // comparison and a wall-clock one are different claims, and a reader of the
+  // output should not have to guess which one a number is.
+  const baselineResults = new Map(
+    baseline.results.map((result) => [result.id, result]),
+  );
+  process.stdout.write(`\nAgainst ${baselinePath}:\n`);
+  for (const candidate of report.results) {
+    const previous = baselineResults.get(candidate.id);
+    if (previous === undefined) {
+      process.stdout.write(`${candidate.id}: no baseline row\n`);
+      continue;
+    }
+    const basis = benchmarkComparisonBasis(previous, candidate);
+    const before =
+      basis.kind === "per-unit"
+        ? (previous.statistics.p50Ms * 1e6) / basis.baselineUnits
+        : previous.statistics.p50Ms;
+    const after =
+      basis.kind === "per-unit"
+        ? (candidate.statistics.p50Ms * 1e6) / basis.candidateUnits
+        : candidate.statistics.p50Ms;
+    const change = before === 0 ? Number.NaN : (after - before) / before;
+    const workload =
+      basis.kind === "per-unit"
+        ? ` [${basis.baselineUnits.toLocaleString("en-US")} → ` +
+          `${basis.candidateUnits.toLocaleString("en-US")} ${basis.counter}]`
+        : "";
+    process.stdout.write(
+      `${candidate.id}: p50 ${before.toFixed(basis.kind === "per-unit" ? 1 : 2)} → ` +
+        `${after.toFixed(basis.kind === "per-unit" ? 1 : 2)} ${basis.unit} ` +
+        `(${change >= 0 ? "+" : ""}${(change * 100).toFixed(1)}%)${workload}\n`,
+    );
+  }
   const regressions = compareBenchmarkReports({
     baseline,
     candidate: report,

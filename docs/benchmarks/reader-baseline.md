@@ -33,6 +33,13 @@ The playground workload repeats its 13 files 20 times. One imported file,
 `SWR1003` diagnostic per repetition. All source files print back to their input
 bytes.
 
+The macro-free TypeScript workload is this repository's own production sources,
+so its size moves with every commit that adds code: the 37 files and 822,648
+bytes above became 1.43 MB by September 2026. The millisecond columns are
+therefore only readable next to the byte count of the same run, and only the
+MiB/s and tokens/s columns are comparable across dates. The suite runner
+normalizes for exactly this reason; see `docs/benchmarks/runner.md`.
+
 ## Method
 
 Each workload runs three warmups and seven measured samples. Timed samples

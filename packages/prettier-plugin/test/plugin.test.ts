@@ -30,25 +30,32 @@ if (!($condition)) $body
 `);
   });
 
-  test("is idempotent across the language-tour corpus", async () => {
-    const tourRoot = resolve(repositoryRoot, "examples/language-tour");
-    const names = (await readdir(tourRoot, { recursive: true }))
-      .filter((name) => /\.stsx?$/u.test(name))
-      .sort();
+  // Formatting every file of the tour twice takes most of a default timeout on
+  // an idle machine, and more than one when the machine is busy. A test that
+  // fails under load is noise, and noise is eventually ignored.
+  test(
+    "is idempotent across the language-tour corpus",
+    { timeout: 180_000 },
+    async () => {
+      const tourRoot = resolve(repositoryRoot, "examples/language-tour");
+      const names = (await readdir(tourRoot, { recursive: true }))
+        .filter((name) => /\.stsx?$/u.test(name))
+        .sort();
 
-    for (const name of names) {
-      const source = await readFile(resolve(tourRoot, name), "utf8");
-      const once = await format(source, {
-        filepath: name,
-        plugins: [plugin],
-      });
-      const twice = await format(once, {
-        filepath: name,
-        plugins: [plugin],
-      });
-      expect(twice, name).toBe(once);
-    }
-  });
+      for (const name of names) {
+        const source = await readFile(resolve(tourRoot, name), "utf8");
+        const once = await format(source, {
+          filepath: name,
+          plugins: [plugin],
+        });
+        const twice = await format(once, {
+          filepath: name,
+          plugins: [plugin],
+        });
+        expect(twice, name).toBe(once);
+      }
+    },
+  );
 
   test("preserves whitespace with runtime meaning", () => {
     const source =

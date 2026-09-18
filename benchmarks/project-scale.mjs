@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,6 +35,11 @@ export const rest${index} = rows${index}.map((row) => describe${index}(row));
  */
 export async function defineProjectScaleBenchmark() {
   const directory = mkdtempSync(join(tmpdir(), "sweet-project-scale-"));
+  // The suite runs one process per scenario, so this 301-file project would
+  // otherwise be left behind once per scenario rather than once per run.
+  process.on("exit", () => {
+    rmSync(directory, { recursive: true, force: true });
+  });
   writeFileSync(
     join(directory, "macros.sts"),
     `export syntax twice:expr {\n  rule { twice($value:expr) } => { [$value, $value] }\n}`,

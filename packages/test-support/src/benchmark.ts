@@ -30,11 +30,30 @@ export interface BenchmarkStatistics {
   readonly p99Ms: number;
 }
 
+/**
+ * How much work one sample of a scenario did, so a duration can be quoted per
+ * unit of it.
+ */
+export interface BenchmarkWorkload {
+  /** The counter the scenario reported, for example `bytes`. */
+  readonly counter: string;
+  /** Its median across the measured samples. */
+  readonly units: number;
+  /** The singular noun a per-unit cost is quoted in, for example `byte`. */
+  readonly unit: string;
+}
+
 export interface BenchmarkResult {
   readonly id: string;
   readonly description: string;
   readonly warmups: number;
   readonly statistics: BenchmarkStatistics;
+  /**
+   * The counter a comparison will divide by, when the scenario reports one.
+   * Recording it makes a stored report say on its face whether it can be
+   * compared per unit of work or only as wall clock.
+   */
+  readonly workload?: BenchmarkWorkload | undefined;
   readonly rawSamples: readonly BenchmarkSample[];
 }
 
@@ -66,15 +85,71 @@ export interface BenchmarkReport {
   readonly results: readonly BenchmarkResult[];
 }
 
+/**
+ * What a comparison's numbers mean.
+ *
+ * Two scenarios read this repository's own sources, so their workload grows
+ * with every commit and a wall-clock comparison against a stored baseline
+ * measures how much the repository grew rather than how fast it is. When both
+ * sides report the same workload counter the comparison divides by it and
+ * speaks in cost per unit; otherwise it stays on wall clock.
+ */
+export type BenchmarkComparisonBasis =
+  | { readonly kind: "duration"; readonly unit: "ms" }
+  | {
+      readonly kind: "per-unit";
+      /** For example `ns/byte`. */
+      readonly unit: string;
+      readonly counter: string;
+      readonly baselineUnits: number;
+      readonly candidateUnits: number;
+    };
+
 export interface BenchmarkRegression {
   readonly scenario: string;
   readonly metric: "p50Ms" | "p95Ms" | "p99Ms";
+  /** What `baseline`, `candidate` and `allowedAbsoluteChange` are counted in. */
+  readonly basis: BenchmarkComparisonBasis;
   readonly baseline: number;
   readonly candidate: number;
+  /** The measured percentiles, in milliseconds, whatever the basis. */
+  readonly baselineMs: number;
+  readonly candidateMs: number;
   readonly relativeChange: number;
   readonly allowedRelativeChange: number;
+  /** The absolute budget expressed in `basis.unit`. */
+  readonly allowedAbsoluteChange: number;
+  /** The absolute budget as configured, in milliseconds. */
   readonly allowedAbsoluteChangeMs: number;
 }
+
+/**
+ * Counter names that measure how much work a scenario did, paired with the
+ * noun a per-unit cost is quoted in. The order is the comparison's preference:
+ * a scenario reporting both `bytes` and `tokens` is compared per byte, which
+ * is the unit the reader and printer corpora are sized in.
+ *
+ * Only sizes belong here. `hits`, `internedSets` and `instructions` are
+ * outcomes or program sizes rather than amounts of work, and a cost per one of
+ * those would measure nothing.
+ */
+const workloadCounters: readonly (readonly [string, string])[] = Object.freeze([
+  ["bytes", "byte"],
+  ["tokens", "token"],
+  ["operations", "operation"],
+  ["matches", "match"],
+  ["invocations", "invocation"],
+  ["entries", "entry"],
+  ["regions", "region"],
+  ["queries", "query"],
+  ["files", "file"],
+  ["updates", "update"],
+] as const);
+
+const durationBasis: BenchmarkComparisonBasis = Object.freeze({
+  kind: "duration",
+  unit: "ms",
+});
 
 function percentile(values: readonly number[], fraction: number): number {
   const sorted = [...values].sort((left, right) => left - right);
@@ -98,6 +173,63 @@ export function summarizeDurations(
     p50Ms: percentile(values, 0.5),
     p95Ms: percentile(values, 0.95),
     p99Ms: percentile(values, 0.99),
+  });
+}
+
+function workloadFromSamples(
+  samples: readonly BenchmarkSample[],
+): BenchmarkWorkload | undefined {
+  if (samples.length === 0) return undefined;
+  for (const [counter, unit] of workloadCounters) {
+    const values: number[] = [];
+    for (const sample of samples) {
+      const value = sample.counters[counter];
+      if (value === undefined || !Number.isFinite(value) || value <= 0) break;
+      values.push(value);
+    }
+    // A counter only one sample happened to report, or one that reached zero,
+    // cannot size the whole run. Dividing by it would invent a rate.
+    if (values.length !== samples.length) continue;
+    return Object.freeze({
+      counter,
+      units: percentile(values, 0.5),
+      unit,
+    });
+  }
+  return undefined;
+}
+
+/**
+ * The workload a result can be normalized by: the one it recorded, or the one
+ * its raw samples imply. Reports written before results carried a workload
+ * still compare per unit, because their samples still carry the counters.
+ */
+export function benchmarkWorkload(
+  result: BenchmarkResult,
+): BenchmarkWorkload | undefined {
+  return result.workload ?? workloadFromSamples(result.rawSamples);
+}
+
+export function benchmarkComparisonBasis(
+  baseline: BenchmarkResult,
+  candidate: BenchmarkResult,
+): BenchmarkComparisonBasis {
+  const before = benchmarkWorkload(baseline);
+  const after = benchmarkWorkload(candidate);
+  // Different counters describe different work, and a ratio between them means
+  // nothing, so only a matched pair normalizes.
+  if (
+    before === undefined ||
+    after === undefined ||
+    before.counter !== after.counter
+  )
+    return durationBasis;
+  return Object.freeze({
+    kind: "per-unit",
+    unit: `ns/${after.unit}`,
+    counter: after.counter,
+    baselineUnits: before.units,
+    candidateUnits: after.units,
   });
 }
 
@@ -169,6 +301,7 @@ export async function runBenchmarkScenario(
     statistics: summarizeDurations(
       rawSamples.map(({ durationMs }) => durationMs),
     ),
+    workload: workloadFromSamples(rawSamples),
     rawSamples: Object.freeze(rawSamples),
   });
 }
@@ -204,16 +337,41 @@ export function compareBenchmarkReports(options: {
   for (const candidate of options.candidate.results) {
     const previous = baseline.get(candidate.id);
     if (previous === undefined) continue;
+    const basis = benchmarkComparisonBasis(previous, candidate);
+    // Nanoseconds per unit keeps a normalized cost in numbers a reader can
+    // hold: 176 ns/byte rather than 0.000176 ms/byte.
+    const perUnit = (durationMs: number, units: number) =>
+      (durationMs * 1e6) / units;
+    const inBasis = (durationMs: number, units: number) =>
+      basis.kind === "per-unit" ? perUnit(durationMs, units) : durationMs;
+    // The relative budget survives normalization unchanged, but the absolute
+    // one does not: two milliseconds of slack for a scenario is two
+    // milliseconds spread over the work it does, so it converts at the
+    // baseline's own size. On a scenario whose workload has not moved this is
+    // exactly the old test; on one that has, the slack stays anchored to the
+    // run the baseline recorded instead of growing with the corpus.
+    const allowedAbsoluteChange =
+      basis.kind === "per-unit"
+        ? perUnit(options.allowedAbsoluteChangeMs, basis.baselineUnits)
+        : options.allowedAbsoluteChangeMs;
     // A percentile the sample count cannot resolve is just the slowest sample:
     // at fifteen samples both p95 and p99 land on the maximum. Reporting each
     // of them turns one slow run into three regressions, so a metric that
     // repeats a coarser one is only counted once.
     const reported = new Set<number>();
     for (const metric of ["p50Ms", "p95Ms", "p99Ms"] as const) {
-      const before = previous.statistics[metric];
-      const after = candidate.statistics[metric];
-      if (reported.has(after)) continue;
-      reported.add(after);
+      const beforeMs = previous.statistics[metric];
+      const afterMs = candidate.statistics[metric];
+      if (reported.has(afterMs)) continue;
+      reported.add(afterMs);
+      const before = inBasis(
+        beforeMs,
+        basis.kind === "per-unit" ? basis.baselineUnits : 1,
+      );
+      const after = inBasis(
+        afterMs,
+        basis.kind === "per-unit" ? basis.candidateUnits : 1,
+      );
       const absolute = after - before;
       const relative =
         before === 0
@@ -222,17 +380,21 @@ export function compareBenchmarkReports(options: {
             : Number.POSITIVE_INFINITY
           : absolute / before;
       if (
-        absolute > options.allowedAbsoluteChangeMs &&
+        absolute > allowedAbsoluteChange &&
         relative > options.allowedRelativeChange
       )
         regressions.push(
           Object.freeze({
             scenario: candidate.id,
             metric,
+            basis,
             baseline: before,
             candidate: after,
+            baselineMs: beforeMs,
+            candidateMs: afterMs,
             relativeChange: relative,
             allowedRelativeChange: options.allowedRelativeChange,
+            allowedAbsoluteChange,
             allowedAbsoluteChangeMs: options.allowedAbsoluteChangeMs,
           }),
         );
