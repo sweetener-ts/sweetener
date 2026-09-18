@@ -56,11 +56,14 @@ export interface StatementItemConsumerOptions extends PrattExpressionConsumerOpt
 
 /**
  * What may stand after a declarator's binder, so that a line break in front of
- * it carries the declaration on: the `!` of a definite assignment, the `:` that
- * opens an annotation, the `=` that opens an initializer, and the `,` and `;`
- * that end the declarator.
+ * it carries the declaration on: the `:` that opens an annotation, the `=`
+ * that opens an initializer, and the `,` and `;` that end the declarator.
+ *
+ * The `!` of a definite assignment is not among them. TypeScript writes
+ * `BindingIdentifier [no LineTerminator here] !`, and reads `let x` and the
+ * `!: A = 1;` under it as two statements.
  */
-const headContinuedBy = new Set(["!", ":", "=", ",", ";"]);
+const headContinuedBy = new Set([":", "=", ",", ";"]);
 
 /**
  * What may carry a declarator's type annotation on across a line break: the
@@ -70,6 +73,14 @@ const headContinuedBy = new Set(["!", ":", "=", ",", ";"]);
  * An array type's `[` is not among them. TypeScript writes
  * `PrimaryType [no LineTerminator here] [ ]`, and reads `let x: A` and the
  * `[b] = c;` under it as two statements.
+ *
+ * Nor is a conditional type's `extends`. TypeScript writes
+ * `CheckType [no LineTerminator here] extends`, and reads `let x: A` and the
+ * `extends B ? C : D = e;` under it as two statements. The `extends` that
+ * gives a type parameter its constraint carries no such restriction, and it is
+ * written inside the `<` this walk holds open, where no line break ends
+ * anything; the `extends` of a class or interface heritage clause is written
+ * in a declaration's header rather than in a type, and is not read here.
  */
 const annotationContinuedBy = new Set([
   "|",
@@ -81,7 +92,6 @@ const annotationContinuedBy = new Set([
   ".",
   "=",
   ";",
-  "extends",
   "is",
 ]);
 
@@ -116,6 +126,35 @@ function headContinues(
   return annotated
     ? annotationContinuedBy.has(next.raw)
     : headContinuedBy.has(next.raw);
+}
+
+/**
+ * Whether the `!` of a definite assignment stands at `next`, the binder it
+ * marks having just been read.
+ *
+ * TypeScript writes `BindingIdentifier [no LineTerminator here] ! : Type`, so
+ * a `!` is the marker only where it is written on the binder's own line. The
+ * line break is the whole of the rule, and both readers of a declaration ask
+ * it here rather than each deciding for itself: the statement reader takes the
+ * `!` into the head it is walking, the item reader takes it between the
+ * binding it parsed and the annotation it measures.
+ */
+function definiteAssignment(next: Syntax | undefined): boolean {
+  return token(next, "!") && !leadingLineBreak(next);
+}
+
+/**
+ * Whether the `const` at the cursor opens a declarator, rather than being the
+ * `const` of `const enum`.
+ *
+ * `const enum E {}` is an enum declaration; the word after the `const` is the
+ * keyword `enum`, not a binder. A reader that takes every `const` for a
+ * variable declaration reads `enum` as the name it is declaring -- which the
+ * statement reader survives only because it scans its head, while the item
+ * reader parses one and refused the whole declaration.
+ */
+function declaresVariable(cursor: SyntaxCursor): boolean {
+  return !(raw(cursor.peek()) === "const" && raw(cursor.peek(1)) === "enum");
 }
 
 /**
@@ -506,7 +545,11 @@ class StatementConsumer implements SyntaxConsumer {
       if (!context.allowAwait) return awaitRefusal("stmt", cursor, start);
       return this.#consumeVariable(cursor, context, start, 2);
     }
-    if (["const", "let", "var", "using"].includes(keyword ?? "")) {
+    // What this declaration declares, which for `const enum` is an enum: its
+    // body is a member list rather than an initializer, and the word after the
+    // `const` is a keyword rather than a binder.
+    const declared = declaresVariable(cursor) ? keyword : "enum";
+    if (["const", "let", "var", "using"].includes(declared ?? "")) {
       return this.#consumeVariable(cursor, context, start, 1);
     }
     if (
@@ -520,13 +563,13 @@ class StatementConsumer implements SyntaxConsumer {
         "operator",
         "rec",
         "syntax",
-      ].includes(keyword ?? "")
+      ].includes(declared ?? "")
     ) {
       // Only a function or namespace body is a statement list. A class, enum,
       // or interface body is a member list and needs its own consumer, so it
       // stays opaque here.
       const statementBody = ["function", "namespace", "module"].includes(
-        keyword ?? "",
+        declared ?? "",
       );
       return this.#consumeScanned(cursor, context, start, true, statementBody);
     }
@@ -1099,6 +1142,14 @@ class StatementConsumer implements SyntaxConsumer {
         continue;
       }
       initialized = false;
+      // The `!` of a definite assignment, taken by the rule the item reader
+      // takes it by: it stands in the head where it is written on the binder's
+      // own line, and a line break in front of one has ended the declaration
+      // above rather than reaching here.
+      if (bound && definiteAssignment(next)) {
+        children.push(cursor.consume()!);
+        continue;
+      }
       if (
         children.length > 1 &&
         leadingLineBreak(next) &&
@@ -1364,7 +1415,10 @@ class ItemConsumer implements SyntaxConsumer {
       // is an expression outside one.
       if (!context.allowAwait) return awaitRefusal("item", cursor, start);
       children.push(cursor.consume()!, cursor.consume()!);
-    } else if (["const", "let", "var", "using"].includes(declaration ?? "")) {
+    } else if (
+      ["const", "let", "var", "using"].includes(declaration ?? "") &&
+      declaresVariable(cursor)
+    ) {
       children.push(cursor.consume()!);
     } else return undefined;
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
@@ -1383,6 +1437,7 @@ class ItemConsumer implements SyntaxConsumer {
       if (!binding.matched)
         return failure("item", cursor, start, ["variable binding"], 40);
       children.push(binding.syntax);
+      if (definiteAssignment(cursor.peek())) children.push(cursor.consume()!);
       if (token(cursor.peek(), ":")) {
         const colon = cursor.consume()!;
         children.push(colon);
@@ -1433,6 +1488,12 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (token(cursor.peek(), ",")) {
         children.push(cursor.consume()!);
+        // A declarator list carries on only where another declarator is
+        // written. TypeScript reads the trailing comma of `let a = 1,;` into
+        // the declaration and reports it there, so the list ends at the `;`
+        // rather than the whole declaration being refused for want of one
+        // more binder.
+        if (token(cursor.peek(), ";")) break;
         continue;
       }
       break;

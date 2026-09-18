@@ -528,6 +528,31 @@ describe("statement and item consumers", () => {
     ["let x: infer\nA = 1;", "let x: infer\nA = 1;"],
     ["let x: A extends\nB ? C : D = e;", "let x: A extends\nB ? C : D = e;"],
     ['let x: import\n("m").A = 1;', 'let x: import\n("m").A = 1;'],
+    // A conditional type is written `CheckType [no LineTerminator here]
+    // extends`, so an `extends` that begins a line is not the one that carries
+    // the annotation on: `let x: A` and the `extends B ? C : D = e;` under it
+    // are two statements. The constraint `extends` of a type parameter stands
+    // inside the `<` the head holds open, where no line break ends anything.
+    ["let x: A\nextends B ? C : D = e;", "let x: A"],
+    [
+      "let f: <T\nextends A>(v: T) => T = g;",
+      "let f: <T\nextends A>(v: T) => T = g;",
+    ],
+    // A definite assignment's `!` stands in a head, and TypeScript writes it
+    // `BindingIdentifier [no LineTerminator here] !`.
+    ["let x!: A;", "let x!: A;"],
+    ["let x!: A = 1;", "let x!: A = 1;"],
+    ["let x!: A\nfoo();", "let x!: A"],
+    ["let x!;", "let x!;"],
+    ["let x!: A, y!: B;", "let x!: A, y!: B;"],
+    ["let x!\n: A = 1;", "let x!\n: A = 1;"],
+    ["let x\n!: A = 1;", "let x"],
+    // `const enum` is an enum declaration; the `const` of one opens no
+    // declarator, so nothing here reads a binder after it.
+    ["const enum E { A }", "const enum E { A }"],
+    // A declarator list that ends at its comma is what TypeScript reads too,
+    // and the trailing comma it disallows is reported against that reading.
+    ["let a = 1,;", "let a = 1,;"],
     // An initializer ends by the same rule, and both readers already agreed
     // about that.
     ["const x = 1\nfoo();", "const x = 1"],
@@ -575,6 +600,38 @@ describe("statement and item consumers", () => {
       ts.ScriptKind.TS,
     );
     expect(parsed.statements[0]?.getText(parsed)).toBe("export let x: A");
+  });
+
+  /**
+   * The declarations only a module writes, read the same way.
+   *
+   * `export` and `declare` stand in front of a declaration at item level and
+   * nowhere else, so these have no statement-level twin -- but the declarator
+   * under them is the same declarator, and the item reader had been reading a
+   * different one: a head with a definite assignment's `!` in it was refused
+   * outright, and a `const enum` was read as a `const` whose binder was the
+   * word `enum`.
+   */
+  test.each([
+    ["export let x!: A;", "export let x!: A;"],
+    ["declare let x!: A;", "declare let x!: A;"],
+    ["export let x!: A\nfoo();", "export let x!: A"],
+    ["declare const enum E { A }", "declare const enum E { A }"],
+    ["export const enum E { A }", "export const enum E { A }"],
+  ])("reads the module declaration %j as %j", (source, extent) => {
+    const whole = `${source}\nafter();`;
+    const { result } = parse(whole, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a module declaration");
+    expect(printLosslessSequence(result.syntax.children)).toBe(extent);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
   });
 
   /**
