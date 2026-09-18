@@ -20,6 +20,7 @@ import {
   type SyntaxConsumer,
   type MacroExtentResolver,
 } from "./consumer.js";
+import { operandExpectedAfter } from "./core-operators.js";
 import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
@@ -50,6 +51,57 @@ export interface StatementItemConsumerOptions extends PrattExpressionConsumerOpt
    */
   readonly holdsStatementOperator?:
     ((children: readonly Syntax[]) => boolean) | undefined;
+}
+
+/**
+ * What may stand after a declarator's binder, so that a line break in front of
+ * it carries the declaration on: the `!` of a definite assignment, the `:` that
+ * opens an annotation, the `=` that opens an initializer, and the `,` and `;`
+ * that end the declarator.
+ */
+const headContinuedBy = new Set(["!", ":", "=", ",", ";"]);
+
+/**
+ * What may carry a declarator's type annotation on across a line break: the
+ * operators the type grammar writes between two types, and what ends the
+ * annotation.
+ *
+ * An array type's `[` is not among them. TypeScript writes
+ * `PrimaryType [no LineTerminator here] [ ]`, and reads `let x: A` and the
+ * `[b] = c;` under it as two statements.
+ */
+const annotationContinuedBy = new Set([
+  "|",
+  "&",
+  "?",
+  ":",
+  ",",
+  "=>",
+  ".",
+  "=",
+  ";",
+  "extends",
+  "is",
+]);
+
+/**
+ * Whether the declarator head read so far carries on across the line break in
+ * front of `next`. It does where an operand is still expected after what was
+ * last read, and where `next` is one of the few things that may stand in a
+ * head at all -- inside the annotation, one of the few that may stand in a
+ * type.
+ */
+function headContinues(
+  previous: Syntax | undefined,
+  next: Syntax,
+  annotated: boolean,
+): boolean {
+  if (previous?.tag === "token" && operandExpectedAfter.has(previous.raw))
+    return true;
+  if (next.tag !== "token") return false;
+  return annotated
+    ? annotationContinuedBy.has(next.raw)
+    : headContinuedBy.has(next.raw);
 }
 
 const statementStarts = new Set([
@@ -940,10 +992,31 @@ class StatementConsumer implements SyntaxConsumer {
     for (let index = 0; index < headWidth; index += 1)
       children.push(cursor.consume()!);
     let initialized = false;
+    /** Whether the declarator being read has taken its binder. */
+    let bound = false;
+    /** Whether it has taken the `:` that opens its type annotation. */
+    let annotated = false;
+    /**
+     * How deep in type arguments the head stands. A `<` still open encloses
+     * whatever is written under it, so `let x: Array<\nnumber\n>` is one head
+     * however its lines are broken.
+     */
+    let typeArguments = 0;
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
       if (token(next, ";")) break;
+      // A declarator's head is a binder, the `!` of a definite assignment and
+      // a `: type`; nothing else stands in one. So a line break in front of
+      // anything else ends the declaration, as it does after an initializer:
+      // `let x` and the `foo();` written under it are two statements.
+      if (
+        bound &&
+        typeArguments === 0 &&
+        leadingLineBreak(next) &&
+        !headContinues(children.at(-1), next, annotated)
+      )
+        break;
       // A declarator ends where its initializer does, so only another
       // declarator may follow one. Anything else on the next line begins a
       // statement of its own: whatever could have continued the initializer
@@ -983,6 +1056,16 @@ class StatementConsumer implements SyntaxConsumer {
         statementStarts.has(raw(next) ?? "")
       )
         break;
+      const spelling = raw(next);
+      if (spelling !== undefined) {
+        typeArguments += angleWidth(spelling, "<");
+        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+      }
+      if (spelling === ",") {
+        bound = false;
+        annotated = false;
+      } else if (spelling === ":") annotated = true;
+      else bound = true;
       children.push(cursor.consume()!);
     }
     const terminator = requireTerminator("stmt", cursor, start, children);

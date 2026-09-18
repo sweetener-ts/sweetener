@@ -92,3 +92,52 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
   ),
   ...operators([","], "infix", 10, "left"),
 ]);
+
+/** The spellings the table holds with `fixity`. */
+function spellingsOf(fixity: PrattFixity): ReadonlySet<string> {
+  return new Set(
+    coreExpressionOperators
+      .filter((operator) => operator.fixity === fixity)
+      .map(({ spelling }) => spelling),
+  );
+}
+
+/**
+ * Spellings a line cannot end after in an expression, because an operand is
+ * still expected: every prefix and infix operator that is not also postfix --
+ * `++` and `--` are, and `!` is a non-null assertion -- and the `.`, `?.`,
+ * `?`, `:` and `...` that are written in an expression without being
+ * operators of it.
+ *
+ * Automatic semicolon insertion is this question and the one below, asked of
+ * the two tokens a line break stands between. Every reader that has to decide
+ * where a line break ends something asks them here: the statement reader, the
+ * class-member reader, and the scan that measures a concise arrow body.
+ */
+export const operandExpectedAfter: ReadonlySet<string> = new Set([
+  ...[...spellingsOf("prefix"), ...spellingsOf("infix")].filter(
+    (spelling) => spelling !== "!" && !spellingsOf("postfix").has(spelling),
+  ),
+  ".",
+  "?.",
+  "?",
+  ":",
+  "...",
+]);
+
+/**
+ * Spellings that carry an expression on from the line before, so that a line
+ * break in front of one ends nothing: every infix operator, a conditional's
+ * `?` and `:`, and a member access.
+ *
+ * A postfix operator is not among them. The grammar writes
+ * `LeftHandSideExpression [no LineTerminator here] ++`, so `a` and the `++b`
+ * under it are two statements rather than one.
+ */
+export const expressionContinuedBy: ReadonlySet<string> = new Set([
+  ...spellingsOf("infix"),
+  ".",
+  "?.",
+  "?",
+  ":",
+]);

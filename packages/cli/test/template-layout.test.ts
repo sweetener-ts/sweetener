@@ -205,6 +205,34 @@ class C { fieldy; other = 1; }`,
     ).toContain("class C { value = 0;\n  other = 1; }");
   });
 
+  /**
+   * The `:` of a conditional written around an expansion.
+   *
+   * A conditional's `:` is spaced away from what stands before it, and every
+   * other `:` is not: an annotation's and an object literal's both hold to the
+   * name in front of them. Which one a `:` is was read from a flag saying a
+   * `?` was still awaiting its own, so a conditional written in another's
+   * consequent answered for both -- and the outer `:`, reached at a seam the
+   * expansion made, was spaced as an annotation's.
+   */
+  test.each([
+    ["c ? c ? 1 : wrapped(2) : 3", "c ? c ? 1 : (2) : 3"],
+    ["c ? wrapped(2) : 3", "c ? (2) : 3"],
+    ["c ? 1 : c ? wrapped(2) : 3", "c ? 1 : c ? (2) : 3"],
+    ["c ? c ? c ? 1 : wrapped(2) : 3 : 4", "c ? c ? c ? 1 : (2) : 3 : 4"],
+  ])("keeps the space before it: %s", (written, printed) => {
+    expect(
+      expand(
+        `export syntax wrapped:expr {
+           rule { wrapped($value:expr) } => { ($value) }
+         }`,
+        `import { wrapped } from "./macros.sts" for syntax;
+declare const c: boolean;
+export const chosen = ${written};`,
+      ),
+    ).toContain(printed);
+  });
+
   test("indents it to where the block's own lines stand", () => {
     expect(
       expand(

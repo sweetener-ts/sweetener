@@ -21,6 +21,10 @@ import {
   type SyntaxConsumer,
 } from "./consumer.js";
 import {
+  expressionContinuedBy,
+  operandExpectedAfter,
+} from "./core-operators.js";
+import {
   consumeBalancedTypeArguments,
   typeOperandFollows,
 } from "./type-class-element.js";
@@ -76,6 +80,19 @@ const literalKeywords = new Set([
   "new",
 ]);
 
+/**
+ * The words that head an expression as operators and stand in it as names.
+ * Each is reserved only inside the function that suspends, so `const await =
+ * 1` and `const x = yield;` are both legal TypeScript outside one.
+ *
+ * The expression parser offers them here only where no operand of their own
+ * stands after them -- a `yield` cannot take one across a line break, and an
+ * `await` outside an async function takes only what is written on its line --
+ * so the word left alone is read as the name it is rather than as an operator
+ * with nothing to apply.
+ */
+const suspendingWords = new Set(["await", "yield"]);
+
 function isPrimaryAtom(syntax: Syntax | undefined): boolean {
   if (syntax?.tag === "protected") return syntax.category === "expr";
   if (syntax?.tag === "group") {
@@ -94,7 +111,9 @@ function isPrimaryAtom(syntax: Syntax | undefined): boolean {
       (syntax.kind === "keyword" &&
         // A contextual keyword is an ordinary name in an expression:
         // `from`, `of` and `type` are all common parameter names.
-        (literalKeywords.has(syntax.raw) || isIdentifierToken(syntax))))
+        (literalKeywords.has(syntax.raw) ||
+          suspendingWords.has(syntax.raw) ||
+          isIdentifierToken(syntax))))
   );
 }
 
@@ -279,9 +298,34 @@ function bareNamedArrowBodyStart(cursor: SyntaxCursor): number | undefined {
 
 /** Where the body of `async v => …` begins. */
 function asyncNamedArrowBodyStart(cursor: SyntaxCursor): number | undefined {
-  return asyncArrowModifier(cursor) && namedArrowFollows(cursor, 1)
+  return asyncNamedArrow(cursor.peek(), cursor.peek(1), cursor.peek(2))
     ? 3
     : undefined;
+}
+
+/**
+ * Whether these three nodes head `async v =>`, the async arrow whose one
+ * parameter is written without parentheses.
+ *
+ * `async` modifies what follows it only on the same line, and TypeScript
+ * applies `[no LineTerminator here]` before the `=>` of this form alone: it
+ * reads `async v` and then a syntax error under it, while `(v)\n=> v` and
+ * `async (v)\n=> v` are both arrows. Both readers of an arrow ask this, so the
+ * asymmetry is stated here once.
+ */
+export function asyncNamedArrow(
+  modifier: Syntax | undefined,
+  name: Syntax | undefined,
+  arrow: Syntax | undefined,
+): boolean {
+  return (
+    asyncModifies(modifier, name) &&
+    name?.tag === "token" &&
+    (name.kind === "identifier" || name.raw === "async") &&
+    arrow?.tag === "token" &&
+    arrow.raw === "=>" &&
+    !leadingLineBreak(arrow)
+  );
 }
 
 /**
@@ -360,12 +404,24 @@ function parenthesizedArrowBodyStart(
   // read `(1) |> f; const g = () => 1;` as an arrow whose parameter list is
   // `(1)`, reaching into the next statement for its `=>`.
   if (after?.tag !== "token" || after.raw !== ":") return undefined;
+  // A `:` the surrounding parse stops at is not this arrow's: it is where
+  // what holds the parameters ends, which for a conditional's consequent is
+  // the conditional's own `:`. There a return type reads only under the rule
+  // `returnTypeReadsInConsequent` states.
+  const colon = cursor.fork();
+  colon.advance(offset);
+  const stops = context.stopSet.matches(colon);
   offset += 1;
   const limit = offset + 64;
   while (offset < limit) {
     const node = cursor.peek(offset);
     if (node === undefined) return undefined;
-    if (node.tag === "token" && node.raw === "=>") return offset + 1;
+    if (node.tag === "token" && node.raw === "=>") {
+      return stops &&
+        !returnTypeReadsInConsequent((at) => cursor.peek(at), offset)
+        ? undefined
+        : offset + 1;
+    }
     // Anything that cannot appear in a return type means this is not an arrow.
     // A brace can, as an object type, only where a type is written.
     if (
@@ -379,6 +435,30 @@ function parenthesizedArrowBodyStart(
     offset += 1;
   }
   return undefined;
+}
+
+/**
+ * Whether a return type stands between parameters and the `=>` at `arrow`,
+ * where those parameters are written at the head of a conditional's
+ * consequent.
+ *
+ * A `(x)` there may be the consequent itself, with the conditional's `:` after
+ * it and an arrow in the alternate: TypeScript reads `c ? (x) : (y) => y` that
+ * way. It reads a return type only where the arrow the parameters head ends at
+ * the conditional's own `:`, as in `c ? (x): T => x : y`.
+ *
+ * TypeScript decides that by parsing the body and looking at the token after
+ * it; `arrowBodyExtent` instead counts the `?` and `:` written beside the
+ * body, which comes to the same reading. Both readers of an arrow ask this --
+ * the one that measures an arrow from its head and the one that walks a
+ * closure written as loose tokens -- so it is stated here once, over an offset
+ * either can answer.
+ */
+export function returnTypeReadsInConsequent(
+  nodeAt: (offset: number) => Syntax | undefined,
+  arrow: number,
+): boolean {
+  return arrowBodyExtent(nodeAt, arrow + 1).conditional;
 }
 
 export interface ArrowBodyExtent {
@@ -402,11 +482,19 @@ export interface ArrowBodyExtent {
  * pairs them exactly as the grammar nests them, so `(v) => v ? 1 : 2` keeps its
  * own alternate; ending at the first `:` left `: 2` outside the arrow.
  *
+ * It also ends where a line break stands in front of syntax that carries
+ * nothing on, which is automatic semicolon insertion read inside an
+ * expression: `const h = () => f` and the `label: g()` written under it are
+ * two statements, and the body reaching past the line break swallowed the
+ * label and its `:` ended the body instead.
+ *
  * `stopsBefore` is where the surrounding parse ends: an arrow that is a pipe's
  * operand ends where the pipe continues. It is not asked while a conditional is
  * pending, because a pending `?` puts the body inside a consequent that runs to
  * its own `:` -- which is the very boundary the surrounding parse would report
- * when the arrow is itself a conditional's consequent.
+ * when the arrow is itself a conditional's consequent. Neither is the line
+ * break, for the same reason: a `?` still awaiting its `:` is an expression
+ * nothing can end.
  *
  * Both readers of an arrow ask this, one over a cursor and one over an array,
  * so it is stated here once, over an offset either can answer.
@@ -420,8 +508,11 @@ export function arrowBodyExtent(
   for (let offset = from; ; offset += 1) {
     const node = nodeAt(offset);
     if (node === undefined) return { end: offset, conditional: false };
-    if (offset > from && conditionals === 0 && stopsBefore(offset))
-      return { end: offset, conditional: false };
+    if (offset > from && conditionals === 0) {
+      if (stopsBefore(offset)) return { end: offset, conditional: false };
+      if (endsAtLineBreak(nodeAt, offset))
+        return { end: offset, conditional: false };
+    }
     if (node.tag !== "token") continue;
     if (node.raw === "?") conditionals += 1;
     else if (node.raw === ":") {
@@ -430,6 +521,46 @@ export function arrowBodyExtent(
     } else if (node.raw === "," || node.raw === ";")
       return { end: offset, conditional: false };
   }
+}
+
+/**
+ * Whether the expression being scanned ends before the node at `offset`: a
+ * line break stands in front of it, what stands behind it expects no operand,
+ * and it carries nothing on.
+ */
+function endsAtLineBreak(
+  nodeAt: (offset: number) => Syntax | undefined,
+  offset: number,
+): boolean {
+  const node = nodeAt(offset);
+  if (node === undefined || !leadingLineBreak(node)) return false;
+  const previous = nodeAt(offset - 1);
+  if (previous?.tag === "token" && operandExpectedAfter.has(previous.raw))
+    return false;
+  return !continuesExpression(node);
+}
+
+/**
+ * Whether `node`, standing after a whole operand, carries the expression on:
+ * an operator that takes it as its left operand, or the parentheses, brackets
+ * or template of a call, an index or a tagged template.
+ *
+ * A brace is none of those. `const h = () => f` and the `{ }` written under it
+ * are an arrow and a block, and reading the brace as an object literal's put
+ * the whole of the rest of the file inside the arrow.
+ */
+function continuesExpression(node: Syntax): boolean {
+  if (node.tag === "group")
+    return (
+      node.delimiter === "parenthesis" ||
+      node.delimiter === "bracket" ||
+      node.delimiter === "template"
+    );
+  if (node.tag !== "token") return false;
+  return (
+    node.kind === "no-substitution-template" ||
+    expressionContinuedBy.has(node.raw)
+  );
 }
 
 /** Where the body of the arrow at the cursor ends, or undefined where it is empty. */

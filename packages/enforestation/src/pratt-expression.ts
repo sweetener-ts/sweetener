@@ -2,6 +2,7 @@ import type { BindingId } from "@sweetener/shared";
 import {
   createPrecedence,
   createProtectedSyntax,
+  leadingLineBreak,
   spanEnvelope,
   type ExpressionForm,
   type OriginStore,
@@ -302,6 +303,38 @@ function checkWork(context: PrattContext): void {
   context.consumer.tracker.chargeMatcherSteps();
 }
 
+/**
+ * Whether the `yield` or `await` at the cursor stands alone, with no operand
+ * of its own after it, so that the word is read as the ordinary word it also
+ * is rather than as the operator.
+ *
+ * `yield` is a restricted production -- the grammar writes `yield
+ * [no LineTerminator here] AssignmentExpression` -- so a line break after it
+ * ends it wherever it is written, inside a generator as readily as outside
+ * one. `await` carries no such restriction inside an async function, where it
+ * reaches the next line; outside one TypeScript reads it as an operator only
+ * where what it would take stands on its line, and as a name otherwise.
+ *
+ * `await` and `yield` are ordinary identifiers in the code that does not
+ * suspend -- `const await = 1` is legal TypeScript -- and that is what
+ * `const x = yield\nv;` ends the declaration at the line break for: the
+ * initializer is the name, and `v;` is the statement under it. Where an
+ * operand does stand beside the word, using it outside the function that
+ * admits it stays the refusal it was.
+ */
+function suspendingWordAlone(
+  cursor: SyntaxCursor,
+  operator: PrattOperator,
+  context: PrattContext,
+): boolean {
+  // `yield*` is one operator of two tokens, and the line break the grammar
+  // forbids is the one between `yield` and the whole of what follows it.
+  if (operator.spelling === "yield") return leadingLineBreak(cursor.peek(1));
+  if (operator.spelling === "await")
+    return !context.consumer.allowAwait && leadingLineBreak(cursor.peek(1));
+  return false;
+}
+
 function parsePrefix(
   cursor: SyntaxCursor,
   context: PrattContext,
@@ -315,9 +348,13 @@ function parsePrefix(
     dot.raw === "." &&
     target?.tag === "token" &&
     target.raw === "target";
-  const prefix = newTarget
+  const resolved = newTarget
     ? undefined
     : resolveOperator(cursor, "prefix", context);
+  const prefix =
+    resolved !== undefined && suspendingWordAlone(cursor, resolved, context)
+      ? undefined
+      : resolved;
   if (prefix !== undefined) {
     if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);

@@ -371,6 +371,52 @@ describe("statement and item consumers", () => {
     ["let x\n= 1;", "let x\n= 1;"],
     ["const x: number\n= 1;", "const x: number\n= 1;"],
     ["let x: Array<\nnumber\n> = [];", "let x: Array<\nnumber\n> = [];"],
+    // A declarator's head ends at a line break by the same rule its
+    // initializer does: a head is a binder, a `!`, and a `: type`, and nothing
+    // else may stand in one.
+    ["let x\nfoo();", "let x"],
+    ["let x, y\nfoo();", "let x, y"],
+    ["let x: A\nfoo();", "let x: A"],
+    ["let x: A[]\nfoo();", "let x: A[]"],
+    ["let x!: A\nfoo();", "let x!: A"],
+    ["let x: { a: number }\nfoo();", "let x: { a: number }"],
+    ["let x: A\n[b] = c;", "let x: A"],
+    ["const x = async v\n=> v;", "const x = async v"],
+    ["let x\n: A = 1;", "let x\n: A = 1;"],
+    ["let x: A |\nB = c;", "let x: A |\nB = c;"],
+    ["let x: A\n| B = c;", "let x: A\n| B = c;"],
+    // `yield` and `await` are words before they are operators, and neither
+    // reaches the next line here: `yield` never takes an operand across a line
+    // break, and outside an async function `await` is an ordinary name.
+    ["const x = yield\nv;", "const x = yield"],
+    ["const x = await\nload();", "const x = await"],
+    // TypeScript applies `[no LineTerminator here]` before the `=>` of the
+    // async arrow written without parentheses, and to no other arrow.
+    ["const x = v\n=> v;", "const x = v\n=> v;"],
+    ["const x = (v)\n=> v;", "const x = (v)\n=> v;"],
+    ["const x = async (v)\n=> v;", "const x = async (v)\n=> v;"],
+    ["const x = async <T,>(v: T)\n=> v;", "const x = async <T,>(v: T)\n=> v;"],
+    // A `(x)` at the head of a conditional's consequent is the consequent
+    // itself where the arrow after the `:` is the alternate, and a parameter
+    // list where the arrow it heads ends at the conditional's own `:`.
+    ["const r = c ? (x) : (y) => y;", "const r = c ? (x) : (y) => y;"],
+    // A concise arrow body is an expression, and ends at a line break where
+    // nothing carries it on -- the same rule the initializer around it ends
+    // by, read one expression further in.
+    ["const h = () => a\nb;", "const h = () => a"],
+    ["const h = () => a\n++b;", "const h = () => a"],
+    ["const h = () => f\n{ }", "const h = () => f"],
+    ["const h = () => f\nlabel: g()", "const h = () => f"],
+    ["const h = () => a +\nb;", "const h = () => a +\nb;"],
+    ["const h = () => a\n.b;", "const h = () => a\n.b;"],
+    ["const h = () => a\n(b);", "const h = () => a\n(b);"],
+    ["const h = () => a\n[b];", "const h = () => a\n[b];"],
+    ["const h = () => a\n`t`;", "const h = () => a\n`t`;"],
+    ["const h = () => a\n, b;", "const h = () => a\n, b;"],
+    ["const h = () => c\n? 1 : 2;", "const h = () => c\n? 1 : 2;"],
+    ["const h = () => a\ninstanceof B;", "const h = () => a\ninstanceof B;"],
+    ["const r = c ? (x): T => x : y;", "const r = c ? (x): T => x : y;"],
+    ["const f = (x): T => x;", "const f = (x): T => x;"],
   ])("ends the statement of %j at %j, as TypeScript does", (source, extent) => {
     const whole = `${source}\nafter();`;
     const { result } = parse(whole, "stmt");
@@ -386,6 +432,96 @@ describe("statement and item consumers", () => {
     );
     expect(parsed.statements[0]?.getText(parsed)).toBe(extent);
   });
+
+  /**
+   * `async v` and the `=>` written under it are not an async arrow.
+   *
+   * TypeScript applies `[no LineTerminator here]` before the `=>` of the async
+   * arrow written without parentheses, and to no other arrow: `(v)\n=> v` and
+   * `async (v)\n=> v` both reach their bodies, which the table above holds it
+   * to. What is left here is not a program TypeScript accepts, so it is held
+   * to what TypeScript read rather than to where its recovery ended.
+   */
+  test("reads no async arrow across the line break before its '=>'", () => {
+    const whole = "const x = async v\n=> v;\nafter();";
+    const { result } = parse(whole, "stmt");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a variable statement");
+    expect(
+      result.syntax.children.some(
+        (child) => child.tag === "protected" && child.form === "arrow",
+      ),
+    ).toBe(false);
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      whole,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    expect(parsed.statements[0]?.getText(parsed)).toBe("const x = async v");
+  });
+
+  /**
+   * The same boundary inside the function that admits each word as an
+   * operator.
+   *
+   * A generator's `yield` takes no operand across a line break -- the grammar
+   * writes `yield [no LineTerminator here] AssignmentExpression` -- so the
+   * declaration ends at the break there as readily as it does outside a
+   * generator. `await` carries no such restriction, and an async function's
+   * reaches the next line.
+   */
+  test.each([
+    [
+      "function* g() {",
+      { allowYield: true, allowAwait: false },
+      "const x = yield\nv;",
+      "const x = yield",
+    ],
+    [
+      "function* g() {",
+      { allowYield: true, allowAwait: false },
+      "const x = yield v;",
+      "const x = yield v;",
+    ],
+    [
+      "async function h() {",
+      { allowYield: false, allowAwait: true },
+      "const x = await\nload();",
+      "const x = await\nload();",
+    ],
+    [
+      "async function h() {",
+      { allowYield: false, allowAwait: true },
+      "const x = await load();",
+      "const x = await load();",
+    ],
+  ])(
+    "ends %s %j at %j, as TypeScript does",
+    (header, contexts, source, extent) => {
+      const body = `${source}\nafter();`;
+      const { result } = parse(body, "stmt", undefined, contexts);
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected a variable statement");
+      expect(printLosslessSequence(result.syntax.children)).toBe(extent);
+      const whole = `${header} ${body} }`;
+      const parsed = ts.createSourceFile(
+        "fixture.ts",
+        whole,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const declaration = parsed.statements[0];
+      if (
+        !ts.isFunctionDeclaration(declaration!) ||
+        declaration.body === undefined
+      )
+        throw new Error("expected a function declaration");
+      expect(declaration.body.statements[0]?.getText(parsed)).toBe(extent);
+    },
+  );
 
   test("reconstructed representative extents parse with pinned TypeScript", () => {
     const statements = [

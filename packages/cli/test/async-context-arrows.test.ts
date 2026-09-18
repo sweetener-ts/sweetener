@@ -24,6 +24,11 @@ export syntax awaitonly:expr {
   context async;
   => { (await $value) }
 }
+export syntax yieldonly:expr {
+  rule { yieldonly($value:expr) }
+  context generator;
+  => { (yield $value) }
+}
 export operator (<-):stmt {
   fixity infix;
   associativity none;
@@ -45,7 +50,7 @@ function expand(source: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { awaitonly, (<-) } from "./macros.sts" for syntax;\n${source}\n`,
+    `import { awaitonly, yieldonly, (<-) } from "./macros.sts" for syntax;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -306,6 +311,120 @@ export function g(): unknown { total <- 1; ${statement} return [total, handler];
     });
   }
 
+  // An arrow written as another arrow's concise body is a function of its own,
+  // and says for itself whether it is async: a plain arrow nested in an async
+  // one admits no `await`, and an async arrow nested in a plain one admits one.
+  //
+  // Written with parentheses around it the inner arrow is a node the walk
+  // descends into, which answers for it. Written without them the two arrows
+  // are one run of tokens, and the walk measured only the outer of them: the
+  // inner body inherited the outer arrow's header.
+  const nestedArrows: readonly (readonly [
+    string,
+    string,
+    readonly string[],
+    string,
+  ])[] = [
+    [
+      "a plain arrow nested in an async one",
+      "const handler = async (v: number) => () => awaitonly(1);",
+      [refusal],
+      "async (v: number) => () => awaitonly(1)",
+    ],
+    [
+      "a plain arrow with a block body nested in an async one",
+      "const handler = async (v: number) => () => { return awaitonly(1); };",
+      [refusal],
+      "async (v: number) => () => { return awaitonly(1); }",
+    ],
+    [
+      "an async arrow nested in a plain one",
+      "const handler = (v: number) => async () => awaitonly(1);",
+      [],
+      "(v: number) => async () => (await 1)",
+    ],
+    [
+      "an async arrow with a block body nested in a plain one",
+      "const handler = (v: number) => async () => { return awaitonly(1); };",
+      [],
+      "(v: number) => async () => { return (await 1); }",
+    ],
+    [
+      "a plain arrow nested two deep in an async one",
+      "const handler = async (v: number) => () => () => awaitonly(1);",
+      [refusal],
+      "async (v: number) => () => () => awaitonly(1)",
+    ],
+    [
+      // The inner arrow ends at the conditional's `:`, and what follows it is
+      // back inside the outer arrow, which is async.
+      "a plain arrow in the consequent of an async arrow's conditional body",
+      "const handler = async (v: number) => v ? () => awaitonly(1) : awaitonly(2);",
+      [refusal],
+      "async (v: number) => v ? () => awaitonly(1) : (await 2)",
+    ],
+  ];
+
+  for (const [name, statement, messages, expansion] of nestedArrows) {
+    test(`reads ${name} by its own header, in a block that parses`, () => {
+      const expanded = expand(
+        `export function g(): unknown { const total = 1; ${statement} return [total, handler]; }`,
+      );
+      expect(expanded.messages).toEqual(messages);
+      expect(expanded.text).toContain(expansion);
+    });
+
+    test(`reads ${name} by its own header, in a block walked as tokens`, () => {
+      const expanded = expand(
+        `export function g(): unknown { total <- 1; ${statement} return [total, handler]; }`,
+      );
+      expect(expanded.messages).toEqual(messages);
+      expect(expanded.text).toContain(expansion);
+    });
+  }
+
+  // The same boundary read in the generator direction. An arrow is a generator
+  // in no case, so `yield` is an expression nowhere in one however deeply it is
+  // nested inside a `function*` -- while the generator's own body still admits
+  // it after the arrow ends.
+  const generatorRefusal =
+    "No rule for macro yieldonly accepted this input: generator context.";
+  const inGenerator: readonly (readonly [string, string])[] = [
+    ["an arrow", "const h = () => yieldonly(1);"],
+    ["an arrow with a block body", "const h = () => { return yieldonly(1); };"],
+    ["an arrow nested in an arrow", "const h = () => () => yieldonly(1);"],
+    [
+      "an async arrow nested in an arrow",
+      "const h = () => async () => yieldonly(1);",
+    ],
+  ];
+
+  for (const [name, statement] of inGenerator) {
+    test(`is refused in ${name} inside a generator, in a block that parses`, () => {
+      const { text, messages } = expand(
+        `export function* g(): Generator<number, unknown, unknown> { const total = 1; ${statement} return [total, h]; }`,
+      );
+      expect(messages).toEqual([generatorRefusal]);
+      expect(text).toContain("yieldonly(1)");
+    });
+
+    test(`is refused in ${name} inside a generator, in a block walked as tokens`, () => {
+      const { text, messages } = expand(
+        `export function* g(): Generator<number, unknown, unknown> { total <- 1; ${statement} return [total, h]; }`,
+      );
+      expect(messages).toEqual([generatorRefusal]);
+      expect(text).toContain("yieldonly(1)");
+    });
+  }
+
+  test("is still admitted in the generator itself after an arrow's body ends", () => {
+    const { text, messages } = expand(
+      "export function* g(): Generator<number, unknown, unknown> { total <- 1; const h = () => total; return yieldonly(h()); }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("(yield h())");
+  });
+
   // `async` modifies the parameters written after it on the same line. With a
   // line break between them TypeScript reads an ordinary name, ends the
   // declaration there, and reads the arrow under it as a plain one of its own
@@ -313,6 +432,30 @@ export function g(): unknown { total <- 1; ${statement} return [total, handler];
   const separatedAsync = `const async = 1;
   const handler = async
   v => awaitonly(v);`;
+
+  // The same rule where the `async` stands in front of a function rather than
+  // in front of an arrow's parameters. Alone at the end of its line it is an
+  // ordinary name, and the `function` written under it is a plain one:
+  // TypeScript reads three statements there, the middle of them `async`.
+  test.each([
+    ["a block that parses", "const total = 1;"],
+    ["a block walked as tokens", "total <- 1;"],
+  ])(
+    "is refused in a function under an `async` left on its own line, in %s",
+    (_name, opening) => {
+      const { text, messages } = expand(
+        `export function f(): unknown {
+  ${opening}
+  const async = 1;
+  async
+  function g(): number { return awaitonly(1); }
+  return [total, async, g];
+}`,
+      );
+      expect(messages).toEqual([refusal]);
+      expect(text).toContain("awaitonly(1)");
+    },
+  );
 
   test("is refused in the arrow under an `async` left on its own line, in a block that parses", () => {
     const { text, messages } = expand(

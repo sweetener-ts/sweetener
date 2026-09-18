@@ -23,6 +23,7 @@ import {
   createClassElementConsumer,
   createTypeConsumer,
   createTypeMemberConsumer,
+  declaresAsync,
   StopSet,
   type TypeClassElementMacroResolver,
 } from "../src/index.js";
@@ -444,5 +445,33 @@ describe("type and class-element consumers", () => {
     const { result, cursor } = consume(source, "classElement");
     expect(result.matched).toBe(false);
     expect(cursor.index).toBe(0);
+  });
+
+  /**
+   * Whether a declaration's scanned head declares an async function.
+   *
+   * `async` modifies what is written after it on the same line. Alone at the
+   * end of its line it names the member or the value instead -- TypeScript
+   * reads `class C { async\n m() {} }` as a field called `async` and a plain
+   * method `m` -- so the body under it admits no `await`. The head is read the
+   * same way wherever it is scanned, so the rule is `asyncModifies`, the one
+   * every other reader of an `async` asks.
+   */
+  test.each([
+    ["async function name()", true],
+    ["async name()", true],
+    ["static async *[key]()", true],
+    ["export async function name()", true],
+    // A function named `async` writes its parameter list or its type
+    // parameters where the name would be.
+    ["async()", false],
+    ["async<T>()", false],
+    ["function name()", false],
+    // The modifier left at the end of its line is a name of its own.
+    ["async\nfunction name()", false],
+    ["async\nname()", false],
+    ["static async\n*[key]()", false],
+  ])("reads the head %j as declaring async: %s", (source, expected) => {
+    expect(declaresAsync(nodes(source, new OriginStore()))).toBe(expected);
   });
 });

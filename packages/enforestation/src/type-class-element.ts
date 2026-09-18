@@ -21,7 +21,8 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
-import { coreExpressionOperators } from "./core-operators.js";
+import { operandExpectedAfter as expressionOperandExpectedAfter } from "./core-operators.js";
+import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 
 export type TypeClassMacroResolver = (
@@ -585,7 +586,9 @@ function decoratorPrefixLength(children: readonly Syntax[]): number {
  *
  * A function named `async` writes its parameter list or its type parameters
  * where the name the modifier stands in front of would otherwise be, so
- * `async(` and `async<` are a name rather than a modifier.
+ * `async(` and `async<` are a name rather than a modifier -- and so is an
+ * `async` left at the end of its line, which `asyncModifies` answers for here
+ * as it does wherever else an `async` is read.
  */
 export function declaresAsync(nodes: readonly Syntax[]): boolean {
   const declaration = nodes.slice(decoratorPrefixLength(nodes));
@@ -593,9 +596,12 @@ export function declaresAsync(nodes: readonly Syntax[]): boolean {
     if (!token(node)) return false;
     if (node.raw !== "async") continue;
     const after = declaration[index + 1];
-    return !(
-      (after?.tag === "group" && after.delimiter === "parenthesis") ||
-      token(after, "<")
+    return (
+      asyncModifies(node, after) &&
+      !(
+        (after?.tag === "group" && after.delimiter === "parenthesis") ||
+        token(after, "<")
+      )
     );
   }
   return false;
@@ -622,27 +628,12 @@ function beginsClassMember(syntax: Syntax): boolean {
 }
 
 /**
- * Spellings a line cannot end after, because they need an operand after them:
- * every prefix and infix operator of the expression grammar that is not also
- * postfix, a member access, a conditional's `?` and `:`, a spread, and the
- * operators of the type grammar. `!` is postfix too, as a non-null assertion.
+ * Spellings a line cannot end after here: the ones an expression cannot end
+ * after, and the operators of the type grammar, which a member's annotation
+ * is written in.
  */
 const operandExpectedAfter = new Set([
-  ...coreExpressionOperators
-    .filter(
-      ({ spelling }) =>
-        spelling !== "!" &&
-        !coreExpressionOperators.some(
-          (operator) =>
-            operator.spelling === spelling && operator.fixity === "postfix",
-        ),
-    )
-    .map(({ spelling }) => spelling),
-  ".",
-  "?.",
-  "?",
-  ":",
-  "...",
+  ...expressionOperandExpectedAfter,
   ...typeOperandHeads,
 ]);
 

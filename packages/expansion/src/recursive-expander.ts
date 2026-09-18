@@ -49,9 +49,11 @@ import {
   arrowBodyExtent,
   asyncArrowHead,
   asyncModifies,
+  asyncNamedArrow,
   classElementEndsBefore,
   classMemberNameFollows,
   parameterBinder,
+  returnTypeReadsInConsequent,
   typeOperandFollows,
   type ArrowBodyExtent,
 } from "@sweetener/enforestation";
@@ -1375,14 +1377,9 @@ export function expandMacroSyntax(
    * just before `from` begins one; the list's head ends at `end` in
    * `preceding`.
    *
-   * A return type may stand between the parameters and `=>`. In a
-   * conditional's consequent TypeScript reads one only when the arrow is
-   * followed by the conditional's own `:`, so `c ? (x): T => x : y` is an arrow
-   * while in `c ? (x) : (y) => y` the consequent is `(x)`.
-   *
-   * TypeScript decides that by parsing the body and looking at the token after
-   * it; `arrowBodyExtent` instead counts the `?` and `:` written beside the
-   * body, which comes to the same reading.
+   * A return type may stand between the parameters and `=>`, and where the
+   * parameters follow a conditional's `?` it reads only under the rule
+   * `returnTypeReadsInConsequent` states.
    */
   const arrowAfterParameters = (
     preceding: readonly Syntax[],
@@ -1412,7 +1409,9 @@ export function expandMacroSyntax(
     if (arrow === following.length) return undefined;
     if (!spelled(preceding[arrowHeadBefore(preceding, end)!], "?"))
       return arrow;
-    return arrowBodyEnd(following, arrow + 1).conditional ? arrow : undefined;
+    return returnTypeReadsInConsequent((at) => following[at], arrow)
+      ? arrow
+      : undefined;
   };
 
   /**
@@ -1821,7 +1820,9 @@ export function expandMacroSyntax(
    * `async name(`, `async function* name(`, `static async *[key](`.
    *
    * It is never written in place of the name, so a function named `async`
-   * writes its parameter list where the name is read from and is not one.
+   * writes its parameter list where the name is read from and is not one, and
+   * it modifies only what stands after it on the same line -- `async` left at
+   * the end of its line is a name, and the `function` under it is a plain one.
    */
   const asyncHeader = (
     preceding: readonly Syntax[],
@@ -1835,7 +1836,7 @@ export function expandMacroSyntax(
       at -= 1;
     for (; at >= 0; at -= 1) {
       const node = preceding[at]!;
-      if (spelled(node, "async")) return true;
+      if (spelled(node, "async")) return asyncModifies(node, preceding[at + 1]);
       if (!spelled(node, "*") && !spelled(node, "function")) return false;
     }
     return false;
@@ -2158,7 +2159,13 @@ export function expandMacroSyntax(
     if (!named && !listed) return undefined;
     const arrow = listed
       ? arrowAfterParameters(nodes, start, nodes, start + 1)
-      : arrowParametersCanFollow(nodes, start) && token(start + 1, "=>")
+      : arrowParametersCanFollow(nodes, start) &&
+          // `async v\n=> v` is `async v` and then a syntax error, while
+          // `v\n=> v` is an arrow: the no-line-break rule before the `=>`
+          // belongs to the async form alone.
+          (async
+            ? asyncNamedArrow(nodes[at], nodes[start], nodes[start + 1])
+            : token(start + 1, "=>"))
         ? start + 1
         : undefined;
     if (arrow === undefined) return undefined;
@@ -2550,8 +2557,8 @@ export function expandMacroSyntax(
      */
     let regionContexts = enclosingContexts;
     /**
-     * Where the arrow this walk stands inside ends, as an index into `input`;
-     * 0 when it stands in none.
+     * The arrows this walk stands inside, innermost last: where each ends, as
+     * an index into `input`, and whether it is async.
      *
      * An arrow is never a generator, so `yield` is not an expression anywhere
      * in one however the function around it is written, and it is async only
@@ -2563,13 +2570,27 @@ export function expandMacroSyntax(
      * around it reached the arrow's body: a macro declared `context generator`
      * was admitted there and wrote a `yield` inside an arrow, which TypeScript
      * then reports on generated code.
+     *
+     * An arrow written as another's body is a function of its own and answers
+     * for itself, so they are held as a stack rather than as the one innermost:
+     * `async (v) => () => …` is async outside the nested arrow and plain inside
+     * it, and `(v) => async () => …` the other way about. The inner arrow may
+     * also end before the outer does -- it ends at the `:` of a conditional
+     * written around it -- and what follows is back inside the outer arrow.
      */
-    let arrowEndsAt = 0;
-    /** Whether that arrow is async, which decides `await` inside it. */
-    let arrowIsAsync = false;
+    const openArrows: { readonly end: number; readonly async: boolean }[] = [];
+    /** `contexts` as the innermost open arrow, if any, narrows `next`. */
+    const withinOpenArrow = (
+      next: ReadonlySet<MacroContext>,
+    ): ReadonlySet<MacroContext> => {
+      const innermost = openArrows.at(-1);
+      return innermost === undefined
+        ? next
+        : withinArrow(next, innermost.async);
+    };
     const enterRegionContexts = (next: ReadonlySet<MacroContext>) => {
       regionContexts = next;
-      contexts = arrowEndsAt > 0 ? withinArrow(next, arrowIsAsync) : next;
+      contexts = withinOpenArrow(next);
     };
     let input = initialInput;
     regions.push(regionBindings(initialInput));
@@ -2746,21 +2767,15 @@ export function expandMacroSyntax(
             withAwait(withYield(enclosingContexts, false), false),
           );
       }
-      // Measured only outside any arrow already open: one written inside
-      // another is inside it too, and the contexts are already narrowed.
-      if (index >= arrowEndsAt) {
-        if (arrowEndsAt > 0) {
-          arrowEndsAt = 0;
-          arrowIsAsync = false;
-          contexts = regionContexts;
-        }
-        const closure = closureEndAt(input, index);
-        if (closure?.kind === "arrow") {
-          arrowEndsAt = closure.end;
-          arrowIsAsync = closure.async;
-          contexts = withinArrow(regionContexts, arrowIsAsync);
-        }
-      }
+      // Each arrow reached is opened and each one left is closed, so that a
+      // nested arrow's own header decides the contexts of its body and the
+      // arrow around it gets them back when the nested one ends.
+      while (openArrows.length > 0 && index >= openArrows.at(-1)!.end)
+        openArrows.pop();
+      const closure = closureEndAt(input, index);
+      if (closure?.kind === "arrow")
+        openArrows.push({ end: closure.end, async: closure.async });
+      contexts = withinOpenArrow(regionContexts);
       if (walked?.tag === "token") {
         // A declaration keyword ends the declaration before it, so it closes
         // both regions the same way a `;` does.

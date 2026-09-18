@@ -545,6 +545,45 @@ describe("Pratt expression consumer", () => {
     expect(operatorAt(operand)).toBe("+");
   });
 
+  /**
+   * A parenthesized operand at the head of a conditional's consequent.
+   *
+   * `(x)` there may be the consequent itself, with the conditional's `:` after
+   * it and an arrow in the alternate, or a parameter list whose return type is
+   * written past that `:`. TypeScript tells them apart by where the arrow ends:
+   * a return type reads only when the conditional's own `:` follows the arrow's
+   * body. Reading `(x) :` as a parameter list and a return type whatever
+   * followed left `c ? (x) : (y) => y` with no `:` for its conditional, and the
+   * whole expression was refused.
+   */
+  test.each([
+    [
+      "c ? (x) : (y) => y",
+      ["c", "?", "(x)", ":", "(y) => y"],
+      [undefined, undefined, undefined, undefined, "arrow"],
+    ],
+    [
+      "c ? (x): T => x : y",
+      ["c", "?", "(x): T => x", ":", "y"],
+      [undefined, undefined, "arrow", undefined, undefined],
+    ],
+  ])("reads the parts of %s", (source, parts, forms) => {
+    const result = parse(source).result;
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.syntax.form).toBe("conditional");
+    expect(
+      result.syntax.children.map((child) =>
+        printLosslessSequence([child]).trim(),
+      ),
+    ).toEqual(parts);
+    expect(
+      result.syntax.children.map((child) =>
+        child.tag === "protected" ? child.form : undefined,
+      ),
+    ).toEqual(forms);
+  });
+
   test.each([
     ["a ? b : c", "conditional"],
     ["x => x + 1", "arrow"],

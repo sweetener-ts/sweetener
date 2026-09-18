@@ -610,12 +610,17 @@ export function printExpandedFile<Trace>(
    */
   const brackets: {
     bracket: string | undefined;
-    conditional: boolean;
+    /**
+     * How many conditionals opened in that bracket still await their `:`.
+     * Counted rather than held as a flag, because a conditional written in
+     * another's consequent closes with a `:` of its own and the outer one is
+     * still open after it: the `:` of `c ? c ? 1 : 2 : 3` that the first
+     * answers is not the one the second does.
+     */
+    conditionals: number;
     readonly openLine: number;
     readonly openIndent: string;
-  }[] = [
-    { bracket: undefined, conditional: false, openLine: -1, openIndent: "" },
-  ];
+  }[] = [{ bracket: undefined, conditionals: 0, openLine: -1, openIndent: "" }];
   /**
    * The indentation a line the printer begins itself takes before this text:
    * the one this block's own lines stand at, or a step past the line its
@@ -677,14 +682,16 @@ export function printExpandedFile<Trace>(
     )
       brackets.push({
         bracket: text.endsWith("${") ? "{" : text,
-        conditional: false,
+        conditionals: 0,
         openLine: lineNumber,
         openIndent: lineIndent,
       });
     const innermost = brackets.at(-1)!;
-    if (text === "?") innermost.conditional = true;
-    else if (text === ":" && innermost.conditional && before !== "?")
-      innermost.conditional = false;
+    if (text === "?") innermost.conditionals += 1;
+    // A `?` with its `:` written straight after it marks something optional --
+    // `a?: T` -- and opened no conditional, so it gives back what it took.
+    else if (text === ":" && innermost.conditionals > 0)
+      innermost.conditionals -= 1;
   };
   const pushToken = (token: TokenSyntax) => {
     const kind = kindFor(token.origin);
@@ -740,7 +747,7 @@ export function printExpandedFile<Trace>(
           ? ""
           : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
               bracket: brackets.at(-1)!.bracket,
-              conditional: brackets.at(-1)!.conditional,
+              conditional: brackets.at(-1)!.conditionals > 0,
               prefix,
               memberName,
               closedTypeArguments,
