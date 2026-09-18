@@ -16,6 +16,27 @@ const startedAt = new Date();
 const start = performance.now();
 
 await mkdir(artifactDirectory, { recursive: true });
+// A package's own tests import `../src`, but a test that reaches across
+// packages resolves through `exports` to `dist`. Without this a source-only
+// edit is tested against the last build: the run is green and says nothing
+// about the change. `tsc6 -b` is incremental, so it costs nothing when the
+// build is current.
+const built = spawnSync(
+  join(repositoryRoot, "node_modules", ".bin", "tsc6"),
+  ["-b", "--pretty", "false"],
+  {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  },
+);
+if (built.error) throw built.error;
+if (built.status !== 0) {
+  process.stderr.write(`${built.stdout ?? ""}${built.stderr ?? ""}`);
+  process.stderr.write("Tests did not run: the build failed.\n");
+  process.exitCode = built.status ?? 1;
+  process.exit(process.exitCode);
+}
 const result = spawnSync(
   process.execPath,
   [vitestPath, "run", "--reporter=json", `--outputFile=${rawPath}`],
