@@ -356,6 +356,31 @@ describe("TypeScript scanner adapter", () => {
     });
   });
 
+  /**
+   * A tag whose attribute holds a regular expression is still a tag, and its
+   * name and attribute names are still scanned in tag mode.
+   *
+   * The lookahead that tells a tag from a generic arrow's type parameters
+   * matched characters, and a regular expression holding a `(` left it looking
+   * for a `)` that never came. It answered that this was no element, and the
+   * tag's whole run of tokens was scanned as ordinary punctuation and
+   * identifiers instead -- which no walk over a JSX tag ever reaches.
+   */
+  it("scans a tag whose attribute holds a regular expression in tag mode", () => {
+    const source = String.raw`<div title={/\(/.source} className="a" />`;
+    const result = scanTypeScript(source, { sourceId, variant: "jsx" });
+    expect(reconstructScannedSource(result.tokens)).toBe(source);
+    expect(
+      result.tokens
+        .filter((token) => token.kind === "jsx-identifier")
+        .map((token) => token.raw),
+    ).toEqual(["div", "title", "className"]);
+    expect(
+      result.tokens.find((token) => token.kind === "regular-expression-literal")
+        ?.raw,
+    ).toBe(String.raw`/\(/`);
+  });
+
   it("does not reinterpret ordinary TSX comparisons with spaced operands", () => {
     const source = "const less = left < right;";
     const result = scanTypeScript(source, { sourceId, variant: "jsx" });

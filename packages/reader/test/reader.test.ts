@@ -108,6 +108,103 @@ describe("generic JSX elements", () => {
     ).toBe(false);
   });
 
+  /**
+   * A regular expression written in an attribute is one token of the
+   * expression inside the braces, and every character in it belongs to that
+   * token.
+   *
+   * The scan that finds a tag's closing `>` stepped over strings, templates,
+   * comments and bracket groups by matching characters, which cannot tell a
+   * regular expression from a division. A `(`, a `[`, a `{`, a quote or a `//`
+   * written inside one opened a region that never closed: the scan ran to the
+   * end of the file and answered that this was no element, so the tag lost its
+   * grouping and every one of its lexical modes -- the same failure the comma
+   * cases above were fixing -- with no diagnostic anywhere to say so.
+   */
+  it.each([
+    [
+      "a parenthesis",
+      String.raw`const e = <div title={/\(/.source} />;` + "\n",
+    ],
+    ["a bracket", String.raw`const e = <div title={/\[/.source} />;` + "\n"],
+    ["a brace", String.raw`const e = <div title={/\{/.source} />;` + "\n"],
+    ["a single quote", "const e = <div title={/'/.source} />;\n"],
+    ["a double quote", 'const e = <div title={/"/.source} />;\n'],
+    ["a backtick", "const e = <div title={/`/.source} />;\n"],
+    [
+      "a line comment's slashes",
+      String.raw`const e = <div title={/a\/\//.source} />;` + "\n",
+    ],
+    [
+      "a block comment's opening",
+      String.raw`const e = <div title={/\/\*/.source} />;` + "\n",
+    ],
+    ["a comma", "const e = <div title={/,/.source} />;\n"],
+    ["an `extends`", "const e = <div title={/extends/.source} />;\n"],
+    ["a semicolon", "const e = <div title={/;/.source} />;\n"],
+    ["a closing angle", "const e = <div title={/>/.source} />;\n"],
+    [
+      "a regular expression in a template substitution",
+      String.raw`const e = <div title={` +
+        "`${" +
+        String.raw`/\(/` +
+        ".source}`} />;\n",
+    ],
+    [
+      "a regular expression after the tag's type arguments",
+      String.raw`const e = <Comp<A, B> title={/\(/.source} />;` + "\n",
+    ],
+  ])("groups an element whose attribute holds a regex with %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.some(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * A `/` is a regular expression only where an expression may begin, which
+   * inside a tag is only inside an attribute's braces. The `/` that closes a
+   * self-closing tag stands where no expression does, and reading it as a
+   * regular expression would swallow the `>` behind it.
+   */
+  it.each([
+    ["a division in a call", "const e = <div title={String(a / b / c)} />;\n"],
+    ["a division in an object", "const e = <div style={{ w: a / 2 }} />;\n"],
+    ["a generic tag closing itself", "const e = <Comp<A> />;\n"],
+    ["nested type arguments", "const e = <Comp<Map<K, V>> />;\n"],
+    ["an arrow among the type arguments", "const e = <Comp<(v: T) => U> />;\n"],
+  ])("reads no regular expression where none is written: %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.some(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * A `;` and an unopened closer stand in no opening tag and in no type
+   * argument list, so a `<` that reaches one opens neither, and the walk that
+   * looked for its `>` stops there rather than at the end of the file.
+   */
+  it("reads on after a `<` that opens nothing", () => {
+    const source = "const x = <a;\nconst y = <b;\nconst z = <div />;\n";
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.filter(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("still reads an element whose text begins with a parenthesis", () => {
     for (const source of [
       "const x = <div>(text)</div>;\n",

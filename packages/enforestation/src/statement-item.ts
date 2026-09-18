@@ -1642,11 +1642,19 @@ class StatementConsumer implements SyntaxConsumer {
         typeArguments += angleWidth(spelling, "<");
         typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
       }
-      if (spelling === ",") {
-        bound = false;
-        annotated = false;
-      } else if (spelling === ":") annotated = true;
-      else bound = true;
+      // A `,` or a `:` written inside type arguments is the type's own, not
+      // the declarator list's: `let x: Map<string, number>` declares one
+      // binder, and reading its comma as a separator left the walk believing
+      // it stood in a binder rather than in an annotation -- so the line break
+      // under it was measured by the expression grammar, and the statement
+      // written there was taken into the declaration.
+      if (typeArguments === 0) {
+        if (spelling === ",") {
+          bound = false;
+          annotated = false;
+        } else if (spelling === ":") annotated = true;
+        else bound = true;
+      }
       children.push(cursor.consume()!);
     }
     const terminator = requireTerminator("stmt", cursor, start, children);

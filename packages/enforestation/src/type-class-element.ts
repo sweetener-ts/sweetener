@@ -494,18 +494,35 @@ const typeOperandHeads = new Set([
 ]);
 
 /**
+ * Spellings an expression expects an operand after which a type does not, so
+ * that the expression table is not read for them. `void` is a whole type
+ * rather than a prefix operator, and the type grammar has no infix `>` at all:
+ * a `>` in a type closes type arguments, and closing them finishes the type
+ * they belong to.
+ *
+ * Taken from the expression table, each held a finished type open across the
+ * line break under it: `let v: Array<string>` and the `foo();` written beneath
+ * were measured as one annotation, which the type reader then refused -- and a
+ * refused item leaves its module to be walked as raw tokens, with every macro
+ * in it unreached.
+ */
+const expressionOnlyOperands = new Set(["void", ">"]);
+
+/**
  * Spellings a line cannot end after inside a type, because the type is not
- * finished: the ones an expression cannot end after -- `typeof` and the `new`
- * of a constructor type are written in both grammars -- the tokens the type
- * grammar writes a type after, and the `import` of `import("m").A`, which is
- * no type until its argument is written.
+ * finished: the ones an expression cannot end after that a type cannot either
+ * -- `typeof` and the `new` of a constructor type are written in both
+ * grammars -- the tokens the type grammar writes a type after, and the
+ * `import` of `import("m").A`, which is no type until its argument is written.
  *
  * A class member's annotation and a declarator's are the same type grammar
  * read in two places, so the reader of each asks this one question of what it
  * last read.
  */
 export const typeOperandExpectedAfter: ReadonlySet<string> = new Set([
-  ...expressionOperandExpectedAfter,
+  ...[...expressionOperandExpectedAfter].filter(
+    (spelling) => !expressionOnlyOperands.has(spelling),
+  ),
   ...typeOperandHeads,
   "import",
 ]);

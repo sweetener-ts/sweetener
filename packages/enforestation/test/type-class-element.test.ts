@@ -318,6 +318,13 @@ describe("type and class-element consumers", () => {
     "first = 1\noverride second = 2;",
     "first = 1\nabstract second: number;",
     "first!: Array<number>\nsecond = 2;",
+    // `void` is a whole type. Read from the expression table, where the same
+    // word is a prefix operator, it carried the member on into the one under
+    // it -- and a class body whose members run together offers none of them as
+    // a macro.
+    "first: void\nsecond = 2;",
+    "declare first: void\nsecond = 2;",
+    "first: () => void\nsecond = 2;",
     // Only `static`, `get` and `set` continue onto the next line as modifiers;
     // any other modifier word ending a line is the name of a field.
     "readonly\nsecond = 2;",
@@ -379,6 +386,13 @@ describe("type and class-element consumers", () => {
     "first?\nsecond: number;",
     "first: Array<number>\nsecond: number;",
     "readonly\nsecond: number;",
+    "first: void\nsecond: number;",
+    "first(): void\nsecond(): number;",
+    "first(): Array<string>\nsecond(): number;",
+    "readonly first: void\nsecond: number;",
+    "first?: void\nsecond: number;",
+    "[key: string]: void\nsecond: number;",
+    "first: (value: number) => void\nsecond: number;",
   ])("ends a type member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
     const { result } = consume(source, "typeMember");
@@ -400,6 +414,12 @@ describe("type and class-element consumers", () => {
     "first: A extends\nB ? C : D;",
     "new\n(value: number): Fixture;",
     "get\nfirst(): number;",
+    // A finished type still carries on where the next line continues it.
+    "first: void |\nB;",
+    "first: A |\nvoid;",
+    "first: Array<\nstring\n>;",
+    "first: Array<string> |\nB;",
+    "first: Array<string>\n| B;",
   ])("reads one type member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
     expect(typescriptFirstTypeMember(source)).toBe(source);

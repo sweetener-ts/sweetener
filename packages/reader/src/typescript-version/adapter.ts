@@ -183,169 +183,198 @@ function tokenLexicalMode(kind: ts.SyntaxKind, jsxMode: JsxMode): LexicalMode {
   return "standard";
 }
 
-const whitespace = /\s/u;
 const identifierStart = /[\p{ID_Start}_$]/u;
-const identifierPart = /[\p{ID_Continue}.$:-]/u;
 
 /**
- * Whether the `<` at `start` opens a JSX element rather than type arguments.
- *
- * Read directly out of the source rather than by slicing it and matching two
- * regular expressions against the slice. Both are linear — V8 slices a long
- * string by taking a view of it, not by copying — but this runs at every `<`
- * in expression position, and doing it without allocating is about twice as
- * fast on element-dense source.
+ * How deep in braces each template substitution the lookahead has entered
+ * stands. A `}` written at depth zero closes the substitution rather than a
+ * brace group, and the scanner is told so by rescanning it.
  */
+type TemplateSubstitutions = number[];
+
 /**
- * Whether a `>` closes the type parameters of a function type rather than a JSX
- * opening tag: `<T>(v: T) => T`, which is how a generic function type is
- * written in an annotation or a type alias. An element with children can have a
- * `(` next too -- `<div>(text)</div>` -- but its parentheses are text and no
+ * The next token the lookahead reads, with the two rescans the walk below
+ * needs.
+ *
+ * TypeScript's scanner cannot know either of them on its own, because both
+ * depend on what the parser was reading: a `}` closes a template's
+ * substitution rather than a brace group, and a `/` begins a regular
+ * expression rather than a division. The walk keeps that position, so it is
+ * the walk that asks for the rescan -- the same two questions, and the same
+ * answers, as the scan this adapter runs over the whole file.
+ */
+function nextLookaheadToken(
+  lookahead: ts.Scanner,
+  templates: TemplateSubstitutions,
+  regularExpressionAllowed: boolean,
+): ts.SyntaxKind {
+  let kind = lookahead.scan();
+  if (
+    regularExpressionAllowed &&
+    (kind === ts.SyntaxKind.SlashToken ||
+      kind === ts.SyntaxKind.SlashEqualsToken)
+  )
+    kind = lookahead.reScanSlashToken();
+  if (kind === ts.SyntaxKind.TemplateHead) {
+    templates.push(0);
+    return kind;
+  }
+  const braces = templates.at(-1);
+  if (braces === undefined) return kind;
+  if (kind === ts.SyntaxKind.OpenBraceToken) {
+    templates[templates.length - 1] = braces + 1;
+  } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+    if (braces > 0) templates[templates.length - 1] = braces - 1;
+    else {
+      kind = lookahead.reScanTemplateToken(false);
+      if (kind === ts.SyntaxKind.TemplateTail) templates.pop();
+    }
+  }
+  return kind;
+}
+
+/** Whether a token opens a parenthesis, bracket or brace group. */
+function opensGroup(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.OpenParenToken ||
+    kind === ts.SyntaxKind.OpenBracketToken ||
+    kind === ts.SyntaxKind.OpenBraceToken
+  );
+}
+
+/** Whether a token closes one. */
+function closesGroup(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.CloseParenToken ||
+    kind === ts.SyntaxKind.CloseBracketToken ||
+    kind === ts.SyntaxKind.CloseBraceToken
+  );
+}
+
+/**
+ * Whether a `>` closes the type parameters of a function type rather than a
+ * JSX opening tag: `<T>(v: T) => T`, which is how a generic function type is
+ * written in an annotation or a type alias. An element with children can have
+ * a `(` next too -- `<div>(text)</div>` -- but its parentheses are text and no
  * `=>` follows them, so the arrow is what tells the two apart.
  *
  * TypeScript decides this from the parser's position rather than by lookahead,
  * knowing whether a type or an expression is expected. A token-level scanner
  * does not know, and after `:` or `=` either one may begin.
- */
-function functionTypeFollows(source: string, from: number): boolean {
-  let index = from;
-  while (index < source.length && whitespace.test(source[index]!)) index += 1;
-  if (source[index] !== "(") return false;
-  let depth = 0;
-  for (; index < source.length; index += 1) {
-    const character = source[index]!;
-    if (character === "(") depth += 1;
-    else if (character === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        index += 1;
-        break;
-      }
-    }
-  }
-  while (index < source.length && whitespace.test(source[index]!)) index += 1;
-  return source.startsWith("=>", index);
-}
-
-/**
- * What a region entered at a given character is closed by: the same quote, the
- * end of the line, the end of the comment, or the matching bracket.
- */
-type RegionEnd = "'" | '"' | "`" | "\n" | "*/" | ")" | "]" | "}";
-
-/**
- * The index just past the region beginning at `from`: a string, a template
- * literal, a comment, or a balanced bracket group, each of which may hold any
- * of the others. `source.length` where the region is never closed.
  *
- * What is written inside one of these belongs to it, so the scan below steps
- * over it whole rather than reading a `,`, a `<` or a `>` out of it.
+ * The lookahead stands at the `>` its caller has just read, and reads on from
+ * there.
  */
-function endOfRegion(source: string, from: number): number {
-  const regions: RegionEnd[] = [];
-  let index = from;
-  while (index < source.length) {
-    const character = source[index]!;
-    const region = regions.at(-1);
-    if (region === "'" || region === '"') {
-      if (character === "\\") index += 1;
-      else if (character === region) regions.pop();
-    } else if (region === "\n") {
-      if (character === "\n") regions.pop();
-    } else if (region === "*/") {
-      if (character === "*" && source[index + 1] === "/") {
-        regions.pop();
-        index += 1;
-      }
-    } else if (region === "`") {
-      if (character === "\\") index += 1;
-      else if (character === "`") regions.pop();
-      else if (character === "$" && source[index + 1] === "{") {
-        regions.push("}");
-        index += 1;
-      }
-    } else if (character === "'" || character === '"' || character === "`") {
-      regions.push(character);
-    } else if (character === "/" && source[index + 1] === "/") {
-      regions.push("\n");
-      index += 1;
-    } else if (character === "/" && source[index + 1] === "*") {
-      regions.push("*/");
-      index += 1;
-    } else if (character === "(") regions.push(")");
-    else if (character === "[") regions.push("]");
-    else if (character === "{") regions.push("}");
-    else if (character === region) regions.pop();
-    index += 1;
-    if (regions.length === 0) return index;
+function functionTypeFollows(
+  lookahead: ts.Scanner,
+  templates: TemplateSubstitutions,
+): boolean {
+  if (
+    nextLookaheadToken(lookahead, templates, false) !==
+    ts.SyntaxKind.OpenParenToken
+  )
+    return false;
+  let depth = 1;
+  let regularExpressionAllowed = true;
+  while (depth > 0) {
+    const kind = nextLookaheadToken(
+      lookahead,
+      templates,
+      regularExpressionAllowed,
+    );
+    if (kind === ts.SyntaxKind.EndOfFileToken) return false;
+    if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
+    else if (kind === ts.SyntaxKind.CloseParenToken) depth -= 1;
+    regularExpressionAllowed = !tokenCanEndExpression(kind);
   }
-  return source.length;
+  return (
+    nextLookaheadToken(lookahead, templates, false) ===
+    ts.SyntaxKind.EqualsGreaterThanToken
+  );
 }
 
-/** Whether a comment begins at `index`. */
-function commentBegins(source: string, index: number): boolean {
-  if (source[index] !== "/") return false;
-  const next = source[index + 1];
-  return next === "/" || next === "*";
-}
-
-function looksLikeJsxStart(source: string, start: number): boolean {
+/**
+ * Whether the `<` at `start` opens a JSX element rather than the type
+ * parameters of a generic arrow.
+ *
+ * A comma or an `extends` before the closing `>` means type parameters: `<T,>`
+ * and `<T extends U>` are the two spellings that are unambiguous in TSX, and
+ * neither is an element. Only what is written directly inside this `<` says
+ * that: a comma nested in the tag's own type arguments -- `<Comp<A, B> />`,
+ * `<Comp<Map<K, V>> />` -- or one inside an attribute value is a comma of that
+ * region, and reading it as the `<T,>` of a generic arrow left the element
+ * ungrouped, its tag a run of loose tokens that nothing walked.
+ *
+ * Which comma is which is a question about tokens, so this reads tokens. A
+ * character scan cannot tell a regular expression from a division, and a
+ * regular expression holding a bracket, a quote or a comment's opening left
+ * the scan looking for a region's end that never came: it ran to the end of
+ * the file and reported no element, so `<div title={/\(/.source} />` lost its
+ * grouping and every one of its tag's lexical modes. Scanning it as TypeScript
+ * does costs one rescan and answers exactly.
+ *
+ * The walk ends at the first token that stands in neither grammar at the top
+ * level of a `<`: a `;`, or a closer for a group that was never opened. A tag
+ * writes neither, and a type argument list writes a `;` only inside the braces
+ * of an object type, so reaching one means this `<` opens nothing -- and the
+ * walk stops there rather than reading to the end of the file at every `<`.
+ */
+function looksLikeJsxStart(
+  lookahead: ts.Scanner,
+  source: string,
+  start: number,
+): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
   const nameStart = start + 1;
   if (nameStart >= source.length || !identifierStart.test(source[nameStart]!))
     return false;
-  // A comma or an `extends` before the closing `>` means type parameters:
-  // `<T,>` and `<T extends U>` are the two spellings that are unambiguous in
-  // TSX, and neither is an element.
-  //
-  // Only what is written directly inside this `<` says that. A comma nested in
-  // the tag's own type arguments -- `<Comp<A, B> />`, `<Comp<Map<K, V>> />` --
-  // or one inside an attribute value, a string or a comment is a comma of that
-  // region, and reading it as the `<T,>` of a generic arrow left the element
-  // ungrouped: its tag became a run of loose tokens that nothing walked.
+  lookahead.setText(source, nameStart);
+  const templates: TemplateSubstitutions = [];
+  /** How many `<` of the tag's own type arguments are still open. */
   let angles = 0;
-  for (let index = nameStart + 1; index < source.length; index += 1) {
-    const character = source[index]!;
-    if (
-      character === "'" ||
-      character === '"' ||
-      character === "`" ||
-      character === "(" ||
-      character === "[" ||
-      character === "{" ||
-      commentBegins(source, index)
-    ) {
-      index = endOfRegion(source, index) - 1;
+  /** How many brace, bracket and parenthesis groups the walk stands inside. */
+  let groups = 0;
+  let regularExpressionAllowed = false;
+  for (;;) {
+    // An attribute's braces are the only place inside a tag or a type argument
+    // list where an expression is written, so they are the only place a `/`
+    // can begin a regular expression. Outside them a `/` closes the tag.
+    const kind = nextLookaheadToken(
+      lookahead,
+      templates,
+      groups > 0 && regularExpressionAllowed,
+    );
+    regularExpressionAllowed = !tokenCanEndExpression(kind);
+    if (kind === ts.SyntaxKind.EndOfFileToken) return false;
+    if (opensGroup(kind)) {
+      groups += 1;
       continue;
     }
-    // The `>` of an arrow written among the type arguments closes nothing:
-    // `<Comp<(v: T) => U> />`.
-    if (character === "=" && source[index + 1] === ">") {
-      index += 1;
+    if (closesGroup(kind)) {
+      if (groups === 0) return false;
+      groups -= 1;
       continue;
     }
-    if (character === "<") {
+    if (groups > 0) continue;
+    if (kind === ts.SyntaxKind.LessThanToken) {
       angles += 1;
       continue;
     }
-    if (character === ">") {
+    if (kind === ts.SyntaxKind.GreaterThanToken) {
       if (angles > 0) {
         angles -= 1;
         continue;
       }
-      return !functionTypeFollows(source, index + 1);
+      return !functionTypeFollows(lookahead, templates);
     }
     if (angles > 0) continue;
-    if (character === ",") return false;
     if (
-      character === "e" &&
-      source.startsWith("extends", index) &&
-      !identifierPart.test(source[index - 1] ?? "") &&
-      !identifierPart.test(source[index + 7] ?? "")
+      kind === ts.SyntaxKind.CommaToken ||
+      kind === ts.SyntaxKind.ExtendsKeyword ||
+      kind === ts.SyntaxKind.SemicolonToken
     )
       return false;
   }
-  return false;
 }
 
 const endsExpression: boolean[] = [];
@@ -408,6 +437,18 @@ export function scanWithSupportedTypeScript(
       }),
     );
   });
+  /**
+   * The scanner the JSX lookahead reads with. It is its own, because the one
+   * above stands mid-file wherever the question is asked, and it skips trivia
+   * because the lookahead has no use for any. Nothing it reads is reported:
+   * whatever it makes of source the scan has not reached yet, the scan reads
+   * again for itself.
+   */
+  const lookahead = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+  );
 
   const tokens: TypeScriptScannedToken[] = [];
   const templateSubstitutions: { braceDepth: number }[] = [];
@@ -506,7 +547,7 @@ export function scanWithSupportedTypeScript(
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
       regularExpressionAllowed &&
-      looksLikeJsxStart(source, scanner.getTokenStart())
+      looksLikeJsxStart(lookahead, source, scanner.getTokenStart())
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
       jsxMode = "tag";

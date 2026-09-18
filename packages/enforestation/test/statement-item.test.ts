@@ -516,6 +516,35 @@ describe("statement and item consumers", () => {
     ["let x: Array<\nnumber\n> = [];", "let x: Array<\nnumber\n> = [];"],
     ["let x: A<B>\n= 1;", "let x: A<B>\n= 1;"],
     ["let x: A[\n0] = 1;", "let x: A[\n0] = 1;"],
+    // A `>` closes type arguments, and closing them finishes the type they
+    // belong to. Read from the expression table, where `>` compares two
+    // operands, it held the annotation open across the break and took the
+    // statement written under it into the declaration -- which the type
+    // reader then refused, leaving the whole module to a raw token walk.
+    ["let x: Array<string>\nfoo();", "let x: Array<string>"],
+    [
+      "let x: Map<string, Array<number>>\nfoo();",
+      "let x: Map<string, Array<number>>",
+    ],
+    ["let x: A.B<C>\nfoo();", "let x: A.B<C>"],
+    ["let x: Array<\nnumber\n>\nfoo();", "let x: Array<\nnumber\n>"],
+    // An array type's `[` is written on the type's own line here too.
+    ["let x: Array<string>\n[0];", "let x: Array<string>"],
+    ["let x: A<B>\n| C = 1;", "let x: A<B>\n| C = 1;"],
+    ["let x: A<B> |\nC = 1;", "let x: A<B> |\nC = 1;"],
+    // A declarator list still ends at its own comma, and only at that one.
+    ["let x: Map<A, B>, y: C;", "let x: Map<A, B>, y: C;"],
+    ["let x: Map<A, B> = m, y = 2;", "let x: Map<A, B> = m, y = 2;"],
+    ["let x = a < b, y = 2;", "let x = a < b, y = 2;"],
+    ["let x: Map<A, B>\nfoo();", "let x: Map<A, B>"],
+    // `void` is a whole type, not the prefix operator the expression grammar
+    // writes with the same word.
+    ["let x: void\nfoo();", "let x: void"],
+    ["let x: () => void\nfoo();", "let x: () => void"],
+    ["let x: new () => void\nfoo();", "let x: new () => void"],
+    ["let x: void = undefined\nfoo();", "let x: void = undefined"],
+    ["let x: void |\nA = 1;", "let x: void |\nA = 1;"],
+    ["let x: A\n| void = 1;", "let x: A\n| void = 1;"],
     ["let x: {\na: number\n} = y;", "let x: {\na: number\n} = y;"],
     ["let x\n: A = 1;", "let x\n: A = 1;"],
     ["const x: number\n= 1;", "const x: number\n= 1;"],
@@ -676,6 +705,13 @@ describe("statement and item consumers", () => {
     ["type T = A\n;", "type T = A\n;"],
     // A `<` still open encloses whatever is written under it.
     ["type T = Array<\nA\n>;", "type T = Array<\nA\n>;"],
+    // The `>` that closes the type arguments finishes the body, and `void` is
+    // a whole type: neither carries the alias on across the break.
+    ["type T = Map<A, B>\nconst x = 1;", "type T = Map<A, B>"],
+    ["type T = A<B>\nfoo();", "type T = A<B>"],
+    ["type T = void\nfoo();", "type T = void"],
+    ["type T = A<B>\n| C;", "type T = A<B>\n| C;"],
+    ["type T = void |\nA;", "type T = void |\nA;"],
     // A heritage clause is not a type, and TypeScript carries it across the
     // break in both directions.
     ["class C extends A\n{ }", "class C extends A\n{ }"],
@@ -954,6 +990,9 @@ describe("statement and item consumers", () => {
     ["type T = A |\nB;", "type T = A |\nB;"],
     ["type T = A\n| B;", "type T = A\n| B;"],
     ["type T = Array<\nA\n>;", "type T = Array<\nA\n>;"],
+    ["type T = A<B>\nfoo();", "type T = A<B>"],
+    ["type T = void\nfoo();", "type T = void"],
+    ["type T = A<B>\n| C;", "type T = A<B>\n| C;"],
     // A name spelled `type` or `abstract` is a name.
     ["type;", "type;"],
     ["type = 1;", "type = 1;"],
