@@ -788,6 +788,32 @@ describe("type positions", () => {
     expect(text).toContain("const boxed = 1");
     expect(text).toContain("return boxed + 1");
   });
+
+  // A `<` opens type arguments only until the statement it is written in
+  // ends. Counted from the start of the whole run instead, the `<` of a
+  // comparison in one statement was still open in the next, and every `=`
+  // after it read as a type parameter's default -- so an expression macro
+  // written in an initializer was refused for being declared `expr`.
+  test("a comparison does not leave type arguments open for the next statement", () => {
+    const { text, messages } = expand(
+      `export syntax twice:expr {
+         rule { twice($value:expr) } => { [$value, $value] }
+       }
+       export syntax pair:item {
+         rule { pair($a:expr, $b:expr) } => {
+           export const compared = $a < $b;
+           export const doubled = twice($b);
+         }
+       }`,
+      `import { twice, pair } from "./macros.sts" for syntax;
+       declare const one: number;
+       declare const two: number;
+       pair(one, two)
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("export const doubled = [two, two]");
+  });
 });
 
 describe("syntax-class refinements", () => {

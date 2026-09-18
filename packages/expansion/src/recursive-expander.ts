@@ -664,7 +664,7 @@ export function expandMacroSyntax(
       return true;
     // A type parameter's default is a type, unlike every other `=` written in
     // an expression: `<T extends object = sized>`.
-    if (previous.raw === "=" && typeArgumentDepth(preceding) > 0) return true;
+    if (previous.raw === "=" && typeArgumentsOpen(preceding)) return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
     return typeAliasInitializerFollows(preceding);
   };
@@ -762,16 +762,32 @@ export function expandMacroSyntax(
     node?.tag === "token" ? angleWidth(node.raw, character) : 0;
 
   /**
-   * How deep in type arguments the end of `nodes` stands, counted forwards: a
-   * `<` still open there encloses everything after it.
+   * Whether type arguments are open at the end of `nodes`: a `<` written
+   * before it that nothing since has closed encloses it.
+   *
+   * Read backwards from the end, like every other rule that asks what stands
+   * around a position: each `>` on the way back closes a `<` behind it, and a
+   * `<` left over with no `>` to spend on it is one still open here. Counted
+   * forwards from the start of the whole walked run instead, this cost the
+   * length of the run at every `=` in it -- and the count carried across the
+   * statement it was taken in, so the `<` of a comparison in one statement
+   * left every `=` in the statements after it reading as a type parameter's
+   * default. A statement boundary ends the scan for the same reason it ends
+   * the one `typeAliasInitializerFollows` makes: no type argument list spans
+   * one.
    */
-  const typeArgumentDepth = (nodes: readonly Syntax[]): number => {
-    let depth = 0;
-    for (const node of nodes) {
-      depth += angles(node, "<");
-      depth = Math.max(0, depth - angles(node, ">"));
+  const typeArgumentsOpen = (nodes: readonly Syntax[]): boolean => {
+    let closed = 0;
+    for (let at = nodes.length - 1; at >= 0; at -= 1) {
+      const node = nodes[at]!;
+      if (node.tag !== "token") continue;
+      if (node.raw === ";" || node.raw === "}") return false;
+      closed += angleWidth(node.raw, ">");
+      const opens = angleWidth(node.raw, "<");
+      if (opens > closed) return true;
+      closed -= opens;
     }
-    return depth;
+    return false;
   };
 
   /**

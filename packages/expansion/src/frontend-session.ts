@@ -865,6 +865,61 @@ export function createExpansionFrontendSession(
   };
 
   const normalizeProtectedInput = (node: ProtectedSyntax): ProtectedSyntax => {
+    /**
+     * What `child` normalizes to, or undefined where it normalizes to itself.
+     * Saying so rather than returning a one-element run of it lets a node
+     * whose whole subtree is already normal be kept rather than rebuilt.
+     */
+    const normalizeChild = (
+      child: Syntax,
+      category: SyntaxCategory | undefined,
+      siblings: number,
+    ): readonly Syntax[] | undefined => {
+      if (child.tag === "protected") {
+        const normalized = normalizeProtectedInput(child);
+        // An expression or type an expansion built inside another is not
+        // redundant: it is the boundary its operators bind within, and
+        // nothing in the text says so. An operator's expansion arrives
+        // here holding its operands that way, and flattening them printed
+        // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
+        // the parser built over source text is redundant with that text.
+        const bounds =
+          (category === "expr" || category === "type") &&
+          !writtenInSource(normalized.origin);
+        // A statement standing beside other syntax inside a statement is
+        // a substatement, not a redundant wrapping: `here: log(x);` and
+        // `while (c) log(x);` each read one statement inside another, and
+        // the syntax beside it is the label or the header that reads it.
+        // Flattened, the head of that statement stood right after the
+        // `:` or the header, where a type is written -- so a statement
+        // macro written there was refused for being declared `stmt`.
+        const substatement =
+          category === "stmt" && normalized.category === "stmt" && siblings > 1;
+        if (normalized.category === category && !bounds && !substatement)
+          return normalized.children;
+        return normalized === child ? undefined : [normalized];
+      }
+      if (child.tag === "group") {
+        const children = normalizeChildren(child.children, undefined);
+        if (children === child.children) return undefined;
+        return [
+          createGroup({
+            ...child,
+            id: options.allocateSyntaxId(),
+            children,
+          }),
+        ];
+      }
+      return undefined;
+    };
+
+    /**
+     * The children of a node, normalized. The run handed in is returned
+     * itself where nothing in it changed, which is what almost every prepared
+     * statement finds: rebuilding it anyway allocated a fresh id for every
+     * protected node and every group beneath it, so the id space filled with
+     * new nodes standing for syntax that had not moved.
+     */
     const normalizeChildren = (
       children: SyntaxSequence,
       // Undefined inside a group: nesting is only redundant when the protected
@@ -874,50 +929,27 @@ export function createExpansionFrontendSession(
       // member, and carrying the category through the brace flattened every
       // member back into loose tokens.
       category: SyntaxCategory | undefined,
-    ): SyntaxSequence =>
-      createSyntaxSequence(
-        children.flatMap((child): readonly Syntax[] => {
-          if (child.tag === "protected") {
-            const normalized = normalizeProtectedInput(child);
-            // An expression or type an expansion built inside another is not
-            // redundant: it is the boundary its operators bind within, and
-            // nothing in the text says so. An operator's expansion arrives
-            // here holding its operands that way, and flattening them printed
-            // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
-            // the parser built over source text is redundant with that text.
-            const bounds =
-              (category === "expr" || category === "type") &&
-              !writtenInSource(normalized.origin);
-            // A statement standing beside other syntax inside a statement is
-            // a substatement, not a redundant wrapping: `here: log(x);` and
-            // `while (c) log(x);` each read one statement inside another, and
-            // the syntax beside it is the label or the header that reads it.
-            // Flattened, the head of that statement stood right after the
-            // `:` or the header, where a type is written -- so a statement
-            // macro written there was refused for being declared `stmt`.
-            const substatement =
-              category === "stmt" &&
-              normalized.category === "stmt" &&
-              children.length > 1;
-            return normalized.category === category && !bounds && !substatement
-              ? normalized.children
-              : [normalized];
-          }
-          if (child.tag === "group")
-            return [
-              createGroup({
-                ...child,
-                id: options.allocateSyntaxId(),
-                children: normalizeChildren(child.children, undefined),
-              }),
-            ];
-          return [child];
-        }),
-      );
+    ): readonly Syntax[] => {
+      let normalized: Syntax[] | undefined;
+      for (let at = 0; at < children.length; at += 1) {
+        const child = children[at]!;
+        const replacement = normalizeChild(child, category, children.length);
+        if (replacement === undefined) {
+          normalized?.push(child);
+          continue;
+        }
+        normalized ??= children.slice(0, at);
+        normalized.push(...replacement);
+      }
+      return normalized ?? children;
+    };
+
+    const children = normalizeChildren(node.children, node.category);
+    if (children === node.children) return node;
     return createProtectedSyntax({
       ...node,
       id: options.allocateSyntaxId(),
-      children: normalizeChildren(node.children, node.category),
+      children,
     });
   };
 
