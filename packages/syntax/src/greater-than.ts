@@ -48,7 +48,10 @@ export function greaterThanTokenWidth(
  * per token would leave a depth wrong wherever one token carries two.
  */
 export function angleWidth(raw: string, character: "<" | ">"): number {
-  return raw.length > 0 && [...raw].every((item) => item === character)
-    ? raw.length
-    : 0;
+  // Every token walked asks this, twice, so it reads the characters where
+  // they are rather than cutting the token into an array of them first.
+  if (raw.length === 0) return 0;
+  for (let at = 0; at < raw.length; at += 1)
+    if (raw[at] !== character) return 0;
+  return raw.length;
 }

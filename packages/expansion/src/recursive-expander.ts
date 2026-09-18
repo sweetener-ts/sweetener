@@ -962,10 +962,15 @@ export function expandMacroSyntax(
   /** Splits a binding list on the commas that separate its entries. */
   const bindingSegments = (
     sequence: readonly Syntax[],
+    // Where the binders begin. A declaration's binders are what follows its
+    // keyword, and reading from there rather than from a copy of the tail
+    // keeps a statement list's walk linear in its length.
+    from = 0,
   ): readonly SyntaxSequence[] => {
     const segments: SyntaxSequence[] = [];
     let segment: Syntax[] = [];
-    for (const node of sequence) {
+    for (let at = from; at < sequence.length; at += 1) {
+      const node = sequence[at]!;
       if (node.tag === "token" && node.raw === ",") {
         if (segment.length > 0) segments.push(createSyntaxSequence(segment));
         segment = [];
@@ -1202,7 +1207,7 @@ export function expandMacroSyntax(
           nodes[at - 1]?.tag === "token" &&
           (nodes[at - 1] as TokenSyntax).raw === "#";
         if (valueDeclarationKeywords.has(node.raw) && !afterHash) {
-          addBinders(bindingSegments(nodes.slice(at + 1)), values);
+          addBinders(bindingSegments(nodes, at + 1), values);
           continue;
         }
         const named = namedDeclarations.get(node.raw);

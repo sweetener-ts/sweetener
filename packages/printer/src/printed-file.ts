@@ -114,17 +114,45 @@ const punctuators: readonly string[] = [
   "/*",
 ];
 
+/**
+ * Every way a punctuator splits in two, gathered by the piece on the left: the
+ * same question `punctuators` asks, answered once at load instead of by
+ * cutting all thirty of them apart again at every seam.
+ */
+const punctuatorJoins: ReadonlyMap<string, readonly string[]> = (() => {
+  const joins = new Map<string, string[]>();
+  for (const punctuator of punctuators)
+    for (let split = 1; split < punctuator.length; split += 1) {
+      const head = punctuator.slice(0, split);
+      const tail = punctuator.slice(split);
+      const tails = joins.get(head);
+      if (tails === undefined) joins.set(head, [tail]);
+      else if (!tails.includes(tail)) tails.push(tail);
+    }
+  return joins;
+})();
+
+/** The longest such left piece: no longer ending of `left` can begin one. */
+const longestJoinHead = Math.max(
+  ...[...punctuatorJoins.keys()].map((head) => head.length),
+);
+
+/** The characters one can end with, so a word ending is dismissed at a glance. */
+const joinHeadEnds: ReadonlySet<string> = new Set(
+  [...punctuatorJoins.keys()].map((head) => head[head.length - 1]!),
+);
+
 /** Whether two adjacent pieces would lex as one longer punctuator. */
 function joinsIntoOne(left: string, right: string): boolean {
-  return punctuators.some((punctuator) => {
-    for (let split = 1; split < punctuator.length; split += 1)
-      if (
-        left.endsWith(punctuator.slice(0, split)) &&
-        right.startsWith(punctuator.slice(split))
-      )
-        return true;
+  if (left.length === 0 || !joinHeadEnds.has(left[left.length - 1]!))
     return false;
-  });
+  const longest = Math.min(longestJoinHead, left.length);
+  for (let length = 1; length <= longest; length += 1) {
+    const tails = punctuatorJoins.get(left.slice(left.length - length));
+    if (tails === undefined) continue;
+    for (const tail of tails) if (right.startsWith(tail)) return true;
+  }
+  return false;
 }
 
 /**
@@ -171,6 +199,55 @@ function applies(text: string, memberName: boolean): boolean {
   );
 }
 
+/** Tokens nothing is written after: what follows stands against them. */
+const holdsWhatFollows: ReadonlySet<string> = new Set([
+  "(",
+  "[",
+  ".",
+  "?.",
+  "...",
+  "!",
+  "~",
+  "#",
+  "@",
+]);
+
+/** Tokens nothing is written before: they stand against what precedes them. */
+const holdsToWhatPrecedes: ReadonlySet<string> = new Set([
+  ")",
+  "]",
+  ",",
+  ";",
+  ".",
+  "?.",
+]);
+
+/** Tokens a line break after which can end a statement. */
+const endsAnOperand: ReadonlySet<string> = new Set([
+  ";",
+  "{",
+  "}",
+  ")",
+  "]",
+  "this",
+  "super",
+  "null",
+  "true",
+  "false",
+]);
+
+/** What a `<` written after it opens type arguments rather than compares. */
+const typeArgumentsCanFollow: ReadonlySet<string> = new Set([
+  "(",
+  ",",
+  "=",
+  "=>",
+  ":",
+  "?",
+  "[",
+  "{",
+]);
+
 /** Where a seam stands, as far as spacing it needs to know. */
 interface SeamContext {
   /**
@@ -215,15 +292,14 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
     return "";
   // A statement ends here; a `for` loop's header is not a statement list.
   if (left === ";") return context.bracket === "(" ? " " : "\n";
-  if (["(", "[", ".", "?.", "...", "!", "~", "#", "@"].includes(left))
-    return "";
+  if (holdsWhatFollows.has(left)) return "";
   if (left === "{") return right === "}" ? "" : " ";
   // A sign, or the `<` that opens type arguments, holds on to what follows.
   if ((left === "-" || left === "+" || left === "<") && context.prefix)
     return "";
   if (right === ">" && context.bracket === "<") return "";
   if (right === ":") return context.conditional ? " " : "";
-  if ([")", "]", ",", ";", ".", "?."].includes(right)) return "";
+  if (holdsToWhatPrecedes.has(right)) return "";
   if (right === "}") return " ";
   if (right === "(" || right === "[")
     return applies(left, context.memberName) ? "" : " ";
@@ -241,8 +317,7 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
  * line break would instead end the statement early, so it is not one of these.
  */
 function mayEndStatement(text: string): boolean {
-  if ([";", "{", "}", ")", "]"].includes(text)) return true;
-  if (["this", "super", "null", "true", "false"].includes(text)) return true;
+  if (endsAnOperand.has(text)) return true;
   if (isReservedWord(text)) return false;
   return /[\p{ID_Continue}$"'`]$/u.test(text);
 }
@@ -371,7 +446,7 @@ export function printExpandedFile<Trace>(
   let lineStarted = false;
   const trackLine = (text: string) => {
     let tail = text;
-    if (/[\n\r]/u.test(text)) {
+    if (text.includes("\n") || text.includes("\r")) {
       const lines = text.split(/\r\n|[\n\r]/u);
       lineNumber += lines.length - 1;
       lineIndent = "";
@@ -567,30 +642,40 @@ export function printExpandedFile<Trace>(
    * nothing about its neighbours in the template; its origin records where
    * the template wrote it.
    */
-  const writtenAt = (
-    origin: OriginId,
-  ):
-    | {
-        readonly sourceId: number;
-        readonly start: number;
-        readonly end: number;
-      }
-    | undefined => {
+  interface WrittenAt {
+    readonly sourceId: number;
+    readonly start: number;
+    readonly end: number;
+  }
+  // An origin's record never changes once it is minted, and an expansion
+  // hands the same origin to run after run of copied tokens, so the walk down
+  // to the source is worth doing once per origin rather than once per token.
+  const writtenPlaces = new Map<OriginId, WrittenAt | undefined>();
+  const writtenAt = (origin: OriginId): WrittenAt | undefined => {
+    const remembered = writtenPlaces.get(origin);
+    if (remembered !== undefined || writtenPlaces.has(origin))
+      return remembered;
     const record = options.origins.get(origin);
+    let answer: WrittenAt | undefined;
     switch (record?.kind) {
       case "source":
-        return {
+        answer = {
           sourceId: record.sourceId,
           start: record.span.start,
           end: record.span.end,
         };
+        break;
       case "copied":
-        return writtenAt(record.parent);
+        answer = writtenAt(record.parent);
+        break;
       case "introduced":
-        return writtenAt(record.definition);
+        answer = writtenAt(record.definition);
+        break;
       default:
-        return undefined;
+        answer = undefined;
     }
+    writtenPlaces.set(origin, answer);
+    return answer;
   };
   /** The text last printed, a token or a grouping parenthesis. */
   let lastPrinted: string | undefined;
@@ -628,7 +713,7 @@ export function printExpandedFile<Trace>(
    * own closer stands back out at the line the bracket opened on.
    */
   const brokenLineIndent = (text: string): string => {
-    const innermost = brackets.at(-1)!;
+    const innermost = brackets[brackets.length - 1]!;
     if (text === ")" || text === "]" || text.startsWith("}"))
       return innermost.openIndent;
     if (lineNumber > innermost.openLine) return lineIndent;
@@ -642,6 +727,27 @@ export function printExpandedFile<Trace>(
   let memberName = false;
   /** Whether the `>` last printed closed a list of type arguments. */
   let closedTypeArguments = false;
+  /**
+   * Where the seam about to be printed stands. Only one seam is being spaced
+   * at a time and `seamSpace` only reads what it is handed, so the same record
+   * is filled in again rather than a fresh one minted per token.
+   */
+  const seam = {
+    bracket: undefined as string | undefined,
+    conditional: false,
+    prefix: false,
+    memberName: false,
+    closedTypeArguments: false,
+  };
+  const seamContext = (): SeamContext => {
+    const innermost = brackets[brackets.length - 1]!;
+    seam.bracket = innermost.bracket;
+    seam.conditional = innermost.conditionals > 0;
+    seam.prefix = prefix;
+    seam.memberName = memberName;
+    seam.closedTypeArguments = closedTypeArguments;
+    return seam;
+  };
   const trackBrackets = (text: string, gap: string) => {
     const before = lastPrinted;
     const wasMemberName = memberName;
@@ -650,11 +756,15 @@ export function printExpandedFile<Trace>(
     // A `<` taken for type arguments may never have closed, so a closing
     // bracket first drops any left open inside it.
     if (closes) {
-      while (brackets.length > 1 && brackets.at(-1)!.bracket === "<")
+      while (
+        brackets.length > 1 &&
+        brackets[brackets.length - 1]!.bracket === "<"
+      )
         brackets.pop();
       if (brackets.length > 1) brackets.pop();
     }
-    closedTypeArguments = text === ">" && brackets.at(-1)!.bracket === "<";
+    closedTypeArguments =
+      text === ">" && brackets[brackets.length - 1]!.bracket === "<";
     if (closedTypeArguments) brackets.pop();
     // A word written after `.` is a property name, whatever it is spelled.
     memberName = before === "." || before === "?." || before === "#";
@@ -664,7 +774,7 @@ export function printExpandedFile<Trace>(
       text === "<" &&
       (before === undefined ||
         (gap === "" && applies(before, wasMemberName)) ||
-        ["(", ",", "=", "=>", ":", "?", "[", "{"].includes(before));
+        typeArgumentsCanFollow.has(before));
     prefix =
       ((text === "-" || text === "+") &&
         (before === undefined ||
@@ -686,7 +796,7 @@ export function printExpandedFile<Trace>(
         openLine: lineNumber,
         openIndent: lineIndent,
       });
-    const innermost = brackets.at(-1)!;
+    const innermost = brackets[brackets.length - 1]!;
     if (text === "?") innermost.conditionals += 1;
     // A `?` with its `:` written straight after it marks something optional --
     // `a?: T` -- and opened no conditional, so it gives back what it took.
@@ -704,7 +814,14 @@ export function printExpandedFile<Trace>(
       lastPrinted !== "{" &&
       lastPrinted !== "}" &&
       lastPrinted !== ";";
-    const trivia = token.leadingTrivia.map(({ raw }) => raw).join("");
+    // The trivia's text and whether any of it is more than whitespace are
+    // both wanted, and reading the pieces once answers both.
+    let trivia = "";
+    let onlyWhitespace = true;
+    for (const piece of token.leadingTrivia) {
+      trivia += piece.raw;
+      if (piece.kind !== "whitespace") onlyWhitespace = false;
+    }
     // The trivia a token was written with is its gap from the token before
     // it there. It is kept where that token is still the one printed before
     // it, and wherever it holds more than a space: a comment, JSX text, or the
@@ -718,12 +835,13 @@ export function printExpandedFile<Trace>(
       lastPrinted === undefined ||
       neighbour ||
       jsxRegions.at(-1) === true ||
-      token.leadingTrivia.some(({ kind: piece }) => piece !== "whitespace") ||
+      !onlyWhitespace ||
       // JSX text carries its own spacing in its text.
       /^\s/u.test(text) ||
       // A line break the author wrote where a statement may end is kept:
       // automatic semicolon insertion reads it.
-      (/[\r\n]/u.test(trivia) && mayEndStatement(lastPrinted!)) ||
+      ((trivia.includes("\n") || trivia.includes("\r")) &&
+        mayEndStatement(lastPrinted!)) ||
       // A template's own token written directly against a placeholder stays
       // against the capture that took its place: `$name<$parameter>` keeps
       // `Result<T>` together.
@@ -745,13 +863,11 @@ export function printExpandedFile<Trace>(
         : // Code a JSX child's or attribute's braces open on holds to them.
           jsxCodeOpened
           ? ""
-          : seamSpace(lastPrinted!, pendingOpens.length > 0 ? "(" : text, {
-              bracket: brackets.at(-1)!.bracket,
-              conditional: brackets.at(-1)!.conditionals > 0,
-              prefix,
-              memberName,
-              closedTypeArguments,
-            });
+          : seamSpace(
+              lastPrinted!,
+              pendingOpens.length > 0 ? "(" : text,
+              seamContext(),
+            );
     // A line the printer begins itself carries no indentation of its own, and
     // a unit left at column zero reads as though the block had ended. Layout
     // the author wrote already stands where they put it.
@@ -785,7 +901,8 @@ export function printExpandedFile<Trace>(
     }
     const start = offset;
     emit(text, token.origin, kind);
-    const trailing = token.trailingTrivia.map(({ raw }) => raw).join("");
+    let trailing = "";
+    for (const piece of token.trailingTrivia) trailing += piece.raw;
     emit(trailing, token.origin, "synthesized");
     trackBrackets(text, leading);
     lastPrinted = text;
