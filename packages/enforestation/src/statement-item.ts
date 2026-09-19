@@ -250,6 +250,15 @@ function typeOnlyClause(
 function declarationHead(cursor: SyntaxCursor, offset = 0): boolean {
   const word = raw(cursor.peek(offset));
   if (word === undefined || !contextualHeads.has(word)) return true;
+  if (word === "module" || word === "namespace") {
+    const following = cursor.peek(offset + 1);
+    if (
+      raw(following) === "." ||
+      raw(following) === "=" ||
+      (following?.tag === "group" && following.delimiter === "parenthesis")
+    )
+      return false;
+  }
   if (noLineTerminatorAfter(cursor, offset)) return true;
   const previous = offset > 0 ? raw(cursor.peek(offset - 1)) : undefined;
   return (
@@ -2084,6 +2093,13 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (
         endsAtBlock &&
+        !(
+          headWords.includes("function") &&
+          (headWords.includes("declare") ||
+            raw(cursor.peek()) === "function" ||
+            (raw(cursor.peek()) === "export" &&
+              raw(cursor.peek(1)) === "function"))
+        ) &&
         !token(children.at(-1), ";") &&
         !braceGroup(children.at(-1)) &&
         !braceGroup(children.at(-2))

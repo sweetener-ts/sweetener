@@ -48,6 +48,16 @@ function expand(macros: string, source: string): string {
 }
 
 describe("the layout a template writes around its placeholders", () => {
+  test("keeps a decimal integer valid before a spliced member access", () => {
+    const output = expand(
+      `export syntax fixed:expr {
+         rule { fixed($value:expr) } => { $value.toFixed(2) }
+       }`,
+      `import { fixed } from "./macros.sts" for syntax;
+export const text = fixed(1);`,
+    );
+    expect(output).toContain("1 .toFixed(2)");
+  });
   test("reaches the expansion", () => {
     expect(
       expand(

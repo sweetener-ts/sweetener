@@ -1,6 +1,6 @@
 # Alpha known limitations
 
-These are explicit gaps in `0.1.0-alpha.0`, not unspecified behavior.
+These are explicit gaps in the alpha release series, not unspecified behavior.
 
 - The CLI installs a `sweetener` binary and a default project expansion
   provider. The current frontend resolves project-local relative and tsconfig
@@ -12,7 +12,7 @@ These are explicit gaps in `0.1.0-alpha.0`, not unspecified behavior.
 - `.sts` and `.stsx` require the Sweet host. Editors and tools that invoke stock
   TypeScript directly do not understand the syntax.
 - TypeScript API support is limited to `6.0.x`; TypeScript 7 has no supported
-  programmatic host API. Node support is limited to the Node 24 line.
+  programmatic host API. Node support starts at 24.
 - Macro execution is intentionally declarative. There is no procedural,
   type-aware, filesystem, network, environment, randomness, or dynamic-import
   macro API.
@@ -21,9 +21,8 @@ These are explicit gaps in `0.1.0-alpha.0`, not unspecified behavior.
   file/module dependency level proven by the equivalence suite.
 - Performance reports are development-machine evidence. Published budgets need
   a stable pinned release runner before they become cross-machine promises.
-- The repository stages and verifies tarballs locally. Uploading to a package
-  registry and creating a Git tag require maintainer release credentials and
-  explicit authorization; `alpha.0` is not claimed to exist remotely.
+- The repository stages and verifies tarballs locally; annotated release tags
+  trigger registry publication through the release workflow.
 
 Core matching, hygiene, origins, resource limits, deterministic caching, and
 clean/incremental equivalence are not limitations; they are specified and tested

@@ -1,11 +1,11 @@
 {
   "$schema": "../schemas/status.schema.json",
   "schemaVersion": 1,
-  "updatedAt": "2026-08-03",
+  "updatedAt": "2026-09-19",
   "currentPhase": "phase-07",
   "currentSlice": "Alpha release review and publication",
   "health": "green",
-  "summary": "The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm at 0.1.0-alpha.3, with provenance signed from the release workflow.",
+  "summary": "The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm at 0.1.0-alpha.4, with provenance signed from the release workflow.",
   "currentTask": null,
   "tasks": [
     {

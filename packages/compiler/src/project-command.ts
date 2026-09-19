@@ -473,7 +473,9 @@ export function runConfiguredProjectCommand(options: {
    * TypeScript which of those names it resolves; nothing else it says is kept,
    * and nothing is emitted.
    */
-  const expansionFailed = expansionOutput.diagnostics.length > 0;
+  const expansionFailed = expansionOutput.diagnostics.some(
+    ({ category }) => category === ts.DiagnosticCategory.Error,
+  );
   if (expansionFailed && heldExplanations.length === 0)
     return Object.freeze({
       command: options.command,
@@ -542,7 +544,11 @@ export function runConfiguredProjectCommand(options: {
   });
   let diagnostics = [...ts.getPreEmitDiagnostics(created.program)];
   const emit =
-    options.command === "build" && !expansionFailed && diagnostics.length === 0
+    options.command === "build" &&
+    !expansionFailed &&
+    !diagnostics.some(
+      ({ category }) => category === ts.DiagnosticCategory.Error,
+    )
       ? created.program.emit()
       : undefined;
   diagnostics.push(...(emit?.diagnostics ?? []));
@@ -601,11 +607,20 @@ export function runConfiguredProjectCommand(options: {
       debugState: expansionProvider.debugState?.(),
     });
   diagnostics = [
-    ...deduplicateDiagnostics([...explained.diagnostics, ...unanswered]),
+    ...deduplicateDiagnostics([
+      ...expansionOutput.diagnostics,
+      ...explained.diagnostics,
+      ...unanswered,
+    ]),
   ];
   return Object.freeze({
     command: options.command,
-    exitCode: diagnostics.length === 0 && emit?.emitSkipped !== true ? 0 : 1,
+    exitCode:
+      diagnostics.some(
+        ({ category }) => category === ts.DiagnosticCategory.Error,
+      ) || emit?.emitSkipped === true
+        ? 1
+        : 0,
     diagnostics: Object.freeze(diagnostics),
     outputs: created.virtualHost.outputs,
     virtualFiles,

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import type { PrintedExpandedFile } from "@sweetener/printer";
+import type { VirtualTypeScriptFile } from "@sweetener/typescript-host";
 import { describe, expect, test } from "vitest";
 import * as ts from "typescript";
 import type { Diagnostic } from "@sweetener/shared";
@@ -53,6 +54,64 @@ function provider(input: string, text: string): ProjectExpansionProvider {
 }
 
 describe("project commands", () => {
+  test("reports expansion warnings without failing check or build", () => {
+    const { config, input } = fixture("export const value = 1;");
+    const base = provider(input, "export const value = 1;");
+    const warning: ts.Diagnostic = {
+      category: ts.DiagnosticCategory.Warning,
+      code: 4025,
+      file: undefined,
+      start: undefined,
+      length: undefined,
+      messageText: "reader warning",
+    };
+    const expansionProvider: ProjectExpansionProvider = {
+      expandProject: (project) => ({
+        files: base.expandProject(project) as readonly VirtualTypeScriptFile[],
+        diagnostics: [warning],
+      }),
+    };
+    for (const command of ["check", "build"] as const) {
+      const result = runConfiguredProjectCommand({
+        command,
+        configPath: config,
+        expansionProvider,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.diagnostics).toContain(warning);
+    }
+  });
+  test.each([
+    "declare const module: any;\nmodule.exports = 1",
+    "export const g:\n  | number\n  | undefined = 1 as any;",
+    "export function f(a: number): number\nexport function f(a: any): any { return a; }",
+  ])(
+    "checks ordinary TypeScript without treating reader warnings as errors: %s",
+    (source) => {
+      const { config } = fixture(source);
+      const result = runConfiguredProjectCommand({
+        command: "check",
+        configPath: config,
+        expansionProvider: createDefaultProjectExpansionProvider(),
+      });
+      expect(
+        result.exitCode,
+        result.diagnostics
+          .map((diagnostic) =>
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          )
+          .join("; "),
+      ).toBe(0);
+      expect(
+        result.diagnostics.filter(
+          ({ category }) => category === ts.DiagnosticCategory.Error,
+        ),
+      ).toEqual([]);
+      expect(result.diagnostics.filter(({ code }) => code === 4025)).toEqual(
+        [],
+      );
+    },
+  );
   test("fails before expansion when the config file cannot be read", () => {
     const directory = mkdtempSync(join(tmpdir(), "sweet-missing-config-"));
     let expanded = false;

@@ -102,7 +102,7 @@ describe("JavaScript macro extensions", () => {
     expect(
       result.diagnostics.map(({ code, category }) => [code, category]),
     ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(0);
   });
 
   /**

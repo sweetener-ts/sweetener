@@ -391,7 +391,11 @@ class TypeConsumer implements SyntaxConsumer {
         continue;
       }
       if (continuationOperators.has(spelling)) {
-        if (expectingOperand) break;
+        if (
+          expectingOperand &&
+          !(children.length === 0 && (spelling === "|" || spelling === "&"))
+        )
+          break;
         children.push(cursor.consume()!);
         expectingOperand = true;
         continue;

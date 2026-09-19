@@ -287,6 +287,9 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
   )
     return "";
   if (joinsIntoOne(left, right)) return " ";
+  // `1.toFixed` is scanned as a malformed decimal literal. A capture ending
+  // in an integer can meet a template's member access at this seam.
+  if (right === "." && /^[0-9][0-9_]*$/u.test(left)) return " ";
   // Inside a template literal's substitution.
   if (left.endsWith("${") || (right.startsWith("}") && right.length > 1))
     return "";
@@ -885,7 +888,19 @@ export function printExpandedFile<Trace>(
     // minting one per token cost an origin and an intern entry for every
     // piece of trivia in the file.
     emit(leading, token.origin, "synthesized");
+    const opensProtected = pendingOpens.length > 0;
     flushOpens();
+    if (
+      text === "." &&
+      leading === "" &&
+      !opensProtected &&
+      /^[0-9][0-9_]*$/u.test(lastPrinted ?? "")
+    )
+      emit(
+        " ",
+        options.origins.synthesized(token.origin, "printer-separator"),
+        "synthesized",
+      );
     // A template writes the space in `typeof $value` as trivia on its own
     // `$value`, which substitution replaces along with the token. Without a
     // separator the two words print as one, so one is added back when the
