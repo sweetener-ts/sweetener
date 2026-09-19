@@ -5,7 +5,7 @@ Current phase: phase-07
 Current slice: Alpha release review and publication  
 Health: green  
 
-The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm at 0.1.0-alpha.4, with provenance signed from the release workflow.
+The declarative TypeScript macro compiler, command line, integrations, and alpha release are complete. Nine packages are published on npm at 0.1.0-alpha.5, with provenance signed from the release workflow.
 
 ## Current task
 
@@ -116,7 +116,7 @@ No task is in progress.
 
 | Check | Result | Commit |
 |---|---|---|
-| unit | 2649 passed | 98c02f5 |
+| unit | 2652 passed | a4bc27d |
 
 ## Decisions requiring review
 
