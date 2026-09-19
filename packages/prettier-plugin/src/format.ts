@@ -68,14 +68,28 @@ function formatMultilineWhitespace(
   return eol.repeat(Math.min(breaks, 2)) + indentation(depth, options);
 }
 
+function isLineBreak(trivia: Trivia | undefined): boolean {
+  return trivia?.kind === "whitespace" && trivia.hasLineBreak;
+}
+
+/**
+ * Lays out the whitespace in front of one token.
+ *
+ * Only whitespace a macro cannot see changes. The reader and matcher look at
+ * whether a token has any trivia before it, which is how an operator spelled
+ * across several tokens is rejoined, and at whether it begins a line, which is
+ * where an item ends. A run of spaces stays a space and a line break stays a
+ * line break; what changes is how wide they are.
+ */
 function collectTrivia(
   trivia: readonly Trivia[],
   depth: number,
   options: SweetenerFormatOptions,
   eol: string,
   replacements: Replacement[],
+  startsFile: boolean,
 ): void {
-  let followsLineBreak = false;
+  let followsLineBreak = startsFile;
   for (let index = 0; index < trivia.length; index += 1) {
     const item = trivia[index]!;
     if (item.kind === "whitespace") {
@@ -101,11 +115,14 @@ function collectTrivia(
             : formatMultilineWhitespace(item.raw, depth, options, eol),
         });
         followsLineBreak = true;
-      } else if (followsLineBreak) {
+      } else {
+        // Leading indentation is replaced by the line break before it, and
+        // spaces at the end of a line are dropped. Anything else is a gap
+        // between two things on one line, and one space is enough.
         replacements.push({
           start: item.span.start,
           end: item.span.end,
-          text: "",
+          text: followsLineBreak || isLineBreak(trivia[index + 1]) ? "" : " ",
         });
       }
       continue;
@@ -121,8 +138,97 @@ function collectToken(
   eol: string,
   replacements: Replacement[],
 ): void {
-  collectTrivia(token.leadingTrivia, depth, options, eol, replacements);
-  collectTrivia(token.trailingTrivia, depth, options, eol, replacements);
+  const startsFile = token.span.start === 0;
+  collectTrivia(
+    token.leadingTrivia,
+    depth,
+    options,
+    eol,
+    replacements,
+    startsFile,
+  );
+  collectTrivia(token.trailingTrivia, depth, options, eol, replacements, false);
+}
+
+/**
+ * Puts a closing brace on its own line when the block it closes was opened
+ * onto one.
+ *
+ * `{` followed by a line break is a block laid out over lines, and the `}`
+ * closing it belongs at the block's own indentation rather than trailing its
+ * last line. A break in front of `}` is safe to add: nothing starts at a
+ * closing delimiter, so no item boundary moves. The same is not true of a
+ * break after `{`, which would make the first thing inside begin a line, so a
+ * block opened on the same line as its content keeps that layout.
+ */
+function collectClosingBrace(
+  group: GroupSyntax,
+  close: TokenSyntax,
+  depth: number,
+  options: SweetenerFormatOptions,
+  eol: string,
+  replacements: Replacement[],
+): void {
+  const first = group.children[0];
+  const firstToken = first?.tag === "group" ? first.open : first;
+  const opensOntoLine =
+    firstToken?.tag === "token" && firstToken.leadingTrivia.some(isLineBreak);
+  if (!opensOntoLine || close.leadingTrivia.some(isLineBreak)) {
+    collectToken(close, depth, options, eol, replacements);
+    return;
+  }
+  // Whitespace directly before the brace becomes the line break; any comment
+  // there stays on the last line, where it was written.
+  let kept = close.leadingTrivia.length;
+  while (kept > 0 && close.leadingTrivia[kept - 1]!.kind === "whitespace")
+    kept -= 1;
+  collectTrivia(
+    close.leadingTrivia.slice(0, kept),
+    depth,
+    options,
+    eol,
+    replacements,
+    false,
+  );
+  const start = close.leadingTrivia[kept]?.span.start ?? close.span.start;
+  replacements.push({
+    start,
+    end: close.span.start,
+    text: eol + indentation(depth, options),
+  });
+}
+
+/**
+ * Separates a brace from a name or parameter list it directly follows.
+ *
+ * `class Name{` and `function f(){` read as one word; Prettier writes them
+ * with a space, and so does every example. A brace group is never part of an
+ * operator spelled across adjacent tokens, so giving it leading whitespace
+ * does not change how anything is read.
+ */
+function collectBraceSpacing(
+  previous: Syntax | undefined,
+  syntax: Syntax,
+  replacements: Replacement[],
+): void {
+  if (
+    syntax.tag !== "group" ||
+    syntax.delimiter !== "brace" ||
+    syntax.open.leadingTrivia.length > 0 ||
+    previous === undefined ||
+    previous.span.end !== syntax.open.span.start
+  )
+    return;
+  const separable =
+    previous.tag === "token"
+      ? previous.kind === "identifier" || previous.kind === "keyword"
+      : previous.tag === "group" && previous.delimiter === "parenthesis";
+  if (!separable) return;
+  replacements.push({
+    start: syntax.open.span.start,
+    end: syntax.open.span.start,
+    text: " ",
+  });
 }
 
 function preservesWhitespace(group: GroupSyntax): boolean {
@@ -147,15 +253,36 @@ function collectSyntax(
     case "group":
       collectToken(syntax.open, depth, options, eol, replacements);
       if (preservesWhitespace(syntax)) return;
-      for (const child of syntax.children)
-        collectSyntax(child, depth + 1, options, eol, replacements);
-      if (syntax.close.tag === "token")
-        collectToken(syntax.close, depth, options, eol, replacements);
+      collectChildren(syntax.children, depth + 1, options, eol, replacements);
+      if (syntax.close.tag !== "token") return;
+      if (syntax.delimiter === "brace")
+        collectClosingBrace(
+          syntax,
+          syntax.close,
+          depth,
+          options,
+          eol,
+          replacements,
+        );
+      else collectToken(syntax.close, depth, options, eol, replacements);
       return;
     case "protected":
     case "root":
-      for (const child of syntax.children)
-        collectSyntax(child, depth, options, eol, replacements);
+      collectChildren(syntax.children, depth, options, eol, replacements);
+  }
+}
+
+function collectChildren(
+  children: readonly Syntax[],
+  depth: number,
+  options: SweetenerFormatOptions,
+  eol: string,
+  replacements: Replacement[],
+): void {
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index]!;
+    collectBraceSpacing(children[index - 1], child, replacements);
+    collectSyntax(child, depth, options, eol, replacements);
   }
 }
 

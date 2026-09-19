@@ -34,7 +34,7 @@ export syntax method:item {
       syntax $head:expr {
         rule {
           $head($(#metavar("headArgument", $headParameter):expr),*)
-          $($segment($(#metavar("argument", $parameter):expr),*))+ 
+          $($segment($(#metavar("argument", $parameter):expr),*))+
         }
         expect "upper argument segment";
         => {

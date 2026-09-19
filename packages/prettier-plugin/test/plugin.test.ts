@@ -63,6 +63,53 @@ if (!($condition)) $body
     expect(formatSweetener(source, { filepath: "macros.sts" })).toBe(source);
   });
 
+  test("lays out spacing within a line and closing braces", () => {
+    const source = `export syntax class FunctionBody{
+  fields {
+    statements:    stmt*;
+    result: expr; }
+
+  rule { $a:expr |>   $b:expr }   // trailing comment
+}
+`;
+
+    expect(formatSweetener(source, { filepath: "macros.sts" })).toBe(
+      `export syntax class FunctionBody {
+  fields {
+    statements: stmt*;
+    result: expr;
+  }
+
+  rule { $a:expr |> $b:expr } // trailing comment
+}
+`,
+    );
+  });
+
+  test("keeps a comment before a closing brace on its own line", () => {
+    const source = `export syntax class Example {
+  fields {
+    name: binding; /* last */ }
+}
+`;
+
+    expect(formatSweetener(source, { filepath: "macros.sts" })).toBe(
+      `export syntax class Example {
+  fields {
+    name: binding; /* last */
+  }
+}
+`,
+    );
+  });
+
+  test("does not join adjacent tokens a macro reads as one operator", () => {
+    const source = "const a = b|>c;\nif (x){ y }\n";
+    expect(formatSweetener(source, { filepath: "main.sts" })).toBe(
+      "const a = b|>c;\nif (x) { y }\n",
+    );
+  });
+
   test("formats TypeScript and JSX inside an imported item macro", async () => {
     const source = `import { memoized } from "./fine-jsx.stsx" for syntax;
 
