@@ -38,6 +38,9 @@ test("Node imports and executes .sts through registration hooks", async () => {
     { encoding: "utf8" },
   );
   expect(result.stdout.trim()).toBe("21,21");
+  // Node 26 deprecates `module.register` and says so on every run through it;
+  // registration picks whichever API the running Node does not warn about.
+  expect(result.stderr).toBe("");
 });
 
 /**

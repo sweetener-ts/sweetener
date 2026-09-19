@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createSweetenerSession,
@@ -10,11 +10,24 @@ import ts from "typescript";
 const session = createSweetenerSession();
 const sweetExtension = /\.s(?:ts|js)x?$/u;
 
-export async function resolve(
+/**
+ * Resolve and load hooks for Sweetener sources.
+ *
+ * Synchronous, so the same two functions serve both ways Node installs hooks:
+ * `module.registerHooks` runs them on the loading thread and requires them to
+ * return directly, and `module.register` runs them on its own thread and
+ * accepts a direct return as readily as a promise. Anything that is not a
+ * Sweetener source is handed on untouched, and what the next hook returns —
+ * a value under one, a promise under the other — goes back as it came.
+ */
+export function resolve<
+  Context extends { readonly parentURL?: string | undefined },
+  Next,
+>(
   specifier: string,
-  context: { readonly parentURL?: string | undefined },
-  nextResolve: (specifier: string, context: unknown) => Promise<unknown>,
-): Promise<unknown> {
+  context: Context,
+  nextResolve: (specifier: string, context: Context) => Next,
+): Next | { readonly url: string; readonly shortCircuit: true } {
   if (sweetExtension.test(specifier))
     return {
       url: new URL(
@@ -26,15 +39,21 @@ export async function resolve(
   return nextResolve(specifier, context);
 }
 
-export async function load(
+export function load<Context, Next>(
   url: string,
-  context: unknown,
-  nextLoad: (url: string, context: unknown) => Promise<unknown>,
-): Promise<unknown> {
+  context: Context,
+  nextLoad: (url: string, context: Context) => Next,
+):
+  | Next
+  | {
+      readonly format: "module";
+      readonly source: string;
+      readonly shortCircuit: true;
+    } {
   const filename = url.startsWith("file:") ? fileURLToPath(url) : url;
   if (!sweetExtension.test(filename)) return nextLoad(url, context);
-  const expanded = await session.transform({
-    code: await readFile(filename, "utf8"),
+  const expanded = session.transformSync({
+    code: readFileSync(filename, "utf8"),
     filename,
     mode: "development",
   });
