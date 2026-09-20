@@ -16,6 +16,7 @@ import {
   createToken,
   createTrivia,
   delimiterText,
+  leadingLineBreak,
   spanContains,
   spanLength,
   spansEqual,
@@ -26,6 +27,7 @@ import {
   type CreateTokenOptions,
   type DelimiterKind,
   type Span,
+  type Syntax,
   type TokenSyntax,
 } from "../src/index.js";
 
@@ -228,6 +230,70 @@ describe("groups and protected syntax", () => {
         children: [],
       }),
     ).toThrow(/at least one child/);
+  });
+});
+
+describe("a line break in front of syntax", () => {
+  /**
+   * `leadingLineBreak` is what every `[no LineTerminator here]` in the grammar
+   * asks about, at about two dozen call sites across the consumers.
+   *
+   * It entered a group, at its opening delimiter, and stopped at a protected
+   * node -- so every ASI question about an operand the parser had already read
+   * answered "no line break in front of it" whatever was written. A protected
+   * node is a reading built over syntax rather than anything written, so the
+   * trivia in front of it belongs to the node inside.
+   */
+  const broken = (raw: string, hasBreak: boolean) =>
+    token(raw, {
+      kind: "identifier",
+      leadingTrivia: hasBreak
+        ? [
+            createTrivia({
+              kind: "whitespace",
+              raw: "\n",
+              span: createSpan(0, 1),
+            }),
+          ]
+        : [],
+    });
+
+  const wrap = (child: Syntax) =>
+    createProtectedSyntax({
+      id: syntaxIds.allocate(),
+      span: child.span,
+      origin: defaultOrigin,
+      scopes: defaultScopes,
+      category: "expr",
+      precedence: undefined,
+      children: [child],
+    });
+
+  it.each([true, false])("is seen through a protected node: %s", (hasBreak) => {
+    const inner = broken("a", hasBreak);
+    expect(leadingLineBreak(inner)).toBe(hasBreak);
+    expect(leadingLineBreak(wrap(inner))).toBe(hasBreak);
+    // A protected node can hold another; the question is the same one.
+    expect(leadingLineBreak(wrap(wrap(inner)))).toBe(hasBreak);
+  });
+
+  it("is seen through a group, at its opening delimiter", () => {
+    const open = broken("(", true);
+    const enclosing = createGroup({
+      id: syntaxIds.allocate(),
+      span: createSpan(0, 2),
+      origin: defaultOrigin,
+      scopes: defaultScopes,
+      delimiter: "parenthesis",
+      open,
+      children: [],
+      close: token(")"),
+    });
+    expect(leadingLineBreak(enclosing)).toBe(true);
+  });
+
+  it("says nothing stands in front of syntax that is not there", () => {
+    expect(leadingLineBreak(undefined)).toBe(false);
   });
 });
 

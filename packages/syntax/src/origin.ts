@@ -76,10 +76,49 @@ export class OriginGraphError extends Error {
  */
 const spanKeyLimit = 0x4000000;
 
+/**
+ * A number for each synthesis reason, so a synthesized origin packs into one
+ * key with the invocation it belongs to.
+ *
+ * Written as a record of the whole union rather than as a list to search, so
+ * a reason added to `SynthesisReason` and not to this is a type error rather
+ * than a key that silently collides with another.
+ */
+const synthesisReasonIndex: Readonly<Record<SynthesisReason, number>> =
+  Object.freeze({
+    "missing-token": 0,
+    recovery: 1,
+    "grouping-parentheses": 2,
+    "generated-binding": 3,
+    "printer-separator": 4,
+    "source-map-anchor": 5,
+  });
+
 function spanKey(start: number, end: number): number | undefined {
   const length = end - start;
   if (start >= spanKeyLimit || length >= spanKeyLimit) return undefined;
   return start * spanKeyLimit + length;
+}
+
+/**
+ * One number standing for a pair of ids, or nothing when it will not fit.
+ *
+ * The same packing the spans use, for the same reason: a copied origin is
+ * interned per generated token and an introduced one per template node, so a
+ * key built by joining them into a string allocated and hashed a string for
+ * every token a macro produced.
+ */
+function pairKey(left: number, right: number): number | undefined {
+  if (left >= spanKeyLimit || right >= spanKeyLimit) return undefined;
+  return left * spanKeyLimit + right;
+}
+
+/** The interned origin at `key`, kept in a map of packed pairs. */
+function pairedOrigin(
+  index: Map<number, OriginId>,
+  key: number | undefined,
+): OriginId | undefined {
+  return key === undefined ? undefined : index.get(key);
 }
 
 export class OriginStore {
@@ -95,6 +134,10 @@ export class OriginStore {
   readonly #firstId: number;
   #count = 0;
   readonly #interned = new Map<string, OriginId>();
+  readonly #singletonSources = new Map<OriginId, readonly SourceOrigin[]>();
+  readonly #copiedIndex = new Map<number, OriginId>();
+  readonly #introducedIndex = new Map<number, OriginId>();
+  readonly #synthesizedIndex = new Map<number, OriginId>();
   readonly #sourceIndex = new Map<SourceId, Map<number, OriginId>>();
   #lastSourceId: SourceId | undefined;
   #lastSpans: Map<number, OriginId> | undefined;
@@ -182,28 +225,54 @@ export class OriginStore {
 
   copied(capture: CaptureId, parent: OriginId): OriginId {
     this.#require(parent);
-    return this.#intern(`copied|${capture}|${parent}`, (id) =>
-      Object.freeze({ id, kind: "copied", capture, parent }),
+    const key = pairKey(capture, parent);
+    const existing = pairedOrigin(this.#copiedIndex, key);
+    if (existing !== undefined) return existing;
+    return this.#interned_(
+      key,
+      this.#copiedIndex,
+      `copied|${capture}|${parent}`,
+      (allocated) =>
+        Object.freeze({ id: allocated, kind: "copied", capture, parent }),
     );
   }
 
   introduced(definition: OriginId, invocation: OriginId): OriginId {
     this.#require(definition);
     this.#require(invocation);
-    return this.#intern(`introduced|${definition}|${invocation}`, (id) =>
-      Object.freeze({
-        id,
-        kind: "introduced",
-        definition,
-        invocation,
-      }),
+    const key = pairKey(definition, invocation);
+    const existing = pairedOrigin(this.#introducedIndex, key);
+    if (existing !== undefined) return existing;
+    return this.#interned_(
+      key,
+      this.#introducedIndex,
+      `introduced|${definition}|${invocation}`,
+      (allocated) =>
+        Object.freeze({
+          id: allocated,
+          kind: "introduced",
+          definition,
+          invocation,
+        }),
     );
   }
 
   synthesized(invocation: OriginId, reason: SynthesisReason): OriginId {
     this.#require(invocation);
-    return this.#intern(`synthesized|${invocation}|${reason}`, (id) =>
-      Object.freeze({ id, kind: "synthesized", invocation, reason }),
+    const key = pairKey(invocation, synthesisReasonIndex[reason]);
+    const existing = pairedOrigin(this.#synthesizedIndex, key);
+    if (existing !== undefined) return existing;
+    return this.#interned_(
+      key,
+      this.#synthesizedIndex,
+      `synthesized|${invocation}|${reason}`,
+      (allocated) =>
+        Object.freeze({
+          id: allocated,
+          kind: "synthesized",
+          invocation,
+          reason,
+        }),
     );
   }
 
@@ -219,7 +288,17 @@ export class OriginStore {
   }
 
   collectSourceOrigins(id: OriginId): readonly SourceOrigin[] {
-    this.#require(id);
+    // A source origin is its own answer, which is the usual one: this is asked
+    // per printed token, and the general walk allocated an array, two sets and
+    // a frozen result to say so.
+    const origin = this.#require(id);
+    if (origin.kind === "source") {
+      const cached = this.#singletonSources.get(id);
+      if (cached !== undefined) return cached;
+      const only = Object.freeze([origin]);
+      this.#singletonSources.set(id, only);
+      return only;
+    }
     const output: SourceOrigin[] = [];
     const seenOrigins = new Set<OriginId>();
     const seenSources = new Set<string>();
@@ -250,9 +329,26 @@ export class OriginStore {
     id: OriginId,
     policy: PrimaryOriginPolicy = "invocation",
   ): SourceOrigin {
-    this.#require(id);
+    // Almost every origin asked about is a source origin, or a short chain of
+    // kinds with one parent each. Following those with a variable keeps the
+    // common answer free of the `Set` and the array the general walk needs --
+    // this is asked once per diagnostic, per printed token, and per name the
+    // expander looks up, and the two allocations were most of its cost.
+    let current: Origin = this.#require(id);
+    for (;;) {
+      if (current.kind === "source") return current;
+      if (current.kind === "copied") {
+        current = this.#require(current.parent);
+        continue;
+      }
+      if (current.kind === "synthesized") {
+        current = this.#require(current.invocation);
+        continue;
+      }
+      break;
+    }
     const seen = new Set<OriginId>();
-    const stack = [id];
+    const stack = [current.id];
     while (stack.length > 0) {
       const currentId = stack.pop();
       if (currentId === undefined || seen.has(currentId)) continue;
@@ -300,6 +396,24 @@ export class OriginStore {
     const origin = create(id);
     this.#store(id, origin);
     this.#interned.set(key, id);
+    return id;
+  }
+
+  /**
+   * Interns under a packed pair where the pair fits, and under the written key
+   * where it does not. The string is built only on the second path, which a
+   * store of fewer than 2^26 origins never takes.
+   */
+  #interned_(
+    key: number | undefined,
+    index: Map<number, OriginId>,
+    fallback: string,
+    create: (id: OriginId) => Origin,
+  ): OriginId {
+    if (key === undefined) return this.#intern(fallback, create);
+    const id = this.#ids.allocate();
+    this.#store(id, create(id));
+    index.set(key, id);
     return id;
   }
 }

@@ -125,7 +125,13 @@ export function createSyntaxSequence(
 function base(fields: SyntaxBaseFields): SyntaxBaseFields {
   return {
     id: fields.id,
-    span: createSpan(fields.span.start, fields.span.end),
+    // A caller holding an immutable span holds what this would build, and
+    // `createSpan` validated it when it was made. Rebuilding it allocated and
+    // revalidated a second span for every node in the tree -- the same reason
+    // the origin store stopped doing it.
+    span: Object.isFrozen(fields.span)
+      ? fields.span
+      : createSpan(fields.span.start, fields.span.end),
     origin: fields.origin,
     scopes: fields.scopes,
   };
@@ -261,9 +267,30 @@ export function createRootSyntax(options: CreateRootSyntaxOptions): RootSyntax {
  * opening delimiter, which is where the trivia in front of it is written.
  */
 export function leadingLineBreak(syntax: Syntax | undefined): boolean {
-  const first = syntax?.tag === "group" ? syntax.open : syntax;
+  const first = firstToken(syntax);
   return (
-    first?.tag === "token" &&
+    first !== undefined &&
     first.leadingTrivia.some((trivia) => trivia.hasLineBreak)
   );
+}
+
+/**
+ * The token `syntax` begins at, wherever it is written.
+ *
+ * A group begins at its opening delimiter. A protected node begins at whatever
+ * its first child begins at: it is a reading the parser built over syntax
+ * rather than anything written, so the trivia in front of it belongs to the
+ * node inside. Asked only of the group, every ASI question about a parsed
+ * operand answered "no line break in front of it" whatever was written, at
+ * about two dozen call sites across the consumers.
+ */
+function firstToken(syntax: Syntax | undefined): TokenSyntax | undefined {
+  let current = syntax;
+  for (;;) {
+    if (current === undefined) return undefined;
+    if (current.tag === "token") return current;
+    if (current.tag === "group") return current.open;
+    // A protected or root node with no children begins nowhere.
+    current = current.children[0];
+  }
 }
