@@ -40,13 +40,15 @@ export function Home({ onOpen }: { onOpen: (id?: string) => void }) {
           <button className="primary" onClick={() => onOpen()}>
             Open the playground
           </button>
-          <a href="https://github.com/jimmyhmiller/sweetener">
+          <a href="https://github.com/sweetener-ts/sweetener">
             Source on GitHub
           </a>
         </p>
         <p className="notice">
-          Alpha. The compiler and its release artifacts are complete; the
-          packages are not published to npm yet.
+          Alpha, and published on npm:{" "}
+          <code>npm install --save-dev @sweetener/cli</code>, then{" "}
+          <code>npx sweetener init</code>. Every release is tagged{" "}
+          <code>latest</code>, so that gives you the newest alpha.
         </p>
       </header>
 
@@ -146,7 +148,7 @@ ordinary TypeScript + origin map + expansion trace
 
       <footer className="colophon">
         <span>Sweetener</span>
-        <a href="https://github.com/jimmyhmiller/sweetener">GitHub</a>
+        <a href="https://github.com/sweetener-ts/sweetener">GitHub</a>
       </footer>
     </div>
   );
