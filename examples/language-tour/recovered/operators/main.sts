@@ -4,7 +4,7 @@ import {
   (|>),
 } from "./macros.sts" for syntax shadows core;
 
-const vector = <T>(...values: T[]): readonly T[] => values;
+const vector = <T,>(...values: T[]): readonly T[] => values;
 const sum = (values: readonly number[]): number =>
 values.reduce((total, value) => total + value, 0);
 

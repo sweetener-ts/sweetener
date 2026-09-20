@@ -275,6 +275,42 @@ export function leadingLineBreak(syntax: Syntax | undefined): boolean {
 }
 
 /**
+ * `syntax` with `trivia` written in front of it in place of whatever was: the
+ * layout in front of a node is the layout in front of the token it begins at.
+ * A node that begins nowhere has nowhere to write it and is returned as it is.
+ */
+export function withLeadingTrivia<Node extends Syntax>(
+  syntax: Node,
+  trivia: readonly Trivia[],
+): Node;
+export function withLeadingTrivia(
+  syntax: Syntax,
+  trivia: readonly Trivia[],
+): Syntax {
+  switch (syntax.tag) {
+    case "token":
+      return createToken({ ...syntax, leadingTrivia: trivia });
+    case "group":
+      return createGroup({
+        ...syntax,
+        open: withLeadingTrivia(syntax.open, trivia),
+      });
+    case "protected":
+    case "root": {
+      const head = syntax.children[0];
+      if (head === undefined) return syntax;
+      const children = [
+        withLeadingTrivia(head, trivia),
+        ...syntax.children.slice(1),
+      ];
+      return syntax.tag === "protected"
+        ? createProtectedSyntax({ ...syntax, children })
+        : createRootSyntax({ ...syntax, children });
+    }
+  }
+}
+
+/**
  * The token `syntax` begins at, wherever it is written.
  *
  * A group begins at its opening delimiter. A protected node begins at whatever
@@ -284,7 +320,9 @@ export function leadingLineBreak(syntax: Syntax | undefined): boolean {
  * operand answered "no line break in front of it" whatever was written, at
  * about two dozen call sites across the consumers.
  */
-function firstToken(syntax: Syntax | undefined): TokenSyntax | undefined {
+export function firstToken(
+  syntax: Syntax | undefined,
+): TokenSyntax | undefined {
   let current = syntax;
   for (;;) {
     if (current === undefined) return undefined;

@@ -120,6 +120,83 @@ export const total = [1, 2, 3]
     ).toContain("export const total = map([1, 2, 3], (n) => n * 2);");
   });
 
+  test("does not carry a capture's line break to where the template wrote none", () => {
+    // The call site broke the line after `=>`, in front of the arm's body.
+    // Spliced after the template's `return` that same break read `return` and
+    // then a statement of its own, so the arm returned nothing at all.
+    const output = expand(
+      `export syntax pick:expr {
+           rule { pick { $pattern:expr => $body:expr } } => {
+             ((matched: unknown) => {
+               if (matched === $pattern) { return $body; }
+               throw new Error("unmatched");
+             })(1)
+           }
+         }`,
+      `import { pick } from "./macros.sts" for syntax;
+export const chosen: string = pick {
+  1 =>
+    \`one \${String(1)}\`
+};`,
+    );
+    expect(output).toContain("return `one ${String(1)}`;");
+    expect(output).not.toMatch(/return\s*\n/u);
+  });
+
+  test("hoists a comment that would part `return` from what it returns", () => {
+    // A line comment cannot give up its line break, and `return` followed by
+    // one returns nothing. The comment is kept, above the statement.
+    const pick = `export syntax pick:expr {
+           rule { pick { $pattern:expr => $body:expr } } => {
+             ((matched: unknown) => {
+               if (matched === $pattern) { return $body; }
+               throw new Error("unmatched");
+             })(1)
+           }
+         }`;
+    const output = expand(
+      pick,
+      `import { pick } from "./macros.sts" for syntax;
+export const chosen: string = pick {
+  1 => // why one
+    "one"
+};`,
+    );
+    expect(output).toMatch(/\/\/ why one\n\s*return "one";/u);
+    expect(output).not.toMatch(/return\s*\/\//u);
+  });
+
+  test("hoists it past every keyword a line break would end", () => {
+    const output = expand(
+      `export syntax relay:stmt {
+           rule { relay($value:expr); } => {
+             function* relayed() { return yield $value; }
+           }
+         }`,
+      `import { relay } from "./macros.sts" for syntax;
+relay(
+  // handed on
+  1
+);`,
+    );
+    expect(output).toMatch(/\/\/ handed on\n\s*return \(yield 1\);/u);
+  });
+
+  test("keeps a comment the call site wrote in front of a capture", () => {
+    expect(
+      expand(
+        `export syntax twice:expr {
+           rule { twice($value:expr) } => { [$value, $value] }
+         }`,
+        `import { twice } from "./macros.sts" for syntax;
+export const doubled = twice(
+  // the answer, halved
+  21
+);`,
+      ),
+    ).toContain("// the answer, halved");
+  });
+
   test("survives a placeholder that stands for several tokens", () => {
     expect(
       expand(
@@ -257,5 +334,165 @@ function outer() {
 declare function second(): void;`,
       ),
     ).toContain("    first();\n    second();");
+  });
+});
+
+/**
+ * A template is written in the file that defines the macro and printed into the
+ * file that invokes it, and the two need not read `<` alike. `<T>(value: T) =>
+ * value` is a generic arrow in a `.ts` file and an unclosed element in a `.tsx`
+ * one, where only `<T,>` and `<T extends U>` are type parameters. Generated
+ * `.ts` is also read as `.tsx` by whatever it is pasted into. So the printer
+ * writes the one spelling both read.
+ */
+describe("a generic arrow's type parameters", () => {
+  const made = `export syntax made:item {
+           rule { made $name:binding<$parameter:binding>; }
+           bind $name in following as recursive value;
+           => {
+             #core(const $name = <$parameter>(value: $parameter): $parameter => value;)
+           }
+         }`;
+
+  test("take the comma a .tsx file needs to read them", () => {
+    expect(
+      expand(
+        made,
+        `import { made } from "./macros.sts" for syntax;
+made same<T>;
+export const kept: number = same(1);`,
+      ),
+    ).toContain("<T,>(value: T): T => value");
+  });
+
+  test("take it behind `async` and before a block body", () => {
+    const output = expand(
+      `export syntax made:item {
+           rule { made $name:binding<$parameter:binding>; }
+           bind $name in following as recursive value;
+           => {
+             #core(const $name = async <$parameter>(value: $parameter) => { return value; };)
+           }
+         }`,
+      `import { made } from "./macros.sts" for syntax;
+made same<T>;
+export const kept: Promise<number> = same(1);`,
+    );
+    expect(output).toContain("async <T,>(value: T) =>");
+  });
+
+  test("are left as written where a .tsx file already reads them", () => {
+    const output = expand(
+      `export syntax made:item {
+           rule { made $name:binding<$parameter:binding>; }
+           bind $name in following as recursive value;
+           => {
+             #core(const $name = {
+               bounded: <$parameter extends number>(value: $parameter) => value,
+               paired: <$parameter, Other>(value: $parameter, other: Other) => [value, other],
+             };)
+           }
+         }`,
+      `import { made } from "./macros.sts" for syntax;
+made both<T>;
+export const kept = both.bounded(1);`,
+    );
+    expect(output).toContain("<T extends number>(value: T) => value");
+    expect(output).toContain("<T, Other>(value: T, other: Other) =>");
+  });
+
+  test("are left as the author of the file wrote them", () => {
+    // Only a template is written for one file and printed into another. What
+    // stands in the file being printed was written for it, and is not respelled.
+    expect(
+      expand(
+        made,
+        `import { made } from "./macros.sts" for syntax;
+made same<T>;
+export const own = <U>(value: U): U => same(value);`,
+      ),
+    ).toContain("<U>(value: U): U => same(value)");
+  });
+
+  test("are not mistaken for a type assertion, which a comma would break", () => {
+    expect(
+      expand(
+        `export syntax cast:expr {
+           rule { cast<$asserted:type>($value:expr) } => { <$asserted>($value) }
+         }`,
+        `import { cast } from "./macros.sts" for syntax;
+export const asserted = cast<number>(1 as unknown);`,
+      ),
+    ).not.toContain(",>");
+  });
+});
+
+/**
+ * A prefix type assertion has no spelling a `.tsx` file reads -- there is no
+ * comma to add, as there is for a generic arrow -- so one a template wrote is
+ * printed as the `as` it means. `as` binds more loosely than the prefix did,
+ * so the parentheses come with it.
+ */
+describe("a prefix type assertion a template wrote", () => {
+  const cast = `export syntax cast:expr {
+           rule { cast<$asserted:type>($value:expr) } => { <$asserted>$value }
+         }`;
+
+  test("is printed as the `as` both kinds of file read", () => {
+    expect(
+      expand(
+        cast,
+        `import { cast } from "./macros.sts" for syntax;
+declare const raw: unknown;
+export const one: number = cast<number>(raw);`,
+      ),
+    ).toContain("export const one: number = (raw as number);");
+  });
+
+  test("keeps what it bound: the operand, and not the product", () => {
+    expect(
+      expand(
+        `export syntax doubled:expr {
+           rule { doubled<$asserted:type>($value:expr) } => { <$asserted>-$value * 2 }
+         }`,
+        `import { doubled } from "./macros.sts" for syntax;
+export const product: number = doubled<number>(3);`,
+      ),
+    ).toContain("((-3 as number) * 2)");
+  });
+
+  test("is printed from the inside out where one asserts another", () => {
+    expect(
+      expand(
+        `export syntax forced:expr {
+           rule { forced<$asserted:type>($value:expr) } => { <$asserted><unknown>$value }
+         }`,
+        `import { forced } from "./macros.sts" for syntax;
+export const count: number = forced<number>("x");`,
+      ),
+    ).toContain('(("x" as unknown) as number)');
+  });
+
+  test("holds a union it asserts together", () => {
+    expect(
+      expand(
+        cast,
+        `import { cast } from "./macros.sts" for syntax;
+declare const raw: unknown;
+export const either = cast<number | string>(raw) === 1;`,
+      ),
+    ).toContain("(raw as (number | string)) === 1");
+  });
+
+  test("is left as written where the author of the file wrote it", () => {
+    expect(
+      expand(
+        cast,
+        `import { cast } from "./macros.sts" for syntax;
+declare const raw: unknown;
+export const own = <number>raw * 2;
+export const made: number = cast<number>(raw);`,
+      ),
+    ).toContain("export const own = <number>raw * 2;");
   });
 });

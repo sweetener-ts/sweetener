@@ -2,7 +2,7 @@ import { (->) } from "./macros.sts" for syntax;
 
 const map = <In, Out>(values: readonly In[], f: (value: In) => Out): Out[] =>
 values.map((value) => f(value));
-const keep = <T>(values: readonly T[], f: (value: T) => boolean): T[] =>
+const keep = <T,>(values: readonly T[], f: (value: T) => boolean): T[] =>
 values.filter((value) => f(value));
 const sum = (values: readonly number[]): number =>
 values.reduce((left, right) => left + right, 0);

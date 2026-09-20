@@ -25,6 +25,8 @@ import {
   createToken,
   createTrivia,
   delimiterText,
+  firstToken,
+  withLeadingTrivia,
   type GroupSyntax,
   type OriginStore,
   type Span,
@@ -82,6 +84,24 @@ type ClonePolicy =
       readonly scopes: ScopeSetId;
     };
 
+/**
+ * The keywords TypeScript reads as complete where a line break follows them:
+ * the grammar writes `[no LineTerminator here]` after each. A `return` with a
+ * line break after it returns nothing, and an `async` with one is a name.
+ */
+const lineBreakEnds: ReadonlySet<string> = new Set([
+  "return",
+  "throw",
+  "yield",
+  "break",
+  "continue",
+  "async",
+]);
+
+function endedByLineBreak(syntax: Syntax | undefined): boolean {
+  return syntax?.tag === "token" && lineBreakEnds.has(syntax.raw);
+}
+
 class Instantiator {
   readonly #options: InstantiateTemplateOptions;
   readonly #tracker: ResourceTracker;
@@ -124,7 +144,7 @@ class Instantiator {
     for (const piece of output) {
       this.#cancellation.throwIfCancellationRequested();
       if (piece.kind === "syntax") {
-        syntax.push(...this.#syntaxPiece(piece));
+        syntax.push(...this.#syntaxPiece(piece, syntax));
       } else if (piece.kind === "group") {
         syntax.push(this.#groupPiece(piece));
       } else {
@@ -134,7 +154,13 @@ class Instantiator {
     return syntax;
   }
 
-  #syntaxPiece(piece: EvaluatedSyntax): Syntax[] {
+  /**
+   * `written` is what already stands before this piece in the sequence it is
+   * written in. Anything there makes the layout in front of the piece a seam
+   * between two tokens rather than the start of a block, and a comment hoisted
+   * off that seam is put back into it.
+   */
+  #syntaxPiece(piece: EvaluatedSyntax, written: Syntax[]): Syntax[] {
     if (piece.source === "capture" && piece.capture === undefined) {
       throw new TypeError("Captured evaluated syntax requires a capture ID");
     }
@@ -150,13 +176,128 @@ class Instantiator {
     // written. Syntax that arrived with layout of its own keeps it: that came
     // from the call site, which is the author's spelling of this very text and
     // so outranks the template's.
+    //
+    // A line break is the exception, where the template wrote the placeholder
+    // on the same line as the token before it. A line break says something
+    // about the two tokens either side of it, and the one that stood before
+    // this syntax at the call site is gone: `=> ⏎ value` captured into
+    // `return $body` would read `return ⏎ value`, which returns nothing. The
+    // template wrote that seam, so its spelling of it stands. Only layout that
+    // is nothing but whitespace gives way; a comment is the author's and stays
+    // -- except after a keyword that a line break ends, where it is hoisted.
     const head = cloned[0];
-    return head === undefined || piece.templateLeadingTrivia.length === 0
-      ? cloned
+    if (head === undefined || piece.templateLeadingTrivia.length === 0)
+      return cloned;
+    const templateBreaks = piece.templateLeadingTrivia.some(
+      ({ hasLineBreak }) => hasLineBreak,
+    );
+    if (written.length === 0 || piece.source !== "capture" || templateBreaks)
+      return [
+        this.#defaultLeadingTrivia(head, piece.templateLeadingTrivia),
+        ...cloned.slice(1),
+      ];
+    return [
+      this.#hoistLeadingComment(head, written)
+        ? withLeadingTrivia(head, piece.templateLeadingTrivia)
+        : this.#withoutLeadingLineBreak(head, piece.templateLeadingTrivia),
+      ...cloned.slice(1),
+    ];
+  }
+
+  /**
+   * Moves a comment written in front of `head` to in front of the keyword it
+   * was spliced after, where a line break after that keyword would end the
+   * statement; says whether it did.
+   *
+   * `1 => // why ⏎ value` captured into `return $body` reads `return // why ⏎
+   * value`. A line comment cannot give up its line break, and TypeScript reads
+   * `return` there as the whole statement. The comment is the author's, so it
+   * is kept: in front of the `return`, on a line of its own, which no grammar
+   * rule forbids. Several such keywords may stand in a row -- `return yield
+   * $value` -- and a comment between any two of them breaks the first, so it
+   * goes in front of them all.
+   */
+  #hoistLeadingComment(head: Syntax, written: Syntax[]): boolean {
+    const layout = firstToken(head)?.leadingTrivia ?? [];
+    if (
+      !layout.some(({ hasLineBreak }) => hasLineBreak) ||
+      layout.every(({ kind }) => kind === "whitespace")
+    )
+      return false;
+    let at = written.length;
+    while (at > 0 && endedByLineBreak(written[at - 1])) at -= 1;
+    const keyword = written[at];
+    if (keyword?.tag !== "token") return false;
+    const first = layout.findIndex(({ kind }) => kind !== "whitespace");
+    const last = layout.findLastIndex(({ kind }) => kind !== "whitespace");
+    const comments = layout.slice(first, last + 1);
+    // What the author wrote between the comment and the code under it: the
+    // line break, where there is one, and the indentation that code stands at.
+    // The keyword now stands under the comment instead, at that indentation,
+    // and the comment is given the same so the two read as one block.
+    const under = layout
+      .slice(last + 1)
+      .map(({ raw }) => raw)
+      .join("");
+    const indent = /[\r\n\u2028\u2029]/u.test(under)
+      ? under.slice(under.search(/[^\r\n\u2028\u2029]*$/u))
+      : "";
+    const ownLine = createTrivia({
+      kind: "whitespace",
+      raw: `\n${indent}`,
+      span: { start: keyword.span.start, end: keyword.span.start },
+    });
+    // The comment takes a line of its own: after a break unless the keyword
+    // was already written on a fresh line, and before one always.
+    const before = keyword.leadingTrivia.some(
+      ({ hasLineBreak }) => hasLineBreak,
+    )
+      ? keyword.leadingTrivia
       : [
-          this.#defaultLeadingTrivia(head, piece.templateLeadingTrivia),
-          ...cloned.slice(1),
+          ...keyword.leadingTrivia.filter(({ kind }) => kind !== "whitespace"),
+          ownLine,
         ];
+    written[at] = createToken({
+      ...keyword,
+      leadingTrivia: [...before, ...comments, ownLine],
+    });
+    return true;
+  }
+
+  /**
+   * Replaces layout that is only whitespace and holds a line break with
+   * `trivia`; any other layout is handled as `#defaultLeadingTrivia` does.
+   */
+  #withoutLeadingLineBreak(syntax: Syntax, trivia: readonly Trivia[]): Syntax {
+    switch (syntax.tag) {
+      case "token":
+        return syntax.leadingTrivia.some(({ hasLineBreak }) => hasLineBreak) &&
+          syntax.leadingTrivia.every(({ kind }) => kind === "whitespace")
+          ? createToken({ ...syntax, leadingTrivia: trivia })
+          : this.#defaultLeadingTrivia(syntax, trivia);
+      case "group":
+        return createGroup({
+          ...syntax,
+          open: this.#withoutLeadingLineBreak(
+            syntax.open,
+            trivia,
+          ) as TokenSyntax,
+        });
+      case "protected":
+      case "root": {
+        const head = syntax.children[0];
+        if (head === undefined) return syntax;
+        const children = [
+          this.#withoutLeadingLineBreak(head, trivia),
+          ...syntax.children.slice(1),
+        ];
+        return syntax.tag === "protected"
+          ? createProtectedSyntax({ ...syntax, children })
+          : createRootSyntax({ ...syntax, children });
+      }
+      default:
+        return syntax;
+    }
   }
 
   #groupPiece(piece: EvaluatedGroup): GroupSyntax {

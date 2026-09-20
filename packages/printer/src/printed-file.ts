@@ -1,5 +1,6 @@
 import type { OriginId, SyntaxId } from "@sweetener/shared";
 import {
+  angleWidth,
   isReservedWord,
   type MissingToken,
   type Origin,
@@ -79,6 +80,113 @@ type PrintItem =
    * attribute's or a child's braces -- and leaving either.
    */
   | { readonly jsx: "text" | "code" | "leave" };
+
+/** The angles a generic arrow's type parameters are written between. */
+interface ArrowTypeParameters {
+  readonly open: TokenSyntax;
+  readonly close: TokenSyntax;
+  /**
+   * Whether they are written in the one way a `.tsx` file cannot read:
+   * `<T>(value: T) => value`.
+   *
+   * There the `<T>` opens an element, and TypeScript reads type parameters
+   * only where a comma or an `extends` stands directly inside the angles --
+   * `<T,>` and `<T extends U>`. A template is written in whichever file defines
+   * the macro and printed into whichever file invokes it, so a `.sts` macro's
+   * `<T>` is printed into `.tsx` whenever a `.stsx` file uses it; and generated
+   * `.ts` is read as `.tsx` by whatever it is pasted into, the TypeScript
+   * playground first among them. The comma is the spelling both files read, so
+   * the printer writes it wherever it is missing.
+   */
+  readonly needsComma: boolean;
+}
+
+/**
+ * The type parameters `arrow` begins with, if it is an arrow and has any.
+ *
+ * Only for a node the parser recorded as an arrow. `<T>(value)` is also a type
+ * assertion, which a comma would break, and `async < T` is also a comparison;
+ * nothing about the tokens says which is meant, and the parser already has.
+ */
+function arrowTypeParameters(
+  arrow: ProtectedSyntax,
+): ArrowTypeParameters | undefined {
+  if (arrow.form !== "arrow") return undefined;
+  const children = arrow.children;
+  let at = 0;
+  const first = children[0];
+  if (first?.tag === "token" && first.raw === "async") at = 1;
+  const open = children[at];
+  if (open?.tag !== "token" || open.raw !== "<") return undefined;
+  let depth = 0;
+  let needsComma = true;
+  for (; at < children.length; at += 1) {
+    const child = children[at]!;
+    if (child.tag !== "token") continue;
+    if (depth === 1 && (child.raw === "," || child.raw === "extends"))
+      needsComma = false;
+    depth += angleWidth(child.raw, "<");
+    const closes = angleWidth(child.raw, ">");
+    if (closes === 0) continue;
+    depth -= closes;
+    if (depth > 0) continue;
+    // The scanner leaves every `>` a token of its own, so that one of them can
+    // close a list; a wider one closing this list was never scanned.
+    if (depth < 0 || closes !== 1)
+      throw new Error(
+        `Cannot print a generic arrow whose type parameters close with \`${child.raw}\`: no comma can be written inside that token`,
+      );
+    return { open, close: child, needsComma };
+  }
+  return undefined;
+}
+
+/** A prefix type assertion, `<A>value`, as the two things it is written with. */
+interface PrefixTypeAssertion {
+  readonly type: readonly Syntax[];
+  readonly operand: Syntax;
+}
+
+/**
+ * The prefix type assertion `node` is, if it is one.
+ *
+ * It is printed as `(value as A)`, which is the same expression and the only
+ * spelling of it a `.tsx` file can read: there a `<` where an operand begins
+ * opens an element. A template is written in the file that defines the macro
+ * and printed into the file that invokes it, so a `.sts` macro's `<A>value`
+ * reaches `.tsx` whenever a `.stsx` file uses it, and generated `.ts` is read
+ * as `.tsx` by whatever it is pasted into. There is no comma to add as there is
+ * for a generic arrow.
+ *
+ * Nothing but an assertion and a generic arrow begins an expression with a `<`
+ * token -- an element is a group -- and the two cannot be confused: after the
+ * closing `>` an assertion holds its one operand, and an arrow holds at least
+ * its parameters, its `=>` and its body.
+ */
+function prefixTypeAssertion(
+  node: ProtectedSyntax,
+): PrefixTypeAssertion | undefined {
+  if (node.category !== "expr" || node.form !== undefined) return undefined;
+  const children = node.children;
+  const open = children[0];
+  // One `<` and no more: the scanner joins `<<`, and the reader does not take
+  // an assertion that opens with one.
+  if (open?.tag !== "token" || open.raw !== "<") return undefined;
+  let depth = 0;
+  for (let at = 0; at < children.length; at += 1) {
+    const child = children[at]!;
+    if (child.tag !== "token") continue;
+    depth += angleWidth(child.raw, "<") - angleWidth(child.raw, ">");
+    if (depth > 0) continue;
+    return depth === 0 && at > 1 && at === children.length - 2
+      ? {
+          type: children.slice(1, at),
+          operand: children[at + 1]!,
+        }
+      : undefined;
+  }
+  return undefined;
+}
 
 /** Punctuators two adjacent tokens could print as, if nothing parted them. */
 const punctuators: readonly string[] = [
@@ -481,6 +589,10 @@ export function printExpandedFile<Trace>(
    * printed as `type F<T> = Array<T> export interface Functor`.
    */
   const statementStarts = new Set<Syntax>();
+  /** Each `<` the parser read as opening an arrow's type parameters. */
+  const typeParameterOpens = new Set<Syntax>();
+  /** Each `>` closing type parameters that `needsComma` before it. */
+  const commaBeforeClose = new Set<Syntax>();
   const firstToken = (node: Syntax): Syntax | undefined => {
     let current: Syntax | undefined = node;
     while (current !== undefined && current.tag !== "token")
@@ -573,6 +685,15 @@ export function printExpandedFile<Trace>(
       throw new RangeError(`Cannot print unknown origin ${String(origin)}`);
     return value.kind;
   };
+  /**
+   * Whether a template wrote `syntax`, rather than the author of the file being
+   * printed. Only that is respelled for the file it lands in: a template is
+   * written for the file that defines its macro, and the author's own code was
+   * written for this one, in the spelling they chose. It is the rule grouping
+   * parentheses already follow.
+   */
+  const writtenByTemplate = (syntax: Syntax): boolean =>
+    kindFor(syntax.origin) === "introduced";
   const pending: PrintItem[] = [...options.syntax].reverse();
   const pushChildren = (children: readonly Syntax[], list = false) => {
     for (let index = children.length - 1; index >= 0; index -= 1) {
@@ -751,7 +872,11 @@ export function printExpandedFile<Trace>(
     seam.closedTypeArguments = closedTypeArguments;
     return seam;
   };
-  const trackBrackets = (text: string, gap: string) => {
+  const trackBrackets = (
+    text: string,
+    gap: string,
+    opensTypeParameters = false,
+  ) => {
     const before = lastPrinted;
     const wasMemberName = memberName;
     const closes =
@@ -775,7 +900,8 @@ export function printExpandedFile<Trace>(
     // and one where an operand begins opens type parameters, `<T>(value: T)`.
     const typeArguments =
       text === "<" &&
-      (before === undefined ||
+      (opensTypeParameters ||
+        before === undefined ||
         (gap === "" && applies(before, wasMemberName)) ||
         typeArgumentsCanFollow.has(before));
     prefix =
@@ -807,6 +933,15 @@ export function printExpandedFile<Trace>(
       innermost.conditionals -= 1;
   };
   const pushToken = (token: TokenSyntax) => {
+    // Written against the parameter, where a trailing comma stands, and
+    // outside what is remembered of the last token printed: the `>` is spaced
+    // from the parameter as it was before the comma stood between them.
+    if (commaBeforeClose.has(token))
+      emit(
+        ",",
+        options.origins.synthesized(token.origin, "printer-separator"),
+        "synthesized",
+      );
     const kind = kindFor(token.origin);
     const text = replacements.get(token.id) ?? token.raw;
     const written = writtenAt(token.origin);
@@ -919,7 +1054,7 @@ export function printExpandedFile<Trace>(
     let trailing = "";
     for (const piece of token.trailingTrivia) trailing += piece.raw;
     emit(trailing, token.origin, "synthesized");
-    trackBrackets(text, leading);
+    trackBrackets(text, leading, typeParameterOpens.has(token));
     lastPrinted = text;
     previousKind = kind;
     previousWritten =
@@ -944,6 +1079,9 @@ export function printExpandedFile<Trace>(
         continue;
       }
       flushOpens();
+      // A word the printer writes stands apart from what it follows; a bracket
+      // holds to it.
+      if (wordCharacter(item.text[0])) emit(" ", item.origin, "grouping");
       emit(item.text, item.origin, "grouping");
       trackBrackets(item.text, "");
       lastPrinted = item.text;
@@ -988,6 +1126,30 @@ export function printExpandedFile<Trace>(
         pushChildren(item.children);
         break;
       case "protected": {
+        const assertion = prefixTypeAssertion(item);
+        if (assertion !== undefined && writtenByTemplate(item.children[0]!)) {
+          // `(value as A)`, pushed last piece first. The parentheses are
+          // written whoever wrote the assertion: `as` binds more loosely than
+          // the prefix it replaces, so `<A>value * 2` is `(value as A) * 2`
+          // even where the author's own grouping is otherwise taken as read.
+          const written = (text: string): PrintItem => ({
+            text,
+            origin: item.origin,
+            grouping: true,
+          });
+          pending.push(written(")"));
+          pushChildren(assertion.type);
+          pending.push(written("as"));
+          // A unary operand holds together against `as` without help.
+          if (
+            assertion.operand.tag === "protected" &&
+            (assertion.operand.precedence ?? 0) > 110
+          )
+            boundOperands.add(assertion.operand);
+          pushChildren([assertion.operand]);
+          pending.push(written("("));
+          break;
+        }
         // Parentheses exist to preserve precedence, which a lone token never
         // needs. Adding them anyway produces `{ (x) }` for a shorthand
         // property, which is not an object literal member at all.
@@ -1018,6 +1180,15 @@ export function printExpandedFile<Trace>(
         if (group)
           pending.push({ text: ")", origin: item.origin, grouping: true });
         markBoundOperands(item);
+        const typeParameters = arrowTypeParameters(item);
+        if (typeParameters !== undefined) {
+          typeParameterOpens.add(typeParameters.open);
+          if (
+            typeParameters.needsComma &&
+            writtenByTemplate(typeParameters.open)
+          )
+            commaBeforeClose.add(typeParameters.close);
+        }
         pushChildren(item.children);
         if (group)
           pending.push({ text: "(", origin: item.origin, grouping: true });
