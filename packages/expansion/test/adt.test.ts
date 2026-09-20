@@ -290,6 +290,52 @@ describe("adt acceptance", () => {
     ).toEqual(["value"]);
   });
 
+  /**
+   * A variant with no fields binds nothing, and so can a whole match.
+   *
+   * `data Color = Red() | Green()` is an ordinary enum, and neither its
+   * declaration nor a match over it binds a single name -- so the contracts
+   * `bind $typeParameter in $constructor.fields.valueType` and
+   * `bind $arm.binders in $result` each select nothing. That was refused, and
+   * refused by a throw, so an enum of nullary variants reached the user as
+   * `Project expansion failed` rather than as anything they could act on.
+   */
+  test("declares and matches constructors that carry no fields", () => {
+    const harness = createHarness();
+    const declaration = harness.expand(
+      "data Color<T> = Red() | Green();",
+      "item",
+    );
+    expect(declaration.diagnostics).toEqual([]);
+    const match = harness.expand(
+      "match (Red()) { Red() => 0; Green() => 1; }",
+      "expr",
+    );
+    expect(match.diagnostics).toEqual([]);
+    expect(
+      semanticDiagnostics(
+        `${printLosslessSequence(declaration.syntax)}\nconst result = ${printLosslessSequence(match.syntax)};`,
+      ),
+    ).toEqual([]);
+  });
+
+  test("still reports a nullary constructor left unhandled", () => {
+    const harness = createHarness();
+    const declaration = harness.expand(
+      "data Color<T> = Red() | Green();",
+      "item",
+    );
+    const match = harness.expand("match (Red()) { Red() => 0; }", "expr");
+    expect(match.diagnostics).toEqual([]);
+    expect(
+      semanticDiagnostics(
+        `${printLosslessSequence(declaration.syntax)}\nconst result = ${printLosslessSequence(match.syntax)};`,
+      ),
+    ).toEqual([
+      `Type '{ readonly tag: "Green"; }' is not assignable to type 'never'.`,
+    ]);
+  });
+
   test("rejects a match that leaves a constructor unhandled", () => {
     const harness = createHarness();
     const declaration = harness.expand(

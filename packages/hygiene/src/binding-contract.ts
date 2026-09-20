@@ -287,11 +287,30 @@ export function applyBindingContract(
     contract.region.kind === "capture"
       ? locatePath(options.captures, contract.region.path)
       : [];
-  if (binders.length === 0) {
-    throw new RangeError("Binding contract selected no binder values");
-  }
-  if (contract.region.kind === "capture" && regions.length === 0) {
-    throw new RangeError("Binding contract selected no region values");
+  // A contract over a repetition that matched nothing binds nothing.
+  //
+  // These were refusals, and they read as though they caught a contract that
+  // names a capture the rule does not have -- but that is caught when the
+  // macro is compiled, as `SWR3002`, so the only thing left for them to catch
+  // is a path that exists and selected nothing this time. That is an ordinary
+  // outcome: `bind $arm.binders in $result` over a match whose every arm binds
+  // nothing, or `bind $typeParameter in $constructor.fields.valueType` over a
+  // `data` declaration whose constructors have no fields. Refused here, an
+  // enum of nullary variants could not be declared or matched at all, and the
+  // refusal arrived as an expansion failure rather than as a diagnostic,
+  // because it is thrown rather than reported.
+  if (
+    binders.length === 0 ||
+    (contract.region.kind === "capture" && regions.length === 0)
+  ) {
+    return Object.freeze({
+      captures: options.captures,
+      environment: options.environment,
+      bindings: Object.freeze([]),
+      followingScopes: options.followingScopes ?? options.scopeStore.empty(),
+      introducedScopes: Object.freeze([]),
+      generatedBindings: Object.freeze([]),
+    });
   }
 
   const scopesByLeaf = new Map<CaptureLeaf, ScopeId[]>();

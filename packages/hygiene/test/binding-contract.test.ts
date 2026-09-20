@@ -74,6 +74,80 @@ function appliedScopes(value: CaptureValue): ReturnType<ScopeStore["empty"]> {
 }
 
 describe("binding contracts", () => {
+  /**
+   * A contract over a repetition that matched nothing binds nothing.
+   *
+   * Both of these were refusals, and they read as though they caught a
+   * contract naming a capture the rule does not have -- but that is caught
+   * when the macro is compiled, as `SWR3002`. What was left for them to catch
+   * is a path that exists and selected nothing this time, which is an ordinary
+   * outcome: a `match` whose every arm binds nothing, or a `data` declaration
+   * whose constructors have no fields. Refused, an enum of nullary variants
+   * could be neither declared nor matched, and the refusal arrived as an
+   * expansion failure rather than a diagnostic, because it is thrown.
+   */
+  test.each([
+    ["no binders", true, false],
+    ["no region values", false, true],
+    ["neither", true, true],
+  ])(
+    "binds nothing where a contract selects %s",
+    (_label, emptyBinders, emptyRegion) => {
+      const scopes = new ScopeStore();
+      const environments = new EnvironmentStore();
+      const binderCapture = capture(1);
+      const regionCapture = capture(2);
+      const captures = new CaptureRecord([
+        [
+          binderCapture,
+          emptyBinders
+            ? sequence(group(1), [])
+            : sequence(group(1), [
+                leaf(binderCapture, "value", bindingClass, scopes.empty()),
+              ]),
+        ],
+        [
+          regionCapture,
+          emptyRegion
+            ? sequence(group(2), [])
+            : sequence(group(2), [
+                leaf(regionCapture, "body", ttClass, scopes.empty()),
+              ]),
+        ],
+      ]);
+      const environment = environments.createRoot();
+      const result = applyBindingContract(
+        createBindingContract({
+          origin: origin(1),
+          binders: createCapturePath("binders", binderCapture),
+          region: {
+            kind: "capture",
+            path: createCapturePath("region", regionCapture),
+          },
+          kind: "lexical",
+          space: "value",
+        }),
+        {
+          captures,
+          scopeStore: scopes,
+          environments,
+          environment,
+          phase: createPhase(0),
+          position: 0,
+        },
+      );
+
+      expect(result.bindings).toEqual([]);
+      expect(result.introducedScopes).toEqual([]);
+      expect(result.generatedBindings).toEqual([]);
+      // The captures and the environment are handed back as they were, so a
+      // contract that selected nothing leaves the next one exactly what it
+      // would have had.
+      expect(result.captures).toBe(captures);
+      expect(result.environment).toBe(environment);
+    },
+  );
+
   test("applies a do-style field binder to the complete rest region", () => {
     const scopes = new ScopeStore();
     const environments = new EnvironmentStore();
