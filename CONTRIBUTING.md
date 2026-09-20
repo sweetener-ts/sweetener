@@ -35,8 +35,16 @@ Check two things before you trust a red result:
   most machines. If `pnpm benchmark:check` reports a regression during a full
   run, reproduce it on its own several times before you believe it.
 - The reader's per-character scaling test has the same problem. It compares two
-  file sizes rather than a wall clock, and parallel load still pushes it over
-  its threshold.
+  file sizes rather than a wall clock, so a slow machine moves both, but
+  parallel load can still push it over its threshold. Its failure message
+  carries the p90/p10 spread of the rounds it measured: a wide spread is the
+  machine, and a tight one is the reader.
+- `turbopack.test.ts` and `incremental-equivalence.test.ts` each drive a real
+  build and take five to ten seconds on an idle machine, against the suite's
+  thirty-second timeout. On a machine running something else heavy they time
+  out, and which of them does is a matter of scheduling. A single one of them
+  failing, with a different one failing on the next run, is the machine; run
+  them on their own before reading it as anything else.
 
 ## Layout
 

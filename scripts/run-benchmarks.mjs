@@ -32,6 +32,10 @@ function parseArguments(arguments_) {
     baseline: undefined,
     relative: 0.15,
     absoluteMs: 2,
+    // A scenario missing from the baseline fails the check, because an
+    // unmeasured scenario is not a passing one. Set while a baseline is being
+    // brought up to date, and not otherwise.
+    allowUnmeasured: false,
     // One scenario per process. Fourteen scenarios sharing one heap let an
     // early one pay for the ones behind it: with `expansion/project-scale`
     // ahead of them, `hygiene/fresh-scopes` measured 12 percent slow and
@@ -42,6 +46,11 @@ function parseArguments(arguments_) {
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
+    // A flag rather than a setting, so it takes no value with it.
+    if (argument === "--allow-unmeasured") {
+      options.allowUnmeasured = true;
+      continue;
+    }
     const value = arguments_[++index];
     if (value === undefined)
       throw new TypeError(`${argument} requires a value`);
@@ -227,6 +236,41 @@ if (options.baseline !== undefined) {
   const baselineResults = new Map(
     baseline.results.map((result) => [result.id, result]),
   );
+  // What the baseline was recorded under decides what a pass from it is
+  // worth, and `benchmarks/baselines/README.md` says so where a person reads
+  // it rather than where the gate does. Said here too, so a pass against a
+  // reference nobody could reproduce is not read as a clean run.
+  const conditions = [];
+  if (baseline.dirty === true)
+    conditions.push(
+      `it was recorded on a dirty worktree at ${baseline.commit ?? "an unrecorded commit"}, ` +
+        `so no tree can be checked out to reproduce it`,
+    );
+  if (baseline.environment?.loadAverage === undefined)
+    conditions.push(
+      "it does not record the load average it was taken under, so nothing " +
+        "says whether the machine was busy",
+    );
+  else if (
+    baseline.environment.loadAverage >
+    (baseline.environment.logicalCpus ?? Number.POSITIVE_INFINITY) / 2
+  )
+    conditions.push(
+      `it was recorded at a load average of ${baseline.environment.loadAverage.toFixed(2)} on ` +
+        `${String(baseline.environment.logicalCpus)} logical CPUs, above the threshold this ` +
+        `runner warns at, so its rows are slow ones and a real regression of the same size passes`,
+    );
+  for (const condition of conditions)
+    process.stderr.write(
+      `Warning: baseline ${baselinePath} is weak evidence: ${condition}.\n`,
+    );
+  // A scenario with no row in the baseline is unmeasured, not unchanged. Left
+  // as a line of output among a dozen others, a new scenario stayed unguarded
+  // until somebody happened to re-record, and `expansion/project-scale` went
+  // unchecked under Node 24 for a month that way.
+  const unmeasured = report.results
+    .filter(({ id }) => !baselineResults.has(id))
+    .map(({ id }) => id);
   process.stdout.write(`\nAgainst ${baselinePath}:\n`);
   for (const candidate of report.results) {
     const previous = baselineResults.get(candidate.id);
@@ -264,6 +308,17 @@ if (options.baseline !== undefined) {
   if (regressions.length > 0) {
     process.stderr.write(`${JSON.stringify(regressions, null, 2)}\n`);
     process.exitCode = 1;
+  }
+  if (unmeasured.length > 0) {
+    process.stderr.write(
+      `${String(unmeasured.length)} scenario${unmeasured.length === 1 ? "" : "s"} ` +
+        `ha${unmeasured.length === 1 ? "s" : "ve"} no row in ${baselinePath}, so ` +
+        `nothing was checked for ${unmeasured.length === 1 ? "it" : "them"}:\n` +
+        `${unmeasured.map((id) => `- ${id}`).join("\n")}\n` +
+        `Record a baseline that covers ${unmeasured.length === 1 ? "it" : "them"}, or pass ` +
+        `--allow-unmeasured to accept a partial comparison.\n`,
+    );
+    if (!options.allowUnmeasured) process.exitCode = 1;
   }
 }
 process.stdout.write(`Wrote ${options.output}\n`);

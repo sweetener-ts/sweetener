@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -256,6 +257,65 @@ async function loadCheckReports() {
   return reports;
 }
 
+/** The commit the tree in front of you is at, where git can say. */
+function headCommit() {
+  try {
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `commit` is a commit this repository holds. */
+function commitExists(commit) {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${commit}^{commit}`], {
+      cwd: repositoryRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What to say about each check report that did not come from the tree in front
+ * of you.
+ *
+ * The validation table records the commit each report ran at and nothing reads
+ * it, so a green row can sit above a `Health: green` at a commit where the
+ * suite never ran. The staleness is worked out here, when the dashboard is
+ * *checked*, rather than written into the file: `STATUS.md` is committed
+ * alongside the change it describes, so anything in it that named the current
+ * commit was one behind the moment it landed -- which is what made the
+ * byte-for-byte render comparison fail from 0.1.0-alpha.3 until `a943ead`
+ * removed the marker.
+ */
+export function staleReports(reports, head, exists = commitExists) {
+  if (head === undefined) return [];
+  const stale = [];
+  for (const report of reports) {
+    if (report.commit === undefined) {
+      stale.push(
+        `${report.name} records no commit, so nothing says when it ran.`,
+      );
+      continue;
+    }
+    if (report.commit === head) continue;
+    stale.push(
+      exists(report.commit)
+        ? `${report.name} ran at ${report.commit}, and HEAD is ${head}.`
+        : `${report.name} ran at ${report.commit}, which is not a commit in this repository.`,
+    );
+  }
+  return stale;
+}
+
 export async function renderStatus(state, review) {
   const current = state.currentTask
     ? state.tasks.find((task) => task.id === state.currentTask)
@@ -399,6 +459,15 @@ export async function runStatus(args = process.argv.slice(2)) {
     const existing = await readFile(statusPath, "utf8").catch(() => "");
     if (existing !== rendered) {
       throw new Error("STATUS.md is stale. Run `node scripts/status.mjs`.");
+    }
+    const stale = staleReports(await loadCheckReports(), headCommit());
+    if (stale.length > 0) {
+      throw new Error(
+        `A check report in STATUS.md predates this tree, so the result it ` +
+          `records is not this commit's:\n${stale
+            .map((message) => `- ${message}`)
+            .join("\n")}\nRe-run the check and regenerate the status snapshot.`,
+      );
     }
     process.stdout.write("Status data is valid and STATUS.md is current.\n");
     return;

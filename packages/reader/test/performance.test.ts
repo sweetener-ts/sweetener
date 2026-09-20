@@ -55,28 +55,19 @@ export function Component${String(index)}({ items }: { items: readonly string[] 
 const allowedRatio = 3;
 
 /**
- * How long, and for how many rounds, a ratio over the bound may be measured
- * again before it is reported as it stands.
+ * How many rounds are measured, and how long they may take.
  *
- * Both limits are reached only where the ratio never settles, which is what a
- * real regression does. The budget is what keeps such a run short: a round
- * costs one read of each size, and a reader that has become slower enough to
- * fail this spends it in a handful of rounds, while a reader that is merely
- * sharing a busy machine gets dozens.
+ * Every round is measured and kept, rather than stopping at the first one that
+ * passes: the statistic is the middle of the distribution, and a distribution
+ * needs all of it. The budget bounds a run on a machine so loaded that the
+ * rounds themselves are slow.
  */
 const budgetMs = 5_000;
-const rounds = 24;
+const rounds = 15;
 
 /**
- * The cost per character of reading each source, in nanoseconds, kept at the
- * fastest round measured.
- *
- * The suite runs these in parallel with everything else, so any single
- * measurement may have spent its time waiting for a core -- and the larger
- * read, being eight times the work, is interrupted eight times as often. The
- * fastest round is the one that was least interrupted, and it is stable in a
- * way a mean is not: a round that comes in slow lowers no minimum and is
- * simply ignored.
+ * The cost per character of reading each source, in nanoseconds, one round of
+ * it, appended to what has been measured so far.
  *
  * A read is timed two ways because each overstates its cost for a different
  * reason. Elapsed time counts every moment the machine spent on something
@@ -87,7 +78,7 @@ const rounds = 24;
  * more often. Neither can report less work than was done, so the smaller of
  * the two is the closer account of it.
  */
-function measure(sources: readonly string[], best: number[]): void {
+function measure(sources: readonly string[], rates: number[][]): void {
   // Interleaved, so a slow stretch of machine falls on both rather than on
   // whichever happened to be measured during it.
   for (const [index, source] of sources.entries()) {
@@ -97,9 +88,18 @@ function measure(sources: readonly string[], best: number[]): void {
     const elapsedMs = performance.now() - started;
     const processor = process.cpuUsage(processorBefore);
     const processorMs = (processor.user + processor.system) / 1000;
-    const rate = (Math.min(elapsedMs, processorMs) / source.length) * 1e6;
-    best[index] = Math.min(best[index]!, rate);
+    rates[index]!.push(
+      (Math.min(elapsedMs, processorMs) / source.length) * 1e6,
+    );
   }
+}
+
+/** The value `fraction` of the way through `values`, sorted. */
+function percentile(values: readonly number[], fraction: number): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[
+    Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))
+  ]!;
 }
 
 describe("reading scales with the size of the file", () => {
@@ -109,28 +109,40 @@ describe("reading scales with the size of the file", () => {
     expect(large.length / small.length).toBeGreaterThan(7);
     const sources = [small, large];
 
-    const best = sources.map(() => Number.POSITIVE_INFINITY);
+    const rates: number[][] = sources.map(() => []);
     for (const source of sources)
       for (let index = 0; index < 3; index += 1)
         readSyntax(source, { sourceId, scopes, variant: "jsx" });
-    // Measuring goes on while the ratio is over the bound, because only a cost
-    // that really grows with the file keeps it there. A run of bad luck on a
-    // busy machine is undone by one uninterrupted round, while work
-    // proportional to a token's offset is over the bound in every round there
-    // is -- the same reason the benchmark suite refuses to call a single slow
-    // sample a regression.
-    let ratio = Number.POSITIVE_INFINITY;
+    // Every round is measured, and none of them ends the loop. Stopping at the
+    // first round that passed made the statistic the best of up to
+    // twenty-four, which is blind to exactly the costs that are usually there
+    // and occasionally not: a cache that degrades, an allocation that only
+    // bites once the collector wakes, work a warm run hides. A reader over the
+    // bound four rounds in five passed on the fifth and the other four were
+    // never counted.
     const until = performance.now() + budgetMs;
     for (let round = 0; round < rounds; round += 1) {
-      measure(sources, best);
-      ratio = best[1]! / best[0]!;
-      if (ratio < allowedRatio || performance.now() > until) break;
+      measure(sources, rates);
+      if (performance.now() > until) break;
     }
 
-    const [smallRate, largeRate] = best as [number, number];
+    // The median of each, rather than the minimum of either: a machine that
+    // interrupted half the rounds still has a middle, and a reader that is
+    // slow most of the time no longer hides behind its best round.
+    const smallRate = percentile(rates[0]!, 0.5);
+    const largeRate = percentile(rates[1]!, 0.5);
+    const ratio = largeRate / smallRate;
+    // The spread, so a failure says whether the machine or the reader is the
+    // reason: a run where the rounds disagree wildly is a busy machine, and
+    // one where they agree is the reader.
+    const spread = (
+      percentile(rates[1]!, 0.9) / percentile(rates[1]!, 0.1)
+    ).toFixed(2);
     expect(
       ratio,
-      `${largeRate.toFixed(0)} ns/char at ${String(large.length)} characters against ${smallRate.toFixed(0)} at ${String(small.length)}`,
+      `${largeRate.toFixed(0)} ns/char at ${String(large.length)} characters ` +
+        `against ${smallRate.toFixed(0)} at ${String(small.length)}, over ` +
+        `${String(rates[0]!.length)} rounds with a p90/p10 spread of ${spread}`,
     ).toBeLessThan(allowedRatio);
   });
 });
