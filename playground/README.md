@@ -54,3 +54,9 @@ Build and exercise every example through the generated browser worker:
 ```bash
 pnpm playground:build
 ```
+
+The build fails unless every example expands without a diagnostic and
+TypeScript then accepts what it generated: each generated project is
+type-checked with the real compiler and libraries, and every generated `.ts`
+file must also parse as `.tsx`, which is how the TypeScript playground and any
+`.tsx` project read code pasted into them.

@@ -1,5 +1,7 @@
 declare module "react/compiler-runtime" {
-  export function c(size: number): unknown[];
+  // React's private compiler cache is deliberately heterogeneous.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  export function c(size: number): any[];
 }
 
 declare namespace JSX {

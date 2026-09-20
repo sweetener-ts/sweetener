@@ -68,9 +68,10 @@ const example = (
  * precedence.
  * The rest follow.
  *
- * Each is a whole working program rather than a fragment, and the build
- * expands every one of them, so an example that stopped compiling would fail
- * the build rather than greet the next person who opened it.
+ * Each is a whole working program rather than a fragment. The build expands
+ * every one of them and hands what came out to TypeScript, so an example that
+ * stopped compiling, or that generates code TypeScript rejects, fails the
+ * build rather than greeting the next person who opened it.
  */
 export const examples: PlaygroundExample[] = [
   example(
