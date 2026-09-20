@@ -789,6 +789,44 @@ describe("type positions", () => {
     expect(text).toContain("return boxed + 1");
   });
 
+  /**
+   * `f(a < b, { x: 1 }, c > d)` is three comparisons, and TypeScript says so
+   * by parsing the candidate type-argument list and reading what follows it.
+   * The walk asked only what stood in front of the brace -- an unclosed `<`
+   * behind, a `>` ahead, and a `,` in front -- and called the brace an object
+   * type. A type holds no expressions, so the macro written inside it was
+   * never offered to the expander.
+   *
+   * Nothing was reported: as far as every other part of the walk was
+   * concerned the reading had succeeded, and the invocation reached the
+   * emitted TypeScript as a call to a name the compile-time import erases.
+   * So the assertion is about the expansion, and the control is the same call
+   * without the comparisons around it.
+   */
+  test.each([
+    ["comparisons around it", "f(a < b, { x: twice(1) }, c > d)"],
+    ["a plain argument list", "f(a, { x: twice(1) }, c)"],
+    ["real type arguments", "g<{ x: readonly number[] }>({ x: twice(1) })"],
+  ])("expands a macro in an object literal with %s", (_label, call) => {
+    const { text, messages } = expand(
+      `export syntax twice:expr {
+         rule { twice($value:expr) } => { [$value, $value] }
+       }`,
+      `import { twice } from "./macros.sts" for syntax;
+       declare const a: number;
+       declare const b: number;
+       declare const c: number;
+       declare const d: number;
+       declare function f(...args: readonly unknown[]): void;
+       declare function g<T>(value: T): void;
+       export const called = ${call};
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("[1, 1]");
+    expect(text).not.toContain("twice(");
+  });
+
   // A `<` opens type arguments only until the statement it is written in
   // ends. Counted from the start of the whole run instead, the `<` of a
   // comparison in one statement was still open in the next, and every `=`

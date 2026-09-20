@@ -7,15 +7,8 @@ import {
   unreadItemCode,
 } from "./diagnostics.js";
 import {
-  bindingMacroResolver,
   coreExpressionOperators,
-  createBindingConsumer,
-  createJsxChildConsumer,
-  createClassElementConsumer,
-  createItemConsumer,
-  createPrattExpressionConsumer,
-  createStatementConsumer,
-  createTypeConsumers,
+  createConsumerSuite,
   StopSet,
   type ConsumerContext,
   type ConsumerFailure,
@@ -587,39 +580,6 @@ export function createExpansionFrontendSession(
     matchesBindingLiteral: options.matchesBindingLiteral,
     ...shared,
   });
-  // Built before the consumers that need it: what stands to the right of `as`
-  // and `satisfies` is a type, and the statement and item consumers build
-  // expression consumers of their own, so it has to reach all of them. Passing
-  // it only to the expression consumer left `const value = 1 as number;`
-  // unparseable inside a function body while working at the top level.
-  // The member consumer is given the extent resolver so a member macro's own
-  // rule decides where its invocation ends; a member list separates on `,`,
-  // which would otherwise cut an invocation that contains one in half.
-  const typeConsumers = createTypeConsumers({
-    ...shared,
-    // A type macro standing in a typed capture is measured by its own rule.
-    // Without this, only one shaped like a generic type (`list<string>`) would
-    // read through; `wrap { string }` would stop at its brace.
-    resolveMacro: (category, cursor, context) =>
-      category === "classElement"
-        ? undefined
-        : extentResolver(category, cursor, context),
-    resolveTypeMemberMacro: extentResolver,
-  });
-  const type = typeConsumers.type;
-  const consumerShared = {
-    ...shared,
-    resolveMacroOperator: operatorResolver,
-    consumeType: type,
-  };
-  const expression = createPrattExpressionConsumer({
-    ...consumerShared,
-    resolveMacro: extentResolver,
-  });
-  const binding = createBindingConsumer({
-    ...shared,
-    resolveMacro: bindingMacroResolver(extentResolver),
-  });
   /**
    * A statement operator has to be offered its statement before the ordinary
    * parse commits, because `a <- b` also reads as a comparison against a
@@ -640,23 +600,25 @@ export function createExpansionFrontendSession(
       ),
     );
   };
-  const statement = createStatementConsumer({
-    ...consumerShared,
-    resolveMacro: extentResolver,
-    holdsStatementOperator,
-  });
-  const item = createItemConsumer({
-    ...consumerShared,
-    resolveMacro: extentResolver,
-    holdsStatementOperator,
-  });
-  const jsxChild = createJsxChildConsumer(shared);
-  const classElement = createClassElementConsumer({
+  // One place knows how the consumers meet, and both this session and the
+  // enforestation tests come through it. Assembling them here as well let the
+  // two drift: a harness without `consumeType` refused `const x = a as
+  // string[];` that the pipeline reads.
+  const {
+    type,
+    typeMember,
+    classElement,
+    expression,
+    binding,
+    statement,
+    item,
+    jsxChild,
+  } = createConsumerSuite({
     ...shared,
-    enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
-      statement.enforestBlock(block, blockContext, allowYield, allowAwait),
+    resolveMacro: extentResolver,
+    resolveMacroOperator: operatorResolver,
+    holdsStatementOperator,
   });
-  const typeMember = typeConsumers.typeMember;
   /**
    * The contexts a capture being matched stands in. A capture is read by the
    * class consumer a module shares across every invocation, so the invocation
@@ -1084,7 +1046,8 @@ export function createExpansionFrontendSession(
    *    in it was macro syntax that expansion went on to rewrite -- recovery
    *    bought nothing here;
    *  - nothing already reported speaks about the run, so an unexpanded macro
-   *    or operator in it is described once, in its own words.
+   *    or operator in it is described once, in its own words -- counting what
+   *    this has itself said, not only what was reported before it began.
    */
   const reportUnreadItems = (
     syntax: SyntaxSequence,
@@ -1126,7 +1089,14 @@ export function createExpansionFrontendSession(
         end: Math.max(...spans.map(({ end }) => end)),
         originId: first.originId,
       };
-      if (reportedAlready.some((diagnostic) => mentions(diagnostic, run)))
+      // What this loop has already said counts as said. Measured against the
+      // snapshot alone, two recovered runs that overlap -- a recovery nested
+      // inside another -- would each find nothing spoken about them and both
+      // report, which is the one thing the rule above forbids.
+      if (
+        reportedAlready.some((diagnostic) => mentions(diagnostic, run)) ||
+        recoveryDiagnostics.some((diagnostic) => mentions(diagnostic, run))
+      )
         continue;
       // Where the reader stopped, which is what its failure counted nodes to.
       // A run recovery ended before that point is named at its last node
@@ -1352,6 +1322,56 @@ export function createExpansionFrontendSession(
     return createSyntaxSequence(prepared);
   };
 
+  /**
+   * Every node of a run, read one after another by `consumer`, or nothing
+   * where the run does not read as a list of them.
+   *
+   * The five list-shaped routes into the expander come through here so that
+   * none of them can answer differently from the others. They were five copies
+   * of this loop, which is how they came to differ from `prepareInput` and
+   * from the expression route in the first place.
+   *
+   * What they still do not do is normalize what they build, which those two
+   * routes do. That looked like the same omission and is not: normalizing
+   * `item` here emits TypeScript that does not parse -- the React memoization
+   * fixture is the reproduction -- because the rules in
+   * `normalizeProtectedInput` were written for a run read from source, and an
+   * item read out of a macro's replacement is not one. The other four pass
+   * their suites normalized, but nothing here asked them to be, so none of
+   * them is: one shape for the five, and a measurement rather than a guess
+   * about what the sixth should be.
+   */
+  const enforestList = (
+    consumer: SyntaxConsumer,
+    category: SyntaxCategory,
+    request: {
+      readonly syntax: SyntaxSequence;
+      readonly contexts: ReadonlySet<MacroContext>;
+      readonly lexicalModule?: CompileParsedMacrosResult | undefined;
+    },
+  ): SyntaxSequence | undefined => {
+    const restore = enforestingModule;
+    enforestingModule = request.lexicalModule ?? restore;
+    try {
+      let cursor = createSyntaxCursor(request.syntax);
+      const read: Syntax[] = [];
+      while (!cursor.atEnd) {
+        const before = cursor.index;
+        const attempted = consumer.consume(cursor, {
+          ...context(category, request.contexts),
+          stopSet: StopSet.empty,
+        });
+        if (!attempted.matched || attempted.cursor.index <= before)
+          return undefined;
+        read.push(attempted.syntax);
+        cursor = attempted.cursor;
+      }
+      return createSyntaxSequence(read);
+    } finally {
+      enforestingModule = restore;
+    }
+  };
+
   return Object.freeze({
     consumeClass,
     environment,
@@ -1406,116 +1426,15 @@ export function createExpansionFrontendSession(
             )
           );
         },
-        enforestStatements: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            let cursor = createSyntaxCursor(syntax);
-            const statements: Syntax[] = [];
-            while (!cursor.atEnd) {
-              const before = cursor.index;
-              const attempted = statement.consume(cursor, {
-                ...context("stmt", contexts),
-                stopSet: StopSet.empty,
-              });
-              if (!attempted.matched || attempted.cursor.index <= before)
-                return undefined;
-              statements.push(attempted.syntax);
-              cursor = attempted.cursor;
-            }
-            return createSyntaxSequence(statements);
-          } finally {
-            enforestingModule = restore;
-          }
-        },
-        enforestItems: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            let cursor = createSyntaxCursor(syntax);
-            const items: Syntax[] = [];
-            while (!cursor.atEnd) {
-              const before = cursor.index;
-              const attempted = item.consume(cursor, {
-                ...context("item", contexts),
-                stopSet: StopSet.empty,
-              });
-              if (!attempted.matched || attempted.cursor.index <= before)
-                return undefined;
-              items.push(attempted.syntax);
-              cursor = attempted.cursor;
-            }
-            return createSyntaxSequence(items);
-          } finally {
-            enforestingModule = restore;
-          }
-        },
-        enforestJsxChildren: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            let cursor = createSyntaxCursor(syntax);
-            const children: Syntax[] = [];
-            while (!cursor.atEnd) {
-              const before = cursor.index;
-              const attempted = jsxChild.consume(cursor, {
-                ...context("jsxChild", contexts),
-                stopSet: StopSet.empty,
-              });
-              if (!attempted.matched || attempted.cursor.index <= before)
-                return undefined;
-              children.push(attempted.syntax);
-              cursor = attempted.cursor;
-            }
-            return createSyntaxSequence(children);
-          } finally {
-            enforestingModule = restore;
-          }
-        },
-        enforestTypeMembers: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            let cursor = createSyntaxCursor(syntax);
-            const members: Syntax[] = [];
-            while (!cursor.atEnd) {
-              const before = cursor.index;
-              const attempted = typeMember.consume(cursor, {
-                ...context("typeMember", contexts),
-                stopSet: StopSet.empty,
-              });
-              if (!attempted.matched || attempted.cursor.index <= before)
-                return undefined;
-              members.push(attempted.syntax);
-              cursor = attempted.cursor;
-            }
-            return createSyntaxSequence(members);
-          } finally {
-            enforestingModule = restore;
-          }
-        },
-        enforestClassElements: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            let cursor = createSyntaxCursor(syntax);
-            const members: Syntax[] = [];
-            while (!cursor.atEnd) {
-              const before = cursor.index;
-              const attempted = classElement.consume(cursor, {
-                ...context("classElement", contexts),
-                stopSet: StopSet.empty,
-              });
-              if (!attempted.matched || attempted.cursor.index <= before)
-                return undefined;
-              members.push(attempted.syntax);
-              cursor = attempted.cursor;
-            }
-            return createSyntaxSequence(members);
-          } finally {
-            enforestingModule = restore;
-          }
-        },
+        enforestStatements: (request) =>
+          enforestList(statement, "stmt", request),
+        enforestItems: (request) => enforestList(item, "item", request),
+        enforestJsxChildren: (request) =>
+          enforestList(jsxChild, "jsxChild", request),
+        enforestTypeMembers: (request) =>
+          enforestList(typeMember, "typeMember", request),
+        enforestClassElements: (request) =>
+          enforestList(classElement, "classElement", request),
         enforestExpression: ({ syntax, contexts, lexicalModule }) => {
           const restore = enforestingModule;
           enforestingModule = lexicalModule ?? restore;

@@ -157,6 +157,20 @@ describe("JavaScript macro extensions", () => {
     expect(
       result.diagnostics.map(({ code, category }) => [code, category]),
     ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
+    // And it says only what it knows. "Nothing defines JSON in the emitted
+    // code" is a claim about the whole program, which is exactly what this
+    // path has nobody to ask -- `lib.d.ts`, an ambient declaration and a
+    // `declare global` all declare names expansion cannot see. On the checked
+    // path the same sentence is earned, because TypeScript has already
+    // reported it cannot find the name.
+    const said = ts.flattenDiagnosticMessageText(
+      result.diagnostics[0]?.messageText,
+      " ",
+    );
+    expect(said).toContain(
+      "JSON is written into the emitted code as it stands",
+    );
+    expect(said).not.toContain("nothing defines JSON");
     const checked = project({
       files: {
         "src/macros.sjs": `export syntax JSON:expr {\n  rule { JSON($value:tt) } => { [$value] }\n}\n`,
@@ -172,6 +186,67 @@ describe("JavaScript macro extensions", () => {
     });
     expect(answered.diagnostics.map(({ code }) => code)).toEqual([]);
     expect(answered.exitCode).toBe(0);
+  });
+
+  /**
+   * `// @ts-check` and `// @ts-nocheck` decide whether TypeScript checks a
+   * file, so they decide whether a held sentence will ever be answered.
+   *
+   * Read from the extension and `checkJs` alone, both directions were wrong.
+   * A `@ts-check`ed JavaScript file was warned about names TypeScript had
+   * already resolved -- the noise this design exists to avoid -- and a
+   * `@ts-nocheck`ed TypeScript file was assumed to answer, so its sentence
+   * was dropped and `export const held = duplicate;` shipped with `check`
+   * reporting success and saying nothing at all.
+   */
+  const heldName = {
+    macros: `export syntax duplicate:expr {\n  rule { duplicate($value:tt) } => { [$value, $value] }\n}\n`,
+    globalMacros: `export syntax JSON:expr {\n  rule { JSON($value:tt) } => { [$value] }\n}\n`,
+  };
+
+  test.each([
+    {
+      what: "a checked JavaScript file says nothing about a name a global defines",
+      extension: "sjs",
+      macros: heldName.globalMacros,
+      main: `// @ts-check\nimport { JSON } from "./macros.sjs" for syntax;\nexport const held = JSON;\nexport const made = JSON(1);\n`,
+      expected: [],
+      exitCode: 0,
+    },
+    {
+      what: "a checked JavaScript file reports a name nothing defines",
+      extension: "sjs",
+      macros: heldName.macros,
+      main: `// @ts-check\nimport { duplicate } from "./macros.sjs" for syntax;\nexport const held = duplicate;\n`,
+      expected: [[4024, ts.DiagnosticCategory.Error]],
+      exitCode: 1,
+    },
+    {
+      what: "an unchecked TypeScript file warns rather than falling silent",
+      extension: "sts",
+      macros: heldName.macros,
+      main: `// @ts-nocheck\nimport { duplicate } from "./macros.sts" for syntax;\nexport const held = duplicate;\n`,
+      expected: [[4024, ts.DiagnosticCategory.Warning]],
+      exitCode: 0,
+    },
+  ])("$what", ({ extension, macros, main, expected, exitCode }) => {
+    const { config } = project({
+      files: {
+        [`src/macros.${extension}`]: macros,
+        [`src/main.${extension}`]: main,
+      },
+      compilerOptions: { checkJs: false, noEmit: true },
+      sweet: { macroExtensions: [`.${extension}`] },
+    });
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: config,
+      writeThrough: false,
+    });
+    expect(
+      result.diagnostics.map(({ code, category }) => [code, category]),
+    ).toEqual(expected);
+    expect(result.exitCode).toBe(exitCode);
   });
 
   test("rejects a macro extension with no virtual-file target", () => {

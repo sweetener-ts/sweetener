@@ -657,6 +657,34 @@ export function compileParsedMacros(
   });
 }
 
+/**
+ * A module's macros by the binding each declares, built once per module.
+ *
+ * Keyed on the array the module holds rather than on the module, so a caller
+ * that passes only `{ macros }` -- which the type here allows, and the tests
+ * do -- shares the index with the expander. Resolving a macro is asked for
+ * every name in every run walked, and a linear search per visible binding made
+ * it cost the whole module each time.
+ */
+const macrosByBinding = new WeakMap<
+  readonly CompiledMacroBinding[],
+  ReadonlyMap<BindingId, CompiledMacroBinding>
+>();
+
+function macroForBinding(
+  macros: readonly CompiledMacroBinding[],
+  binding: BindingId,
+): CompiledMacroBinding | undefined {
+  let index = macrosByBinding.get(macros);
+  if (index === undefined) {
+    const built = new Map<BindingId, CompiledMacroBinding>();
+    for (const macro of macros) built.set(macro.binding.id, macro);
+    index = built;
+    macrosByBinding.set(macros, index);
+  }
+  return index.get(binding);
+}
+
 /** Resolves a compiled macro through the nearest lexical expansion frame. */
 export function resolveCompiledMacro(options: {
   readonly module: Pick<CompileParsedMacrosResult, "macros">;
@@ -667,16 +695,19 @@ export function resolveCompiledMacro(options: {
   readonly phase: Phase;
 }): CompiledMacroBinding | undefined {
   const visible = options.store.lookupBindings(options.environment, options);
-  const compiled = visible.flatMap((binding) => {
-    const macro = options.module.macros.find(
-      (candidate) => candidate.binding.id === binding.id,
-    );
-    return macro === undefined ? [] : [macro];
-  });
-  if (compiled.length > 1) {
-    throw new RangeError(
-      `Ambiguous lexical macro ${options.spelling} in ${options.category}`,
-    );
+  // At most one macro is visible for a name in a space, and the usual answer
+  // is none or one. Collected into an array first, every lookup allocated one
+  // -- and one more per binding, from the `flatMap`.
+  let found: CompiledMacroBinding | undefined;
+  for (const binding of visible) {
+    const macro = macroForBinding(options.module.macros, binding.id);
+    if (macro === undefined) continue;
+    if (found !== undefined) {
+      throw new RangeError(
+        `Ambiguous lexical macro ${options.spelling} in ${options.category}`,
+      );
+    }
+    found = macro;
   }
-  return compiled[0];
+  return found;
 }

@@ -170,11 +170,48 @@ export function warnAboutHeldNames(
   explanations: readonly UnresolvedNameExplanation[],
 ): readonly ts.Diagnostic[] {
   return Object.freeze(
-    explanations.map(({ diagnostic }) =>
+    explanations.map(({ diagnostic, name }) =>
       Object.freeze({
         ...diagnostic,
+        messageText: withoutTheUnverifiableClaim(diagnostic, name),
         category: ts.DiagnosticCategory.Warning,
       }),
     ),
+  );
+}
+
+/** `SWR4024`, the sentence about a macro name written on its own. */
+const bareMacroNameCode = 4024;
+
+/**
+ * The sentence with its one unverifiable claim taken out of it.
+ *
+ * `SWR4024` says "nothing defines X in the emitted code", which is a claim
+ * about the whole program: `lib.d.ts`, an ambient declaration and a `declare
+ * global` all declare names expansion cannot see. On a checked path that claim
+ * is earned, because it is only said where TypeScript has already reported it
+ * cannot find the name, and the sentence replaces `Cannot find name` with an
+ * explanation of it. Here nothing has said anything, so the claim is made with
+ * nothing behind it -- the same over-reach the held-name design took out
+ * everywhere else, left in the one place the design cannot hand the sentence
+ * on.
+ *
+ * What is left is what expansion does know: the name is a macro here, and the
+ * emitted code will contain it as written.
+ */
+function withoutTheUnverifiableClaim(
+  diagnostic: ts.Diagnostic,
+  name: string,
+): ts.Diagnostic["messageText"] {
+  const message = diagnostic.messageText;
+  if (diagnostic.code !== bareMacroNameCode || typeof message !== "string")
+    return message;
+  const claim = `A macro is a compile-time name, so nothing defines ${name} in the emitted code.`;
+  if (!message.includes(claim)) return message;
+  return message.replace(
+    claim,
+    `A macro is a compile-time name, so ${name} is written into the emitted ` +
+      `code as it stands, and nothing in this build checks this file for ` +
+      `whether anything defines it there.`,
   );
 }

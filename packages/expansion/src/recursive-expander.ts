@@ -56,6 +56,8 @@ import {
   classMemberNameFollows,
   parameterBinder,
   returnTypeReadsInConsequent,
+  callFollowsTypeArguments,
+  typeArgumentsFollow,
   typeOperandFollows,
   type ArrowBodyExtent,
 } from "@sweetener/enforestation";
@@ -251,6 +253,58 @@ const itemDispatchPrefixes = new Set([
 ]);
 
 /** Whether a spelling is punctuation rather than an identifier. */
+/** Whether the node at `offset` in `nodes` is the token spelled `raw`. */
+function tokenAt(
+  nodes: readonly Syntax[],
+  offset: number,
+  raw: string,
+): boolean {
+  const node = nodes[offset];
+  return node?.tag === "token" && node.raw === raw;
+}
+
+/**
+ * Where the brace that opens a body stands after `from`, as the index just
+ * past it; undefined where the run ends or a `,` or `;` ends the header first.
+ *
+ * A brace written where a return type is is an object type, so the node in
+ * front of it decides.
+ */
+function braceAfterIn(
+  nodes: readonly Syntax[],
+  from: number,
+): number | undefined {
+  for (let index = from; index < nodes.length; index += 1) {
+    const node = nodes[index]!;
+    if (
+      node.tag === "group" &&
+      node.delimiter === "brace" &&
+      !typeOperandFollows(nodes[index - 1])
+    )
+      return index + 1;
+    if (node.tag === "token" && (node.raw === "," || node.raw === ";"))
+      return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Every space a macro can be declared for, in the order a name is looked for
+ * in them. Written once rather than per lookup: the scan that asks whether a
+ * name is a macro in some other space runs for every name the walk cannot
+ * resolve, and built inside it the list was an array per name.
+ */
+const macroSpaces = Object.freeze([
+  "item",
+  "stmt",
+  "expr",
+  "type",
+  "classElement",
+  "typeMember",
+  "binding",
+  "jsxChild",
+] as const);
+
 function punctuationSpelled(spelling: string): boolean {
   return !/^[\p{ID_Start}_$]/u.test(spelling);
 }
@@ -2280,38 +2334,24 @@ export function expandMacroSyntax(
         readonly async: boolean;
       }
     | undefined => {
-    const token = (offset: number, raw: string) => {
-      const node = nodes[offset];
-      return node?.tag === "token" && node.raw === raw;
-    };
-    const braceAfter = (from: number) => {
-      for (let index = from; index < nodes.length; index += 1) {
-        const node = nodes[index]!;
-        // A brace where a return type is written is an object type.
-        if (
-          node.tag === "group" &&
-          node.delimiter === "brace" &&
-          !typeOperandFollows(nodes[index - 1])
-        )
-          return index + 1;
-        if (node.tag === "token" && (node.raw === "," || node.raw === ";"))
-          return undefined;
-      }
-      return undefined;
-    };
+    // `token` and `braceAfter` are written outside, taking the nodes they read
+    // rather than closing over them: this is asked once per node of every run
+    // walked, and two closures per node is two allocations per node for two
+    // functions that never differ.
     // `task.class` and `task.function` name properties.
-    if (token(at - 1, ".") || token(at - 1, "?.")) return undefined;
+    if (tokenAt(nodes, at - 1, ".") || tokenAt(nodes, at - 1, "?."))
+      return undefined;
     // `async` modifies what is written after it on the same line; left alone
     // on its own line it is an ordinary name, and the closure under it is one
     // of its own. The enforestation route reads it by the same rule.
     const async = asyncModifies(nodes[at], nodes[at + 1]);
     const start = async ? at + 1 : at;
-    if (token(start, "function")) {
-      const end = braceAfter(start + 1);
+    if (tokenAt(nodes, start, "function")) {
+      const end = braceAfterIn(nodes, start + 1);
       return end === undefined ? undefined : { end, kind: "function", async };
     }
-    if (at === start && token(at, "class")) {
-      const end = braceAfter(at + 1);
+    if (at === start && tokenAt(nodes, at, "class")) {
+      const end = braceAfterIn(nodes, at + 1);
       return end === undefined ? undefined : { end, kind: "class", async };
     }
     const parameters = nodes[start];
@@ -2332,7 +2372,7 @@ export function expandMacroSyntax(
           // belongs to the async form alone.
           (async
             ? asyncNamedArrow(nodes[at], nodes[start], nodes[start + 1])
-            : token(start + 1, "=>"))
+            : tokenAt(nodes, start + 1, "=>"))
         ? start + 1
         : undefined;
     if (arrow === undefined) return undefined;
@@ -2897,7 +2937,25 @@ export function expandMacroSyntax(
         if (node.raw === ";") return false;
         depth += angles(node, "<");
         depth -= angles(node, ">");
-        if (depth <= 0) return true;
+        // The candidate has closed, and what stands after it says whether it
+        // was ever a type-argument list -- the fourth question, and the one
+        // TypeScript answers by parsing the list and reading on. A call or a
+        // tagged template after it makes it a call's type arguments; short of
+        // that, only something that cannot begin an operand leaves it an
+        // instantiation expression.
+        //
+        // Without it `f(a < b, { x: 1 }, c > d)`, which is three comparisons,
+        // had its brace read as an object type -- so a macro written in that
+        // brace was never offered to the expander, and nothing was reported,
+        // because as far as every other part of the walk went the reading had
+        // succeeded.
+        if (depth <= 0) {
+          const following = input[forward + 1];
+          return (
+            callFollowsTypeArguments(following) ||
+            typeArgumentsFollow(following)
+          );
+        }
       }
       return false;
     };
@@ -3831,26 +3889,16 @@ export function expandMacroSyntax(
         node.tag === "token" &&
         !shadowsMacro(node.raw, spaceReadHere)
       ) {
-        const elsewhere = (
-          [
-            "item",
-            "stmt",
-            "expr",
-            "type",
-            "classElement",
-            "typeMember",
-            "binding",
-            "jsxChild",
-          ] as const
-        ).find(
+        // Asked once, not once per candidate: this scan runs for every name
+        // the walk cannot resolve, and `sourceOf` walks the origin graph.
+        const writtenIn = sourceOf(node);
+        const spelling = node.raw;
+        const position = node.span.start;
+        const elsewhere = macroSpaces.find(
           (candidate) =>
             candidate !== spaceReadHere &&
-            resolveSpelling(
-              node.raw,
-              node.span.start,
-              sourceOf(node),
-              candidate,
-            ) !== undefined,
+            resolveSpelling(spelling, position, writtenIn, candidate) !==
+              undefined,
         );
         if (elsewhere !== undefined) {
           const source = options.origins.selectPrimarySource(node.origin);
