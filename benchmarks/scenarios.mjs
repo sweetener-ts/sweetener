@@ -28,6 +28,7 @@ import { defineReaderBenchmarks } from "./reader.mjs";
 import { defineExpansionBenchmark } from "./expansion.mjs";
 import { defineProjectScaleBenchmark } from "./project-scale.mjs";
 import { defineScopeStoreBenchmarks } from "./scope-store.mjs";
+import { defineWideReplacementBenchmark } from "./wide-replacement.mjs";
 
 function countTokens(root) {
   let count = 0;
@@ -46,6 +47,7 @@ function countTokens(root) {
 export async function defineBenchmarkScenarios(repositoryRoot) {
   const expansionScenario = await defineExpansionBenchmark(repositoryRoot);
   const projectScaleScenario = await defineProjectScaleBenchmark();
+  const wideReplacementScenario = defineWideReplacementBenchmark();
   const readerWorkloads = await defineReaderBenchmarks(repositoryRoot);
   const readerScenarios = readerWorkloads.map((workload) => ({
     id: `reader/${workload.id}`,
@@ -321,6 +323,7 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
     matcherScenario,
     expansionScenario,
     projectScaleScenario,
+    wideReplacementScenario,
     ...hygieneScenarios,
   ];
 }

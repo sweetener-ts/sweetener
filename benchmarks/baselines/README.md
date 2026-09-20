@@ -6,7 +6,14 @@ running runtime and refuses to compare across majors.
 A baseline is a measurement, so it is only worth what the conditions it was
 taken under are worth. Record the conditions here whenever a file is replaced:
 the commit, whether the worktree was clean, the one-minute load average, and
-which measurement protocol was in force. The protocol matters as much as the
+which measurement protocol was in force. `pnpm benchmark:check` now reads the
+first three out of the file itself and warns when they make a pass weak
+evidence, so what is written here is the account rather than the whole record.
+
+A scenario with no row in the baseline **fails** the check: an unmeasured
+scenario is not a passing one, and a new scenario used to stay unguarded until
+somebody happened to re-record. Pass `--allow-unmeasured` while a baseline is
+being brought up to date, and not otherwise. The protocol matters as much as the
 hardware — numbers taken before per-scenario process isolation are not
 comparable with numbers taken after it, because every scenario but the first
 used to inherit the heap its predecessors left behind.
@@ -39,7 +46,8 @@ Treat a pass on the rows after the first as weaker evidence than a failure.
 
 The repository supports Node 24, but development runs on Node 26, so this file
 has not been re-recorded alongside `node26.json`. Re-record it from a Node 24
-runtime before relying on it.
+runtime before relying on it: until then a check under Node 24 fails on the
+missing `expansion/project-scale` row rather than passing over it.
 
 ## Recording
 
