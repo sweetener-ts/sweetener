@@ -13,9 +13,8 @@ import { createSyntaxCursor, OriginStore } from "@sweetener/syntax";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
-  ConsumerRegistry,
   consumeParameterList,
-  createBindingConsumer,
+  createConsumerSuite,
   registerBindingSkeleton,
   StopSet,
 } from "../src/index.js";
@@ -49,13 +48,17 @@ function setup(source: string) {
     }),
   });
   const options = { origins, allocateSyntaxId: ids.allocate };
-  return { syntax, origins, ids, tracker, context, options };
+  // Wired as the expander wires it, so the harness and the pipeline cannot
+  // read different languages. `consumeParameterList` takes the plain options
+  // it is given, which is the surface it exposes.
+  const suite = createConsumerSuite(options);
+  return { syntax, origins, ids, tracker, context, options, suite };
 }
 
 function binding(source: string) {
   const prepared = setup(source);
-  const consumer = createBindingConsumer(prepared.options);
-  const registry = new ConsumerRegistry([{ category: "binding", consumer }]);
+  const consumer = prepared.suite.binding;
+  const registry = prepared.suite.registry;
   const cursor = createSyntaxCursor(prepared.syntax);
   const result = registry.consume("binding", {
     cursor,
@@ -172,12 +175,7 @@ describe("binding and parameter consumers", () => {
     ]) {
       const prepared = setup(source);
       const cursor = createSyntaxCursor(prepared.syntax);
-      const registry = new ConsumerRegistry([
-        {
-          category: "binding",
-          consumer: createBindingConsumer(prepared.options),
-        },
-      ]);
+      const registry = prepared.suite.registry;
       const result = registry.consume("binding", {
         cursor,
         phase: prepared.context.phase,
@@ -258,7 +256,7 @@ describe("binding and parameter consumers", () => {
     "{ ...rest: renamed }",
   ])("rejects invalid binding edge %s", (source) => {
     const prepared = setup(source);
-    const result = createBindingConsumer(prepared.options).consumeBinding(
+    const result = prepared.suite.binding.consumeBinding(
       createSyntaxCursor(prepared.syntax),
       prepared.context,
     );
@@ -358,7 +356,7 @@ describe("binding and parameter consumers", () => {
     ["{ type = 1 }", ["type"]],
   ])("names the binding %s", (source, names) => {
     const prepared = setup(source);
-    const result = createBindingConsumer(prepared.options).consumeBinding(
+    const result = prepared.suite.binding.consumeBinding(
       createSyntaxCursor(prepared.syntax),
       prepared.context,
     );
@@ -388,7 +386,7 @@ describe("binding and parameter consumers", () => {
     "implements",
   ])("refuses the reserved binder %s", (word) => {
     const prepared = setup(word);
-    const result = createBindingConsumer(prepared.options).consumeBinding(
+    const result = prepared.suite.binding.consumeBinding(
       createSyntaxCursor(prepared.syntax),
       prepared.context,
     );

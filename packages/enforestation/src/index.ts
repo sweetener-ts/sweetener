@@ -8,3 +8,4 @@ export * from "./statement-item.js";
 export * from "./binding-parameter.js";
 export * from "./type-class-element.js";
 export * from "./statement-final-expression.js";
+export * from "./consumer-suite.js";

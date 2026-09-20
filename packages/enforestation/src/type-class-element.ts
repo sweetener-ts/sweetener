@@ -433,6 +433,11 @@ class TypeConsumer implements SyntaxConsumer {
       if (prefixTypeWords.has(spelling)) {
         if (!expectingOperand) break;
         children.push(cursor.consume()!);
+        // A predicate's `asserts` with no name after it on its line is an
+        // ordinary type name, and the type is finished. `let a: asserts` is
+        // valid TypeScript declaring a variable of that type.
+        if (spelling === "asserts" && !predicateOperandFollows(cursor.peek()))
+          expectingOperand = false;
         continue;
       }
       const atom =
@@ -475,10 +480,34 @@ class TypeConsumer implements SyntaxConsumer {
 }
 
 /**
+ * Whether the name a predicate's `asserts` is about stands after it.
+ *
+ * TypeScript writes `asserts [no LineTerminator here] IdentifierOrThis`: with
+ * a line break between them the type ends at `asserts`, and `function f(x):
+ * asserts` with its `x` on the next line is reported rather than read. So this
+ * asks for a name on the same line, and `asserts` with anything else after it
+ * -- or nothing -- is an ordinary type name.
+ */
+function predicateOperandFollows(operand: Syntax | undefined): boolean {
+  return (
+    token(operand) &&
+    !leadingLineBreak(operand) &&
+    (operand.kind === "identifier" || operand.raw === "this")
+  );
+}
+
+/**
  * Tokens after which a type is written: an annotation's `:`, a union or
  * intersection, type arguments, a conditional type's branches, a function
  * type's `=>`, a type operator, a predicate's `is`, and the heritage a class
  * implements or an interface extends.
+ *
+ * A predicate's `asserts` is not among them, though it is a type operator of a
+ * sort: TypeScript writes `asserts [no LineTerminator here] IdentifierOrThis`,
+ * so a line can end after it and the name it is about is never a brace.
+ * Unconditionally an operand head, it held `let a: asserts` open across the
+ * break and swallowed the statement below -- where a macro then never ran.
+ * `predicateOperandFollows` is the rule instead.
  */
 const typeOperandHeads = new Set([
   ":",
@@ -494,7 +523,6 @@ const typeOperandHeads = new Set([
   "readonly",
   "unique",
   "infer",
-  "asserts",
   "is",
 ]);
 
@@ -584,13 +612,19 @@ export function decoratorWidth(
     width += 2;
   }
   let call = width;
-  if (token(peek(call), "<")) {
+  const opening = peek(call);
+  // Counted with `angles`, because the reader emits `<<` and `>>` as single
+  // tokens and each stands for two. Counted one token at a time, a `<<` in
+  // `@dec<Shift<1 << 2>>()` moved the depth by nothing, the scan ran off the
+  // end of the input, and the decorator came back as the bare `@dec` with the
+  // rest of it read as something else.
+  if (opening !== undefined && angles(opening, "<") > 0) {
     let depth = 0;
     for (; ; call += 1) {
       const node = peek(call);
       if (node === undefined) return width;
-      if (token(node, "<")) depth += 1;
-      else if (token(node, ">")) depth -= 1;
+      depth += angles(node, "<");
+      depth = Math.max(0, depth - angles(node, ">"));
       if (depth === 0) break;
     }
     call += 1;

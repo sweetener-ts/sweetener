@@ -145,7 +145,10 @@ function expressionMarkerWidth(cursor: SyntaxCursor): number | undefined {
     : undefined;
 }
 
-function functionExpressionWidth(cursor: SyntaxCursor): number | undefined {
+function functionExpressionWidth(
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): number | undefined {
   let offset = 0;
   // `async` modifies the `function` after it only on the same line; alone on
   // its line it is an ordinary name, as it is in front of an arrow's
@@ -156,45 +159,95 @@ function functionExpressionWidth(cursor: SyntaxCursor): number | undefined {
   offset += 1;
   const star = cursor.peek(offset);
   if (star?.tag === "token" && star.raw === "*") offset += 1;
-  let parametersOffset: number | undefined;
-  for (let candidate = offset; candidate < offset + 32; candidate += 1) {
-    const node = cursor.peek(candidate);
-    if (node === undefined) return undefined;
-    if (node.tag === "group" && node.delimiter === "parenthesis") {
-      parametersOffset = candidate;
-      break;
-    }
+  // What stands between `function` and its parameters is a name and type
+  // parameters, and nothing else -- so they are read rather than scanned past.
+  // Scanned for the first parenthesis within a fixed number of nodes, a header
+  // with more type parameters than the count allowed was refused, and a
+  // parenthesis written inside those parameters would have been taken for the
+  // list itself.
+  const name = cursor.peek(offset);
+  if (name?.tag === "token" && isIdentifierToken(name)) offset += 1;
+  const afterName = cursor.fork();
+  afterName.advance(offset);
+  const typeParameters = consumeBalancedTypeArguments(afterName, context);
+  if (typeParameters !== undefined) offset += typeParameters.width;
+  const parameters = cursor.peek(offset);
+  if (parameters?.tag !== "group" || parameters.delimiter !== "parenthesis")
+    return undefined;
+  offset += 1;
+  const afterParameters = cursor.peek(offset);
+  if (afterParameters === undefined) return undefined;
+  // With no return type the body stands here.
+  if (!(afterParameters.tag === "token" && afterParameters.raw === ":")) {
+    return afterParameters.tag === "group" &&
+      afterParameters.delimiter === "brace"
+      ? offset + 1
+      : undefined;
   }
-  if (parametersOffset === undefined) return undefined;
-  for (
-    let candidate = parametersOffset + 1;
-    candidate < parametersOffset + 33;
-    candidate += 1
-  ) {
-    const node = cursor.peek(candidate);
+  // A return type stands between the parameters and the body, and ends at the
+  // brace that opens the body. The scan runs to that brace rather than for a
+  // fixed number of nodes -- a sixteen-member union in a return type is
+  // thirty-three of them -- and gives up at what a return type cannot hold.
+  for (offset += 1; ; offset += 1) {
+    const node = cursor.peek(offset);
     if (node === undefined) return undefined;
-    // A brace where the return type is written is an object type.
+    // A brace where the return type is written is an object type, and the
+    // body is the brace after the whole type.
     if (
       node.tag === "group" &&
       node.delimiter === "brace" &&
-      !typeOperandFollows(cursor.peek(candidate - 1))
+      !typeOperandFollows(cursor.peek(offset - 1))
     )
-      return candidate + 1;
+      return offset + 1;
+    if (node.tag === "token" && returnTypeEndsBefore.has(node.raw))
+      return undefined;
   }
-  return undefined;
 }
 
-function classExpressionWidth(cursor: SyntaxCursor): number | undefined {
+/**
+ * Tokens a return type cannot hold, so that a scan for the body brace gives up
+ * rather than running on. A `;` or an `=` closes whatever held the
+ * parameters; inside an object type or a parameter default each is written in
+ * a group, which the scan steps over whole.
+ */
+const returnTypeEndsBefore = new Set([";", "=", ")", "]"]);
+
+function classExpressionWidth(
+  cursor: SyntaxCursor,
+  context: ConsumerContext,
+): number | undefined {
   const first = cursor.peek();
   if (first?.tag !== "token" || first.raw !== "class") return undefined;
-  for (let candidate = 1; candidate < 33; candidate += 1) {
-    const node = cursor.peek(candidate);
+  // The header runs to the brace that opens the body, however long it is: a
+  // seventeen-segment `extends a.b.c…` is thirty-three nodes, and a scan
+  // bounded at that count refused the class rather than reading it.
+  //
+  // A `<...>` region holds type parameters or a heritage expression's type
+  // arguments, and a brace inside one is an object type --
+  // `class extends make()<{ a: string }>` -- so the region is stepped over
+  // whole rather than searched, the way the statement and item readers step
+  // over it.
+  for (let offset = 1; ; offset += 1) {
+    const node = cursor.peek(offset);
     if (node === undefined) return undefined;
-    if (node.tag === "group" && node.delimiter === "brace")
-      return candidate + 1;
+    if (node.tag === "group" && node.delimiter === "brace") return offset + 1;
+    if (node.tag !== "token") continue;
+    if (classHeaderEndsBefore.has(node.raw)) return undefined;
+    if (angleWidth(node.raw, "<") > 0) {
+      const region = cursor.fork();
+      region.advance(offset);
+      const balanced = consumeBalancedTypeArguments(region, context);
+      if (balanced !== undefined) offset += balanced.width - 1;
+    }
   }
-  return undefined;
 }
+
+/**
+ * Tokens a class header cannot hold, so that a scan for the body brace gives
+ * up rather than running to the end of the input. Each of them is written
+ * inside a group where a header holds one at all.
+ */
+const classHeaderEndsBefore = new Set([";", "=", "=>", ")", "]"]);
 
 /**
  * How wide an arrow function is, from `(` or `async` or `<` to its body.
@@ -422,8 +475,10 @@ function parenthesizedArrowBodyStart(
   colon.advance(offset);
   const stops = context.stopSet.matches(colon);
   offset += 1;
-  const limit = offset + 64;
-  while (offset < limit) {
+  // No bound on how far the return type reaches: the rules below say what
+  // ends it, and a count said only that a type of more than sixty-four nodes
+  // -- a thirty-three-member union -- was not one.
+  for (;;) {
     const node = cursor.peek(offset);
     if (node === undefined) return undefined;
     if (node.tag === "token" && node.raw === "=>") {
@@ -444,7 +499,6 @@ function parenthesizedArrowBodyStart(
       return undefined;
     offset += 1;
   }
-  return undefined;
 }
 
 /**
@@ -685,7 +739,9 @@ function beginsExpression(syntax: Syntax): boolean {
  * Whether a call or a tagged template stands after a `<...>` that has closed,
  * so that the angles hold the type arguments of that call.
  */
-function callFollowsTypeArguments(following: Syntax | undefined): boolean {
+export function callFollowsTypeArguments(
+  following: Syntax | undefined,
+): boolean {
   if (following === undefined) return false;
   if (following.tag === "group")
     return (
@@ -709,7 +765,7 @@ function callFollowsTypeArguments(following: Syntax | undefined): boolean {
  * angles hold type arguments wherever a line break, a binary operator, or
  * something that cannot begin an operand follows them.
  */
-function typeArgumentsFollow(following: Syntax | undefined): boolean {
+export function typeArgumentsFollow(following: Syntax | undefined): boolean {
   if (following === undefined) return true;
   const spelling = following.tag === "token" ? following.raw : undefined;
   if (spelling !== undefined) {
@@ -752,6 +808,22 @@ function consumePostfix(
     ) {
       cursor.advance();
       return undefined;
+    }
+    // `y?.<A>(b)` is an optional call with its type arguments supplied.
+    // TypeScript writes `?. TypeArguments Arguments`, so the call is required
+    // here: `y?.<A>;` is reported by TypeScript itself. Read as nothing an
+    // optional chain may hold, the item recovered to its tokens and every
+    // macro at a statement head inside it went unexpanded.
+    if (isPunctuation(target, "<")) {
+      const typeArguments = consumeBalancedTypeArguments(cursor, context);
+      const call =
+        typeArguments === undefined
+          ? undefined
+          : cursor.peek(typeArguments.width);
+      if (typeArguments !== undefined && callFollowsTypeArguments(call)) {
+        cursor.advance(typeArguments.width + 1);
+        return undefined;
+      }
     }
     return failure(cursor, start, ["property, index, or call after '?.'"], 20);
   }
@@ -905,9 +977,9 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       cursor.fork(),
       context,
     );
-    const functionWidth = functionExpressionWidth(cursor);
+    const functionWidth = functionExpressionWidth(cursor, context);
     const markerWidth = expressionMarkerWidth(cursor);
-    const classWidth = classExpressionWidth(cursor);
+    const classWidth = classExpressionWidth(cursor, context);
     const arrow = arrowWidth(cursor, context);
     // A macro may be named by punctuation that begins no ordinary operand --
     // a syntax parameter spelled `%` stands where an operand does. Only the

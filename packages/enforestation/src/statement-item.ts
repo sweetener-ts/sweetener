@@ -426,10 +426,17 @@ function annotationExtent(
  * of a global augmentation stands after it and is an ordinary name everywhere
  * else -- `global.value = 1;` is an assignment. It is asked for by
  * `beginsStatement` instead, which is what every reader here asks.
+ *
+ * Nor is `async`, for the same reason and with the same answer as the item
+ * reader's list, which never held it. A statement can begin with `async`, but
+ * it is not a word that ends the declaration above: TypeScript reads `class C
+ * extends` and the `async.Base {}` under it as one class, and reads even
+ * `extends` with `async function g() {}` under it as a heritage clause it
+ * then complains about. Listed here, the statement reader refused the first
+ * of those while the item reader read it.
  */
 const statementStarts = new Set([
   "abstract",
-  "async",
   "await",
   "break",
   "class",

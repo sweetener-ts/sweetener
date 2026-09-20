@@ -21,9 +21,8 @@ import {
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
-  ConsumerRegistry,
   coreExpressionOperators,
-  createPrattExpressionConsumer,
+  createConsumerSuite,
   StopSet,
   type MacroOperatorExpansionInput,
   type MacroOperatorResolver,
@@ -54,17 +53,15 @@ function parse(
     (node) => node.tag !== "token" || node.kind !== "end-of-file",
   );
   const ids = createIdAllocator<SyntaxId>(20_000);
-  const registry = new ConsumerRegistry([
-    {
-      category: "expr",
-      consumer: createPrattExpressionConsumer({
-        origins,
-        allocateSyntaxId: () => ids.allocate(),
-        resolveMacroOperator,
-        allowComma,
-      }),
-    },
-  ]);
+  // Wired as the expander wires it. Built alone the expression consumer has no
+  // `consumeType`, so `x as string[]` does not parse and the harness reports a
+  // gap the pipeline does not have.
+  const { registry } = createConsumerSuite({
+    origins,
+    allocateSyntaxId: () => ids.allocate(),
+    resolveMacroOperator,
+    allowComma,
+  });
   const cursor = createSyntaxCursor(syntax);
   const result = registry.consume("expr", {
     cursor,
@@ -97,6 +94,34 @@ describe("Pratt expression consumer", () => {
     if (!result.matched) throw new Error("expected generic call expression");
     expect(result.cursor.atEnd).toBe(true);
   });
+  /**
+   * `y?.<A>(b)` is an optional call with its type arguments supplied.
+   * TypeScript writes `?. TypeArguments Arguments`, so the call is part of the
+   * form and `y?.<A>` on its own is reported by TypeScript too. Read as
+   * nothing an optional chain may hold, the declaration this stood in
+   * recovered to its tokens, and a macro at a statement head inside it went
+   * unexpanded with nothing said.
+   */
+  test.each([
+    "y?.<A>(b)",
+    "y?.<A, B>(b)",
+    "y?.<A>`t`",
+    "a?.b?.<A>(c)",
+    "a?.<A>(b)!.c",
+  ])("consumes an optional call with type arguments: %s", (source) => {
+    const { result } = parse(source);
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an optional call");
+    expect(result.cursor.atEnd).toBe(true);
+    expect(output(source)).toBe(source);
+  });
+
+  test("refuses type arguments in an optional chain with no call after them", () => {
+    // TypeScript reports `'(' expected` here, so refusing agrees with it.
+    const { result } = parse("y?.<A>");
+    expect(result.matched).toBe(false);
+  });
+
   test("consumes generic arrows with explicit return types", () => {
     const source = '<T>(value: T): Option<T> => ({ tag: "Some", value })';
     const { result } = parse(source);
@@ -244,11 +269,10 @@ describe("Pratt expression consumer", () => {
     const syntax = read.root.children.filter(
       (node) => node.tag !== "token" || node.kind !== "end-of-file",
     );
-    const consumer = createPrattExpressionConsumer({
+    const { registry } = createConsumerSuite({
       origins,
       allocateSyntaxId: createIdAllocator<SyntaxId>(25_000).allocate,
     });
-    const registry = new ConsumerRegistry([{ category: "expr", consumer }]);
     const rejected = registry.consume("expr", {
       cursor: createSyntaxCursor(syntax),
       phase: createPhase(0),
@@ -281,11 +305,10 @@ describe("Pratt expression consumer", () => {
     const syntax = read.root.children.filter(
       (node) => node.tag !== "token" || node.kind !== "end-of-file",
     );
-    const consumer = createPrattExpressionConsumer({
+    const { registry } = createConsumerSuite({
       origins,
       allocateSyntaxId: createIdAllocator<SyntaxId>(26_000).allocate,
     });
-    const registry = new ConsumerRegistry([{ category: "expr", consumer }]);
     const rejected = registry.consume("expr", {
       cursor: createSyntaxCursor(syntax),
       phase: createPhase(0),
@@ -514,15 +537,10 @@ describe("Pratt expression consumer", () => {
       (node) => node.tag !== "token" || node.kind !== "end-of-file",
     );
     const ids = createIdAllocator<SyntaxId>(40_000);
-    const registry = new ConsumerRegistry([
-      {
-        category: "expr",
-        consumer: createPrattExpressionConsumer({
-          origins,
-          allocateSyntaxId: () => ids.allocate(),
-        }),
-      },
-    ]);
+    const { registry } = createConsumerSuite({
+      origins,
+      allocateSyntaxId: () => ids.allocate(),
+    });
     const result = registry.consume("expr", {
       cursor: createSyntaxCursor(syntax),
       phase: createPhase(0),
@@ -619,15 +637,10 @@ describe("Pratt expression consumer", () => {
       (node) => node.tag !== "token" || node.kind !== "end-of-file",
     );
     const ids = createIdAllocator<SyntaxId>(50_000);
-    const registry = new ConsumerRegistry([
-      {
-        category: "expr",
-        consumer: createPrattExpressionConsumer({
-          origins,
-          allocateSyntaxId: () => ids.allocate(),
-        }),
-      },
-    ]);
+    const { registry } = createConsumerSuite({
+      origins,
+      allocateSyntaxId: () => ids.allocate(),
+    });
     const result = registry.consume("expr", {
       cursor: createSyntaxCursor(syntax),
       phase: createPhase(0),

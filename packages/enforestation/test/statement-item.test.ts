@@ -19,9 +19,7 @@ import {
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
-  ConsumerRegistry,
-  createItemConsumer,
-  createStatementConsumer,
+  createConsumerSuite,
   type StatementItemMacroResolver,
 } from "../src/index.js";
 
@@ -49,20 +47,16 @@ function parse(
     (node) => node.tag !== "token" || node.kind !== "end-of-file",
   );
   const ids = createIdAllocator<SyntaxId>(30_000);
-  const options = {
+  // The whole suite, wired as the expander wires it. Built here from the
+  // consumers this file happens to need, the harness read a language that is
+  // not TypeScript: without `consumeType` it refused `const x = a as
+  // string[];`, which the real pipeline reads, and a session spent time on a
+  // reader gap that did not exist.
+  const { registry } = createConsumerSuite({
     origins,
     allocateSyntaxId: ids.allocate,
     resolveMacro,
-  };
-  const registry = new ConsumerRegistry([
-    {
-      category,
-      consumer:
-        category === "stmt"
-          ? createStatementConsumer(options)
-          : createItemConsumer(options),
-    },
-  ]);
+  });
   const cursor = createSyntaxCursor(syntax);
   const tracker = new ResourceTracker(createResourceBudget());
   const result = registry.consume(category, {
@@ -82,7 +76,88 @@ function output(source: string, category: "stmt" | "item") {
   return printLosslessSequence(result.syntax.children);
 }
 
+const union = (members: number): string =>
+  Array.from({ length: members }, (_, index) => `T${String(index)}`).join(
+    " | ",
+  );
+const path = (segments: number): string =>
+  Array.from({ length: segments }, (_, index) => `s${String(index)}`).join(".");
+
 describe("statement and item consumers", () => {
+  /**
+   * The harness reads what the pipeline reads.
+   *
+   * These consumers are built here the way the expander builds them, through
+   * one factory, because a registry assembled by hand reads a language that is
+   * not TypeScript. Without the type consumer, `as` has nothing to its right
+   * that parses, and the statement holding it looked refused here while the
+   * real pipeline read it -- a gap that cost a session before it turned out
+   * not to exist.
+   */
+  test.each([
+    "const x = a as string[];",
+    "const y = value as const;",
+    "const z = shape satisfies Options;",
+  ])(
+    "reads a type on the right of an operator that takes one: %s",
+    (source) => {
+      const { result } = parse(source, "item");
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected an item");
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    },
+  );
+
+  /**
+   * A header is read to its end, however long it is.
+   *
+   * Each of these scans used to stop after a fixed number of nodes -- 32, 33,
+   * or 64 -- and refuse what stood past it. The counts are in nodes rather
+   * than in anything a reader writes: a union member is two nodes and a path
+   * segment is two, so the bound fell at 33 union members in an arrow's return
+   * type, 16 in a function expression's, and a 17-segment heritage path. A
+   * union that long is what a generated discriminated union looks like, and
+   * prettier's default layout writes exactly those.
+   *
+   * The sizes here are one past each old bound.
+   */
+  test.each([
+    ["arrow return type", `const f = (): ${union(33)} => x;`],
+    [
+      "function expression return type",
+      `const g = function (): ${union(16)} { return x; };`,
+    ],
+    ["class expression heritage", `const C = class extends ${path(17)} {};`],
+    [
+      "far past every bound",
+      `const h = function (): ${union(200)} { return x; };`,
+    ],
+  ])("reads a header past the old lookahead bound: %s", (_label, source) => {
+    const { result } = parse(source, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an item");
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
+  /**
+   * What the bounds stood in for, which the rules have to keep answering: a
+   * brace in a return type is an object type rather than the body, a header
+   * holds type parameters and a heritage expression's type arguments, and an
+   * arrow does not reach into the statement after it for its `=>`.
+   */
+  test.each([
+    "const i = function (): { a: number } { return { a: 1 }; };",
+    "const j = function* named<T>(a: T): T { return a; };",
+    "const k = class Named<A, B> extends s.t implements X, Y {};",
+    "const l = class extends make()<{ a: string }> {};",
+    "const m = c ? (x) : (y) => y;",
+  ])("still reads what the bounds stood in front of: %s", (source) => {
+    const { result } = parse(source, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected an item");
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
   test("consumes a generic-arrow variable item", () => {
     const source =
       'const Some = <T>(value: T): Option<T> => ({ tag: "Some", value });';
@@ -120,6 +195,43 @@ describe("statement and item consumers", () => {
     expect(result.cursor.atEnd).toBe(false);
     expect(result.syntax.category).toBe("stmt");
   });
+
+  /**
+   * `asserts` heads a type predicate only where the name it is about is
+   * written on its line; alone it is an ordinary type name and the annotation
+   * ends with it. Read as an unconditional operand head, the annotation could
+   * never terminate and swallowed the statement under it -- where a statement
+   * macro then reached the output unexpanded, with nothing reported.
+   */
+  test.each([
+    ["let a: asserts", "after();"],
+    ["let a: asserts x", "after();"],
+  ])("ends an annotation at a line break after asserts: %s", (head, next) => {
+    const { result } = parse(`${head}\n${next}`, "stmt");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected statement");
+    expect(printLosslessSequence(result.syntax.children)).toBe(head);
+  });
+
+  /**
+   * The statement reader and the item reader agree about `async`.
+   *
+   * A statement can begin with `async`, but the word does not end the
+   * declaration above it: TypeScript reads `class C extends` and the
+   * `async.Base {}` under it as one class. Listed among the words that do, the
+   * statement reader refused this while the item reader read it -- the two
+   * disagreeing about whether a program is TypeScript.
+   */
+  test.each(["stmt", "item"] as const)(
+    "reads a heritage clause broken before async as %s",
+    (category) => {
+      const source = "class C extends\nasync.Base {}";
+      const { result } = parse(source, category);
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected a class");
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    },
+  );
 
   test("enforests each member of a class body with parenthesized decorators", () => {
     // `@(expr)` is a decorator, so the body is a list of members rather than

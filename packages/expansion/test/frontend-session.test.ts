@@ -162,6 +162,33 @@ describe("production expansion frontend session", () => {
   });
 
   /**
+   * A statement macro under an annotation ending in `asserts` still expands.
+   *
+   * `asserts` heads a type predicate only where the name it is about is
+   * written on its line. Read as an unconditional operand head, the annotation
+   * ran on into the statement below and took the invocation with it -- which
+   * reached the output as written, with nothing reported. The control is the
+   * same function with an ordinary annotation, and the assertion that matters
+   * is the expansion rather than the absence of a diagnostic: there was no
+   * diagnostic either way.
+   */
+  test.each(["number", "asserts"])(
+    "expands a statement macro under a `%s` annotation",
+    (annotation) => {
+      const expand = harness();
+      const result = expand(
+        `export function f(ok: boolean) {\n  let a: ${annotation}\n  guard(ok) { run(); }\n}`,
+        "item",
+      );
+
+      expect(result.diagnostics).toEqual([]);
+      expect(compact(result.syntax)).toBe(
+        `exportfunctionf(ok:boolean){leta:${annotation}return;}`,
+      );
+    },
+  );
+
+  /**
    * An item the reader could not read says so.
    *
    * Recovery passes such an item through as written and expansion carries on,
@@ -171,12 +198,18 @@ describe("production expansion frontend session", () => {
    * far was invisible for exactly that reason.
    */
   test("says what it could not read when a recovered item expanded nothing", () => {
-    // `y?.<A>(b)` is an optional call with its type arguments supplied, which
-    // TypeScript reads and this reader does not. Nothing in the declaration is
-    // macro syntax, so recovery bought nothing here and nothing else reports
-    // it. The instantiation expression `y<A>` stood here until the reader
-    // learned to read it.
-    const result = harness()("export const x = y?.<A>(b);", "item");
+    // `y?.<A>` is an optional chain with type arguments and no call after
+    // them, which TypeScript reports as `'(' expected` and this reader
+    // refuses. Nothing in the declaration is macro syntax, so recovery bought
+    // nothing here and nothing else reports it.
+    //
+    // The fixture keeps moving because the gaps keep closing: the
+    // instantiation expression `y<A>` stood here, then `y?.<A>(b)`, and both
+    // read now. This one is the first that is unreadable because TypeScript
+    // does not accept it either -- no valid TypeScript is known to be
+    // unreadable at this point, which is why the sample is malformed rather
+    // than merely uncovered.
+    const result = harness()("export const x = y?.<A>;", "item");
 
     expect(
       result.diagnostics.map(({ code, severity }) => ({ code, severity })),
@@ -188,9 +221,7 @@ describe("production expansion frontend session", () => {
     // The whole item is named, and the place the reader stopped is named
     // under it.
     expect(reported.primaryOrigin.start).toBe(0);
-    expect(reported.primaryOrigin.end).toBe(
-      "export const x = y?.<A>(b);".length,
-    );
+    expect(reported.primaryOrigin.end).toBe("export const x = y?.<A>;".length);
     expect(reported.relatedOrigins[0]?.origin.start).toBeGreaterThan(
       reported.primaryOrigin.start,
     );
