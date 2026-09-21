@@ -4,7 +4,6 @@
 
 Sweetener is a macro system for typescript. You are able to add any feature to the language you want. Using simple declarative macros, you can add any missing feature you always wished typescript had.
 
-
 [Use the playground to try it out](https://sweetener-ts.github.io/).
 
 > Sweetener is currently alpha quality software.

@@ -42,9 +42,7 @@ export function Home({ onOpen }: { onOpen: (id?: string) => void }) {
             Source on GitHub
           </a>
         </p>
-        <p className="notice">
-          Sweetener is currently alpha quality software.
-        </p>
+        <p className="notice">Sweetener is currently alpha quality software.</p>
       </header>
 
       <section className="install">
