@@ -115,6 +115,10 @@ button.primary:hover {
   margin-top: 3.5rem;
 }
 
+.page section.install {
+  margin-top: 2rem;
+}
+
 .page h2 {
   margin: 0 0 0.875rem;
   font-size: 1.1875rem;

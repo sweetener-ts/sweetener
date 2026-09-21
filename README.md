@@ -2,17 +2,12 @@
 
 **Hygienic, declarative macros for TypeScript.**
 
-You extend TypeScript's syntax. The official TypeScript compiler still does the
-type checking, declaration generation, JavaScript emission, and editor
-semantics. Your `.sts` and `.stsx` files expand into ordinary TypeScript, and
-source maps and expansion traces connect the result back to what you wrote.
+Sweetener is a macro system for typescript. You are able to add any feature to the language you want. Using simple declarative macros, you can add any missing feature you always wished typescript had.
 
-[Try the playground](https://sweetener-ts.github.io/). It runs the
-real expansion pipeline locally in a Web Worker, with no server-side compiler.
 
-> Sweetener is alpha. Every release is published as `latest`, so a plain
-> `npm install` gives you the newest alpha, with nothing stable behind it.
-> Public TypeScript signatures may change before `1.0`.
+[Use the playground to try it out](https://sweetener-ts.github.io/).
+
+> Sweetener is currently alpha quality software.
 
 ## Define your own syntax
 

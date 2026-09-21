@@ -30,11 +30,9 @@ export function Home({ onOpen }: { onOpen: (id?: string) => void }) {
         <h1>Sweetener</h1>
         <p className="lede">Hygienic, declarative macros for TypeScript.</p>
         <p>
-          Sweetener lets a project extend TypeScript syntax while leaving type
-          checking, declaration generation, JavaScript emission, and editor
-          semantics to the official TypeScript compiler. Files ending in{" "}
-          <code>.sts</code> expand into ordinary TypeScript, with source maps
-          and expansion traces connecting the result back to what you wrote.
+          Sweetener is a macro system for typescript. You are able to add any
+          feature to the language you want. Using simple declarative macros, you
+          can add any missing feature you always wished typescript had.
         </p>
         <p className="actions">
           <button className="primary" onClick={() => onOpen()}>
@@ -45,12 +43,24 @@ export function Home({ onOpen }: { onOpen: (id?: string) => void }) {
           </a>
         </p>
         <p className="notice">
-          Alpha, and published on npm:{" "}
-          <code>npm install --save-dev @sweetener/cli</code>, then{" "}
-          <code>npx sweetener init</code>. Every release is tagged{" "}
-          <code>latest</code>, so that gives you the newest alpha.
+          Sweetener is currently alpha quality software.
         </p>
       </header>
+
+      <section className="install">
+        <h2>Install</h2>
+        <figure className="code">
+          <pre>
+            <code>
+              <span className="tok-keyword">npm</span> install{" "}
+              <span className="tok-number">--save-dev</span>{" "}
+              <span className="tok-string">@sweetener/cli</span>
+              {"\n"}
+              <span className="tok-keyword">npx</span> sweetener init
+            </code>
+          </pre>
+        </figure>
+      </section>
 
       <section>
         <h2>Define your own syntax</h2>
