@@ -22,7 +22,7 @@ pnpm playground
 pnpm check
 ```
 
-It formats, lints, type-checks, runs the unit suite, enforces the package
+It lints, type-checks, runs the unit suite, enforces the package
 boundaries and the declarative acceptance boundary, validates the acceptance
 ledger and the release specification, scaffolds a project and builds it, runs
 the external sample projects, builds every example and the
