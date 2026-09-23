@@ -24,6 +24,7 @@ import {
   expressionContinuedBy,
   operandExpectedAfter,
 } from "./core-operators.js";
+import { asyncModifies } from "./primary-expression.js";
 import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
@@ -129,6 +130,445 @@ function headContinues(
   return annotated
     ? annotationContinuedBy.has(next.raw)
     : headContinuedBy.has(next.raw);
+}
+
+/**
+ * Whether `children` are a function declaration rather than some other form
+ * that happens to mention the word.
+ *
+ * Modifiers and `*` may stand in front of `function`. The first word that is
+ * none of those decides it, so a class whose heritage mentions a function
+ * expression is not one.
+ */
+function declarationIsFunction(children: readonly Syntax[]): boolean {
+  for (const child of children) {
+    const spelling = raw(child);
+    if (spelling === undefined) return false;
+    if (spelling === "function") return true;
+    if (
+      spelling === "export" ||
+      spelling === "default" ||
+      spelling === "declare" ||
+      spelling === "async" ||
+      spelling === "abstract" ||
+      spelling === "*"
+    )
+      continue;
+    return false;
+  }
+  return false;
+}
+
+/**
+ * The parameter list of a function declaration in `children`, when one has
+ * been read.
+ *
+ * It is the parenthesis group at angle-depth zero after `function`. A group
+ * inside `f<T extends () => void>` is the constraint, not the list.
+ */
+function functionParameterIndex(
+  children: readonly Syntax[],
+): number | undefined {
+  let angles = 0;
+  let seenFunction = false;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index]!;
+    if (!seenFunction) {
+      if (token(child, "function")) seenFunction = true;
+      continue;
+    }
+    if (
+      angles === 0 &&
+      child.tag === "group" &&
+      child.delimiter === "parenthesis"
+    )
+      return index;
+    const spelling = raw(child);
+    if (spelling === undefined) continue;
+    angles += angleWidth(spelling, "<");
+    angles = Math.max(0, angles - angleWidth(spelling, ">"));
+  }
+  return undefined;
+}
+
+/**
+ * Whether a `{...}` after the parameter list is the function body.
+ *
+ * A brace in type position is the return type: `(): { a: number }`,
+ * `(): () => { a: number }`. The same question the body walk asks of
+ * `typeOperandFollows`. Counting every brace as a body kept
+ * `function f(): { a: number }` open across the line break, and the call
+ * under it was swallowed.
+ */
+function tookFunctionBody(
+  children: readonly Syntax[],
+  parameters: number,
+): boolean {
+  const after = children.slice(parameters + 1);
+  for (let index = 0; index < after.length; index += 1) {
+    const child = after[index];
+    if (!braceGroup(child)) continue;
+    const previous = index === 0 ? children[parameters] : after[index - 1];
+    if (!typeOperandFollows(previous)) return true;
+  }
+  return false;
+}
+
+/**
+ * How the return type after the parameter list stands, if one has started.
+ *
+ * A conditional type is a stack, and only at angle-depth zero. `extends`
+ * opens one that still needs `?`; that `?` leaves it needing `:`; that `:`
+ * closes it. `infer Name extends` is a constraint, not that opener: pushing
+ * it left `infer R extends C` waiting on `?` and stole the real conditional's
+ * `:`. An `extends` written inside `<...>` does not open one either.
+ * `Foo<A extends B>` is finished as far as the line break after it is
+ * concerned. Nested `A extends B ? C extends D ? E : F : G` keeps the outer
+ * `:` waiting under the inner one.
+ *
+ * `inferName` is set when the type ends in `infer Name`, so the `extends`
+ * of the constraint may stand on the next line. A conditional's own
+ * `extends` may not: TypeScript writes `CheckType [no LineTerminator here]
+ * extends`.
+ */
+function returnTypeState(
+  children: readonly Syntax[],
+  parameters: number,
+  cursor?: SyntaxCursor,
+) {
+  let angles = 0;
+  let started = false;
+  let inferOpen = false;
+  let inferName = false;
+  let inferExtendsMayRollBack = false;
+  let brokenTrueBranchInferExtends = false;
+  let nullableQuestion = false;
+  let brackets = 0;
+  let previousLast = "";
+  let last = "";
+  const conditional: Array<"question" | "colon"> = [];
+  for (const child of children.slice(parameters + 1)) {
+    const spelling = raw(child);
+    // A group is the type an operator was waiting for: `{ a: number }` after
+    // `:`, or `(x: number)` before `=>`. Leaving `last` on the operator would
+    // keep the signature open and take the next statement into it.
+    if (spelling === undefined) {
+      if (started) {
+        previousLast = last;
+        last = "";
+      }
+      continue;
+    }
+    angles += angleWidth(spelling, "<");
+    angles = Math.max(0, angles - angleWidth(spelling, ">"));
+    if (angles === 0 && spelling === "[") brackets += 1;
+    else if (angles === 0 && spelling === "]" && brackets > 0) brackets -= 1;
+    if (angles !== 0) continue;
+    previousLast = last;
+    last = spelling;
+    if (spelling === ":" && !started) {
+      started = true;
+      inferOpen = false;
+      inferName = false;
+      continue;
+    }
+    if (!started) continue;
+    brokenTrueBranchInferExtends = false;
+    const constraint = spelling === "extends" && inferName;
+    if (
+      spelling === "extends" &&
+      constraint &&
+      conditional.at(-1) !== "question"
+    ) {
+      // `infer U extends string ? U : never` rolls this `extends` back into
+      // a conditional when `?` follows. Inside `T extends … ?` the stack is
+      // already waiting on `?`, and the same words are the constraint.
+      inferExtendsMayRollBack = true;
+      // A line break in the true branch. Whether this `extends` is recovered
+      // (stop after the keyword) depends on a later `?`, which the cursor
+      // still has. `extends C : D` is a constraint and stays open.
+      brokenTrueBranchInferExtends =
+        conditional.at(-1) === "colon" && leadingLineBreak(child);
+    } else if (spelling === "extends" && !constraint) {
+      conditional.push("question");
+      inferExtendsMayRollBack = false;
+    } else if (spelling === "?" && conditional.at(-1) === "question") {
+      conditional[conditional.length - 1] = "colon";
+      inferExtendsMayRollBack = false;
+    } else if (spelling === "?" && inferExtendsMayRollBack) {
+      conditional.push("colon");
+      inferExtendsMayRollBack = false;
+    } else if (spelling === "?" && conditional.at(-1) === "colon") {
+      // `A extends B ? C \n ? D` — the outer conditional still wants `:`,
+      // and TypeScript takes `? D` as that false branch. The `?` wants a
+      // type; a colon after that type is not the conditional's colon.
+      conditional.pop();
+      nullableQuestion = true;
+    } else if (spelling === ":" && conditional.at(-1) === "colon") {
+      inferExtendsMayRollBack = false;
+      conditional.pop();
+    }
+    if (spelling === "infer") {
+      inferOpen = true;
+      inferName = false;
+    } else if (inferOpen) {
+      inferName = true;
+      inferOpen = false;
+    } else {
+      inferName = false;
+      inferOpen = false;
+    }
+  }
+  const pending = conditional.at(-1);
+  // `infer R\nextends C ?` keeps `extends` and stops before `C`.
+  // `infer R\nextends C : D` does not: no `?` follows, so `C` belongs to it.
+  const recoveredExtends =
+    brokenTrueBranchInferExtends &&
+    last === "extends" &&
+    cursor !== undefined &&
+    questionFollowsExtendedType(cursor, 0);
+  // Only an operator the return type actually accepted keeps it open.
+  // `=`, `,`, and `>` are in the declarator table because a variable
+  // annotation uses them; a function return type does not. A `?`, `:`,
+  // `=>`, `is`, or `extends` keeps it open only in the state that let
+  // the token in.
+  const expectsOperand =
+    started &&
+    (last === "?"
+      ? pending === "colon" || nullableQuestion
+      : last === ":" ||
+        last === "=>" ||
+        last === "is" ||
+        (last === "extends" && !recoveredExtends) ||
+        last === "|" ||
+        last === "&" ||
+        last === "." ||
+        last === "<" ||
+        last === "[" ||
+        last === "keyof" ||
+        last === "typeof" ||
+        last === "readonly" ||
+        last === "unique" ||
+        last === "infer" ||
+        // `new () => T`, `abstract new () => T`, and `import("m").T` stay
+        // open across the line break after the keyword. `asserts` does not:
+        // its name has to share its line, so it is not in this list.
+        last === "new" ||
+        last === "abstract" ||
+        last === "import");
+  return {
+    angles,
+    brackets,
+    started,
+    inferName,
+    expectsOperand,
+    // `asserts x` still wants `is`. Once `is` is consumed, the predicate is
+    // finished and another `is` on the next line is not part of it.
+    awaitingIs: previousLast === "asserts" && last !== "" && last !== "is",
+    inferExtendsMayRollBack,
+    // `asserts` wants its name on the same line only. It is not
+    // `expectsOperand`, or `asserts` and the name under it would be one type.
+    last,
+    pending,
+  };
+}
+
+/**
+ * Whether the function signature in `children` has a finished header.
+ *
+ * The same state decides both this and `functionSignatureContinues`. A
+ * return type is unfinished while `<...>` or `[...]` is open, or while
+ * the last operator it accepted still wants a type. A `?` wants one only
+ * after it opened a conditional's true branch, not after `Foo ?`.
+ */
+function returnTypeIsComplete(
+  children: readonly Syntax[],
+  cursor?: SyntaxCursor,
+): boolean {
+  if (!declarationIsFunction(children)) return false;
+  const parameters = functionParameterIndex(children);
+  if (parameters === undefined) return false;
+  if (tookFunctionBody(children, parameters)) return false;
+  const type = returnTypeState(children, parameters, cursor);
+  if (type.angles !== 0 || type.brackets !== 0) return false;
+  if (!type.started) {
+    const last = children.at(-1);
+    return !(last?.tag === "token" && operandExpectedAfter.has(last.raw));
+  }
+  return !type.expectsOperand;
+}
+
+/**
+ * Whether `children` are a function signature whose header is finished and
+ * which has not taken a body.
+ *
+ * After the parameter list, a return type is unfinished while a `<` is open
+ * or the last token still expects a type — the same question a declarator's
+ * annotation asks — and `>` is not one of those tokens, because in a type it
+ * only closes arguments.
+ */
+function completeFunctionSignature(
+  children: readonly Syntax[],
+  cursor?: SyntaxCursor,
+): boolean {
+  return returnTypeIsComplete(children, cursor);
+}
+
+/**
+ * Whether the signature read so far carries on across the line break in front
+ * of `next`.
+ *
+ * Before a return type, only `:` opens one. Once it has started, an unfinished
+ * type carries on — `keyof` and the line under it are one type — and so does
+ * a function type whose `=>` is written under its parameter list, and the
+ * `is` of `asserts x is T`, and the `extends` of `infer Name extends`. A
+ * conditional carries on into `?` while its check `extends` still needs one,
+ * and into `:` while that `?` still needs one. A finished type still carries
+ * on across `|`, `&` and `.`. `Foo` and the `is`, `=>`, `?` or `:` under it
+ * do not, and neither does `T` and the `extends` under it: TypeScript ends
+ * the signature there.
+ */
+function openFunctionReturn(children: readonly Syntax[]): boolean {
+  return declarationIsFunction(children) && !returnTypeIsComplete(children);
+}
+
+/**
+ * Whether the type after this `extends` is followed by `?`.
+ *
+ * `start` is 1 when `cursor` sits on `extends`, and 0 when `extends` has
+ * already been read and `cursor` sits on the type after it. A `?` at
+ * angle-depth zero means TypeScript rolls the `extends` back into a
+ * conditional. A `:`, `;`, function body, or the end of the file means it
+ * was a real constraint.
+ *
+ * The scan runs to that boundary. A fixed node count is not one: a
+ * generated union is one member per two nodes, and the old caps of 32, 48,
+ * and 64 hid a `?` that stood past them, so a rollback was read as a
+ * constraint.
+ */
+function questionFollowsExtendedType(
+  cursor: SyntaxCursor,
+  start: number,
+): boolean {
+  let angles = 0;
+  for (let offset = start; offset < cursor.remainingLength; offset += 1) {
+    const node = cursor.peek(offset);
+    if (node === undefined) return false;
+    if (node.tag === "group") {
+      if (angles === 0 && node.delimiter === "brace") return false;
+      continue;
+    }
+    const spelling = raw(node);
+    if (spelling === undefined) continue;
+    angles += angleWidth(spelling, "<");
+    angles = Math.max(0, angles - angleWidth(spelling, ">"));
+    if (angles !== 0) continue;
+    if (spelling === "?") return true;
+    if (spelling === ":" || spelling === ";" || spelling === "{") return false;
+  }
+  return false;
+}
+
+function functionSignatureContinues(
+  children: readonly Syntax[],
+  next: Syntax,
+  cursor?: SyntaxCursor,
+): boolean {
+  const parameters = functionParameterIndex(children);
+  if (parameters === undefined) return true;
+  const type = returnTypeState(children, parameters, cursor);
+  // `readonly number[]` — the brackets are one group on `number`'s line.
+  if (
+    type.started &&
+    next.tag === "group" &&
+    next.delimiter === "bracket" &&
+    !leadingLineBreak(next)
+  )
+    return true;
+  if (next.tag !== "token") return false;
+  if (!type.started) return next.raw === ":";
+  if (type.last === "asserts" && !leadingLineBreak(next)) return true;
+  // The operator already accepted still wants its operand. This set is the
+  // return type's own, not `typeOperandExpectedAfter`: that table also holds
+  // `=`, `,`, and `>`, which keep a variable annotation open and must not
+  // keep a function signature open.
+  if (type.expectsOperand) return true;
+  const previous = children.at(-1);
+  const broken = leadingLineBreak(next);
+  switch (next.raw) {
+    case "|":
+    case "&":
+    case ".":
+      return true;
+    case "?":
+      // An outer conditional that still wants its false branch keeps a `?`
+      // (`A extends B ? … \n ? F`). A finished conditional does not.
+      return (
+        type.pending === "question" ||
+        type.inferExtendsMayRollBack ||
+        type.pending === "colon"
+      );
+    case ":":
+      return type.pending === "colon";
+    case "=>":
+      return previous?.tag === "group" && previous.delimiter === "parenthesis";
+    case "is":
+      // `Foo is T` shares Foo's line. A line break before `is` ends the type,
+      // except while `asserts x` is still waiting for its `is`. After that
+      // `is` is consumed, a second `is` is not part of the predicate.
+      return type.awaitingIs || !broken;
+    case "extends":
+      // `Foo extends Bar` opens a conditional on Foo's line. A line break
+      // before `extends` ends it. `infer Name extends` crosses that break
+      // when it is a constraint: the stack is already waiting on `?`, or the
+      // type after `extends` is not followed by `?`. `infer R` / `extends A ?`
+      // does not, because that `extends` is the conditional.
+      if (type.pending === "question") return true;
+      if (type.inferName) {
+        const rollsBack =
+          cursor !== undefined &&
+          token(cursor.peek(), "extends") &&
+          questionFollowsExtendedType(cursor, 1);
+        if (!rollsBack) return true;
+        if (!broken) return true;
+        // A line break before a conditional `extends` ends a bare
+        // `infer R`. In the true branch of an outer conditional,
+        // TypeScript still keeps that `extends` and stops after it.
+        return type.pending === "colon";
+      }
+      return !broken;
+    case "<":
+    case "[":
+    case "!":
+      return !broken;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether a complete function signature with no body ends in front of `next`.
+ *
+ * TypeScript's rule is automatic semicolon insertion, and it is a property of
+ * the signature rather than of the statement written under it: `function f()`
+ * and `run();` are two statements, and so are `declare function h(): void`
+ * and the call beneath it. Ending only when the next line itself begins a
+ * declaration swallowed the call. A body written on the next line, a return
+ * type, and a `;` still belong to the signature.
+ */
+function functionSignatureEndsBefore(
+  children: readonly Syntax[],
+  next: Syntax,
+  cursor?: SyntaxCursor,
+): boolean {
+  if (children.length === 0) return false;
+  if (token(next, ";") || braceGroup(next)) return false;
+  // Same state as the cross-line question. A finished type ends before
+  // `Foo ?`, `Foo =>`, `Foo :`, `Foo =`, `Foo ,`, or `Foo >` on this line,
+  // not only before the token after the line break: TypeScript's first
+  // statement stops at `Foo`.
+  if (!returnTypeIsComplete(children, cursor)) return false;
+  return !functionSignatureContinues(children, next, cursor);
 }
 
 /**
@@ -284,12 +724,31 @@ function ambientDeclaration(cursor: SyntaxCursor, offset = 0): boolean {
  */
 function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
   let width = 0;
-  while (
-    declarationModifiers.has(raw(cursor.peek(offset + width)) ?? "") &&
-    noLineTerminatorAfter(cursor, offset + width)
-  )
-    width += 1;
+  while (modifierAt(cursor, offset + width)) width += 1;
   return width;
+}
+
+/**
+ * Whether the word at `offset` modifies the declaration after it.
+ *
+ * `declare` and `abstract` do, with no line break between the word and what
+ * it modifies. `async` does only in front of `function`, on that function's
+ * own line: `async function f()` is the declaration, and `async (v) => v` is
+ * an arrow, which is an expression. A line break makes `async` a name, the
+ * same rule `asyncModifies` states for arrows.
+ */
+function modifierAt(cursor: SyntaxCursor, offset: number): boolean {
+  const word = raw(cursor.peek(offset));
+  if (
+    declarationModifiers.has(word ?? "") &&
+    noLineTerminatorAfter(cursor, offset)
+  )
+    return true;
+  return (
+    word === "async" &&
+    asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
+    raw(cursor.peek(offset + 1)) === "function"
+  );
 }
 
 /**
@@ -1699,9 +2158,16 @@ class StatementConsumer implements SyntaxConsumer {
       if (
         children.length > 0 &&
         leadingLineBreak(next) &&
-        beginsStatement(cursor)
+        beginsStatement(cursor) &&
+        // `import` begins a statement and is also a type. Only an open
+        // function return type still owns it; every other declaration ends.
+        !openFunctionReturn(children)
       )
         break;
+      // A finished function signature ends at the line break, whatever is
+      // written under it. `run();` begins no statement keyword, and taking it
+      // into the signature made one statement out of two.
+      if (functionSignatureEndsBefore(children, next, cursor)) break;
       // An alias's body is a type, and a type ends at a line break the type
       // grammar does not carry across. The item reader asks the same question
       // of the same tracker.
@@ -1751,7 +2217,11 @@ class StatementConsumer implements SyntaxConsumer {
     if (
       endsAtBlock &&
       !token(children.at(-1), ";") &&
-      !braceGroup(children.at(-1))
+      !braceGroup(children.at(-1)) &&
+      // A function signature may be the whole declaration. An overload and an
+      // ambient one have no body, and TypeScript reads `function f()` on its
+      // own as that signature rather than as a declaration missing a brace.
+      !completeFunctionSignature(children, cursor)
     ) {
       return failure("stmt", cursor, start, ["declaration body"], 40);
     }
@@ -2048,7 +2518,8 @@ class ItemConsumer implements SyntaxConsumer {
           children.length > 0 &&
           leadingLineBreak(next) &&
           beginsItem(cursor) &&
-          !headExpectsMore(raw(children.at(-1)))
+          !headExpectsMore(raw(children.at(-1))) &&
+          !openFunctionReturn(children)
         ) {
           break;
         }
@@ -2075,6 +2546,16 @@ class ItemConsumer implements SyntaxConsumer {
           !moduleItemContinues(children, next)
         )
           break;
+        // The same signature rule as the statement reader. A function whose
+        // header is finished and which has no body ends at the line break,
+        // including when the next line is a call rather than another
+        // declaration.
+        if (functionSignatureEndsBefore(children, next, cursor)) {
+          // The next token ended the signature. It is not a `;` this item
+          // was missing, including when that token shares the last line.
+          whole = true;
+          break;
+        }
         // A brace inside a `<...>` region is an object type, not the body of
         // the declaration being read.
         if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
@@ -2100,6 +2581,7 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (
         endsAtBlock &&
+        !completeFunctionSignature(children, cursor) &&
         !(
           headWords.includes("function") &&
           (headWords.includes("declare") ||
