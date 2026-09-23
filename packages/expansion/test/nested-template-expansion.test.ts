@@ -90,6 +90,7 @@ function harness(definitionText: string) {
     const result = session.expand(withoutEof(read.root.children), category);
     return {
       text: compact(result.syntax),
+      syntax: result.syntax,
       diagnostics: result.diagnostics,
       unresolvedNameExplanations: result.unresolvedNameExplanations,
     };
@@ -168,6 +169,19 @@ describe("macros nested in a template", () => {
   test("expands a macro standing in the body of a template function", () => {
     const expand = harness(definitions);
     expect(expand("functionBody a;", "item")).toBe("functiona(){return[2,2];}");
+  });
+
+  test("enforestItems hands over one item, not an item wrapped in an item", () => {
+    const { syntax } = harness(definitions).run("head a;", "item");
+    const root = syntax[0];
+    expect(root?.tag).toBe("protected");
+    if (root?.tag !== "protected") throw new Error("expected an item");
+    expect(root.category).toBe("item");
+    expect(
+      root.children.some(
+        (child) => child.tag === "protected" && child.category === "item",
+      ),
+    ).toBe(false);
   });
 
   test("keeps expanding the positions that already worked", () => {
