@@ -14,6 +14,20 @@ export interface SourcePositionQuery {
   readonly column: number;
 }
 
+/**
+ * A macro a file can name, with the span of its definition and of each
+ * compile-time import of that binding in this file.
+ */
+export interface InspectedMacro {
+  readonly binding: number;
+  readonly name: string;
+  readonly category: string;
+  readonly definitionSourceId: SourceId;
+  readonly definitionStart: number;
+  readonly definitionEnd: number;
+  readonly imports: readonly { readonly start: number; readonly end: number }[];
+}
+
 export interface SourceExpansionInspection {
   readonly sourceId: SourceId;
   readonly sourceText: string;
@@ -45,6 +59,11 @@ export interface SourceExpansionInspection {
   readonly origins: OriginStore;
   readonly trace: unknown;
   readonly generatedNames?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Macros this file defines or imports. Absent on inspections built by tests
+   * that never ask where a macro name came from.
+   */
+  readonly macros?: readonly InspectedMacro[] | undefined;
 }
 
 export interface ExpansionInspectionProvider {

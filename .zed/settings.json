@@ -1,0 +1,18 @@
+{
+  "languages": {
+    "Sweetener TypeScript": {
+      "language_servers": ["sweetener-lsp"]
+    },
+    "Sweetener TSX": {
+      "language_servers": ["sweetener-lsp"]
+    }
+  },
+  "lsp": {
+    "sweetener-lsp": {
+      "binary": {
+        "path": "node",
+        "arguments": ["./packages/cli/bin/sweetener.mjs", "--lsp", "--stdio"]
+      }
+    }
+  }
+}

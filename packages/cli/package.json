@@ -2,21 +2,21 @@
   "name": "@sweetener/cli",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
   "bin": {
     "sweetener": "./bin/sweetener.mjs"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/src/index.d.ts",
-      "import": "./dist/src/index.js"
-    }
   },
   "files": [
     "bin",
     "dist",
     "SKILL.md"
   ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
   "dependencies": {
     "@sweetener/compiler": "workspace:*",
     "@sweetener/expansion": "workspace:*",

@@ -40,6 +40,7 @@ export class VirtualLanguageServiceProject {
   readonly #files = new Map<string, FileState>();
   readonly #externalVersions = new Map<string, number>();
   readonly #directories = new Set<string>();
+  readonly #additionalRoots: readonly string[];
   readonly #canonicalize: (fileName: string) => string;
   readonly #host: ts.LanguageServiceHost;
   readonly #service: ts.LanguageService;
@@ -48,6 +49,12 @@ export class VirtualLanguageServiceProject {
   constructor(options: {
     readonly compilerOptions: ts.CompilerOptions;
     readonly files?: readonly VirtualLanguageServiceFile[];
+    /**
+     * Project files that are not expanded virtual files. They stay on disk and
+     * are roots of the same program, so an import of an ordinary `.ts` module
+     * resolves the way `sweetener check` resolves it.
+     */
+    readonly additionalRootNames?: readonly string[];
     readonly currentDirectory?: string;
     readonly system?: ts.System;
     readonly documentRegistry?: ts.DocumentRegistry;
@@ -61,11 +68,22 @@ export class VirtualLanguageServiceProject {
       options.currentDirectory ?? system.getCurrentDirectory(),
     );
     for (const file of options.files ?? []) this.#insertInitial(file);
+    this.#additionalRoots = Object.freeze([
+      ...(options.additionalRootNames ?? []),
+    ]);
     this.#rebuildDirectories();
     this.#host = {
       getCompilationSettings: () => compilerOptions,
-      getScriptFileNames: () =>
-        [...this.#files.values()].map(({ fileName }) => fileName).sort(),
+      getScriptFileNames: () => {
+        const names = new Map<string, string>();
+        for (const file of this.#files.values())
+          names.set(this.#canonicalize(file.fileName), file.fileName);
+        for (const name of this.#additionalRoots) {
+          const key = this.#canonicalize(name);
+          if (!names.has(key)) names.set(key, normalized(name));
+        }
+        return [...names.values()].sort();
+      },
       getScriptVersion: (fileName) =>
         String(
           this.#files.get(this.#canonicalize(fileName))?.version ??

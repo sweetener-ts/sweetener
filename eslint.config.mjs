@@ -41,6 +41,21 @@ export default tseslint.config(
     },
   },
   {
+    // The VS Code extension host loads a CommonJS entry. The rest of the
+    // repository is ESM.
+    files: ["editors/vscode/**/*.js"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        module: "readonly",
+        require: "readonly",
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  {
     files: ["**/*.ts"],
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
