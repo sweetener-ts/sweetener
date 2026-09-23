@@ -108,6 +108,22 @@ function checkDirective(text: string | undefined): boolean | undefined {
 
 const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/u;
 
+/** Whether `name` is one identifier and nothing after it. */
+function scansAsIdentifier(name: string, target: ts.ScriptTarget): boolean {
+  if (name.length === 0) return false;
+  const scanner = ts.createScanner(
+    target,
+    true,
+    ts.LanguageVariant.Standard,
+    name,
+  );
+  return (
+    scanner.scan() === ts.SyntaxKind.Identifier &&
+    scanner.getTokenText() === name &&
+    scanner.scan() === ts.SyntaxKind.EndOfFileToken
+  );
+}
+
 function remapGeneratedDiagnostics(options: {
   readonly diagnostics: readonly ts.Diagnostic[];
   readonly provider: ProjectExpansionProvider;
@@ -184,6 +200,73 @@ function remapGeneratedDiagnostics(options: {
       ),
     };
   };
+  /**
+   * Where a macro rule wrote an introduced name, when this diagnostic is about
+   * one.
+   *
+   * The diagnostic itself stays on the invocation: an introduced name has no
+   * place in the file that called the macro. The rule that wrote it does, and
+   * two names from one invocation are the same span until something says which
+   * identifier each report is about.
+   */
+  const introducedName = (
+    file: ts.SourceFile | undefined,
+    generatedStart: number | undefined,
+    code: number,
+  ): ts.DiagnosticRelatedInformation | undefined => {
+    const virtualName = file?.fileName;
+    if (virtualName === undefined || generatedStart === undefined)
+      return undefined;
+    const originalOwner = sourceByVirtual.get(virtualName);
+    const inspection =
+      originalOwner === undefined ? undefined : inspections.get(originalOwner);
+    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
+    if (inspection === undefined || mapped?.kind !== "introduced")
+      return undefined;
+    const defined = inspection.origins.selectPrimarySource(
+      mapped.origin,
+      "definition",
+    );
+    const sourceName = sourceById.get(defined.sourceId);
+    const sourceInspection =
+      sourceName === undefined ? undefined : inspections.get(sourceName);
+    if (sourceName === undefined || sourceInspection === undefined)
+      return undefined;
+    const name = sourceInspection.sourceText.slice(
+      defined.span.start,
+      defined.span.end,
+    );
+    // `π` is an identifier. An ASCII pattern dropped it, so the diagnostic
+    // for that name never gained a related location in the rule. TypeScript
+    // 6's public types do not declare `isIdentifierText`; the scanner is the
+    // same question.
+    if (!scansAsIdentifier(name, options.target)) return undefined;
+    // Already the span the diagnostic will report. Nothing further to point at.
+    if (
+      defined.sourceId === mapped.primary.sourceId &&
+      defined.span.start === mapped.projectedOriginalOffset
+    )
+      return undefined;
+    let sourceFile = sourceFiles.get(sourceName);
+    if (sourceFile === undefined) {
+      sourceFile = ts.createSourceFile(
+        sourceName,
+        sourceInspection.sourceText,
+        options.target,
+        true,
+        sourceName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+      );
+      sourceFiles.set(sourceName, sourceFile);
+    }
+    return {
+      category: ts.DiagnosticCategory.Message,
+      code,
+      file: sourceFile,
+      start: defined.span.start,
+      length: Math.max(0, defined.span.end - defined.span.start),
+      messageText: `Name '${name}' was introduced by this macro rule.`,
+    };
+  };
   return options.diagnostics.map((diagnostic) => {
     const located = locate(
       diagnostic.file,
@@ -202,10 +285,25 @@ function remapGeneratedDiagnostics(options: {
     });
     const remapped =
       located === undefined ? diagnostic : { ...diagnostic, ...located };
+    const introduced = introducedName(
+      diagnostic.file,
+      diagnostic.start,
+      diagnostic.code,
+    );
+    const relatedInformation =
+      introduced === undefined ||
+      related.some(
+        (entry) =>
+          entry.file?.fileName === introduced.file?.fileName &&
+          entry.start === introduced.start &&
+          entry.messageText === introduced.messageText,
+      )
+        ? related
+        : [...related, introduced];
     return Object.freeze(
-      related.length === 0
+      relatedInformation.length === 0
         ? remapped
-        : { ...remapped, relatedInformation: related },
+        : { ...remapped, relatedInformation },
     );
   });
 }
