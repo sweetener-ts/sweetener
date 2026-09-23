@@ -43,6 +43,8 @@ export interface ProjectExpansionProvider {
 export interface ProjectExpansionOutput {
   readonly files: readonly VirtualTypeScriptFile[];
   readonly diagnostics: readonly ts.Diagnostic[];
+  /** Files read outside the project sources while producing this expansion. */
+  readonly dependencies?: readonly string[];
   /**
    * What expansion can say about a name it left alone, for the places
    * TypeScript reports it cannot resolve one.
@@ -717,7 +719,7 @@ export function watchConfiguredProject(options: {
     if (closed) return;
     const project = loadSweetProject(options.configPath);
     const wanted = new Set([
-      project.configPath,
+      ...(project.configurationDependencies ?? [project.configPath]),
       ...project.typescript.fileNames,
       ...(expansionProvider.macroDependencies?.(project) ?? []),
     ]);

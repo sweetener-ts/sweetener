@@ -92,6 +92,7 @@ interface CacheEntry {
 interface ProjectExpansion {
   readonly configFile: string;
   readonly inputs: readonly string[];
+  readonly dependencies: readonly string[];
   readonly fingerprint: string;
   readonly expanded: ProjectExpansionOutput;
 }
@@ -170,10 +171,12 @@ export function createSweetenerSession(
   const expansionFor = (
     configFile: string,
     project: LoadedSweetProject,
-  ): ProjectExpansionOutput => {
+  ): ProjectExpansion => {
     const listed = [
-      ...new Set([configFile, ...project.typescript.fileNames].map(canonical)),
-    ].sort();
+      configFile,
+      ...(project.configurationDependencies ?? [configFile]),
+      ...project.typescript.fileNames,
+    ].map(canonical);
     const remembered = projectExpansion;
     if (
       remembered !== undefined &&
@@ -181,21 +184,22 @@ export function createSweetenerSession(
       listed.every((fileName) => remembered.inputs.includes(fileName)) &&
       fingerprintDependencies(remembered.inputs) === remembered.fingerprint
     )
-      return remembered.expanded;
+      return remembered;
     const expanded = provider.expandProject(project);
-    const inputs = [
-      ...new Set([
-        ...listed,
-        ...provider.macroDependencies(project).map(canonical),
-      ]),
-    ].sort();
+    const dependencies = [
+      ...(project.configurationDependencies ?? [configFile]),
+      ...provider.macroDependencies(project),
+      ...(expanded.dependencies ?? []),
+    ].map(canonical);
+    const inputs = [...new Set([...listed, ...dependencies])].sort();
     projectExpansion = {
       configFile,
       inputs,
+      dependencies: [...new Set(dependencies)].sort(),
       fingerprint: fingerprintDependencies(inputs),
       expanded,
     };
-    return expanded;
+    return projectExpansion;
   };
 
   const transformSync = (
@@ -243,7 +247,8 @@ export function createSweetenerSession(
       throw new Error(
         `Sweetener cannot use ${configFile}: ${configurationErrors.join("; ")}`,
       );
-    const expanded = expansionFor(configFile, project);
+    const expansion = expansionFor(configFile, project);
+    const expanded = expansion.expanded;
     const inspected = provider.inspectSource(filename);
     const sourceStem = filename.replace(/\.s(?:ts|js)x?$/u, "");
     const generated = expanded.files.find(
@@ -258,11 +263,7 @@ export function createSweetenerSession(
       throw new Error(
         `${filename} is not opted into Sweetener expansion by ${configFile}. List it there, under "files" or "include".`,
       );
-    const dependencies = Object.freeze(
-      [...new Set([configFile, ...provider.macroDependencies(project)])]
-        .map(canonical)
-        .sort(),
-    );
+    const dependencies = Object.freeze([...expansion.dependencies].sort());
     // Every source in the project, so a composed map can name a macro module
     // it reaches through as well as the file being transformed.
     const sourceNames = new Map<number, { name: string; text: string }>();

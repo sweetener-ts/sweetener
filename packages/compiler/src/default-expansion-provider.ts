@@ -743,6 +743,7 @@ export class DefaultProjectExpansionProvider
     const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
     const packageManifests = new Map<string, MacroPackageManifest>();
+    const dependencies = new Set<string>();
     const loadFile = (
       fileName: string,
       sourceKind?: SourceKind,
@@ -889,6 +890,7 @@ export class DefaultProjectExpansionProvider
           parsedPackage.name,
         );
         if (packageJsonPath === undefined) continue;
+        dependencies.add(resolve(packageJsonPath));
         const packageRoot = dirname(packageJsonPath);
         let packageJson: Record<string, unknown>;
         try {
@@ -937,6 +939,7 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
+        dependencies.add(manifestPath);
         if (!isFile(manifestPath)) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
@@ -1624,6 +1627,7 @@ export class DefaultProjectExpansionProvider
           asTypeScriptDiagnostic(diagnostic, bySource),
         ),
       ),
+      dependencies: Object.freeze([...dependencies].sort()),
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
           // The name travels with the sentence. Every name one macro writes is

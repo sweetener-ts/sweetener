@@ -1,4 +1,5 @@
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -239,6 +240,214 @@ describe("public compiler session", () => {
     });
     expect(expansions).toBe(2);
     expect(otherAfter.code).toContain("[7, 7, 7]");
+    await session.close();
+  });
+
+  test("re-expands after an extended config changes", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const base = join(fixture.directory, "base.json");
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      base,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+      }),
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        extends: "./base.json",
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const inner = createDefaultProjectExpansionProvider();
+    let expansions = 0;
+    const provider = new Proxy(inner, {
+      get(target, property) {
+        if (property === "expandProject")
+          return (...args: Parameters<typeof inner.expandProject>) => {
+            expansions += 1;
+            return target.expandProject(...args);
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const session = createSweetenerSession({ provider });
+    await session.transform({
+      code: readFile(fixture.main),
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(1);
+
+    session.invalidate([base]);
+    await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(2);
+
+    writeFileSync(
+      base,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2020" },
+      }),
+    );
+    const afterConfigChange = await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(3);
+    expect(afterConfigChange.diagnostics).toEqual([]);
+    await session.close();
+  });
+
+  test("re-expands after package metadata changes", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const packageRoot = join(
+      fixture.directory,
+      "node_modules",
+      "@acme",
+      "forms",
+    );
+    const packageJson = join(packageRoot, "package.json");
+    const manifest = join(packageRoot, "sweet-macros.json");
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      packageJson,
+      JSON.stringify({
+        name: "@acme/forms",
+        version: "1.0.0",
+        sweetMacros: "./sweet-macros.json",
+      }),
+    );
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        formatVersion: 1,
+        name: "@acme/forms",
+        languageVersion: "1",
+        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+        entry: "./macros.sts",
+        exports: {
+          packaged: { source: "./forms.sts", category: "expr", phase: 1 },
+        },
+        dependencies: [],
+      }),
+    );
+    writeFileSync(
+      join(packageRoot, "macros.sts"),
+      `export const metadata = "macro package entry";\n`,
+    );
+    writeFileSync(
+      join(packageRoot, "forms.sts"),
+      `export syntax packaged:expr { rule { packaged($value:tt) } => { [$value, $value] } }\n`,
+    );
+    writeFileSync(
+      join(packageRoot, "forms2.sts"),
+      `export syntax packaged:expr { rule { packaged($value:tt) } => { [$value, $value, $value] } }\n`,
+    );
+    const source = `import { packaged } from "@acme/forms" for syntax;\nexport const answer = packaged(21);\n`;
+    writeFileSync(fixture.main, source);
+    writeFileSync(other, source.replace("21", "7"));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["main.sts", "other.sts"],
+      }),
+    );
+    const inner = createDefaultProjectExpansionProvider();
+    let expansions = 0;
+    const provider = new Proxy(inner, {
+      get(target, property) {
+        if (property === "expandProject")
+          return (...args: Parameters<typeof inner.expandProject>) => {
+            expansions += 1;
+            return target.expandProject(...args);
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const session = createSweetenerSession({ provider });
+    const first = await session.transform({
+      code: source,
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(1);
+    expect(first.code).toContain("[21, 21]");
+
+    session.invalidate([packageJson]);
+    await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(2);
+
+    writeFileSync(
+      packageJson,
+      JSON.stringify({
+        name: "@acme/forms",
+        version: "2.0.0",
+        sweetMacros: "./sweet-macros.json",
+      }),
+    );
+    await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(3);
+
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        formatVersion: 1,
+        name: "@acme/forms",
+        languageVersion: "1",
+        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+        entry: "./macros.sts",
+        exports: {
+          packaged: { source: "./forms2.sts", category: "expr", phase: 1 },
+        },
+        dependencies: [],
+      }),
+    );
+    const afterManifestChange = await session.transform({
+      code: source,
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(4);
+    expect(afterManifestChange.code).toContain("[21, 21, 21]");
     await session.close();
   });
 
