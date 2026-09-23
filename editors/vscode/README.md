@@ -49,11 +49,11 @@ executable. The extension runs `node` and the `sweetener` CLI with
 `--lsp --stdio`, and the workspace root is the working directory. Leave
 `sweetener.languageServer` unset.
 
-This checkout is the exception the extension already knows. The CLI is
-`packages/cli/bin/sweetener.mjs`, and the working directory is
-`examples/language-tour` when that `sweetener.json` is present. Run
-`pnpm build` once so the CLI has its compiled output. The server is not
-inside the extension package.
+In this checkout the CLI is `packages/cli/bin/sweetener.mjs` rather than
+an install under `node_modules`. The extension runs that file. The project
+is still the workspace folder, which VS Code uses as the process working
+directory. Run `pnpm build` once so the CLI has its compiled output. The
+server is not inside the extension package.
 
 Set `sweetener.languageServer` only when `sweetener` is not in that place,
 or when you need a flag the default command does not pass.

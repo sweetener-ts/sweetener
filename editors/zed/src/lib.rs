@@ -14,36 +14,26 @@ impl zed::Extension for SweetenerExtension {
     ) -> Result<Command> {
         let root = worktree.root_path();
         let node = worktree.which("node").unwrap_or_else(|| "node".to_string());
-        // Same shape as TypeScript's native server: the compiler CLI, then
-        // `--lsp --stdio`. The working directory Zed uses is the worktree.
-        // This checkout's sample project is not that root, so the extension
-        // adds `--project` itself. An installed project does not need it.
-        let mut args = vec!["--lsp".to_string(), "--stdio".to_string()];
+        // Zed starts this process with the worktree as its working directory.
+        // The CLI reads that directory. This command does not choose a project.
+        let args = vec!["--lsp".to_string(), "--stdio".to_string()];
         let checkout = "packages/cli/bin/sweetener.mjs";
-        if worktree.read_text_file(checkout).is_ok()
-            && worktree
-                .read_text_file("examples/language-tour/sweetener.json")
-                .is_ok()
-        {
-            args.push("--project".to_string());
-            args.push(format!("{root}/examples/language-tour"));
-        }
         if worktree.read_text_file(checkout).is_ok() {
-            let mut full = vec![format!("{root}/{checkout}")];
-            full.append(&mut args);
             return Ok(Command {
                 command: node,
-                args: full,
+                args: vec![format!("{root}/{checkout}"), "--lsp".into(), "--stdio".into()],
                 env: Vec::new(),
             });
         }
         let installed = "node_modules/@sweetener/cli/bin/sweetener.mjs";
         if worktree.read_text_file(installed).is_ok() {
-            let mut full = vec![format!("{root}/{installed}")];
-            full.append(&mut args);
             return Ok(Command {
                 command: node,
-                args: full,
+                args: vec![
+                    format!("{root}/{installed}"),
+                    "--lsp".into(),
+                    "--stdio".into(),
+                ],
                 env: Vec::new(),
             });
         }

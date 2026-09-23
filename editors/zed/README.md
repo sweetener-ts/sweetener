@@ -30,11 +30,11 @@ Zed finds `node` on the worktree `PATH` and runs the `sweetener` CLI with
 directory is the worktree root, which has to contain `sweetener.json` or
 `tsconfig.json`. No binary path and no extra arguments.
 
-This checkout is the exception the extension already knows. The CLI is
-`packages/cli/bin/sweetener.mjs`, not an install at the root, and the sample
-project is `examples/language-tour`. The extension adds `--project` for that
-directory. Run `pnpm build` once so the CLI has its compiled output. The
-server is not bundled in the extension archive.
+In this checkout the CLI is `packages/cli/bin/sweetener.mjs` rather than
+an install under `node_modules`. The extension runs that file. The project
+is still the working directory Zed gives the process, which is the opened
+folder. Run `pnpm build` once so the CLI has its compiled output. The server
+is not bundled in the extension archive.
 
 Set `lsp.sweetener-lsp.binary` only when `sweetener` is not in that place,
 or when you need a flag the default command does not pass.
