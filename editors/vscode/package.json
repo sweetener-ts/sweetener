@@ -3,7 +3,6 @@
   "displayName": "Sweetener",
   "description": "Syntax highlighting for Sweetener's .sts and .stsx files.",
   "version": "0.1.0-alpha.0",
-  "private": true,
   "publisher": "sweetener",
   "license": "MIT",
   "engines": {
@@ -12,7 +11,35 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:sweetener-typescript",
+    "onLanguage:sweetener-typescriptreact"
+  ],
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
   "contributes": {
+    "configuration": {
+      "title": "Sweetener",
+      "properties": {
+        "sweetener.languageServer": {
+          "type": "object",
+          "description": "Command that starts the Sweetener language server.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
     "languages": [
       {
         "id": "sweetener-typescript",

@@ -42,17 +42,23 @@ containers put back, since those hold code and the text around them does not.
 against VS Code's TSX grammar and the examples in this repository, and asserts
 the scopes that come out.
 
-## What it deliberately does not do
+## Language server
 
-There is no language server here, so nothing type-checks a `.sts` in the
-editor. That is on purpose rather than unfinished: associating these files with
-the built-in `typescript` language would start TypeScript's own service on
-them, and it would report every macro definition and every macro invocation as
-a syntax error. Highlighting without diagnostics is worth more than
-highlighting with wrong ones.
+Opening a `.sts` or `.stsx` file activates this extension and starts the
+Sweetener language server. `sweetener.languageServer.command` defaults to
+`node`. `sweetener.languageServer.args` is the server script and the project
+directory, for this repository `packages/cli/bin/sweetener-lsp.mjs` and
+`examples/language-tour`. The server comes from `pnpm build` and is not inside
+the extension package. An empty `args` list is reported in the Sweetener
+output channel and the client does not start.
 
-For checking, run `sweetener check`, or `sweetener watch`, which reports as
-you edit. Diagnostics come back mapped to the `.sts` line you wrote.
+These files stay on `sweetener-typescript` and `sweetener-typescriptreact`.
+Associating them with the built-in `typescript` language would start
+TypeScript's own service and report every macro as a syntax error.
+
+For checking from a terminal, run `sweetener check`, or `sweetener watch`.
+Diagnostics from the language server are mapped back to the `.sts` line you
+wrote.
 
 Ordinary `.ts` and `.tsx` files that _import_ a `.sts` module do get full
 editor support, including completions and type errors across the boundary, once
@@ -62,8 +68,9 @@ sees the real types.
 
 ## Installing it
 
-The extension is not published to the Marketplace. To use it from a checkout,
-link it into your extensions directory and restart VS Code:
+The extension is not published to the Marketplace. A GitHub Release of this
+repository carries `sweetener-vscode-<version>.vsix`. From a checkout, link
+the directory into your extensions folder and restart VS Code:
 
 ```sh
 ln -s "$PWD/editors/vscode" ~/.vscode/extensions/sweetener

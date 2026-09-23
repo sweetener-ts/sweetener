@@ -31,3 +31,26 @@ jobs:
           deno-version: v2.x
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+
+  editors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Zed Preview 1.21 compiles an extension library for wasm32-wasip2.
+      # 1.98.1 is the toolchain this crate was built with.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+      - name: Package the editor extensions
+        run: node scripts/package-editors.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-extensions
+          path: |
+            artifacts/editors/*.tar.gz
+            artifacts/editors/*.vsix
+            artifacts/editors/editors.json

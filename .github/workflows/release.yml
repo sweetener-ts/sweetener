@@ -113,3 +113,46 @@ jobs:
           path: |
             artifacts/release/release.json
             artifacts/release/tarballs
+
+  editors:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-wasip2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.1
+      - name: Package the editor extensions
+        run: node scripts/package-editors.mjs
+      - name: Keep the editor archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-extensions-${{ github.ref_name }}
+          path: |
+            artifacts/editors/*.tar.gz
+            artifacts/editors/*.vsix
+            artifacts/editors/editors.json
+      # A tag push publishes. A manual run publishes only when dry run is off,
+      # which matches the npm job. The archives are attached to that version's
+      # GitHub Release; npm publication itself stays on the publish job.
+      - name: Publish the editor archives
+        if: github.event_name == 'push' || inputs.dryRun == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v${version}"
+          fi
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --notes "Editor extensions for ${tag}."
+          fi
+          gh release upload "$tag" artifacts/editors/sweetener-zed-*.tar.gz artifacts/editors/sweetener-vscode-*.vsix artifacts/editors/editors.json --clobber
