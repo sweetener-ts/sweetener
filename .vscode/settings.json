@@ -1,0 +1,10 @@
+{
+  "files.associations": {
+    "*.sts": "sweetener-typescript",
+    "*.stsx": "sweetener-typescriptreact"
+  },
+  "sweetener.languageServer": {
+    "command": "node",
+    "args": ["./packages/cli/bin/sweetener.mjs", "--lsp", "--stdio"]
+  }
+}

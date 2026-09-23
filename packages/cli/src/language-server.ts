@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, parse, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -15,6 +15,7 @@ import type { OriginId, SourceId } from "@sweetener/shared";
 import {
   MappedLanguageService,
   VirtualLanguageServiceProject,
+  type MappedDocumentSymbol,
 } from "@sweetener/typescript-host";
 import ts from "typescript";
 
@@ -45,8 +46,6 @@ export const unimplementedLanguageServerMethods = Object.freeze([
   "textDocument/inlayHint",
   "textDocument/codeLens",
   "textDocument/prepareCallHierarchy",
-  "textDocument/signatureHelp",
-  "textDocument/documentSymbol",
   "textDocument/codeAction",
 ]);
 
@@ -56,8 +55,17 @@ export const languageServerCapabilities = Object.freeze({
   definitionProvider: true,
   referencesProvider: true,
   completionProvider: Object.freeze({
-    triggerCharacters: Object.freeze(["."]),
+    triggerCharacters: Object.freeze([".", '"', "'", "<"]),
+    resolveProvider: true,
   }),
+  signatureHelpProvider: Object.freeze({
+    triggerCharacters: Object.freeze(["(", ","]),
+    retriggerCharacters: Object.freeze([","]),
+  }),
+  typeDefinitionProvider: true,
+  implementationProvider: true,
+  documentHighlightProvider: true,
+  documentSymbolProvider: true,
   renameProvider: Object.freeze({ prepareProvider: true }),
   diagnosticProvider: Object.freeze({
     interFileDependencies: true,
@@ -223,6 +231,14 @@ function formatTag(tag: ts.JSDocTagInfo): string {
       ? `*@${tag.name}* \`${name}\``
       : `*@${tag.name}* \`${name}\` — ${body}`;
   return body.length === 0 ? `*@${tag.name}*` : `*@${tag.name}* — ${body}`;
+}
+
+function wordAt(text: string, offset: number): string {
+  let start = offset;
+  let end = offset;
+  while (start > 0 && /[A-Za-z0-9_$]/u.test(text[start - 1] ?? "")) start -= 1;
+  while (end < text.length && /[A-Za-z0-9_$]/u.test(text[end] ?? "")) end += 1;
+  return text.slice(start, end);
 }
 
 function contentHash(text: string): string {
@@ -392,17 +408,31 @@ const completionKinds: Readonly<Record<string, number>> = Object.freeze({
   const: 21,
   let: 6,
   var: 6,
+  "local variable": 6,
+  variable: 6,
   function: 3,
+  "local function": 3,
   method: 2,
+  "member function": 2,
+  constructor: 4,
   property: 10,
+  "member variable": 5,
+  "member get accessor": 10,
+  "member set accessor": 10,
   class: 7,
+  "local class": 7,
   interface: 8,
+  type: 7,
   enum: 13,
   "enum member": 20,
   keyword: 14,
   module: 9,
+  "external module name": 9,
   alias: 6,
   parameter: 6,
+  "type parameter": 25,
+  "primitive type": 7,
+  string: 14,
 });
 
 /**
@@ -415,6 +445,7 @@ export class LanguageServerSession {
   readonly #documents = new Map<string, OpenDocument>();
   readonly #inspections = new Map<string, SourceExpansionInspection>();
   readonly #answers = new Map<string, unknown>();
+  readonly #outgoing: object[] = [];
   readonly #contentStamps = new Map<
     string,
     { readonly mtimeMs: number; readonly size: number; readonly hash: string }
@@ -435,6 +466,20 @@ export class LanguageServerSession {
         readonly inspections: Map<string, SourceExpansionInspection>;
       }
     | undefined;
+  /**
+   * Projects reached by opening a file the workspace config does not list.
+   * Kept by content hash so a click does not expand language-tour again.
+   */
+  readonly #extraProjects = new Map<
+    string,
+    {
+      fingerprint: string;
+      readonly paths: readonly string[];
+      readonly service: MappedLanguageService;
+      readonly virtual: VirtualLanguageServiceProject;
+      readonly inspections: Map<string, SourceExpansionInspection>;
+    }
+  >();
 
   constructor(projectDirectory: string) {
     const configPath = languageServerConfigPath(projectDirectory);
@@ -452,11 +497,19 @@ export class LanguageServerSession {
     return this.#directory;
   }
 
+  takeOutgoing(): readonly object[] {
+    const notes = [...this.#outgoing];
+    this.#outgoing.length = 0;
+    return notes;
+  }
+
   dispose(): void {
     this.#shutdown = true;
     this.#virtual?.dispose();
     this.#virtual = undefined;
     this.#service = undefined;
+    for (const extra of this.#extraProjects.values()) extra.virtual.dispose();
+    this.#extraProjects.clear();
   }
 
   /**
@@ -531,6 +584,50 @@ export class LanguageServerSession {
             result: this.#at(method, params, (path, offset) =>
               this.#definitions(path, offset),
             ),
+          });
+        case "textDocument/typeDefinition":
+          return Object.freeze({
+            kind: "result",
+            result: this.#at(method, params, (path, offset) =>
+              this.#located(this.#boundService().typeDefinitions(path, offset)),
+            ),
+          });
+        case "textDocument/implementation":
+          return Object.freeze({
+            kind: "result",
+            result: this.#at(method, params, (path, offset) =>
+              this.#located(this.#boundService().implementations(path, offset)),
+            ),
+          });
+        case "textDocument/signatureHelp":
+          return Object.freeze({
+            kind: "result",
+            result: this.#at(method, params, (path, offset) =>
+              this.#signatureHelp(path, offset),
+            ),
+          });
+        case "textDocument/documentHighlight":
+          return Object.freeze({
+            kind: "result",
+            result: this.#at(method, params, (path, offset) =>
+              this.#highlights(path, offset),
+            ),
+          });
+        case "textDocument/documentSymbol": {
+          const uri = documentUri(params);
+          const path = resolve(fileURLToPath(uri));
+          const run = () => this.#symbols(path);
+          return Object.freeze({
+            kind: "result",
+            result: this.#inspections.has(path)
+              ? this.#cached(`symbols\0${uri}`, run)
+              : this.#once(path, run),
+          });
+        }
+        case "completionItem/resolve":
+          return Object.freeze({
+            kind: "result",
+            result: this.#resolveCompletion(params),
           });
         case "textDocument/references": {
           const includeDeclaration = includeDeclarationParam(params);
@@ -645,18 +742,57 @@ export class LanguageServerSession {
       readSource: (fileName) => this.#documents.get(resolve(fileName))?.text,
     });
     let project = projectListing(path);
+    const key = resolve(project.configPath);
+    const cached = this.#extraProjects.get(key);
+    if (
+      cached !== undefined &&
+      cached.inspections.has(path) &&
+      cached.fingerprint === this.#computeFingerprint(cached.paths)
+    ) {
+      this.#outside = cached;
+      try {
+        return compute();
+      } finally {
+        this.#outside = undefined;
+      }
+    }
+    cached?.virtual.dispose();
     let expanded = provider.expandProject(project);
     if (provider.inspectSource(path) === undefined) {
       project = loadStandaloneProject([path]);
       expanded = provider.expandProject(project);
     }
     const mounted = this.#materialize(project, provider, expanded);
-    this.#outside = mounted;
+    const paths = [
+      ...new Set(
+        [
+          ...(project.configurationDependencies ?? [project.configPath]),
+          ...project.typescript.fileNames,
+          ...provider.macroDependencies(project),
+          ...(expanded.dependencies ?? []),
+        ].map((fileName) => resolve(fileName)),
+      ),
+    ];
+    const slot = {
+      fingerprint: this.#computeFingerprint(paths),
+      paths,
+      service: mounted.service,
+      virtual: mounted.virtual,
+      inspections: mounted.inspections,
+    };
+    this.#extraProjects.set(key, slot);
+    if (this.#extraProjects.size > 2) {
+      const oldest = this.#extraProjects.keys().next().value;
+      if (oldest !== undefined && oldest !== key) {
+        this.#extraProjects.get(oldest)?.virtual.dispose();
+        this.#extraProjects.delete(oldest);
+      }
+    }
+    this.#outside = slot;
     try {
       return compute();
     } finally {
       this.#outside = undefined;
-      mounted.virtual.dispose();
     }
   }
 
@@ -685,6 +821,7 @@ export class LanguageServerSession {
     // Opening the text already expanded at startup must not throw that work
     // away. A buffer that differs from disk is a new input.
     if (diskText(path) !== text) this.#bump();
+    this.#publish(uri);
   }
 
   #change(params: unknown): void {
@@ -721,6 +858,7 @@ export class LanguageServerSession {
       }),
     );
     if (text !== document.text) this.#bump();
+    this.#publish(document.uri);
   }
 
   #close(params: unknown): void {
@@ -870,30 +1008,41 @@ export class LanguageServerSession {
     return hash;
   }
 
-  #computeFingerprint(): string {
-    const paths = [...this.#dependencyPaths()].sort();
+  #computeFingerprint(
+    paths: readonly string[] = this.#dependencyPaths(),
+  ): string {
+    const ordered = [...paths].sort();
     const hash = createHash("sha256");
-    for (const fileName of paths) {
+    for (const fileName of ordered) {
       hash.update(fileName);
       hash.update("\0");
       hash.update(this.#fileDigest(fileName));
       hash.update("\0");
     }
-    // A new file in one of these directories is not in the list above until
-    // the config is read again. The directory mtime changes when that happens.
+    // Names of Sweetener files in those directories. A new `.sts` shows up
+    // here. An unrelated file does not change the hash, so it does not
+    // rebuild the project.
     const directories = [
-      ...new Set(paths.map((fileName) => dirname(fileName))),
+      ...new Set(ordered.map((fileName) => dirname(fileName))),
     ].sort();
     for (const directory of directories) {
-      let mark = "missing";
+      let names: string;
       try {
-        mark = String(statSync(directory).mtimeMs);
+        names = readdirSync(directory)
+          .filter(
+            (name) =>
+              name.endsWith(".sts") ||
+              name.endsWith(".stsx") ||
+              name.endsWith(".json"),
+          )
+          .sort()
+          .join("\n");
       } catch {
-        // The directory went away with its inputs.
+        names = "<missing>";
       }
       hash.update(directory);
       hash.update("\0");
-      hash.update(mark);
+      hash.update(names);
       hash.update("\0");
     }
     return hash.digest("hex");
@@ -907,6 +1056,11 @@ export class LanguageServerSession {
       readonly severity: 1 | 2 | 3 | 4;
       readonly source: string;
       readonly code: number | string;
+      readonly tags?: readonly number[];
+      readonly relatedInformation?: readonly {
+        readonly location: { readonly uri: string; readonly range: LspRange };
+        readonly message: string;
+      }[];
     }[];
   } {
     const document = this.#require(uri);
@@ -921,6 +1075,17 @@ export class LanguageServerSession {
           continue;
         const range = rangeFor(text, origin.start, origin.end);
         if (range === undefined) continue;
+        const related = [];
+        for (const info of diagnostic.relatedOrigins) {
+          const path = this.#pathForSource(info.origin.sourceId);
+          const location = this.#location(
+            path,
+            info.origin.start,
+            info.origin.end,
+          );
+          if (location === undefined) continue;
+          related.push(Object.freeze({ location, message: info.message }));
+        }
         items.push(
           Object.freeze({
             range,
@@ -928,6 +1093,10 @@ export class LanguageServerSession {
             severity: severity(diagnostic.category),
             source: "typescript",
             code: diagnostic.typescriptCode,
+            ...(diagnostic.tags.length === 0 ? {} : { tags: diagnostic.tags }),
+            ...(related.length === 0
+              ? {}
+              : { relatedInformation: Object.freeze(related) }),
           }),
         );
       }
@@ -954,6 +1123,19 @@ export class LanguageServerSession {
       }
     }
     return Object.freeze({ kind: "full", items: Object.freeze(items) });
+  }
+
+  #publish(uri: string): void {
+    try {
+      const report = this.#diagnostics(uri);
+      this.#outgoing.push({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: { uri, diagnostics: report.items },
+      });
+    } catch {
+      // The document went away between the edit and the publish.
+    }
   }
 
   #pathForSource(sourceId: SourceId): string | undefined {
@@ -1131,6 +1313,17 @@ export class LanguageServerSession {
       return located === undefined ? null : Object.freeze([located]);
     }
     const definitions = this.#boundService().definitions(path, offset);
+    if (definitions.length === 0) {
+      const keyword = this.#blockKeyword(path, offset);
+      if (keyword !== undefined) {
+        const located = this.#location(
+          keyword.definitionPath,
+          keyword.definitionStart,
+          keyword.definitionEnd,
+        );
+        return located === undefined ? null : Object.freeze([located]);
+      }
+    }
     const locations = [];
     for (const definition of definitions) {
       if (definition.expansionView) continue;
@@ -1183,6 +1376,8 @@ export class LanguageServerSession {
   }
 
   #completions(path: string, offset: number): unknown {
+    const syntaxImport = this.#syntaxImportCompletion(path, offset);
+    if (syntaxImport !== undefined) return syntaxImport;
     const completions = this.#boundService().completions(path, offset);
     if (completions === undefined) return null;
     const text = this.#text(path);
@@ -1202,6 +1397,13 @@ export class LanguageServerSession {
             label: entry.name,
             kind: completionKinds[entry.kind] ?? 1,
             sortText: entry.sortText,
+            insertTextFormat: entry.isSnippet ? 2 : 1,
+            data: Object.freeze({
+              uri: this.#uri(path),
+              offset,
+              name: entry.name,
+              ...(entry.source === undefined ? {} : { source: entry.source }),
+            }),
             ...(entry.insertText === undefined
               ? {}
               : { insertText: entry.insertText }),
@@ -1221,7 +1423,7 @@ export class LanguageServerSession {
 
   #prepareRename(path: string, offset: number): unknown {
     const rename = this.#boundService().rename(path, offset);
-    if (!rename.canRename) return null;
+    if (!rename.canRename) throw new RequestError(-32803, rename.reason);
     const text = this.#text(path);
     const here = rename.locations.find(
       (location) =>
@@ -1238,29 +1440,277 @@ export class LanguageServerSession {
 
   #rename(path: string, offset: number, newName: string): unknown {
     const rename = this.#boundService().rename(path, offset);
-    if (!rename.canRename) return null;
+    if (!rename.canRename) throw new RequestError(-32803, rename.reason);
     const changes: Record<
       string,
       { readonly range: LspRange; readonly newText: string }[]
     > = {};
     for (const location of rename.locations) {
-      if (
-        location.source === undefined ||
-        location.sourceFileName === undefined
-      )
-        return null;
-      const range = rangeFor(
-        this.#text(location.sourceFileName),
-        location.source.start,
-        location.source.end,
-      );
-      if (range === undefined) return null;
+      if (location.sourceFileName === undefined) continue;
+      const range =
+        location.source === undefined
+          ? rangeFor(
+              this.#text(location.sourceFileName),
+              location.generatedTextSpan.start,
+              location.generatedTextSpan.start +
+                location.generatedTextSpan.length,
+            )
+          : rangeFor(
+              this.#text(location.sourceFileName),
+              location.source.start,
+              location.source.end,
+            );
+      if (range === undefined) continue;
       const uri = this.#uri(location.sourceFileName);
       const edits = changes[uri] ?? [];
       edits.push(Object.freeze({ range, newText: newName }));
       changes[uri] = edits;
     }
+    if (Object.keys(changes).length === 0)
+      throw new RequestError(-32803, "No source location can be renamed.");
     return Object.freeze({ changes });
+  }
+
+  #syntaxImportCompletion(path: string, offset: number): unknown {
+    const text = this.#text(path);
+    const from = text.lastIndexOf("import", offset);
+    if (from < 0 || offset - from > 400) return undefined;
+    const clause = text.slice(from, Math.min(text.length, from + 400));
+    if (!clause.includes("for syntax")) return undefined;
+    const open = clause.indexOf("{");
+    const close = clause.indexOf("}");
+    if (open < 0 || close < open) return undefined;
+    const absoluteOpen = from + open;
+    const absoluteClose = from + close;
+    if (offset <= absoluteOpen || offset > absoluteClose) return undefined;
+    const specifier = /from\s+["']([^"']+)["']/u.exec(clause);
+    if (specifier === null) return undefined;
+    const importedFrom = specifier[1];
+    if (importedFrom === undefined) return undefined;
+    const target = resolve(dirname(path), importedFrom);
+    const imported = this.#boundInspections().get(target);
+    if (imported?.macros === undefined) return undefined;
+    let wordStart = offset;
+    while (
+      wordStart > absoluteOpen &&
+      /[A-Za-z0-9_$]/u.test(text[wordStart - 1] ?? "")
+    )
+      wordStart -= 1;
+    const prefix = text.slice(wordStart, offset);
+    const range = rangeFor(text, wordStart, offset);
+    const items = imported.macros
+      .filter(
+        (macro) =>
+          macro.definitionSourceId === imported.sourceId &&
+          macro.name.startsWith(prefix),
+      )
+      .map((macro) =>
+        Object.freeze({
+          label: macro.name,
+          kind: 3,
+          detail: macro.category,
+          insertText: macro.name,
+          insertTextFormat: 1,
+          ...(range === undefined
+            ? {}
+            : {
+                textEdit: Object.freeze({ range, newText: macro.name }),
+              }),
+        }),
+      );
+    return Object.freeze({ isIncomplete: false, items: Object.freeze(items) });
+  }
+
+  #resolveCompletion(params: unknown): unknown {
+    const item = record(params);
+    const data = record(item?.["data"]);
+    const uri = data?.["uri"];
+    const offset = data?.["offset"];
+    const name = data?.["name"];
+    if (
+      typeof uri !== "string" ||
+      typeof offset !== "number" ||
+      typeof name !== "string"
+    )
+      return params;
+    const path = resolve(fileURLToPath(uri));
+    const source =
+      typeof data?.["source"] === "string" ? data["source"] : undefined;
+    const fill = (): unknown => {
+      const details = this.#boundService().completionDetails(
+        path,
+        offset,
+        name,
+        source,
+      );
+      if (details === undefined) return params;
+      return {
+        ...(item ?? {}),
+        detail: details.detail,
+        ...(details.documentation.length === 0
+          ? {}
+          : {
+              documentation: Object.freeze({
+                kind: "markdown",
+                value: details.documentation,
+              }),
+            }),
+      };
+    };
+    return this.#inspections.has(path) ? fill() : this.#once(path, fill);
+  }
+
+  #located(
+    definitions: readonly {
+      readonly expansionView: boolean;
+      readonly source:
+        { readonly start: number; readonly end: number } | undefined;
+      readonly sourceFileName: string | undefined;
+      readonly generatedTextSpan: {
+        readonly start: number;
+        readonly length: number;
+      };
+    }[],
+  ): unknown {
+    const locations = [];
+    for (const definition of definitions) {
+      if (definition.expansionView) continue;
+      const located =
+        definition.source === undefined
+          ? this.#location(
+              definition.sourceFileName,
+              definition.generatedTextSpan.start,
+              definition.generatedTextSpan.start +
+                definition.generatedTextSpan.length,
+            )
+          : this.#location(
+              definition.sourceFileName,
+              definition.source.start,
+              definition.source.end,
+            );
+      if (located !== undefined) locations.push(located);
+    }
+    return locations.length === 0 ? null : Object.freeze(locations);
+  }
+
+  #signatureHelp(path: string, offset: number): unknown {
+    const help = this.#boundService().signatureHelp(path, offset);
+    if (help === undefined) return null;
+    return Object.freeze({
+      activeSignature: help.selectedItemIndex,
+      activeParameter: help.argumentIndex,
+      signatures: Object.freeze(
+        help.items.map((item) => {
+          const parameters = item.parameters.map((parameter) =>
+            ts.displayPartsToString(parameter.displayParts),
+          );
+          const label = [
+            ts.displayPartsToString(item.prefixDisplayParts),
+            parameters.join(
+              ts.displayPartsToString(item.separatorDisplayParts),
+            ),
+            ts.displayPartsToString(item.suffixDisplayParts),
+          ].join("");
+          return Object.freeze({
+            label,
+            parameters: Object.freeze(
+              parameters.map((parameter) =>
+                Object.freeze({ label: parameter }),
+              ),
+            ),
+          });
+        }),
+      ),
+    });
+  }
+
+  #highlights(path: string, offset: number): unknown {
+    const text = this.#text(path);
+    const highlights = [];
+    for (const span of this.#boundService().documentHighlights(path, offset)) {
+      const range = rangeFor(text, span.source.start, span.source.end);
+      if (range === undefined) continue;
+      highlights.push(
+        Object.freeze({
+          range,
+          kind: span.kind === "write" ? 3 : span.kind === "read" ? 2 : 1,
+        }),
+      );
+    }
+    return highlights.length === 0 ? null : Object.freeze(highlights);
+  }
+
+  #symbols(path: string): unknown {
+    const text = this.#text(path);
+    const convert = (symbol: MappedDocumentSymbol): object | undefined => {
+      const range = rangeFor(text, symbol.source.start, symbol.source.end);
+      if (range === undefined) return undefined;
+      return Object.freeze({
+        name: symbol.name,
+        kind: completionKinds[symbol.kind] ?? 1,
+        range,
+        selectionRange: range,
+        children: Object.freeze(
+          symbol.children.flatMap((child) => {
+            const converted = convert(child);
+            return converted === undefined ? [] : [converted];
+          }),
+        ),
+      });
+    };
+    return Object.freeze(
+      this.#boundService()
+        .documentSymbols(path)
+        .flatMap((symbol) => {
+          const converted = convert(symbol);
+          return converted === undefined ? [] : [converted];
+        }),
+    );
+  }
+
+  #blockKeyword(
+    path: string,
+    offset: number,
+  ):
+    | {
+        readonly definitionPath: string;
+        readonly definitionStart: number;
+        readonly definitionEnd: number;
+      }
+    | undefined {
+    const text = this.#text(path);
+    if (wordAt(text, offset) !== "else" && wordAt(text, offset) !== "end")
+      return undefined;
+    const before = text.slice(0, offset);
+    const whenAt = before.lastIndexOf("{when");
+    const eachAt = before.lastIndexOf("{each");
+    const at = Math.max(whenAt, eachAt);
+    if (at < 0) return undefined;
+    const name = whenAt > eachAt ? "when" : "each";
+    let macro:
+      NonNullable<SourceExpansionInspection["macros"]>[number] | undefined;
+    for (const inspected of this.#boundInspections().values()) {
+      macro = inspected.macros?.find(
+        (candidate) =>
+          candidate.name === name &&
+          candidate.definitionSourceId === inspected.sourceId,
+      );
+      if (macro !== undefined) break;
+    }
+    if (macro === undefined) return undefined;
+    const definitionPath = this.#pathForSource(macro.definitionSourceId);
+    if (definitionPath === undefined) return undefined;
+    const definition = nameSpan(
+      this.#text(definitionPath),
+      macro.definitionStart,
+      macro.definitionEnd,
+      macro.name,
+    );
+    return {
+      definitionPath,
+      definitionStart: definition.start,
+      definitionEnd: definition.end,
+    };
   }
 }
 
@@ -1371,6 +1821,8 @@ export function serveLanguageServer(
         continue;
       }
       const response = handleLanguageServerMessage(session, message);
+      for (const note of session.takeOutgoing())
+        output.write(encodeMessage(note));
       if (response !== undefined) output.write(encodeMessage(response));
       if (message.method === "exit") finish();
     }

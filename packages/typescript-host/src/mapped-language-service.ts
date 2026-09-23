@@ -2,7 +2,7 @@ import type { OriginQueryIndex, PrintedExpandedFile } from "@sweetener/printer";
 import { resolve } from "node:path";
 import type { BindingId, SourceId, SourceSpan } from "@sweetener/shared";
 import type { OriginStore } from "@sweetener/syntax";
-import type * as ts from "typescript";
+import ts from "typescript";
 import { remapTypeScriptDiagnostic } from "./diagnostic-remap.js";
 import type { RemappedTypeScriptDiagnostic } from "./diagnostic-remap.js";
 import type { VirtualLanguageServiceProject } from "./language-service-host.js";
@@ -57,8 +57,16 @@ export interface MappedCompletion {
   readonly sortText: string;
   readonly insertText: string | undefined;
   readonly isSnippet: boolean;
+  readonly source: string | undefined;
   readonly replacementSpan: SourceSpan | undefined;
   readonly expansionView: boolean;
+}
+
+export interface MappedDocumentSymbol {
+  readonly name: string;
+  readonly kind: ts.ScriptElementKind;
+  readonly source: SourceSpan;
+  readonly children: readonly MappedDocumentSymbol[];
 }
 
 export interface MappedCompletions {
@@ -323,6 +331,7 @@ export class MappedLanguageService {
             sortText: entry.sortText,
             insertText: entry.insertText,
             isSnippet: entry.isSnippet ?? false,
+            source: entry.source,
             replacementSpan,
             expansionView:
               generatedSpan !== undefined && replacementSpan === undefined,
@@ -330,6 +339,122 @@ export class MappedLanguageService {
         }),
       ),
     });
+  }
+
+  completionDetails(
+    sourceFileName: string,
+    originalOffset: number,
+    name: string,
+    source: string | undefined,
+  ):
+    | {
+        readonly detail: string;
+        readonly documentation: string;
+      }
+    | undefined {
+    const position = this.#generatedPosition(
+      sourceFileName,
+      originalOffset,
+      true,
+    );
+    if (position === undefined) return undefined;
+    const details = this.#project.languageService.getCompletionEntryDetails(
+      position.mapping.virtualFileName,
+      position.offset,
+      name,
+      {},
+      source,
+      {},
+      undefined,
+    );
+    if (details === undefined) return undefined;
+    return Object.freeze({
+      detail: ts.displayPartsToString(details.displayParts),
+      documentation: ts.displayPartsToString([
+        ...(details.documentation ?? []),
+      ]),
+    });
+  }
+
+  typeDefinitions(
+    sourceFileName: string,
+    originalOffset: number,
+  ): readonly MappedDefinition[] {
+    return this.#definitionsAt(
+      sourceFileName,
+      originalOffset,
+      (service, file, offset) =>
+        service.getTypeDefinitionAtPosition(file, offset) ?? [],
+    );
+  }
+
+  implementations(
+    sourceFileName: string,
+    originalOffset: number,
+  ): readonly MappedDefinition[] {
+    return this.#definitionsAt(
+      sourceFileName,
+      originalOffset,
+      (service, file, offset) =>
+        service.getImplementationAtPosition(file, offset) ?? [],
+    );
+  }
+
+  signatureHelp(
+    sourceFileName: string,
+    originalOffset: number,
+  ): ts.SignatureHelpItems | undefined {
+    const position = this.#generatedPosition(sourceFileName, originalOffset);
+    if (position === undefined) return undefined;
+    return this.#project.languageService.getSignatureHelpItems(
+      position.mapping.virtualFileName,
+      position.offset,
+      {},
+    );
+  }
+
+  documentHighlights(
+    sourceFileName: string,
+    originalOffset: number,
+  ): readonly {
+    readonly source: SourceSpan;
+    readonly kind: "read" | "write" | "text";
+  }[] {
+    const position = this.#generatedPosition(sourceFileName, originalOffset);
+    if (position === undefined) return Object.freeze([]);
+    const highlights =
+      this.#project.languageService.getDocumentHighlights(
+        position.mapping.virtualFileName,
+        position.offset,
+        [position.mapping.virtualFileName],
+      ) ?? [];
+    const spans = [];
+    for (const highlight of highlights)
+      for (const span of highlight.highlightSpans) {
+        const source = sourceSpanForTextSpan(position.mapping, span.textSpan);
+        if (source === undefined) continue;
+        spans.push(
+          Object.freeze({
+            source,
+            kind:
+              span.kind === ts.HighlightSpanKind.writtenReference
+                ? ("write" as const)
+                : span.kind === ts.HighlightSpanKind.reference
+                  ? ("read" as const)
+                  : ("text" as const),
+          }),
+        );
+      }
+    return Object.freeze(spans);
+  }
+
+  documentSymbols(sourceFileName: string): readonly MappedDocumentSymbol[] {
+    const mapping = this.#bySource.get(canonical(sourceFileName));
+    if (mapping === undefined) return Object.freeze([]);
+    const tree = this.#project.languageService.getNavigationTree(
+      mapping.virtualFileName,
+    );
+    return Object.freeze(this.#symbols(mapping, tree.childItems ?? []));
   }
 
   rename(sourceFileName: string, originalOffset: number): MappedRenameResult {
@@ -439,6 +564,73 @@ export class MappedLanguageService {
       kind: info.kind,
       locations: Object.freeze([...mapped.values()]),
     });
+  }
+
+  #definitionsAt(
+    sourceFileName: string,
+    originalOffset: number,
+    query: (
+      service: ts.LanguageService,
+      fileName: string,
+      offset: number,
+    ) => readonly {
+      readonly fileName: string;
+      readonly textSpan: ts.TextSpan;
+      readonly name?: string;
+      readonly kind?: ts.ScriptElementKind;
+    }[],
+  ): readonly MappedDefinition[] {
+    const position = this.#generatedPosition(sourceFileName, originalOffset);
+    if (position === undefined) return Object.freeze([]);
+    return Object.freeze(
+      query(
+        this.#project.languageService,
+        position.mapping.virtualFileName,
+        position.offset,
+      ).map((definition) => {
+        const target = this.#byVirtual.get(canonical(definition.fileName));
+        const source =
+          target === undefined
+            ? undefined
+            : sourceSpanForTextSpan(target, definition.textSpan);
+        return Object.freeze({
+          name: definition.name ?? "",
+          kind: definition.kind ?? ts.ScriptElementKind.unknown,
+          source,
+          generatedFileName: definition.fileName,
+          generatedTextSpan: definition.textSpan,
+          expansionView: target !== undefined && source === undefined,
+          sourceFileName:
+            target === undefined ? definition.fileName : target.sourceFileName,
+        });
+      }),
+    );
+  }
+
+  #symbols(
+    mapping: LanguageServiceSourceMapping,
+    items: readonly ts.NavigationTree[],
+  ): readonly MappedDocumentSymbol[] {
+    const symbols = [];
+    for (const item of items) {
+      const span = item.nameSpan ?? item.spans[0];
+      const source =
+        span === undefined ? undefined : sourceSpanForTextSpan(mapping, span);
+      const children = this.#symbols(mapping, item.childItems ?? []);
+      if (source === undefined) {
+        symbols.push(...children);
+        continue;
+      }
+      symbols.push(
+        Object.freeze({
+          name: item.text,
+          kind: item.kind,
+          source,
+          children,
+        }),
+      );
+    }
+    return Object.freeze(symbols);
   }
 
   #generatedPosition(

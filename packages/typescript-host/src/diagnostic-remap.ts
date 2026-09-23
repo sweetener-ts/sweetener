@@ -17,6 +17,8 @@ export interface RemappedTypeScriptDiagnostic {
   readonly generatedStart: number | undefined;
   readonly generatedLength: number | undefined;
   readonly typescriptRelatedInformation: readonly ts.DiagnosticRelatedInformation[];
+  /** LSP DiagnosticTag values: 1 unnecessary, 2 deprecated. */
+  readonly tags: readonly (1 | 2)[];
 }
 
 function originLabel(origin: Origin): string {
@@ -126,6 +128,10 @@ export function remapTypeScriptDiagnostic(options: {
     generatedLength: diagnostic.length,
     typescriptRelatedInformation: Object.freeze([
       ...(diagnostic.relatedInformation ?? []),
+    ]),
+    tags: Object.freeze([
+      ...(diagnostic.reportsUnnecessary === true ? [1 as const] : []),
+      ...(diagnostic.reportsDeprecated === true ? [2 as const] : []),
     ]),
   });
 }

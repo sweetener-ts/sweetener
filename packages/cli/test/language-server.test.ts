@@ -355,6 +355,122 @@ export const value = marker(1);
     }
   }, 20_000);
 
+  test("completes a for-syntax import and jumps from else to its macro", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-lsp-import-"));
+    writeFileSync(
+      join(directory, "macros.sts"),
+      `export syntax when:expr {
+  rule { when ($condition:expr) } => { $condition }
+}
+export syntax marker:expr {
+  rule { marker($value:expr) } => { $value }
+}
+`,
+    );
+    const source = `import { } from "./macros.sts" for syntax;
+export const value = {when (true)} {else} {end};
+`;
+    writeFileSync(join(directory, "main.sts"), source);
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+        },
+        files: ["macros.sts", "main.sts"],
+      }),
+    );
+    const server = startServer(directory);
+    const uri = pathToFileURL(join(directory, "main.sts")).href;
+    try {
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: pathToFileURL(directory).href,
+        capabilities: {},
+      });
+      server.notify("initialized", {});
+      server.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: "sweetener",
+          version: 1,
+          text: source,
+        },
+      });
+      const inside = positionOf(source, source.indexOf("{ }") + 1);
+      const completion = (await server.request("textDocument/completion", {
+        textDocument: { uri },
+        position: inside,
+      })) as { items: { label: string; detail?: string }[] };
+      expect(completion.items.map((item) => item.label).sort()).toEqual([
+        "marker",
+        "when",
+      ]);
+      const definitions = (await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position: positionOf(source, source.indexOf("else")),
+      })) as Location[];
+      expect(definitions.length).toBeGreaterThan(0);
+      const macro = readFileSync(join(directory, "macros.sts"), "utf8");
+      expect(
+        definitions.some(
+          (definition) => slice(macro, definition.range) === "when",
+        ),
+      ).toBe(true);
+      const typed = (await server.request("textDocument/typeDefinition", {
+        textDocument: { uri },
+        position: positionOf(source, source.indexOf("value")),
+      })) as Location[] | null;
+      expect(typed === null || Array.isArray(typed)).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  }, 20_000);
+
+  test("does not expand language-tour again on the next jump", async () => {
+    const server = startServer(repository);
+    const main = resolve(
+      repository,
+      "examples/language-tour/recovered/core-rewrites/main.sts",
+    );
+    const text = readFileSync(main, "utf8");
+    const uri = pathToFileURL(main).href;
+    const position = positionOf(text, text.indexOf("exact"));
+    try {
+      await server.request("initialize", {
+        processId: process.pid,
+        rootUri: pathToFileURL(repository).href,
+        capabilities: {},
+      });
+      server.notify("initialized", {});
+      server.notify("textDocument/didOpen", {
+        textDocument: { uri, languageId: "sweetener", version: 1, text },
+      });
+      const firstStarted = performance.now();
+      const first = (await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position,
+      })) as Location[];
+      const firstMs = performance.now() - firstStarted;
+      const secondStarted = performance.now();
+      const second = (await server.request("textDocument/definition", {
+        textDocument: { uri },
+        position,
+      })) as Location[];
+      const secondMs = performance.now() - secondStarted;
+      expect(second).toEqual(first);
+      expect(first.length).toBeGreaterThan(0);
+      expect(secondMs).toBeLessThan(firstMs);
+      expect(secondMs).toBeLessThan(80);
+    } finally {
+      await server.stop();
+    }
+  }, 30_000);
+
   test("answers mapped editor requests for the language tour", async () => {
     const launches = [];
     for (let launch = 0; launch < 2; launch += 1)
@@ -558,13 +674,13 @@ async function exercise(): Promise<{
       true,
     );
 
-    expect(
-      await server.request("textDocument/rename", {
+    await expect(
+      server.request("textDocument/rename", {
         textDocument: { uri: mainUri },
         position: clampAt,
         newName: "limit",
       }),
-    ).toBeNull();
+    ).rejects.toThrow(/rename|generated|boundary|location|binding|captured/iu);
 
     const ruleAt = positionOf(macros, macros.indexOf("rule"));
     expect(
@@ -591,13 +707,13 @@ export const high = clamp(14, 0, 10);
       textDocument: { uri: mainUri, version: 2 },
       contentChanges: [{ text: withBound }],
     });
-    expect(
-      await server.request("textDocument/rename", {
+    await expect(
+      server.request("textDocument/rename", {
         textDocument: { uri: mainUri },
         position: positionOf(withBound, withBound.lastIndexOf("bound")),
         newName: "value",
       }),
-    ).toBeNull();
+    ).rejects.toThrow(/binding/);
 
     const edited = source.replace("-4", '"zz"');
     server.notify("textDocument/didChange", {
