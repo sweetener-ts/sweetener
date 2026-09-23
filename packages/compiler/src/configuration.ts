@@ -33,6 +33,8 @@ export interface SweetConfigurationProblem {
 
 export interface LoadedSweetProject {
   readonly configPath: string;
+  /** Config files read while resolving this project, including `configPath`. */
+  readonly configurationDependencies?: readonly string[];
   readonly sweet: SweetCompilerOptions;
   readonly typescript: ts.ParsedCommandLine;
   readonly problems: readonly SweetConfigurationProblem[];
@@ -264,6 +266,7 @@ export function loadStandaloneProject(
   });
   return Object.freeze({
     configPath: resolve(absolute[0] ?? ".", "..", "tsconfig.json"),
+    configurationDependencies: Object.freeze([]),
     sweet,
     typescript: Object.freeze({
       options: Object.freeze({
@@ -284,7 +287,12 @@ export function loadStandaloneProject(
 
 export function loadSweetProject(configPath: string): LoadedSweetProject {
   const absolute = resolve(configPath);
-  const read = ts.readConfigFile(absolute, ts.sys.readFile);
+  const configurationDependencies = new Set([absolute]);
+  const readConfigFile = (fileName: string): string | undefined => {
+    configurationDependencies.add(resolve(fileName));
+    return ts.sys.readFile(fileName);
+  };
+  const read = ts.readConfigFile(absolute, readConfigFile);
   const raw = read.config as Record<string, unknown> | undefined;
   const parsedSweet = parseSweetCompilerOptions(raw?.["sweet"]);
   // Deferred, which is what makes a wildcard pick these up at all: TypeScript
@@ -317,7 +325,7 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
       : raw;
   const parsedTypeScript = ts.parseJsonConfigFileContent(
     rawWithJavaScript ?? {},
-    ts.sys,
+    { ...ts.sys, readFile: readConfigFile },
     dirname(absolute),
     undefined,
     absolute,
@@ -338,6 +346,9 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
   });
   return Object.freeze({
     configPath: absolute,
+    configurationDependencies: Object.freeze(
+      [...configurationDependencies].sort(),
+    ),
     sweet: parsedSweet.options,
     typescript,
     problems: parsedSweet.problems,
