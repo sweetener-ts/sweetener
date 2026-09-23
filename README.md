@@ -281,14 +281,14 @@ validation evidence.
 
 Three limits, before you adopt it.
 
-**Editor support is highlighting only.** `editors/vscode` contributes a grammar
-for `.sts` and `.stsx`. It is not on the Marketplace, so link it from a
-checkout. It ships no language server on purpose: registering `.sts` as
-`typescript` starts TypeScript's own service on the file and paints every macro
-definition as a syntax error. So a `.sts` gets no hover, diagnostics, or
-go-to-definition, and `sweetener check` and `watch` cover that instead. A `.ts`
-file importing a `.sts` does get completions and errors, through the
-declarations above.
+**Editor support is highlighting only.** `editors/vscode` and `editors/zed`
+contribute languages for `.sts` and `.stsx`. Neither is published, so install
+from a checkout. Neither ships a language server on purpose: registering
+`.sts` as TypeScript starts TypeScript's own service on the file and paints
+every macro definition as a syntax error. So a `.sts` gets no hover,
+diagnostics, or go-to-definition, and `sweetener check` and `watch` cover that
+instead. A `.ts` file importing a `.sts` does get completions and errors,
+through the declarations above.
 
 **Sweetener declines to rename through a macro invocation.** A captured
 reference carries no proof of which binding each copy denotes, so it refuses

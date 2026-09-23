@@ -1,0 +1,21 @@
+id = "sweetener"
+name = "Sweetener"
+version = "0.1.0"
+schema_version = 1
+authors = ["Sweetener"]
+description = "Syntax highlighting for Sweetener .sts and .stsx files."
+repository = "https://github.com/sweetener-ts/sweetener"
+
+# The key is the C symbol Zed exports, `tree_sitter_<name>`. These grammars
+# already export `tree_sitter_typescript` and `tree_sitter_tsx`. A renamed key
+# fails at link time. Zed keeps its built-in grammar when the name matches, so
+# this does not replace TypeScript or TSX highlighting.
+[grammars.typescript]
+repository = "https://github.com/zed-industries/tree-sitter-typescript"
+rev = "e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899"
+path = "typescript"
+
+[grammars.tsx]
+repository = "https://github.com/zed-industries/tree-sitter-typescript"
+rev = "e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899"
+path = "tsx"
