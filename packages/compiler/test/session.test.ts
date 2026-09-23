@@ -8,7 +8,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
-import { createSweetenerSession } from "../src/index.js";
+import {
+  createDefaultProjectExpansionProvider,
+  createSweetenerSession,
+  type DefaultProjectExpansionProvider,
+} from "../src/index.js";
 
 function project(): {
   directory: string;
@@ -154,6 +158,87 @@ describe("public compiler session", () => {
     expect(result.map.sources).toContain(realpathSync(fixture.main));
     expect(result.map.sourcesContent).toContain(source);
     expect(Array.isArray(result.trace)).toBe(true);
+    await session.close();
+  });
+
+  test("expands the project once when several files are transformed", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(
+      other,
+      `import { duplicate } from "./macros.sts" for syntax;\nexport const other = duplicate(7);\n`,
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const inner = createDefaultProjectExpansionProvider();
+    let expansions = 0;
+    const counting = new Proxy(inner, {
+      get(target, property) {
+        if (property === "expandProject")
+          return (
+            project: Parameters<
+              DefaultProjectExpansionProvider["expandProject"]
+            >[0],
+          ) => {
+            expansions += 1;
+            return target.expandProject(project);
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const session = createSweetenerSession({ provider: counting });
+    const main = await session.transform({
+      code: readFile(fixture.main),
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    const second = await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    const mainAgain = await session.transform({
+      code: readFile(fixture.main),
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+
+    expect(expansions).toBe(1);
+    expect(main.diagnostics).toEqual([]);
+    expect(second.diagnostics).toEqual([]);
+    expect(main.code).toContain("[21, 21]");
+    expect(second.code).toContain("[7, 7]");
+    expect(mainAgain).toBe(main);
+
+    writeFileSync(
+      fixture.macros,
+      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, $value, $value] } }\n`,
+    );
+    const rebuilt = await session.transform({
+      code: readFile(fixture.main),
+      filename: fixture.main,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(2);
+    expect(rebuilt.code).toContain("[21, 21, 21]");
+    const otherAfter = await session.transform({
+      code: readFile(other),
+      filename: other,
+      configFile: fixture.config,
+      mode: "test",
+    });
+    expect(expansions).toBe(2);
+    expect(otherAfter.code).toContain("[7, 7, 7]");
     await session.close();
   });
 

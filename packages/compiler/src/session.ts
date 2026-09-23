@@ -9,7 +9,8 @@ import {
   createDefaultProjectExpansionProvider,
   type DefaultProjectExpansionProvider,
 } from "./default-expansion-provider.js";
-import { loadSweetProject } from "./configuration.js";
+import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
+import type { ProjectExpansionOutput } from "./project-command.js";
 
 export interface SweetenerTransformRequest {
   /** Source text supplied to the build tool. It must still match the file. */
@@ -76,6 +77,23 @@ interface CacheEntry {
   readonly result: SweetenerTransformResult;
   readonly dependencies: ReadonlySet<string>;
   readonly dependencyFingerprint: string;
+}
+
+/**
+ * One expansion of a project, kept so the next file does not expand it again.
+ *
+ * `transformSync` is asked per file. A miss used to call `expandProject`,
+ * which clears its inspections and rebuilds every file, then threw away all
+ * but the one that was asked for. The following file was a different cache
+ * key, so a build paid for a full expansion once per file. The inputs are the
+ * config and every project file, plus macro dependencies found while
+ * expanding. Reuse asks whether those bytes are still the ones expanded.
+ */
+interface ProjectExpansion {
+  readonly configFile: string;
+  readonly inputs: readonly string[];
+  readonly fingerprint: string;
+  readonly expanded: ProjectExpansionOutput;
 }
 
 function canonical(fileName: string): string {
@@ -146,7 +164,39 @@ export function createSweetenerSession(
 ): SweetenerSession {
   const provider = options.provider ?? createDefaultProjectExpansionProvider();
   const cache = new Map<string, CacheEntry>();
+  let projectExpansion: ProjectExpansion | undefined;
   let closed = false;
+
+  const expansionFor = (
+    configFile: string,
+    project: LoadedSweetProject,
+  ): ProjectExpansionOutput => {
+    const listed = [
+      ...new Set([configFile, ...project.typescript.fileNames].map(canonical)),
+    ].sort();
+    const remembered = projectExpansion;
+    if (
+      remembered !== undefined &&
+      remembered.configFile === configFile &&
+      listed.every((fileName) => remembered.inputs.includes(fileName)) &&
+      fingerprintDependencies(remembered.inputs) === remembered.fingerprint
+    )
+      return remembered.expanded;
+    const expanded = provider.expandProject(project);
+    const inputs = [
+      ...new Set([
+        ...listed,
+        ...provider.macroDependencies(project).map(canonical),
+      ]),
+    ].sort();
+    projectExpansion = {
+      configFile,
+      inputs,
+      fingerprint: fingerprintDependencies(inputs),
+      expanded,
+    };
+    return expanded;
+  };
 
   const transformSync = (
     request: SweetenerTransformRequest,
@@ -193,7 +243,7 @@ export function createSweetenerSession(
       throw new Error(
         `Sweetener cannot use ${configFile}: ${configurationErrors.join("; ")}`,
       );
-    const expanded = provider.expandProject(project);
+    const expanded = expansionFor(configFile, project);
     const inspected = provider.inspectSource(filename);
     const sourceStem = filename.replace(/\.s(?:ts|js)x?$/u, "");
     const generated = expanded.files.find(
@@ -279,10 +329,16 @@ export function createSweetenerSession(
       for (const [key, entry] of cache)
         if ([...invalidated].some((path) => entry.dependencies.has(path)))
           cache.delete(key);
+      if (
+        projectExpansion !== undefined &&
+        [...invalidated].some((path) => projectExpansion?.inputs.includes(path))
+      )
+        projectExpansion = undefined;
     },
     async close(): Promise<void> {
       closed = true;
       cache.clear();
+      projectExpansion = undefined;
     },
   });
 }
