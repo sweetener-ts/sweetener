@@ -1331,15 +1331,12 @@ export function createExpansionFrontendSession(
    * of this loop, which is how they came to differ from `prepareInput` and
    * from the expression route in the first place.
    *
-   * What they still do not do is normalize what they build, which those two
-   * routes do. That looked like the same omission and is not: normalizing
-   * `item` here emits TypeScript that does not parse -- the React memoization
-   * fixture is the reproduction -- because the rules in
-   * `normalizeProtectedInput` were written for a run read from source, and an
-   * item read out of a macro's replacement is not one. The other four pass
-   * their suites normalized, but nothing here asked them to be, so none of
-   * them is: one shape for the five, and a measurement rather than a guess
-   * about what the sixth should be.
+   * They normalize what they build, as `prepareInput` and the expression
+   * route do. An item read out of a replacement used to be left wrapped in
+   * a second item (`item(item(const …))`); the expression route never handed
+   * the expander that shape. Measured again, normalizing all five, including
+   * `item`, still parses: the React memoization fixture and the expansion
+   * suite both accept it. One call here is what keeps the six from drifting.
    */
   const enforestList = (
     consumer: SyntaxConsumer,
@@ -1363,7 +1360,11 @@ export function createExpansionFrontendSession(
         });
         if (!attempted.matched || attempted.cursor.index <= before)
           return undefined;
-        read.push(attempted.syntax);
+        read.push(
+          attempted.syntax.tag === "protected"
+            ? normalizeProtectedInput(attempted.syntax)
+            : attempted.syntax,
+        );
         cursor = attempted.cursor;
       }
       return createSyntaxSequence(read);
