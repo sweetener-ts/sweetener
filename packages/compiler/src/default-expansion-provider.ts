@@ -72,6 +72,7 @@ import {
   type MacroModuleSource,
   type VirtualTypeScriptFile,
 } from "@sweetener/typescript-host";
+import type { InspectedMacro } from "./expansion-tools.js";
 import { planHygienicRenames } from "./hygienic-renaming.js";
 import * as ts from "typescript";
 import {
@@ -704,17 +705,69 @@ function originContains(
   return originContains(origins, origin.invocation, wanted, seen);
 }
 
+function macroCatalog(options: {
+  readonly modules: readonly CompileParsedMacrosResult[];
+  readonly origins: OriginStore;
+  readonly imports:
+    ReadonlyMap<BindingId, Parameters<OriginStore["get"]>[0]> | undefined;
+  readonly sourceId: SourceId;
+}): readonly InspectedMacro[] {
+  const byBinding = new Map<number, InspectedMacro>();
+  for (const module of options.modules)
+    for (const macro of module.macros) {
+      const id = Number(macro.binding.id);
+      const declared = options.origins.selectPrimarySource(
+        macro.binding.declaration,
+      );
+      const imports = [...(byBinding.get(id)?.imports ?? [])];
+      const importedAt = options.imports?.get(macro.binding.id);
+      if (importedAt !== undefined) {
+        const site = options.origins.selectPrimarySource(importedAt);
+        if (site.sourceId === options.sourceId)
+          imports.push(
+            Object.freeze({ start: site.span.start, end: site.span.end }),
+          );
+      }
+      byBinding.set(
+        id,
+        Object.freeze({
+          binding: id,
+          name: macro.binding.spelling,
+          category: macro.category,
+          definitionSourceId: declared.sourceId,
+          definitionStart: declared.span.start,
+          definitionEnd: declared.span.end,
+          imports: Object.freeze(imports),
+        }),
+      );
+    }
+  return Object.freeze([...byBinding.values()]);
+}
+
 /** Default, synchronous project frontend used by both the API and executable. */
 export class DefaultProjectExpansionProvider
   implements ProjectExpansionProvider, ExpansionInspectionProvider
 {
   readonly #system: ts.System | undefined;
+  /**
+   * Editor buffers. `undefined` means the file on disk; a string is expanded
+   * even when it differs from that file. Other files still come from disk, so
+   * the overlay keeps the project's macro graph.
+   */
+  readonly #readSource: ((fileName: string) => string | undefined) | undefined;
   readonly #inspections = new Map<string, SourceExpansionInspection>();
   #macroDependencies: readonly string[] = Object.freeze([]);
   #debug: unknown = Object.freeze({ files: 0, modules: 0, invocations: 0 });
 
-  constructor(options: { readonly system?: ts.System | undefined } = {}) {
+  constructor(
+    options: {
+      readonly system?: ts.System | undefined;
+      readonly readSource?:
+        ((fileName: string) => string | undefined) | undefined;
+    } = {},
+  ) {
     this.#system = options.system;
+    this.#readSource = options.readSource;
   }
 
   expandProject(project: LoadedSweetProject): ProjectExpansionOutput {
@@ -734,6 +787,7 @@ export class DefaultProjectExpansionProvider
     const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
     const packageManifests = new Map<string, MacroPackageManifest>();
+    const dependencies = new Set<string>();
     const loadFile = (
       fileName: string,
       sourceKind?: SourceKind,
@@ -742,7 +796,8 @@ export class DefaultProjectExpansionProvider
       const existing = byPath.get(absolute);
       if (existing !== undefined) return existing;
       const sourceId = sourceIds.allocate();
-      const sourceText = readFileSync(absolute, "utf8");
+      const sourceText =
+        this.#readSource?.(absolute) ?? readFileSync(absolute, "utf8");
       const kind =
         sourceKind ??
         importedMacroModuleKind(absolute, project.sweet.macroExtensions);
@@ -880,6 +935,7 @@ export class DefaultProjectExpansionProvider
           parsedPackage.name,
         );
         if (packageJsonPath === undefined) continue;
+        dependencies.add(resolve(packageJsonPath));
         const packageRoot = dirname(packageJsonPath);
         let packageJson: Record<string, unknown>;
         try {
@@ -928,6 +984,7 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
+        dependencies.add(manifestPath);
         if (!existsSync(manifestPath)) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
@@ -1600,6 +1657,12 @@ export class DefaultProjectExpansionProvider
               ),
           }),
           trace: result.traces,
+          macros: macroCatalog({
+            modules,
+            origins,
+            imports: importOriginsByModule.get(file.compiled),
+            sourceId: file.sourceId,
+          }),
         }),
       );
     }
@@ -1618,6 +1681,7 @@ export class DefaultProjectExpansionProvider
           asTypeScriptDiagnostic(diagnostic, bySource),
         ),
       ),
+      dependencies: Object.freeze([...dependencies].sort()),
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
           // The name travels with the sentence. Every name one macro writes is
@@ -1676,6 +1740,8 @@ export class DefaultProjectExpansionProvider
 export function createDefaultProjectExpansionProvider(
   options: {
     readonly system?: ts.System | undefined;
+    readonly readSource?:
+      ((fileName: string) => string | undefined) | undefined;
   } = {},
 ): DefaultProjectExpansionProvider {
   return new DefaultProjectExpansionProvider(options);

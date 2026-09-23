@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { readSync } from "node:fs";
+import { resolve } from "node:path";
 import { runCli } from "./command-line.js";
+import { serveLanguageServer } from "./language-server.js";
 
 /**
  * Reads one line of an answer from the terminal.
@@ -40,4 +42,15 @@ const result = runCli({
   },
 });
 
-process.exitCode = result.exitCode;
+if (result.lsp !== undefined) {
+  try {
+    serveLanguageServer(resolve(result.lsp), process.stdin, process.stdout);
+  } catch (error) {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  }
+} else {
+  process.exitCode = result.exitCode;
+}

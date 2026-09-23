@@ -246,11 +246,22 @@ export class MappedLanguageService {
   ): readonly MappedReference[] {
     const position = this.#generatedPosition(sourceFileName, originalOffset);
     if (position === undefined) return Object.freeze([]);
+    // `getReferencesAtPosition` returns `ReferenceEntry`, which has no
+    // `isDefinition`. `findReferences` names the definition separately and
+    // leaves the flag unset on the matching entry, so mark that span here.
     const references =
-      this.#project.languageService.getReferencesAtPosition(
-        position.mapping.virtualFileName,
-        position.offset,
-      ) ?? [];
+      this.#project.languageService
+        .findReferences(position.mapping.virtualFileName, position.offset)
+        ?.flatMap((symbol) => {
+          const definition = symbol.definition;
+          return symbol.references.map((reference) =>
+            reference.fileName === definition.fileName &&
+            reference.textSpan.start === definition.textSpan.start &&
+            reference.textSpan.length === definition.textSpan.length
+              ? { ...reference, isDefinition: true as const }
+              : reference,
+          );
+        }) ?? [];
     // A macro can copy one written occurrence into several generated ones. The
     // editor lists what the author wrote, so the copies collapse back into the
     // single span they came from, and that span is a definition or a write if

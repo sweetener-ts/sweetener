@@ -63,6 +63,11 @@ export type CliInvocation =
       readonly command: "emit";
       readonly fileNames: readonly string[];
       readonly outDir: string;
+    }
+  | {
+      readonly command: "lsp";
+      /** Directory that contains `sweetener.json` or `tsconfig.json`. */
+      readonly projectDirectory: string;
     };
 
 /**
@@ -93,7 +98,38 @@ function splitProjectOption(argv: readonly string[]): {
   return { positional: Object.freeze(positional), configPath };
 }
 
+/**
+ * `sweetener --lsp --stdio` speaks JSON-RPC on the standard streams.
+ *
+ * The project is the working directory, the same way a compiler finds its
+ * config. `--project` is the same path `check` accepts: a directory, or the
+ * config file itself. There is no separate language-server executable.
+ */
+function parseLanguageServer(argv: readonly string[]): CliInvocation {
+  let stdio = false;
+  let projectDirectory = ".";
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument === "--lsp") continue;
+    if (argument === "--stdio") {
+      stdio = true;
+      continue;
+    }
+    if (argument === "-p" || argument === "--project") {
+      const value = argv[++index];
+      if (value === undefined)
+        throw new TypeError(`${argument} requires a path`);
+      projectDirectory = value;
+      continue;
+    }
+    throw new TypeError(`Unknown argument ${argument}`);
+  }
+  if (!stdio) throw new TypeError("--lsp requires --stdio");
+  return Object.freeze({ command: "lsp", projectDirectory });
+}
+
 export function parseCliInvocation(argv: readonly string[]): CliInvocation {
+  if (argv.includes("--lsp")) return parseLanguageServer(argv);
   const command = argv[0];
   if (command === "init") {
     const rest = argv.slice(1);
@@ -175,7 +211,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   }
   if (command !== "check" && command !== "build" && command !== "watch")
     throw new TypeError(
-      "Expected init, check, build, watch, expand, explain, emit, or guide command",
+      "Expected init, check, build, watch, expand, explain, emit, or guide command, or --lsp --stdio",
     );
   let configPath = "tsconfig.json";
   let debug = false;
@@ -246,6 +282,8 @@ Options:
   --json                  For explain: print the raw origin records instead of
                           a description.
   --debug                 Print the expansion's internal state after the run.
+  --lsp --stdio           Speak the language server on standard input. The
+                          project is the working directory.
   -h, --help              Show this.
 `;
 
@@ -351,7 +389,12 @@ export function runCli(options: {
   readonly inspectionProvider?: ExpansionInspectionProvider | undefined;
   readonly io: CliIo;
   readonly system?: System;
-}): { readonly exitCode: 0 | 1; readonly watch?: WatchProject } {
+}): {
+  readonly exitCode: 0 | 1;
+  readonly watch?: WatchProject;
+  /** Set when `--lsp --stdio` was parsed. The caller speaks JSON-RPC. */
+  readonly lsp?: string;
+} {
   const expansionProvider =
     options.expansionProvider ?? createDefaultProjectExpansionProvider();
   const inspectionProvider =
@@ -372,6 +415,12 @@ export function runCli(options: {
   if (invocation.command === "help") {
     options.io.stdout(usage);
     return Object.freeze({ exitCode: 0 });
+  }
+  if (invocation.command === "lsp") {
+    return Object.freeze({
+      exitCode: 0,
+      lsp: invocation.projectDirectory,
+    });
   }
   if (invocation.command === "guide") {
     const path = guidePath();

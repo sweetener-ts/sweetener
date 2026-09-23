@@ -1,10 +1,16 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OriginStore } from "@sweetener/syntax";
 import { describe, expect, test } from "vitest";
 import type { OriginId, SourceId } from "@sweetener/shared";
 import { parseCliInvocation, runCli } from "../src/index.js";
+import { languageServerConfigPath } from "../src/language-server.js";
 
 describe("sweet-ts command line", () => {
   test("parses project and debug options", () => {
@@ -27,6 +33,36 @@ describe("sweet-ts command line", () => {
     expect(() => parseCliInvocation(["build", "-p"])).toThrow(
       /requires a path/u,
     );
+    expect(parseCliInvocation(["--lsp", "--stdio"])).toEqual({
+      command: "lsp",
+      projectDirectory: ".",
+    });
+    expect(
+      parseCliInvocation([
+        "--lsp",
+        "--stdio",
+        "--project",
+        "examples/language-tour",
+      ]),
+    ).toEqual({
+      command: "lsp",
+      projectDirectory: "examples/language-tour",
+    });
+    expect(() => parseCliInvocation(["--lsp"])).toThrow(/--stdio/u);
+    expect(
+      parseCliInvocation(["--stdio", "--project", "sweetener.json", "--lsp"]),
+    ).toEqual({ command: "lsp", projectDirectory: "sweetener.json" });
+  });
+
+  test("language server --project accepts a directory or a config file", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweetener-lsp-project-"));
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(config, "{}\n");
+    writeFileSync(join(directory, "sweetener.json"), "{}\n");
+    expect(languageServerConfigPath(directory)).toBe(
+      join(directory, "sweetener.json"),
+    );
+    expect(languageServerConfigPath(config)).toBe(config);
   });
 
   test("reports usage failures without invoking expansion", () => {
@@ -45,6 +81,19 @@ describe("sweet-ts command line", () => {
     expect(stderr.join("")).toContain(
       "Expected init, check, build, watch, expand, explain, emit, or guide",
     );
+    const lsp = runCli({
+      argv: ["--lsp", "--stdio"],
+      expansionProvider: {
+        expandProject: () => {
+          throw new Error("lsp must not expand from the command parser");
+        },
+      },
+      io: {
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+    });
+    expect(lsp).toEqual({ exitCode: 0, lsp: "." });
   });
 
   test("prints exact expansions and JSON explanations", () => {
