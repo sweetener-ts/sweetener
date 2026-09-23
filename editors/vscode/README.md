@@ -44,13 +44,19 @@ the scopes that come out.
 
 ## Language server
 
-Opening a `.sts` or `.stsx` file activates this extension and starts the
-Sweetener language server. `sweetener.languageServer.command` defaults to
-`node`. `sweetener.languageServer.args` is the server script and the project
-directory, for this repository `packages/cli/bin/sweetener-lsp.mjs` and
-`examples/language-tour`. The server comes from `pnpm build` and is not inside
-the extension package. An empty `args` list is reported in the Sweetener
-output channel and the client does not start.
+Opening a `.sts` or `.stsx` file starts the server. There is no second
+executable. The extension runs `node` and the `sweetener` CLI with
+`--lsp --stdio`, and the workspace root is the working directory. Leave
+`sweetener.languageServer` unset.
+
+This checkout is the exception the extension already knows. The CLI is
+`packages/cli/bin/sweetener.mjs`, and the working directory is
+`examples/language-tour` when that `sweetener.json` is present. Run
+`pnpm build` once so the CLI has its compiled output. The server is not
+inside the extension package.
+
+Set `sweetener.languageServer` only when `sweetener` is not in that place,
+or when you need a flag the default command does not pass.
 
 These files stay on `sweetener-typescript` and `sweetener-typescriptreact`.
 Associating them with the built-in `typescript` language would start

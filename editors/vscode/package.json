@@ -25,7 +25,7 @@
       "properties": {
         "sweetener.languageServer": {
           "type": "object",
-          "description": "Command that starts the Sweetener language server.",
+          "description": "Override the Sweetener language server command. Leave unset to use node and the CLI in this workspace.",
           "properties": {
             "command": {
               "type": "string"

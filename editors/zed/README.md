@@ -24,12 +24,20 @@ does not reuse that grammar.
 
 ## Language server
 
-The extension registers `sweetener-lsp` for Sweetener TypeScript and Sweetener
-TSX. Zed starts `node` on `packages/cli/bin/sweetener-lsp.mjs`, then the
-project directory. In this repository that directory is
-`examples/language-tour` when `examples/language-tour/sweetener.json` is
-present, and the worktree root otherwise. The server process is built with
-the compiler (`pnpm build`) and is not bundled in the extension archive.
+Installing the extension starts the server. There is no second executable.
+Zed finds `node` on the worktree `PATH` and runs the `sweetener` CLI with
+`--lsp --stdio`, the same shape as TypeScript's native server. The working
+directory is the worktree root, which has to contain `sweetener.json` or
+`tsconfig.json`. No binary path and no extra arguments.
+
+This checkout is the exception the extension already knows. The CLI is
+`packages/cli/bin/sweetener.mjs`, not an install at the root, and the sample
+project is `examples/language-tour`. The extension adds `--project` for that
+directory. Run `pnpm build` once so the CLI has its compiled output. The
+server is not bundled in the extension archive.
+
+Set `lsp.sweetener-lsp.binary` only when `sweetener` is not in that place,
+or when you need a flag the default command does not pass.
 
 These languages stay separate from Zed's TypeScript and TSX, so a settings
 block for those languages does not apply here. A `file_types` entry that maps
