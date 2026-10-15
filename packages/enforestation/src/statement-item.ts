@@ -313,6 +313,13 @@ function typeOnlyClause(
 function declarationHead(cursor: SyntaxCursor, offset = 0): boolean {
   const word = raw(cursor.peek(offset));
   if (word === undefined || !contextualHeads.has(word)) return true;
+  // A modifier modifies only a declaration written after it on its line:
+  // `declare = 1` and `declare(x)` use a name, and the line break that ends
+  // one of them carries no declaration's rule.
+  if (declarationModifiers.has(word))
+    return (
+      noLineTerminatorAfter(cursor, offset) && beginsItem(cursor, offset + 1)
+    );
   if (word === "module" || word === "namespace") {
     const following = cursor.peek(offset + 1);
     if (

@@ -1195,6 +1195,12 @@ describe("statement and item consumers", () => {
     ["const\nx = 1;", "const\nx = 1;"],
     ["var\nx = 1;", "var\nx = 1;"],
     ["global\n{ }", "global\n{ }"],
+    // A modifier modifies only a declaration written after it on its line,
+    // and a `declare` or an `abstract` written in front of anything else is a
+    // name: these are expressions, which the line break carries on.
+    ["declare = 1\n(x);", "declare = 1\n(x);"],
+    ["declare(x)\n[0];", "declare(x)\n[0];"],
+    ["abstract = 1\n`t`;", "abstract = 1\n`t`;"],
   ])(
     "reads %j as %j at statement level and at item level, as TypeScript does",
     (source, extent) => {
