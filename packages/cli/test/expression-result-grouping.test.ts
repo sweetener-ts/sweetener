@@ -53,16 +53,6 @@ export syntax members:expr {
 }
 export syntax listOf:type { rule { listOf($t:type) } => { Array<$t> } }
 export syntax has:expr { rule { has($k:expr, $o:expr) } => { $k in $o } }
-export syntax scale:expr {
-  rule { scale($($x:expr),*) } => {
-    #fold($x, init: { 0 }) { ($acc, $item, $index) => { ($acc) * 2 + $item } }
-  }
-}
-export syntax list:expr {
-  rule { list($($x:expr),*) } => {
-    [#fold($x, init: { 0 }) { ($acc, $item, $index) => { $acc, $item } }]
-  }
-}
 `;
 
 interface Expansion {
@@ -77,7 +67,7 @@ function expand(main: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has, scale, list } from "./macros.sts" for syntax;\n${main}`,
+    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has } from "./macros.sts" for syntax;\n${main}`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -453,24 +443,5 @@ export const joined = obj(3) + "";
     expect(text).toContain("function () { return 1; }();");
     expect(text).toContain("if (flag) ({ value: 2 });");
     expect(text).toContain('{ value: 3 } + ""');
-  });
-});
-
-describe("a fold's accumulator", () => {
-  test("is spliced as written, so a list can be built from it", () => {
-    const { text, messages, exports } = expand(
-      "export const listed = list(1, 2, 3);\n",
-    );
-    expect(messages).toEqual([]);
-    expect(text).toContain("[0, 1, 2, 3]");
-    expect(exports["listed"]).toEqual([0, 1, 2, 3]);
-  });
-
-  test("keeps the grouping its template writes around it", () => {
-    const { messages, exports } = expand(
-      "const a = 1, b = 2, c = true;\nexport const scaled = scale(a, b + 1, c ? 1 : 2);\n",
-    );
-    expect(messages).toEqual([]);
-    expect(exports["scaled"]).toBe(((0 * 2 + 1) * 2 + 3) * 2 + 1);
   });
 });

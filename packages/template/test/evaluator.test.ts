@@ -98,7 +98,8 @@ function raws(output: ReturnType<typeof evaluateTemplate>["output"]): string[] {
   const stack = [...output].reverse();
   while (stack.length > 0) {
     const item = stack.pop()!;
-    if (item.kind === "group") stack.push(...[...item.body].reverse());
+    if (item.kind === "group" || item.kind === "fold")
+      stack.push(...[...item.body].reverse());
     else if (item.kind === "syntax")
       values.push(
         ...item.syntax.map((syntax) =>
@@ -383,6 +384,15 @@ describe("template evaluator", () => {
       ":",
       "1",
     ]);
+    // The result and each accumulator a step spliced stay marked, for
+    // expansion to decide what they are where the fold stands.
+    const [folded] = result.output;
+    expect(result.output).toHaveLength(1);
+    expect(folded).toMatchObject({ kind: "fold", part: "result" });
+    expect(folded?.kind === "fold" ? folded.body[0] : undefined).toMatchObject({
+      kind: "fold",
+      part: "accumulator",
+    });
     expect(result.trace.map((event) => event.operation)).toEqual([
       "index",
       "index",

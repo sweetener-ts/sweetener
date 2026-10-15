@@ -24,6 +24,7 @@ import type {
 } from "@sweetener/syntax";
 import type {
   ConditionalPredicate,
+  FoldPart,
   HygieneOperation,
   SequenceTemplate,
   TemplateNode,
@@ -101,8 +102,23 @@ export type EvaluatedOperation =
       readonly prototype?: TokenSyntax | undefined;
     };
 
+/**
+ * What a `#fold` evaluated to, or one of the accumulators its steps spliced.
+ *
+ * Neither is spliced as the tokens it holds. What an accumulator is -- one
+ * expression, one type, or a run of elements or statements -- is decided by
+ * where the fold stands in the expansion, which only expansion can see, so
+ * both are carried to it marked.
+ */
+export interface EvaluatedFold {
+  readonly kind: "fold";
+  readonly part: FoldPart;
+  readonly origin: OriginId;
+  readonly body: readonly EvaluatedTemplate[];
+}
+
 export type EvaluatedTemplate =
-  EvaluatedSyntax | EvaluatedGroup | EvaluatedOperation;
+  EvaluatedSyntax | EvaluatedGroup | EvaluatedOperation | EvaluatedFold;
 
 export interface TemplateOperationTrace {
   readonly operation: HygieneOperation["kind"];
@@ -424,7 +440,14 @@ class Evaluator {
           );
         }
         if (node.local === "accumulator") {
-          return [...locals.accumulator];
+          return [
+            Object.freeze({
+              kind: "fold",
+              part: "accumulator",
+              origin: node.origin,
+              body: locals.accumulator,
+            }),
+          ];
         }
         if (node.local === "index") {
           return [
@@ -447,20 +470,27 @@ class Evaluator {
               `Fold driver $${node.driver.rootName} is not a sequence`,
             );
           }
-          let accumulator: readonly EvaluatedTemplate[] = this.#sequence(
-            node.initial,
-            indices,
-            locals,
+          let accumulator: readonly EvaluatedTemplate[] = Object.freeze(
+            this.#sequence(node.initial, indices, locals),
           );
           for (let index = 0; index < driver.elements.length; index += 1) {
             this.#step();
-            accumulator = this.#sequence(node.body, indices, {
-              accumulator,
-              element: driver.elements[index]!,
-              index,
-            });
+            accumulator = Object.freeze(
+              this.#sequence(node.body, indices, {
+                accumulator,
+                element: driver.elements[index]!,
+                index,
+              }),
+            );
           }
-          return [...accumulator];
+          return [
+            Object.freeze({
+              kind: "fold",
+              part: "result",
+              origin: node.origin,
+              body: accumulator,
+            }),
+          ];
         });
     }
   }

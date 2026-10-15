@@ -266,11 +266,37 @@ perform I/O or invoke host functions.
 and emits the result as numeric-literal syntax. It is charged against the
 template-step budget and records the capture and count in expansion traces.
 
-The parameter list is fixed to `($acc, $item, $index)`. `$acc` splices the
-previous evaluated accumulator, `$item` selects the current capture element and
-its declared fields, and `$index` emits the zero-based compile-time index. The
-body becomes the complete next accumulator. Empty input returns the initial
-template unchanged.
+The parameter list is fixed to `($acc, $item, $index)`. `$acc` stands for the
+previous accumulator, `$item` selects the current capture element and its
+declared fields, and `$index` emits the zero-based compile-time index. The body
+becomes the complete next accumulator. Empty input returns the initial template
+unchanged.
+
+What an accumulator is follows from where the fold stands in the expansion, as
+what a capture is follows from the class it matched:
+
+- Standing where one expression or one type is written -- an operand, an
+  initializer, what `return` takes, a property's value, a type annotation, the
+  whole of an `expr` or `type` macro's template -- the fold builds one
+  expression or one type. The initial template and every step must each build
+  exactly one, and `$acc` is spliced as that expression or type, so the syntax
+  around it cannot re-associate it: `$acc * 2 + $item` multiplies the whole
+  accumulator.
+- Standing as a part of a list -- an array element, an argument, a parameter,
+  an object literal's member, a type argument, a tuple member, a statement, an
+  item, a class or type member, a JSX child -- the fold builds parts of that
+  list, and `$acc` is the run of parts built so far, spliced as those parts. It
+  is written only where the list's own parts are: between the list's
+  separators, or beside a separator the run itself ends or begins with. A fold
+  is a part of a list when nothing but the list's separators, its brackets or,
+  among statements, a statement boundary stands on either side of it. Grouped
+  in parentheses there, it is one expression instead.
+
+A step that does not build what the fold's position needs, an accumulator of a
+list written inside a part or beside an operator, or a fold standing where it
+can build neither reports `SWR4026` at the invocation, with the `#fold` as the
+related location. Nothing is spliced as tokens for the syntax around it to
+re-read.
 
 A parameterization gives a syntax parameter a meaning for the syntax it wraps:
 

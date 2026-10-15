@@ -112,6 +112,9 @@ export interface HygieneOperationTemplate extends TemplateBase {
 
 export type FoldLocal = "accumulator" | "element" | "index";
 
+/** The whole of what a fold evaluated to, or one accumulator in it. */
+export type FoldPart = "result" | "accumulator";
+
 export interface LocalTemplate extends TemplateBase {
   readonly kind: "local";
   readonly local: FoldLocal;

@@ -36,12 +36,55 @@ import {
   type TokenSyntax,
   type Trivia,
 } from "@sweetener/syntax";
+import type { FoldPart } from "./ast.js";
 import type {
+  EvaluatedFold,
   EvaluatedGroup,
   EvaluatedOperation,
   EvaluatedSyntax,
   EvaluatedTemplate,
 } from "./evaluator.js";
+
+/**
+ * The spelling of the token that marks each part of a fold for expansion.
+ * Its kind is `unknown`, which no token read from a file has under these
+ * spellings: written in a file, `#fold` is a private name.
+ */
+const foldMarkerSpellings: Readonly<Record<FoldPart, string>> = Object.freeze({
+  result: "#fold",
+  accumulator: "#accumulator",
+});
+
+export interface FoldMarker {
+  readonly part: FoldPart;
+  /** The marker itself, which carries the layout written in front of it. */
+  readonly marker: TokenSyntax;
+  /** What the fold or the accumulator holds. */
+  readonly body: GroupSyntax;
+}
+
+/**
+ * The part of a fold marked at `nodes[at]`, where one is: a marker token and
+ * the braces holding what it marks, which take two nodes.
+ */
+export function foldMarkerAt(
+  nodes: readonly Syntax[],
+  at: number,
+): FoldMarker | undefined {
+  const marker = nodes[at];
+  const body = nodes[at + 1];
+  if (
+    marker?.tag !== "token" ||
+    marker.kind !== "unknown" ||
+    body?.tag !== "group" ||
+    body.delimiter !== "brace"
+  )
+    return undefined;
+  const part = (Object.keys(foldMarkerSpellings) as FoldPart[]).find(
+    (candidate) => foldMarkerSpellings[candidate] === marker.raw,
+  );
+  return part === undefined ? undefined : { part, marker, body };
+}
 
 export interface FreshBinding {
   readonly binding: BindingId;
@@ -69,6 +112,8 @@ export interface InstantiateTemplateOptions {
 
 export interface InstantiateTemplateResult {
   readonly syntax: SyntaxSequence;
+  /** Whether the syntax holds a marked `#fold` for expansion to read. */
+  readonly holdsFolds: boolean;
   readonly freshBindings: readonly FreshBinding[];
   readonly outputOrigins: readonly OriginId[];
   readonly outputTokens: number;
@@ -108,6 +153,7 @@ class Instantiator {
   readonly #cancellation: CancellationToken;
   readonly #freshBindings: FreshBinding[] = [];
   readonly #outputOrigins: OriginId[] = [];
+  #holdsFolds = false;
 
   constructor(options: InstantiateTemplateOptions) {
     this.#options = options;
@@ -133,6 +179,7 @@ class Instantiator {
     );
     return Object.freeze({
       syntax,
+      holdsFolds: this.#holdsFolds,
       freshBindings: Object.freeze([...this.#freshBindings]),
       outputOrigins: Object.freeze([...this.#outputOrigins]),
       outputTokens: this.#tracker.usage.outputTokens,
@@ -147,6 +194,8 @@ class Instantiator {
         syntax.push(...this.#syntaxPiece(piece, syntax));
       } else if (piece.kind === "group") {
         syntax.push(this.#groupPiece(piece));
+      } else if (piece.kind === "fold") {
+        syntax.push(...this.#foldPiece(piece));
       } else {
         syntax.push(...this.#operationPiece(piece));
       }
@@ -328,6 +377,50 @@ class Instantiator {
       });
       this.#recordOrigin(group.origin);
       return group;
+    });
+  }
+
+  /**
+   * A fold's result or one of its accumulators, as a marker and the braces
+   * holding it. The layout written in front of what it holds moves onto the
+   * marker, which is what stands in front of it until expansion replaces the
+   * marker with it. Nothing here reaches the output as written, so nothing
+   * is charged as output.
+   */
+  #foldPiece(piece: EvaluatedFold): Syntax[] {
+    this.#holdsFolds = true;
+    return this.#nested(() => {
+      const origin = this.#introduced(piece.origin);
+      const scopes = this.#introducedScopes(this.#options.definitionScopes);
+      const held = this.#pieces(piece.body);
+      const head = held[0];
+      const leadingTrivia =
+        head === undefined ? [] : (firstToken(head)?.leadingTrivia ?? []);
+      if (head !== undefined) held[0] = this.#clearLeadingTrivia(head);
+      const token = (raw: string, trivia: readonly Trivia[]) =>
+        createToken({
+          id: this.#options.allocateSyntaxId(),
+          span: this.#options.anchor,
+          origin,
+          scopes,
+          kind: raw === "{" || raw === "}" ? "punctuation" : "unknown",
+          raw,
+          leadingTrivia: trivia,
+        });
+      this.#step();
+      return [
+        token(foldMarkerSpellings[piece.part], leadingTrivia),
+        createGroup({
+          id: this.#options.allocateSyntaxId(),
+          span: this.#options.anchor,
+          origin,
+          scopes,
+          delimiter: "brace",
+          open: token("{", []),
+          children: held,
+          close: token("}", []),
+        }),
+      ];
     });
   }
 
