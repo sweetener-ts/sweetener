@@ -45,6 +45,12 @@ const coreByKey = new Map(
   ]),
 );
 
+/**
+ * What an assignment expression binds at: an assignment's, and an arrow
+ * function's, which TypeScript reads at the same level.
+ */
+const assignmentPrecedence = coreByKey.get("infix|=")!.precedence;
+
 export interface MacroOperatorExpansionInput {
   readonly operator: readonly Syntax[];
   readonly left: ProtectedSyntax | undefined;
@@ -428,6 +434,7 @@ function parsePrefix(
     };
   }
   const operandStart = cursor.index;
+  const operand = cursor.peek();
   const attempt = context.primary.consume(cursor, context.consumer);
   if (!attempt.matched) {
     // The primary consumer read no operand, and a `<` standing where the
@@ -445,7 +452,16 @@ function parsePrefix(
   return {
     syntax: attempt.syntax,
     cursor: attempt.cursor,
-    outerPrecedence: attempt.syntax.precedence ?? 1_000,
+    // An expression already read -- a capture spliced into a template -- is
+    // one operand, kept whole however loosely it binds inside. An arrow
+    // function written here is an assignment expression, however its body is
+    // written, and binds no tighter than the `=>` it is read with elsewhere.
+    outerPrecedence:
+      attempt.syntax === operand
+        ? 1_000
+        : attempt.syntax.form === "arrow"
+          ? assignmentPrecedence
+          : (attempt.syntax.precedence ?? 1_000),
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
   };
@@ -570,6 +586,31 @@ function parseAssertedType(
 }
 
 /**
+ * An arrow function's block body, standing at the cursor after its `=>`, or
+ * undefined where the body is an expression.
+ *
+ * The block is the whole body. Read as an operand, the brace was an object
+ * literal that what followed it could carry on, so `() => {}` and the
+ * `/re/.test(s);` written under it were one division, and `() => {}` with
+ * `[0]` under it an index into the body.
+ */
+function parseArrowBlockBody(
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | undefined {
+  const body = cursor.peek();
+  if (body?.tag !== "group" || body.delimiter !== "brace") return undefined;
+  cursor.advance();
+  return {
+    syntax: protect(context.options, [body], 1_000),
+    cursor,
+    outerPrecedence: 1_000,
+    unparenthesizedPrefix: false,
+    mixingFamily: undefined,
+  };
+}
+
+/**
  * Whether nothing at the cursor continues the operand before it: the end,
  * a stop, a statement or conditional boundary, or an operator that takes an
  * operand on its left.
@@ -667,9 +708,14 @@ function arrowRightOperand(
     body = parsed.syntax;
   }
   return {
-    syntax: protect(context.options, [...head, body], 20, "arrow"),
+    syntax: protect(
+      context.options,
+      [...head, body],
+      assignmentPrecedence,
+      "arrow",
+    ),
     cursor,
-    outerPrecedence: 20,
+    outerPrecedence: assignmentPrecedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
   };
@@ -738,6 +784,27 @@ function parseExpression(
     }
     const infix = resolveOperator(cursor, "infix", context);
     if (infix === undefined || infix.precedence < minimumPrecedence) break;
+    // TypeScript takes no operator but a comma after an assignment
+    // expression. One that could have taken the operator already did, inside
+    // its right operand; one that could not is an arrow function, whose body
+    // ended it. So `x = () => {}` and the `/re/` written under it are two
+    // statements rather than a division, and so are `() => {}` and the
+    // `/=x/.test(s);` under it rather than a compound assignment.
+    if (
+      infix.macro === undefined &&
+      left.outerPrecedence <= assignmentPrecedence &&
+      infix.precedence >= assignmentPrecedence
+    )
+      break;
+    // TypeScript writes `UnaryExpression [no LineTerminator here] as Type`,
+    // and the same of `satisfies`: an `as` beginning a line names something
+    // rather than asserting a type.
+    if (
+      infix.macro === undefined &&
+      (infix.spelling === "as" || infix.spelling === "satisfies") &&
+      leadingLineBreak(cursor.peek())
+    )
+      break;
     if (infix.spelling === "," && !context.allowComma) break;
     const mixingFamily =
       infix.spelling === "??"
@@ -787,6 +854,9 @@ function parseExpression(
             : undefined));
     const right =
       macroOperand ??
+      (infix.macro === undefined && infix.spelling === "=>"
+        ? parseArrowBlockBody(cursor, context)
+        : undefined) ??
       (infix.spelling === "as" || infix.spelling === "satisfies"
         ? parseAssertedType(cursor, context, infix.precedence)
         : parseExpression(

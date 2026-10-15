@@ -560,6 +560,10 @@ export interface ArrowBodyExtent {
  * break, for the same reason: a `?` still awaiting its `:` is an expression
  * nothing can end.
  *
+ * A body written as a block is the block and nothing more. TypeScript takes
+ * no operator after an arrow function, so `() => {}` and the `/re/.test(s);`
+ * written under it are two statements, not a division of the block.
+ *
  * Both readers of an arrow ask this, one over a cursor and one over an array,
  * so it is stated here once, over an offset either can answer.
  */
@@ -568,6 +572,9 @@ export function arrowBodyExtent(
   from: number,
   stopsBefore: (offset: number) => boolean = () => false,
 ): ArrowBodyExtent {
+  const block = nodeAt(from);
+  if (block?.tag === "group" && block.delimiter === "brace")
+    return { end: from + 1, conditional: false };
   let conditionals = 0;
   for (let offset = from; ; offset += 1) {
     const node = nodeAt(offset);
@@ -1023,10 +1030,18 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         macroOperand ??
         1,
     );
+    // An arrow function takes nothing after its body: TypeScript reads
+    // `x = () => {}` and the `[0].map(g);` under it as two statements, not as
+    // an index into the arrow.
+    const readArrow =
+      functionWidth === undefined &&
+      markerWidth === undefined &&
+      classWidth === undefined &&
+      arrow !== undefined;
     // Postfix parsing runs first so the macro extent is compared against the
     // whole expression, not just its head.
     let optionalChain = false;
-    while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
+    while (!readArrow && !cursor.atEnd && !context.stopSet.matches(cursor)) {
       const before = cursor.index;
       const beginsOptional = isPunctuation(cursor.peek(), "?.");
       const failed = consumePostfix(cursor, context, start, optionalChain);

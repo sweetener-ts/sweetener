@@ -756,6 +756,15 @@ describe("statement and item consumers", () => {
     ["const x = a as B[]\n`t`;", "const x = a as B[]"],
     ["const x = a as B\n<C>(d);", "const x = a as B\n<C>(d);"],
     ["const x = a as const\n.y;", "const x = a as const\n.y;"],
+    // TypeScript takes no operator after an arrow function, whose body ended
+    // it, and no postfix either: the line under one begins a statement.
+    ["const f = () => {}\n[0].map(g);", "const f = () => {}"],
+    ["const f = (v) => {}\n(0);", "const f = (v) => {}"],
+    ["const f = (v) => {}\n+x;", "const f = (v) => {}"],
+    // And it writes `UnaryExpression [no LineTerminator here] as Type`, the
+    // same of `satisfies`: one beginning a line is a name.
+    ["const x = a\nas;", "const x = a"],
+    ["const x = a\nsatisfies;", "const x = a"],
   ])(
     "reads %j as %j at statement level and at item level",
     (source, extent) => {
