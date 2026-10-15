@@ -5,12 +5,13 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import * as ts from "typescript";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
   createSweetenerSession,
@@ -616,6 +617,44 @@ describe("public compiler session", () => {
     expect(before.code).toContain("[21, 21]");
     expect(after.code).toContain("(21, 21)");
     await session.close();
+  });
+
+  test("sees a settled macro module rewritten at the same size with its modification time put back", async () => {
+    // What `rsync -t` and `tar` do: new bytes, the old size and modification
+    // time. Only the change time, which nothing can set back, still differs
+    // from the stat the macro module was confirmed under.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    // A whole second, which every file system's stamp can hold exactly.
+    const modified = new Date("2026-01-01T00:00:00Z");
+    utimesSync(fixture.macros, modified, modified);
+    // Far enough on that every file just written reads as settled, so the
+    // session confirms each by its stat and does not read it again.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 10_000);
+      const session = createSweetenerSession();
+      const before = await transform(session, fixture.main, fixture.config);
+      writeFileSync(
+        fixture.macros,
+        `export syntax duplicate:expr { rule { duplicate($value:tt) } => { ($value, $value) } }\n`,
+      );
+      utimesSync(fixture.macros, modified, modified);
+      const after = await transform(session, other, fixture.config);
+      expect(before.code).toContain("[21, 21]");
+      expect(after.code).toContain("(21, 21)");
+      await session.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
