@@ -962,6 +962,63 @@ describe("project commands", () => {
     expect(escaped.diagnostics.map(({ code }) => code)).toContain(5001);
   });
 
+  test("reports a directory imported for syntax as a module it cannot resolve", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-directory-import-"));
+    mkdirSync(join(directory, "lib"));
+    const packageRoot = join(directory, "node_modules/@acme/forms");
+    mkdirSync(join(packageRoot, "macros.sts"), { recursive: true });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@acme/forms",
+        version: "1.0.0",
+        sweetMacros: "./sweet-macros.json",
+      }),
+    );
+    writeFileSync(
+      join(packageRoot, "sweet-macros.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        name: "@acme/forms",
+        languageVersion: "1",
+        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+        entry: "./macros.sts",
+        exports: {
+          packaged: { source: "./macros.sts", category: "expr", phase: 1 },
+        },
+        dependencies: [],
+      }),
+    );
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      join(directory, "main.sts"),
+      `import { dup } from "./lib" for syntax;
+       import { packaged } from "@acme/forms" for syntax;
+       export const result = dup(1);`,
+    );
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { strict: true },
+        sweet: { macroExtensions: [".sts"] },
+        files: ["main.sts"],
+      }),
+    );
+
+    const expanded = createDefaultProjectExpansionProvider().expandProject(
+      loadSweetProject(config),
+    );
+
+    expect(
+      expanded.diagnostics.map(({ messageText }) => String(messageText)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Cannot resolve macro module ./lib from"),
+        expect.stringContaining("entry or export source does not exist"),
+      ]),
+    );
+  });
+
   test("builds a declarative macro project through the default frontend", () => {
     const directory = mkdtempSync(join(tmpdir(), "sweet-default-cli-"));
     const base = join(directory, "base.sts");

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import {
   compileParsedMacros,
@@ -117,6 +117,15 @@ function packageParts(specifier: string): { name: string; subpath: string } {
   };
 }
 
+/**
+ * Whether a path names a file. A directory exists too, and reading one as a
+ * module crashed expansion with a bare `EISDIR` instead of saying the import
+ * resolves to nothing.
+ */
+function isFile(fileName: string): boolean {
+  return statSync(fileName, { throwIfNoEntry: false })?.isFile() === true;
+}
+
 function findPackageManifest(
   from: string,
   packageName: string,
@@ -130,7 +139,7 @@ function findPackageManifest(
       packageName,
       "package.json",
     );
-    if (existsSync(candidate)) return candidate;
+    if (isFile(candidate)) return candidate;
     if (directory === root) return undefined;
     directory = dirname(directory);
   }
@@ -866,7 +875,7 @@ export class DefaultProjectExpansionProvider
         });
         const localTarget = [relativeTarget, ...aliasTargets].find(
           (candidate): candidate is string =>
-            candidate !== undefined && existsSync(candidate),
+            candidate !== undefined && isFile(candidate),
         );
         if (localTarget !== undefined) {
           const target = loadFile(localTarget);
@@ -928,7 +937,7 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
-        if (!existsSync(manifestPath)) {
+        if (!isFile(manifestPath)) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
@@ -994,10 +1003,7 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
-        if (
-          !existsSync(entry) ||
-          exportSources.some((source) => !existsSync(source))
-        ) {
+        if (!isFile(entry) || exportSources.some((source) => !isFile(source))) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {

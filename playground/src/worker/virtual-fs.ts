@@ -11,6 +11,16 @@ export function existsSync(fileName: string): boolean {
   return files.has(normalize(fileName));
 }
 
+/** Every entry here is a file: the playground holds no directories. */
+export function statSync(
+  fileName: string,
+  options?: { readonly throwIfNoEntry?: boolean },
+): { isFile(): boolean } | undefined {
+  if (files.has(normalize(fileName))) return { isFile: () => true };
+  if (options?.throwIfNoEntry === false) return undefined;
+  throw new Error(`ENOENT: ${fileName}`);
+}
+
 export function realpathSync(fileName: string): string {
   const normalized = normalize(fileName);
   if (!files.has(normalized)) throw new Error(`ENOENT: ${fileName}`);
