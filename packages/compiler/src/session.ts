@@ -114,7 +114,6 @@ export interface SweetenerSession {
  */
 function signatureOf(project: LoadedSweetProject): string {
   return JSON.stringify({
-    configPath: project.configPath,
     sweet: project.sweet,
     options: project.typescript.options,
   });
@@ -134,10 +133,7 @@ interface ConfigState {
   readonly consulted: readonly CheckedInput[];
   /** The sources it expands, by resolved path. */
   readonly expanded: ReadonlySet<string>;
-  /**
-   * Every file it lists, as one string, kept from the previous load while
-   * the list is the same so comparing it with an expansion's is immediate.
-   */
+  /** Every file it lists, as one string to compare an expansion's with. */
   readonly fileList: string;
   /**
    * Each source's last expansion, kept while everything it consulted holds
@@ -246,6 +242,13 @@ interface Round {
   readonly expanded: Map<string, Map<string, FileExpansion>>;
 }
 
+/** A request made through `transform`, waiting for its round. */
+interface Queued {
+  readonly request: SweetenerTransformRequest;
+  readonly resolve: (result: SweetenerTransformResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 function newRound(): Round {
   return {
     inputs: new InputCheckRound(),
@@ -324,7 +327,7 @@ export function createSweetenerSession(
         loadedAt,
       )(project.configurationInputs),
       expanded,
-      fileList: previous?.fileList === fileList ? previous.fileList : fileList,
+      fileList,
       files,
     };
     configs.set(configFile, state);
@@ -528,16 +531,8 @@ export function createSweetenerSession(
 
   // Requests made through `transform` and not yet answered, answered together
   // once this turn of the event loop is over.
-  let queued:
-    | {
-        readonly request: SweetenerTransformRequest;
-        readonly resolve: (result: SweetenerTransformResult) => void;
-        readonly reject: (error: unknown) => void;
-      }[]
-    | undefined;
-  const answerQueued = (): void => {
-    const requests = queued ?? [];
-    queued = undefined;
+  let queued: Queued[] | undefined;
+  const answer = (requests: readonly Queued[]): void => {
     const round = newRound();
     for (const { request, resolve, reject } of requests) {
       try {
@@ -556,8 +551,12 @@ export function createSweetenerSession(
     ): Promise<SweetenerTransformResult> {
       return new Promise((resolve, reject) => {
         if (queued === undefined) {
-          queued = [];
-          setImmediate(answerQueued);
+          const requests: Queued[] = [];
+          queued = requests;
+          setImmediate(() => {
+            queued = undefined;
+            answer(requests);
+          });
         }
         queued.push({ request, resolve, reject });
       });

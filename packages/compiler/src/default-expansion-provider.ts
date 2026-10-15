@@ -1318,9 +1318,6 @@ export class DefaultProjectExpansionProvider
         moduleFile.sourceId,
       ]),
     );
-    const projectFileNames = new Set(
-      projectFiles.map(({ fileName }) => fileName),
-    );
     // Whether TypeScript resolved binding literals, over every source in the
     // project, which then makes every file's expansion depend on all of it.
     const resolvesBindingLiterals = [...byPath.values()].some(
@@ -1697,16 +1694,14 @@ export class DefaultProjectExpansionProvider
           // running and leaves this file expanding into itself. Reporting
           // only the first would have `expand` print the unexpanded source and
           // report success whenever the fault is in the macros rather than in
-          // their use. A module in the project reports its own warnings; one
-          // outside it, in a package, has no one else to report them.
+          // their use. Only a module's errors stop its macros; anything else
+          // it says is its own to report.
           diagnostics: Object.freeze(
             [
               ...answerableFor(file),
               ...macroModules.flatMap((module) =>
                 answerableFor(module).filter(
-                  ({ severity }) =>
-                    severity === "error" ||
-                    !projectFileNames.has(module.fileName),
+                  ({ severity }) => severity === "error",
                 ),
               ),
               ...raised,

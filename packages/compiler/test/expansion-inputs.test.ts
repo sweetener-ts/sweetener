@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import {
   checkedInputs,
   createDefaultProjectExpansionProvider,
-  inputsHold,
+  InputCheckRound,
   nowNanoseconds,
   type LoadedSweetProject,
 } from "../src/index.js";
@@ -159,9 +159,9 @@ test("checks a binding literal's inputs against the file system expansion read",
     provider.fileSystem,
     nowNanoseconds(),
   )(expanded.inputs);
-  expect(inputsHold(checked)).toBe(true);
+  expect(new InputCheckRound().hold(checked)).toBe(true);
 
   files.set(`${root}/shapes.ts`, "export const Shape = 2;\n");
-  expect(inputsHold(checked)).toBe(false);
+  expect(new InputCheckRound().hold(checked)).toBe(false);
   expect(answerOf()).toContain('"other"');
 });

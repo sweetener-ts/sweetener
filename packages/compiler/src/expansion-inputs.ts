@@ -349,8 +349,3 @@ export class InputCheckRound {
     );
   }
 }
-
-/** Whether every question an expansion asked still gets the answer it got. */
-export function inputsHold(checked: readonly CheckedInput[]): boolean {
-  return new InputCheckRound().hold(checked);
-}
