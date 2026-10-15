@@ -1,4 +1,4 @@
-import type { BindingEnvironment } from "@sweetener/hygiene";
+import type { Binding, BindingEnvironment } from "@sweetener/hygiene";
 import type { SyntaxClassConsumer } from "@sweetener/pattern";
 import {
   ResourceLimitError,
@@ -1963,6 +1963,27 @@ export function expandMacroSyntax(
     }
   };
 
+  /**
+   * `bindings` with what `declared` binds added to it, each from `from` to
+   * the end of the run: a declaration an expansion wrote at `from`.
+   */
+  const boundFrom = (
+    bindings: RegionBindings,
+    declared: RegionBindings,
+    from: number,
+  ): RegionBindings => {
+    if (declared === noBindings) return bindings;
+    const into = collecting();
+    addBindings(bindings, into);
+    for (const [spelling, binders] of declared.values)
+      for (const { scopes } of binders)
+        recordValue(into, spelling, scopes, { from, to: wholeRun.to });
+    for (const [spelling, binders] of declared.types)
+      for (const { scopes } of binders)
+        recordType(into, spelling, scopes, { from, to: wholeRun.to });
+    return bindingsOf(into);
+  };
+
   const regionBindings = (
     sequence: SyntaxSequence,
     category: SyntaxCategory,
@@ -2251,9 +2272,75 @@ export function expandMacroSyntax(
    * into.
    */
   interface Region {
-    readonly bindings: RegionBindings;
+    /** Grows as the walk expands a declaration into the run. */
+    bindings: RegionBindings;
     at: number;
+    /**
+     * What expansions in the run have declared in the block it stands in, to
+     * be declared in turn in the run around it where the run is one
+     * statement's: an item macro is expanded inside the item it stands in,
+     * and what it declares is the module's. A block keeps them, but for
+     * `hoisted`.
+     */
+    declared: RegionBindings;
+    /** The `var`s among `declared`, which a block does not keep. */
+    hoisted: RegionBindings;
+    /**
+     * The scopes binding contracts in the run gave the syntax following
+     * them, to be given in turn to what follows in the run around it, as
+     * `declared` is declared there.
+     */
+    following: ScopeSetId;
   }
+
+  /**
+   * What a macro's binding contracts declare in `following`: each binding
+   * whose region is the syntax after the invocation, in the namespace its
+   * space is, with the scopes the contract gave it. The name the macro
+   * emits for it carries the invocation's use-site scope as well, which no
+   * syntax following the invocation does, so it is the contract's binding
+   * that says whom the name binds: the spec's binding contract adds its
+   * scope to the binder and to the region, and nothing else.
+   */
+  const contractBindings = (bindings: readonly Binding[]): RegionBindings => {
+    const into = collecting();
+    for (const binding of bindings) {
+      if (binding.visibility.kind !== "from") continue;
+      if (binding.space === "value" || binding.space === "namespace")
+        recordValue(into, binding.spelling, binding.scopes, wholeRun);
+      if (binding.space === "type" || binding.space === "namespace")
+        recordType(into, binding.spelling, binding.scopes, wholeRun);
+    }
+    return bindingsOf(into);
+  };
+
+  /** `left` and `right` together. */
+  const merged = (
+    left: RegionBindings,
+    right: RegionBindings,
+  ): RegionBindings => {
+    if (right === noBindings) return left;
+    if (left === noBindings) return right;
+    const into = collecting();
+    addBindings(left, into);
+    addBindings(right, into);
+    return bindingsOf(into);
+  };
+
+  /**
+   * Declares in `region`, from `from` to the end of its run, what an
+   * expansion wrote there: `declared`, with `hoisted` the `var`s among it.
+   */
+  const declareInRun = (
+    region: Region,
+    declared: RegionBindings,
+    hoisted: RegionBindings,
+    from: number,
+  ): void => {
+    region.bindings = boundFrom(region.bindings, declared, from);
+    region.declared = merged(region.declared, declared);
+    region.hoisted = merged(region.hoisted, hoisted);
+  };
 
   /** Regions enclosing the position being walked, outermost first. */
   const regions: Region[] = [];
@@ -3313,6 +3400,10 @@ export function expandMacroSyntax(
   ): {
     readonly syntax: SyntaxSequence;
     readonly environment: BindingEnvironment;
+    /** What expansions in the run declared, as `Region` keeps it. */
+    readonly declared: RegionBindings;
+    readonly hoisted: RegionBindings;
+    readonly following: ScopeSetId;
   } => {
     let contexts = enclosingContexts;
     /**
@@ -3361,6 +3452,9 @@ export function expandMacroSyntax(
     const region: Region = {
       bindings: regionBindings(initialInput, category),
       at: 0,
+      declared: noBindings,
+      hoisted: noBindings,
+      following: options.scopeStore.empty(),
     };
     regions.push(region);
     const output: Syntax[] = [];
@@ -3757,6 +3851,15 @@ export function expandMacroSyntax(
               : createSyntaxSequence([categorized]),
         });
         output.push(completed);
+        // What a `#core` form writes is written here: the region read the
+        // form as a marker and a group, and never saw the declaration in it.
+        if (category === "stmt" || category === "item")
+          declareInRun(
+            region,
+            declaredBy(completed),
+            hoistedFrom(completed),
+            index,
+          );
         currentEnvironment = nested.environment;
         index += coreBody === compactCoreBody ? 2 : 3;
         continue;
@@ -5086,8 +5189,34 @@ export function expandMacroSyntax(
               trivia,
             ),
           );
+          // What an expansion declares in a list of statements or items is
+          // declared in the block the list is, as if it had been written
+          // where the invocation stood, and binds for the rest of the run.
+          // The region was read before the run was walked, so it is told now.
+          // Its scopes decide whom it binds: a name the template wrote binds
+          // only names the template wrote, and a name taken from the call
+          // site binds the call site's.
+          declareInRun(
+            region,
+            merged(
+              result.syntax.category === "stmt" ||
+                result.syntax.category === "item"
+                ? declaredBy(result.syntax)
+                : noBindings,
+              contractBindings(result.bindings),
+            ),
+            result.syntax.category === "stmt" ||
+              result.syntax.category === "item"
+              ? hoistedFrom(result.syntax)
+              : noBindings,
+            index,
+          );
         }
         currentEnvironment = replacementEnvironment ?? result.environment;
+        region.following = options.scopeStore.union(
+          region.following,
+          result.followingScopes,
+        );
         if (options.scopeStore.size(result.followingScopes) > 0) {
           input = createSyntaxSequence([
             ...input.slice(0, result.cursor.index),
@@ -5855,6 +5984,23 @@ export function expandMacroSyntax(
             ? { names: [] }
             : undefined;
         if (frame !== undefined) liftFrames.push(frame);
+        // One unit of a list -- a statement, an item, a member -- is not a
+        // block, so what expansions inside it declared is declared in the run
+        // it stands in, and what follows it there follows them; a block
+        // keeps all but its `var`s. A function's body, a class's and a
+        // namespace's keep everything.
+        const declaresAround =
+          node.tag === "protected" &&
+          (node.category === "stmt" ||
+            node.category === "item" ||
+            node.category === "classElement" ||
+            node.category === "typeMember") &&
+          (!braceBody(node) ||
+            braceHeader(walkedRun, output.length) === otherBrace);
+        const blockOfStatements =
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          braceHeader(walkedRun, output.length) === otherBrace;
         let nested;
         try {
           nested = visit(
@@ -5886,6 +6032,22 @@ export function expandMacroSyntax(
           activeExpansionEnvironment = enclosingExpansionEnvironment;
         }
         currentEnvironment = nested.environment;
+        if (declaresAround) {
+          declareInRun(region, nested.declared, nested.hoisted, index);
+          if (options.scopeStore.size(nested.following) > 0) {
+            region.following = options.scopeStore.union(
+              region.following,
+              nested.following,
+            );
+            input = createSyntaxSequence([
+              ...input.slice(0, index + 1),
+              ...input
+                .slice(index + 1)
+                .map((syntax) => addScopes(syntax, nested.following)),
+            ]);
+          }
+        } else if (blockOfStatements)
+          declareInRun(region, nested.hoisted, nested.hoisted, index);
         if (node.tag === "protected" && nested.syntax.length === 0) {
           index += 1;
           continue;
@@ -5933,6 +6095,9 @@ export function expandMacroSyntax(
     return Object.freeze({
       syntax: createSyntaxSequence(output),
       environment: currentEnvironment,
+      declared: region.declared,
+      hoisted: region.hoisted,
+      following: region.following,
     });
   };
 

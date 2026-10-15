@@ -191,6 +191,8 @@ export interface MacroInvocationSuccess {
   readonly cursor: SyntaxCursor;
   readonly environment: BindingEnvironment;
   readonly followingScopes: ScopeSetId;
+  /** What the rule's binding contracts declared. */
+  readonly bindings: readonly Binding[];
   readonly freshBindings: readonly FreshBinding[];
   readonly trace: MacroTraceEvent;
 }
@@ -645,6 +647,7 @@ export function invokeMacro(
         cursor: matched.cursor,
         environment: contracts.environment,
         followingScopes: contracts.followingScopes,
+        bindings: contracts.bindings,
         freshBindings: instantiated.freshBindings,
         trace,
       });

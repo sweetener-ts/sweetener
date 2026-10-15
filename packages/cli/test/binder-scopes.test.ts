@@ -41,6 +41,40 @@ export syntax callTwice:expr {
 export syntax same:expr {
   rule { same($value:expr) } => { $value }
 }
+export syntax defineBound:item {
+  rule { defineBound $name:binding; }
+  bind $name in following as recursive value;
+  => { export const $name = (v: number) => v; }
+}
+export syntax defineUnbound:item {
+  rule { defineUnbound $name:binding; }
+  => { export const $name = (v: number) => v; }
+}
+export syntax defineTwice:item {
+  rule { defineTwice; } => { export const twice = (v: number) => v; }
+}
+export syntax defineThroughBound:item {
+  rule { defineThroughBound $name:binding; }
+  bind $name in following as recursive value;
+  => { defineBound $name; }
+}
+export syntax defineThrough:item {
+  rule { defineThrough $name:binding; } => { defineBound $name; }
+}
+export syntax letBound:stmt {
+  rule { letBound $name:binding; }
+  bind $name in following as lexical value;
+  => { const $name = (v: number) => v; }
+}
+export syntax letUnbound:stmt {
+  rule { letUnbound $name:binding; } => { const $name = (v: number) => v; }
+}
+export syntax letTwice:stmt {
+  rule { letTwice; } => { const twice = (v: number) => v; void twice(5); }
+}
+export syntax member:classElement {
+  rule { member $name:binding; } => { $name = (v: number) => v; }
+}
 `;
 
 interface Expansion {
@@ -54,7 +88,7 @@ function expand(source: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { twice, boxed, emit, withParameter, callTwice, same } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
+    `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -277,4 +311,109 @@ describe("a binder and a name written by different hands", () => {
     expect(messages).toEqual([]);
     expect(text).toContain("=> twice(1)");
   });
+});
+
+/**
+ * A declaration an expansion writes, and the names after it in the same run.
+ *
+ * Such a declaration is in scope for the rest of the block the expansion
+ * stands in, as one written there is, and binds a name there by the scopes the
+ * spec's hygiene gives it. A name a template wrote carries the invocation's
+ * introduction scope, so it binds nothing the call site wrote. A name taken
+ * from the call site carries the invocation's use-site scope, which nothing
+ * written after the invocation does, so it binds the call site's names only
+ * where the macro says so with a binding contract: `bind $name in following`
+ * gives the binding and the syntax after the invocation one scope of their
+ * own, and it is that binding the later names resolve to.
+ */
+describe("a declaration an expansion writes", () => {
+  const declarations: readonly Boundary[] = [
+    {
+      name: "an item binding a call-site name in following",
+      source: "defineBound twice;\nexport const after = twice(2);",
+      inside: ["after = twice(2)"],
+      outside: [],
+    },
+    {
+      name: "an item declaring a call-site name with no binding contract",
+      source: "defineUnbound twice;\nexport const after = twice(2);",
+      inside: [],
+      outside: ["after = (2 + 2)"],
+    },
+    {
+      name: "an item declaring a name its template wrote",
+      source: "defineTwice;\nexport const after = twice(2);",
+      inside: [],
+      outside: ["after = (2 + 2)"],
+    },
+    {
+      name: "a statement binding a call-site name in following",
+      source:
+        "export function f(): number { letBound twice; return twice(2); }",
+      inside: ["return twice(2);"],
+      outside: [],
+    },
+    {
+      name: "a statement declaring a call-site name with no binding contract",
+      source:
+        "export function f(): number { letUnbound twice; return twice(2); }",
+      inside: [],
+      outside: ["return (2 + 2);"],
+    },
+    {
+      name: "a statement declaring a name its template wrote",
+      source: "export function f(): number { letTwice; return twice(2); }",
+      inside: ["twice(5)"],
+      outside: ["return (2 + 2);"],
+    },
+    {
+      name: "a statement binding in following inside a block",
+      source:
+        "export function f(): number { { letBound twice; void twice(1); } return twice(2); }",
+      inside: ["void twice(1);"],
+      outside: ["return (2 + 2);"],
+    },
+    {
+      name: "a statement binding in following in a method's body",
+      source:
+        "export class C { m(): number { letBound twice; return twice(1); } n(): number { return twice(2); } }",
+      inside: ["return twice(1);"],
+      outside: ["return (2 + 2);"],
+    },
+    {
+      name: "a class member named from the call site",
+      source:
+        "export class C { member twice; n(): number { return twice(2); } }",
+      inside: ["{ twice = "],
+      outside: ["return (2 + 2);"],
+    },
+    {
+      name: "an item binding in following through a macro that also binds",
+      source: "defineThroughBound twice;\nexport const after = twice(2);",
+      inside: ["after = twice(2)"],
+      outside: [],
+    },
+    {
+      name: "an item declared through a macro that binds nothing itself",
+      source: "defineThrough twice;\nexport const after = twice(2);",
+      inside: [],
+      outside: ["after = (2 + 2)"],
+    },
+    {
+      name: "an item binding in following, handed back as tokens",
+      source: "emit { defineBound twice; export const after = twice(2); }",
+      inside: ["after = twice(2)"],
+      outside: [],
+    },
+  ];
+  for (const { name, source, inside, outside } of declarations) {
+    test(`${name} binds where hygiene says it does`, () => {
+      const expanded = expand(source);
+      expect(expanded.messages).toEqual([]);
+      for (const kept of inside) expect(expanded.text).toContain(kept);
+      for (const expansion of outside)
+        expect(expanded.text).toContain(expansion);
+      if (outside.length === 0) expect(expanded.text).not.toContain(" + ");
+    });
+  }
 });
