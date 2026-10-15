@@ -90,6 +90,31 @@ describe("diagnostics for names a macro introduces", () => {
     ).toBe("π");
   });
 
+  test("points a name spelled like a contextual keyword back at the rule", () => {
+    const macros = `export syntax names:expr { rule { names } => { [type, of, async] } }\n`;
+    const main = `import { names } from "./macros.sts" for syntax;\nexport const made = names;\n`;
+    const { result } = check(macros, main);
+    const missing = result.diagnostics.filter(({ code }) => code === 2304);
+    expect(
+      missing.map(({ messageText }) => String(messageText)).sort(),
+    ).toEqual([
+      "Cannot find name 'async'.",
+      "Cannot find name 'of'.",
+      "Cannot find name 'type'.",
+    ]);
+    const introduced = missing.map((diagnostic) => {
+      const related = diagnostic.relatedInformation?.find((entry) =>
+        String(entry.messageText).includes("introduced by this macro rule"),
+      );
+      expect(related?.file?.fileName).toMatch(/macros\.sts$/u);
+      return macros.slice(
+        related?.start,
+        (related?.start ?? 0) + (related?.length ?? 0),
+      );
+    });
+    expect(introduced.sort()).toEqual(["async", "of", "type"]);
+  });
+
   test("reports a name the call site wrote where it was written", () => {
     const macros = `export syntax bad:expr { rule { bad($name:ident) } => { $name } }\n`;
     const main = `import { bad } from "./macros.sts" for syntax;\nexport const made = bad(missing);\n`;

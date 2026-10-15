@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import type { SourceId } from "@sweetener/shared";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -108,18 +109,25 @@ function checkDirective(text: string | undefined): boolean | undefined {
 
 const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/u;
 
-/** Whether `name` is one identifier and nothing after it. */
-function scansAsIdentifier(name: string, target: ts.ScriptTarget): boolean {
-  if (name.length === 0) return false;
+/**
+ * Whether `text` is one name and nothing after it: an identifier, or a keyword
+ * that is reserved only where its grammar stands, as `type`, `of` and `async`
+ * are. The scanner gives each of those a keyword's kind rather than an
+ * identifier's, though each names a value wherever it is not a keyword.
+ */
+function scansAsName(text: string, target: ts.ScriptTarget): boolean {
   const scanner = ts.createScanner(
     target,
     true,
     ts.LanguageVariant.Standard,
-    name,
+    text,
   );
+  const kind = scanner.scan();
   return (
-    scanner.scan() === ts.SyntaxKind.Identifier &&
-    scanner.getTokenText() === name &&
+    (kind === ts.SyntaxKind.Identifier ||
+      (kind > ts.SyntaxKind.LastReservedWord &&
+        kind <= ts.SyntaxKind.LastKeyword)) &&
+    scanner.getTokenText() === text &&
     scanner.scan() === ts.SyntaxKind.EndOfFileToken
   );
 }
@@ -149,6 +157,43 @@ function remapGeneratedDiagnostics(options: {
     ]),
   );
   const sourceFiles = new Map<string, ts.SourceFile>();
+  /** The source a source id names, parsed the first time it is asked for. */
+  const sourceFileFor = (sourceId: SourceId): ts.SourceFile | undefined => {
+    const sourceName = sourceById.get(sourceId);
+    if (sourceName === undefined) return undefined;
+    const sourceInspection = inspections.get(sourceName);
+    if (sourceInspection === undefined) return undefined;
+    let sourceFile = sourceFiles.get(sourceName);
+    if (sourceFile === undefined) {
+      sourceFile = ts.createSourceFile(
+        sourceName,
+        sourceInspection.sourceText,
+        options.target,
+        true,
+        sourceName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+      );
+      sourceFiles.set(sourceName, sourceFile);
+    }
+    return sourceFile;
+  };
+  /**
+   * What a position in a generated file was generated from, with the
+   * inspection of the source the file was generated for.
+   */
+  const mappingAt = (
+    file: ts.SourceFile | undefined,
+    generatedStart: number | undefined,
+  ) => {
+    const virtualName = file?.fileName;
+    if (virtualName === undefined || generatedStart === undefined)
+      return undefined;
+    const originalOwner = sourceByVirtual.get(virtualName);
+    const inspection =
+      originalOwner === undefined ? undefined : inspections.get(originalOwner);
+    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
+    if (inspection === undefined || mapped === undefined) return undefined;
+    return { inspection, mapped };
+  };
   /**
    * Where in the sources a position in a generated file came from, or nothing
    * when it came from nowhere the sources can name.
@@ -164,29 +209,10 @@ function remapGeneratedDiagnostics(options: {
         readonly length: number;
       }
     | undefined => {
-    const virtualName = file?.fileName;
-    if (virtualName === undefined || generatedStart === undefined)
-      return undefined;
-    const originalOwner = sourceByVirtual.get(virtualName);
-    const inspection =
-      originalOwner === undefined ? undefined : inspections.get(originalOwner);
-    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
+    const mapped = mappingAt(file, generatedStart)?.mapped;
     if (mapped === undefined) return undefined;
-    const sourceName = sourceById.get(mapped.primary.sourceId);
-    if (sourceName === undefined) return undefined;
-    const sourceInspection = inspections.get(sourceName);
-    if (sourceInspection === undefined) return undefined;
-    let sourceFile = sourceFiles.get(sourceName);
-    if (sourceFile === undefined) {
-      sourceFile = ts.createSourceFile(
-        sourceName,
-        sourceInspection.sourceText,
-        options.target,
-        true,
-        sourceName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-      );
-      sourceFiles.set(sourceName, sourceFile);
-    }
+    const sourceFile = sourceFileFor(mapped.primary.sourceId);
+    if (sourceFile === undefined) return undefined;
     const start = mapped.projectedOriginalOffset;
     return {
       file: sourceFile,
@@ -214,56 +240,29 @@ function remapGeneratedDiagnostics(options: {
     generatedStart: number | undefined,
     code: number,
   ): ts.DiagnosticRelatedInformation | undefined => {
-    const virtualName = file?.fileName;
-    if (virtualName === undefined || generatedStart === undefined)
-      return undefined;
-    const originalOwner = sourceByVirtual.get(virtualName);
-    const inspection =
-      originalOwner === undefined ? undefined : inspections.get(originalOwner);
-    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
-    if (inspection === undefined || mapped?.kind !== "introduced")
-      return undefined;
+    const mapping = mappingAt(file, generatedStart);
+    if (mapping?.mapped.kind !== "introduced") return undefined;
+    const { inspection, mapped } = mapping;
     const defined = inspection.origins.selectPrimarySource(
       mapped.origin,
       "definition",
     );
-    const sourceName = sourceById.get(defined.sourceId);
-    const sourceInspection =
-      sourceName === undefined ? undefined : inspections.get(sourceName);
-    if (sourceName === undefined || sourceInspection === undefined)
-      return undefined;
-    const name = sourceInspection.sourceText.slice(
-      defined.span.start,
-      defined.span.end,
-    );
-    // `π` is an identifier. An ASCII pattern dropped it, so the diagnostic
-    // for that name never gained a related location in the rule. TypeScript
-    // 6's public types do not declare `isIdentifierText`; the scanner is the
-    // same question.
-    if (!scansAsIdentifier(name, options.target)) return undefined;
     // Already the span the diagnostic will report. Nothing further to point at.
     if (
       defined.sourceId === mapped.primary.sourceId &&
       defined.span.start === mapped.projectedOriginalOffset
     )
       return undefined;
-    let sourceFile = sourceFiles.get(sourceName);
-    if (sourceFile === undefined) {
-      sourceFile = ts.createSourceFile(
-        sourceName,
-        sourceInspection.sourceText,
-        options.target,
-        true,
-        sourceName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-      );
-      sourceFiles.set(sourceName, sourceFile);
-    }
+    const sourceFile = sourceFileFor(defined.sourceId);
+    if (sourceFile === undefined) return undefined;
+    const name = sourceFile.text.slice(defined.span.start, defined.span.end);
+    if (!scansAsName(name, options.target)) return undefined;
     return {
       category: ts.DiagnosticCategory.Message,
       code,
       file: sourceFile,
       start: defined.span.start,
-      length: Math.max(0, defined.span.end - defined.span.start),
+      length: defined.span.end - defined.span.start,
       messageText: `Name '${name}' was introduced by this macro rule.`,
     };
   };
@@ -291,15 +290,7 @@ function remapGeneratedDiagnostics(options: {
       diagnostic.code,
     );
     const relatedInformation =
-      introduced === undefined ||
-      related.some(
-        (entry) =>
-          entry.file?.fileName === introduced.file?.fileName &&
-          entry.start === introduced.start &&
-          entry.messageText === introduced.messageText,
-      )
-        ? related
-        : [...related, introduced];
+      introduced === undefined ? related : [...related, introduced];
     return Object.freeze(
       relatedInformation.length === 0
         ? remapped
