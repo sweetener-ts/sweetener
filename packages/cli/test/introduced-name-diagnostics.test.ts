@@ -1,8 +1,17 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
+import {
+  MappedLanguageService,
+  VirtualLanguageServiceProject,
+} from "@sweetener/typescript-host";
 import { describe, expect, test } from "vitest";
-import { runConfiguredProjectCommand } from "../src/index.js";
+import {
+  createDefaultProjectExpansionProvider,
+  loadSweetProject,
+  runConfiguredProjectCommand,
+} from "../src/index.js";
 
 /**
  * Names a macro introduces are reported on the invocation, and the rule that
@@ -14,117 +23,184 @@ import { runConfiguredProjectCommand } from "../src/index.js";
  * related location is the identifier in the rule, so `alpha` and `beta` point
  * at different text. A name the call site wrote is not one of these: it is
  * reported where it was written.
+ *
+ * `check` and an editor's language service read the same expansion, and they
+ * say the same thing about it.
  */
 
-function check(macros: string, main: string) {
+const definition = "Macro template definition";
+
+function project(macros: string, main: string) {
   const directory = mkdtempSync(join(tmpdir(), "sweet-introduced-"));
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(join(directory, "main.sts"), main);
+  const configPath = join(directory, "tsconfig.json");
   writeFileSync(
-    join(directory, "tsconfig.json"),
+    configPath,
     JSON.stringify({
       compilerOptions: { noEmit: true, strict: false, target: "ES2022" },
       sweet: { macroExtensions: [".sts"] },
       files: ["macros.sts", "main.sts"],
     }),
   );
+  return { directory, configPath };
+}
+
+/** What is said about each missing name, as `check` reports it. */
+function checkedNames(macros: string, main: string) {
+  const { configPath } = project(macros, main);
   const result = runConfiguredProjectCommand({
     command: "check",
-    configPath: join(directory, "tsconfig.json"),
+    configPath,
     writeThrough: false,
   });
-  return { directory, macros, main, result };
+  return result.diagnostics
+    .filter(({ code }) => code === 2304)
+    .map((diagnostic) => ({
+      message: String(diagnostic.messageText),
+      reported: main.slice(
+        diagnostic.start,
+        diagnostic.start! + diagnostic.length!,
+      ),
+      related: (diagnostic.relatedInformation ?? []).map((entry) => {
+        const inMacros = entry.file?.fileName.endsWith("macros.sts") === true;
+        return {
+          message: String(entry.messageText),
+          file: inMacros ? "macros" : "main",
+          text: (inMacros ? macros : main).slice(
+            entry.start,
+            entry.start! + entry.length!,
+          ),
+        };
+      }),
+    }))
+    .sort((left, right) => left.message.localeCompare(right.message));
 }
+
+/** What is said about each missing name, as an editor is told it. */
+function editorNames(macros: string, main: string) {
+  const { directory, configPath } = project(macros, main);
+  const provider = createDefaultProjectExpansionProvider();
+  const expansion = provider.expandProject(loadSweetProject(configPath));
+  const inspectedMain = provider.inspectSource(join(directory, "main.sts"));
+  const inspectedMacros = provider.inspectSource(join(directory, "macros.sts"));
+  if (inspectedMain === undefined || inspectedMacros === undefined)
+    throw new Error("the project's sources were not inspected");
+  const virtualFileName = expansion.files.find(({ fileName }) =>
+    fileName.endsWith("main.ts"),
+  )?.fileName;
+  if (virtualFileName === undefined) throw new Error("no virtual main.ts");
+  const service = new MappedLanguageService(
+    new VirtualLanguageServiceProject({
+      compilerOptions: {
+        noEmit: true,
+        strict: false,
+        target: ts.ScriptTarget.ES2022,
+      },
+      currentDirectory: directory,
+      files: expansion.files.map(({ fileName, generated }) => ({
+        fileName,
+        generated,
+      })),
+    }),
+    [
+      {
+        sourceFileName: join(directory, "main.sts"),
+        sourceId: inspectedMain.sourceId,
+        virtualFileName,
+        printed: inspectedMain.generated,
+        index: inspectedMain.index,
+        origins: inspectedMain.origins,
+      },
+    ],
+  );
+  return service
+    .diagnostics(join(directory, "main.sts"))
+    .filter(({ typescriptCode }) => typescriptCode === 2304)
+    .map((diagnostic) => ({
+      message: diagnostic.messageText,
+      reported: main.slice(
+        diagnostic.primaryOrigin?.start,
+        diagnostic.primaryOrigin?.end,
+      ),
+      related: diagnostic.relatedOrigins.map(({ message, origin }) => {
+        const inMacros = origin.sourceId === inspectedMacros.sourceId;
+        return {
+          message,
+          file: inMacros ? "macros" : "main",
+          text: (inMacros ? macros : main).slice(origin.start, origin.end),
+        };
+      }),
+    }))
+    .sort((left, right) => left.message.localeCompare(right.message));
+}
+
+const imports = (name: string) =>
+  `import { ${name} } from "./macros.sts" for syntax;\nexport const made = ${name};\n`;
 
 describe("diagnostics for names a macro introduces", () => {
   test("points each introduced name back at the rule that wrote it", () => {
     const macros = `export syntax pair:expr { rule { pair } => { [alpha, beta] } }\n`;
-    const main = `import { pair } from "./macros.sts" for syntax;\nexport const made = pair;\n`;
-    const { result } = check(macros, main);
-    const missing = result.diagnostics.filter(({ code }) => code === 2304);
-    expect(
-      missing.map(({ messageText }) => String(messageText)).sort(),
-    ).toEqual(["Cannot find name 'alpha'.", "Cannot find name 'beta'."]);
-    const invocation = main.indexOf("pair;");
-    expect(invocation).toBeGreaterThan(0);
-    for (const diagnostic of missing) {
-      expect(diagnostic.file?.fileName).toMatch(/main\.sts$/u);
-      expect(diagnostic.start).toBe(invocation);
-      expect(
-        main.slice(diagnostic.start, diagnostic.start! + diagnostic.length!),
-      ).toBe("pair");
-    }
-    const introduced = missing.map((diagnostic) => {
-      const related = diagnostic.relatedInformation?.find((entry) =>
-        String(entry.messageText).includes("introduced by this macro rule"),
-      );
-      expect(related?.file?.fileName).toMatch(/macros\.sts$/u);
-      return macros.slice(
-        related?.start,
-        (related?.start ?? 0) + (related?.length ?? 0),
-      );
-    });
-    expect(introduced.sort()).toEqual(["alpha", "beta"]);
+    expect(checkedNames(macros, imports("pair"))).toEqual([
+      {
+        message: "Cannot find name 'alpha'.",
+        reported: "pair",
+        related: [{ message: definition, file: "macros", text: "alpha" }],
+      },
+      {
+        message: "Cannot find name 'beta'.",
+        reported: "pair",
+        related: [{ message: definition, file: "macros", text: "beta" }],
+      },
+    ]);
   });
 
   test("points a unicode introduced name back at the rule that wrote it", () => {
     const macros = "export syntax pair:expr { rule { pair } => { π } }\n";
-    const main = `import { pair } from "./macros.sts" for syntax;\nexport const made = pair;\n`;
-    const { result } = check(macros, main);
-    const missing = result.diagnostics.filter(({ code }) => code === 2304);
-    expect(missing.map(({ messageText }) => String(messageText))).toEqual([
-      "Cannot find name 'π'.",
+    expect(checkedNames(macros, imports("pair"))).toEqual([
+      {
+        message: "Cannot find name 'π'.",
+        reported: "pair",
+        related: [{ message: definition, file: "macros", text: "π" }],
+      },
     ]);
-    const invocation = main.indexOf("pair;");
-    const diagnostic = missing[0];
-    expect(diagnostic?.start).toBe(invocation);
-    const related = diagnostic?.relatedInformation?.find((entry) =>
-      String(entry.messageText).includes("introduced by this macro rule"),
-    );
-    expect(related?.file?.fileName).toMatch(/macros\.sts$/u);
-    expect(
-      macros.slice(
-        related?.start,
-        (related?.start ?? 0) + (related?.length ?? 0),
-      ),
-    ).toBe("π");
   });
 
   test("points a name spelled like a contextual keyword back at the rule", () => {
     const macros = `export syntax names:expr { rule { names } => { [type, of, async] } }\n`;
-    const main = `import { names } from "./macros.sts" for syntax;\nexport const made = names;\n`;
-    const { result } = check(macros, main);
-    const missing = result.diagnostics.filter(({ code }) => code === 2304);
     expect(
-      missing.map(({ messageText }) => String(messageText)).sort(),
+      checkedNames(macros, imports("names")).map(({ related }) => related),
     ).toEqual([
-      "Cannot find name 'async'.",
-      "Cannot find name 'of'.",
-      "Cannot find name 'type'.",
+      [{ message: definition, file: "macros", text: "async" }],
+      [{ message: definition, file: "macros", text: "of" }],
+      [{ message: definition, file: "macros", text: "type" }],
     ]);
-    const introduced = missing.map((diagnostic) => {
-      const related = diagnostic.relatedInformation?.find((entry) =>
-        String(entry.messageText).includes("introduced by this macro rule"),
-      );
-      expect(related?.file?.fileName).toMatch(/macros\.sts$/u);
-      return macros.slice(
-        related?.start,
-        (related?.start ?? 0) + (related?.length ?? 0),
-      );
-    });
-    expect(introduced.sort()).toEqual(["async", "of", "type"]);
   });
 
   test("reports a name the call site wrote where it was written", () => {
     const macros = `export syntax bad:expr { rule { bad($name:ident) } => { $name } }\n`;
     const main = `import { bad } from "./macros.sts" for syntax;\nexport const made = bad(missing);\n`;
-    const { result } = check(macros, main);
-    const missing = result.diagnostics.filter(({ code }) => code === 2304);
-    expect(missing).toHaveLength(1);
-    const diagnostic = missing[0]!;
-    expect(diagnostic.file?.fileName).toMatch(/main\.sts$/u);
-    expect(
-      main.slice(diagnostic.start, diagnostic.start! + diagnostic.length!),
-    ).toBe("missing");
+    expect(checkedNames(macros, main)).toEqual([
+      {
+        message: "Cannot find name 'missing'.",
+        reported: "missing",
+        related: [],
+      },
+    ]);
   });
+
+  test.each([
+    ["two names", "pair", "[alpha, beta]"],
+    ["a unicode name", "pair", "π"],
+    ["names spelled like contextual keywords", "names", "[type, of, async]"],
+  ])(
+    "tells an editor what check reports about %s",
+    (_label, name, template) => {
+      const macros = `export syntax ${name}:expr { rule { ${name} } => { ${template} } }\n`;
+      const main = imports(name);
+      const checked = checkedNames(macros, main);
+      expect(checked.length).toBeGreaterThan(0);
+      expect(editorNames(macros, main)).toEqual(checked);
+    },
+  );
 });

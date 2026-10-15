@@ -2,7 +2,7 @@ import type { CaptureId, InvocationId, SourceId } from "@sweetener/shared";
 import { OriginStore } from "@sweetener/syntax";
 import { describe, expect, test } from "vitest";
 import * as ts from "typescript";
-import { remapTypeScriptDiagnostic } from "../src/index.js";
+import { remapGeneratedSpan, remapTypeScriptDiagnostic } from "../src/index.js";
 
 describe("TypeScript diagnostic remapping", () => {
   test("maps introduced syntax to its invocation and relates its definition", () => {
@@ -122,12 +122,61 @@ describe("TypeScript diagnostic remapping", () => {
         },
         origins,
       });
-      expect(result.primaryOrigin).toMatchObject({
-        sourceId: 982,
-        start: 5,
-        end: 9,
-      });
+      expect(result.primaryOrigin).toMatchObject({ sourceId: 982, start: 5 });
     }
+  });
+
+  /**
+   * A region that prints the text it came from maps position for position,
+   * the projection the origin index answers offset queries with. A region a
+   * macro's template wrote has no position of its own and stands for its
+   * source as a whole: a name it introduced is reported over the whole
+   * invocation, however long the name is.
+   */
+  test("reports written text where it was written and introduced text over its source", () => {
+    const origins = new OriginStore();
+    const written = origins.source(986 as SourceId, { start: 10, end: 16 });
+    const definition = origins.source(987 as SourceId, { start: 3, end: 4 });
+    const invocation = origins.source(986 as SourceId, { start: 20, end: 24 });
+    const introduced = origins.introduced(definition, invocation);
+    const generated = {
+      text: "abcdef π",
+      originMap: {
+        schemaVersion: 1 as const,
+        entries: [
+          {
+            generatedStart: 0,
+            generatedEnd: 6,
+            origin: written,
+            kind: "source" as const,
+          },
+          {
+            generatedStart: 7,
+            generatedEnd: 8,
+            origin: introduced,
+            kind: "introduced" as const,
+          },
+        ],
+      },
+      tokenSpans: [],
+      trace: [],
+      serializedTrace: "[]\n",
+    };
+    expect(
+      remapGeneratedSpan({ generated, origins, start: 2, length: 3 })
+        .primaryOrigin,
+    ).toMatchObject({ sourceId: 986, start: 12, end: 15 });
+    expect(
+      remapGeneratedSpan({ generated, origins, start: 7, length: 1 }),
+    ).toMatchObject({
+      primaryOrigin: { sourceId: 986, start: 20, end: 24 },
+      relatedOrigins: [
+        {
+          message: "Macro template definition",
+          origin: { sourceId: 987, start: 3, end: 4 },
+        },
+      ],
+    });
   });
 
   test("maps composed regions to one primary source and stable related sources", () => {
@@ -229,7 +278,7 @@ describe("TypeScript diagnostic remapping", () => {
       },
       origins,
     });
-    expect(result.primaryOrigin).toMatchObject({ start: 2, end: 3 });
+    expect(result.primaryOrigin).toMatchObject({ start: 2, end: 2 });
     expect(result.typescriptRelatedInformation).toHaveLength(1);
   });
 });

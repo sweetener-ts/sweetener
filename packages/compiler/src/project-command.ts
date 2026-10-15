@@ -14,6 +14,7 @@ import type {
 import {
   composeSourceMap,
   createVirtualProgram,
+  remapGeneratedSpan,
 } from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
@@ -109,29 +110,6 @@ function checkDirective(text: string | undefined): boolean | undefined {
 
 const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/u;
 
-/**
- * Whether `text` is one name and nothing after it: an identifier, or a keyword
- * that is reserved only where its grammar stands, as `type`, `of` and `async`
- * are. The scanner gives each of those a keyword's kind rather than an
- * identifier's, though each names a value wherever it is not a keyword.
- */
-function scansAsName(text: string, target: ts.ScriptTarget): boolean {
-  const scanner = ts.createScanner(
-    target,
-    true,
-    ts.LanguageVariant.Standard,
-    text,
-  );
-  const kind = scanner.scan();
-  return (
-    (kind === ts.SyntaxKind.Identifier ||
-      (kind > ts.SyntaxKind.LastReservedWord &&
-        kind <= ts.SyntaxKind.LastKeyword)) &&
-    scanner.getTokenText() === text &&
-    scanner.scan() === ts.SyntaxKind.EndOfFileToken
-  );
-}
-
 function remapGeneratedDiagnostics(options: {
   readonly diagnostics: readonly ts.Diagnostic[];
   readonly provider: ProjectExpansionProvider;
@@ -177,93 +155,51 @@ function remapGeneratedDiagnostics(options: {
     return sourceFile;
   };
   /**
-   * What a position in a generated file was generated from, with the
-   * inspection of the source the file was generated for.
-   */
-  const mappingAt = (
-    file: ts.SourceFile | undefined,
-    generatedStart: number | undefined,
-  ) => {
-    const virtualName = file?.fileName;
-    if (virtualName === undefined || generatedStart === undefined)
-      return undefined;
-    const originalOwner = sourceByVirtual.get(virtualName);
-    const inspection =
-      originalOwner === undefined ? undefined : inspections.get(originalOwner);
-    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
-    if (inspection === undefined || mapped === undefined) return undefined;
-    return { inspection, mapped };
-  };
-  /**
-   * Where in the sources a position in a generated file came from, or nothing
-   * when it came from nowhere the sources can name.
+   * Where in the sources a span of a generated file is reported, and what else
+   * in them it is about, or nothing when it came from nowhere the sources can
+   * name. The language service reports through the same remap, so an editor
+   * and `check` say the same thing about the same expansion. A related source
+   * no inspected file holds, such as a macro module inside a package, has no
+   * file to point into here and is left out.
    */
   const locate = (
     file: ts.SourceFile | undefined,
     generatedStart: number | undefined,
     generatedLength: number | undefined,
-  ):
-    | {
-        readonly file: ts.SourceFile;
-        readonly start: number;
-        readonly length: number;
-      }
-    | undefined => {
-    const mapped = mappingAt(file, generatedStart)?.mapped;
-    if (mapped === undefined) return undefined;
-    const sourceFile = sourceFileFor(mapped.primary.sourceId);
-    if (sourceFile === undefined) return undefined;
-    const start = mapped.projectedOriginalOffset;
-    return {
-      file: sourceFile,
-      start,
-      length: Math.max(
-        0,
-        Math.min(
-          mapped.primary.span.end - start,
-          generatedLength ?? mapped.primary.span.end - start,
-        ),
-      ),
-    };
-  };
-  /**
-   * Where a macro rule wrote an introduced name, when this diagnostic is about
-   * one.
-   *
-   * The diagnostic itself stays on the invocation: an introduced name has no
-   * place in the file that called the macro. The rule that wrote it does, and
-   * two names from one invocation are the same span until something says which
-   * identifier each report is about.
-   */
-  const introducedName = (
-    file: ts.SourceFile | undefined,
-    generatedStart: number | undefined,
-    code: number,
-  ): ts.DiagnosticRelatedInformation | undefined => {
-    const mapping = mappingAt(file, generatedStart);
-    if (mapping?.mapped.kind !== "introduced") return undefined;
-    const { inspection, mapped } = mapping;
-    const defined = inspection.origins.selectPrimarySource(
-      mapped.origin,
-      "definition",
-    );
-    // Already the span the diagnostic will report. Nothing further to point at.
-    if (
-      defined.sourceId === mapped.primary.sourceId &&
-      defined.span.start === mapped.projectedOriginalOffset
-    )
+  ) => {
+    const originalOwner =
+      file === undefined ? undefined : sourceByVirtual.get(file.fileName);
+    const inspection =
+      originalOwner === undefined ? undefined : inspections.get(originalOwner);
+    if (inspection === undefined || generatedStart === undefined)
       return undefined;
-    const sourceFile = sourceFileFor(defined.sourceId);
+    const { primaryOrigin, relatedOrigins } = remapGeneratedSpan({
+      generated: inspection.generated,
+      origins: inspection.origins,
+      start: generatedStart,
+      length: generatedLength ?? 0,
+    });
+    if (primaryOrigin === undefined) return undefined;
+    const sourceFile = sourceFileFor(primaryOrigin.sourceId);
     if (sourceFile === undefined) return undefined;
-    const name = sourceFile.text.slice(defined.span.start, defined.span.end);
-    if (!scansAsName(name, options.target)) return undefined;
     return {
-      category: ts.DiagnosticCategory.Message,
-      code,
       file: sourceFile,
-      start: defined.span.start,
-      length: defined.span.end - defined.span.start,
-      messageText: `Name '${name}' was introduced by this macro rule.`,
+      start: primaryOrigin.start,
+      length: primaryOrigin.end - primaryOrigin.start,
+      related: relatedOrigins.flatMap(({ message, origin }) => {
+        const relatedFile = sourceFileFor(origin.sourceId);
+        return relatedFile === undefined
+          ? []
+          : [
+              {
+                category: ts.DiagnosticCategory.Message,
+                file: relatedFile,
+                start: origin.start,
+                length: origin.end - origin.start,
+                messageText: message,
+              },
+            ];
+      }),
     };
   };
   return options.diagnostics.map((diagnostic) => {
@@ -280,17 +216,29 @@ function remapGeneratedDiagnostics(options: {
       const entryLocation = locate(entry.file, entry.start, entry.length);
       return entryLocation === undefined
         ? entry
-        : Object.freeze({ ...entry, ...entryLocation });
+        : Object.freeze({
+            ...entry,
+            file: entryLocation.file,
+            start: entryLocation.start,
+            length: entryLocation.length,
+          });
     });
+    const relatedInformation = [
+      ...related,
+      ...(located?.related ?? []).map((entry) => ({
+        ...entry,
+        code: diagnostic.code,
+      })),
+    ];
     const remapped =
-      located === undefined ? diagnostic : { ...diagnostic, ...located };
-    const introduced = introducedName(
-      diagnostic.file,
-      diagnostic.start,
-      diagnostic.code,
-    );
-    const relatedInformation =
-      introduced === undefined ? related : [...related, introduced];
+      located === undefined
+        ? diagnostic
+        : {
+            ...diagnostic,
+            file: located.file,
+            start: located.start,
+            length: located.length,
+          };
     return Object.freeze(
       relatedInformation.length === 0
         ? remapped
