@@ -5,7 +5,9 @@ import {
   nextSlashReadings,
   printLossless,
   readSyntax,
+  regularExpressionEnd,
   slashReadingIsLocal,
+  typescriptSlashReadings,
 } from "../src/index.js";
 
 const sourceId = 9 as SourceId;
@@ -165,5 +167,25 @@ describe("slash readings", () => {
         new Map([[7, "division"]]),
       ),
     ).toThrow(/read as regular-expression and then found misread/u);
+  });
+
+  it.each([
+    ["a regular expression", "if (c) /a  b/.test(s);", 7, 13],
+    ["no expression on the line", "x = a / 2;\ny / 3;", 6, undefined],
+  ])("measures where %s a slash would begin ends", (_, source, offset, end) => {
+    expect(regularExpressionEnd(source, offset)).toBe(end);
+  });
+
+  it("reads slashes as TypeScript's parser reads them", () => {
+    const source = "if (c) /(/.test(s);\nx = of / 2 / 3;";
+    const readings = typescriptSlashReadings(source, "standard");
+    expect([...readings]).toEqual([
+      [7, "regular-expression"],
+      [source.indexOf("/ 2"), "division"],
+    ]);
+    expect(
+      readSyntax(source, { sourceId, scopes, slashReadings: readings })
+        .diagnostics,
+    ).toEqual([]);
   });
 });

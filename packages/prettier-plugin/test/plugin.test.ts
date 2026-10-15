@@ -175,6 +175,39 @@ wrapped const example = { single: 'quoted' };
 });
 
 /**
+ * Whether a slash begins a regular expression is the parser's to say, and the
+ * reader judges it from the token before: after `)` or a name, a division. A
+ * formatter has no parser of Sweetener's to ask, so it never lays out the text
+ * a slash could begin an expression over, and where the reader's judgement
+ * left the read unbalanced it reads the slashes as TypeScript's parser does.
+ */
+describe("slashes the reader judges from the token before", () => {
+  test.each([
+    ["after a condition", "if (c) /a  b/.test(s);\n"],
+    ["under a bodiless signature", "function f()\n/a  b/.test(s);\n"],
+    ["under an annotation", "let x: T\n/a  {2}/.test(s);\n"],
+  ])("leaves the text of a regular expression %s as written", (_, source) => {
+    expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(source);
+  });
+
+  test("lays out a division no slash could begin an expression over", () => {
+    expect(formatSweetener("x = a  /  2;\n", { filepath: "regex.sts" })).toBe(
+      "x = a / 2;\n",
+    );
+  });
+
+  test("formats a source whose regular expression holds a delimiter", async () => {
+    const source = "if (c) /(/.test(s);\nrun(  1 );\n";
+    expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(
+      "if (c) /(/.test(s);\nrun( 1 );\n",
+    );
+    expect(
+      await format(source, { filepath: "regex.sts", plugins: [plugin] }),
+    ).toBe("if (c) /(/.test(s);\nrun(1);\n");
+  });
+});
+
+/**
  * Layout is normalized; the tokens are left as written.
  *
  * Semicolons and quotes are real tokens to a macro matcher, so Prettier's

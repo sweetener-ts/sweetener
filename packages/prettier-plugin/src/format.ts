@@ -1,11 +1,16 @@
-import { readSyntax } from "@sweetener/reader";
+import {
+  readSyntax,
+  regularExpressionEnd,
+  typescriptSlashReadings,
+} from "@sweetener/reader";
 import type { ScopeSetId, SourceId } from "@sweetener/shared";
-import type {
-  GroupSyntax,
-  RootSyntax,
-  Syntax,
-  TokenSyntax,
-  Trivia,
+import {
+  divisionSlash,
+  type GroupSyntax,
+  type RootSyntax,
+  type Syntax,
+  type TokenSyntax,
+  type Trivia,
 } from "@sweetener/syntax";
 
 export interface SweetenerFormatOptions {
@@ -286,6 +291,83 @@ function collectChildren(
   }
 }
 
+/**
+ * The spans of the source a slash read as a division could begin a regular
+ * expression over, where one would end on the slash's own line.
+ *
+ * Which of the two a slash begins is the parser's to say, and the reader can
+ * only judge from the token before: after `)` or a name it reads a division,
+ * where `if (c) /a  b/.test(s)` writes a regular expression. Read as a
+ * division, the text inside is names and operators with whitespace between
+ * them, which this formatter would lay out -- and `/a  b/` would become `/a
+ * b/`, another expression. A formatter has no parser to ask, and no macros to
+ * say what their own syntax reads, so it leaves the text of every such span
+ * exactly as written. A regular expression the reader read where a division
+ * stands is one token already, and nothing inside a token is laid out.
+ */
+function possibleRegularExpressions(
+  source: string,
+  syntax: Syntax,
+): readonly { readonly start: number; readonly end: number }[] {
+  switch (syntax.tag) {
+    case "token": {
+      if (!divisionSlash(syntax)) return [];
+      const end = regularExpressionEnd(source, syntax.span.start);
+      return end === undefined ? [] : [{ start: syntax.span.start, end }];
+    }
+    case "group":
+    case "protected":
+    case "root":
+      return syntax.children.flatMap((child) =>
+        possibleRegularExpressions(source, child),
+      );
+  }
+}
+
+/**
+ * `spans` joined where they overlap, in source order. Two slashes may each
+ * begin an expression over the other: in `a / b / c` the first ends at the
+ * second, and the second reaches past it.
+ */
+function disjoint(
+  spans: readonly { readonly start: number; readonly end: number }[],
+): readonly { readonly start: number; readonly end: number }[] {
+  const joined: { start: number; end: number }[] = [];
+  for (const span of [...spans].sort(
+    (left, right) => left.start - right.start,
+  )) {
+    const last = joined.at(-1);
+    if (last !== undefined && span.start < last.end)
+      last.end = Math.max(last.end, span.end);
+    else joined.push({ ...span });
+  }
+  return joined;
+}
+
+/**
+ * Whether `replacement` touches the inside of any of `spans`, which are in
+ * source order and do not overlap.
+ */
+function overlapsAny(
+  spans: readonly { readonly start: number; readonly end: number }[],
+  replacement: Replacement,
+): boolean {
+  let low = 0;
+  let high = spans.length;
+  // The first span ending after the replacement begins.
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (spans[middle]!.end <= replacement.start) low = middle + 1;
+    else high = middle;
+  }
+  const span = spans[low];
+  return (
+    span !== undefined &&
+    replacement.end > span.start &&
+    replacement.start < span.end
+  );
+}
+
 function applyReplacements(
   source: string,
   replacements: readonly Replacement[],
@@ -306,11 +388,22 @@ export function readSweetenerSyntax(
   source: string,
   options: SweetenerFormatOptions,
 ): RootSyntax {
-  const result = readSyntax(source, {
-    sourceId,
-    scopes,
-    variant: options.filepath?.endsWith("x") === true ? "jsx" : "standard",
-  });
+  const variant = options.filepath?.endsWith("x") === true ? "jsx" : "standard";
+  const initial = readSyntax(source, { sourceId, scopes, variant });
+  // A slash the reader judged a division may begin a regular expression
+  // holding a bracket or a quote, which then leaves the read unbalanced:
+  // `if (c) /(/.test(s)`. The expansion reads the source again with the
+  // enforester's answer; a formatter has no enforester, so it asks
+  // TypeScript's parser, and only where the read went wrong.
+  const result =
+    initial.diagnostics.length === 0
+      ? initial
+      : readSyntax(source, {
+          sourceId,
+          scopes,
+          variant,
+          slashReadings: typescriptSlashReadings(source, variant),
+        });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];
     throw new SyntaxError(
@@ -333,6 +426,10 @@ export function formatSweetener(
   const eol = lineEnding(source, options.endOfLine);
   const replacements: Replacement[] = [];
   collectSyntax(root, 0, options, eol, replacements);
-  const formatted = applyReplacements(source, replacements);
+  const kept = disjoint(possibleRegularExpressions(source, root));
+  const formatted = applyReplacements(
+    source,
+    replacements.filter((replacement) => !overlapsAny(kept, replacement)),
+  );
   return formatted.replace(/[ \t\r\n\u2028\u2029]+$/u, "") + eol;
 }

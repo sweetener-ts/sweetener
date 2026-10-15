@@ -1,4 +1,5 @@
 import type { SlashReading, SlashReadings } from "@sweetener/syntax";
+import * as ts from "typescript";
 import {
   scanWithSupportedTypeScript,
   type ScannerLanguageVariant,
@@ -126,4 +127,72 @@ export function nextSlashReadings(
     if (!local) break;
   }
   return next;
+}
+
+/**
+ * How TypeScript's own parser reads each slash of `source`, for a reader
+ * that has no enforester to ask.
+ *
+ * The parser rescans a slash as a regular expression where it expects an
+ * operand, so the regular expressions in the tree it builds are where
+ * TypeScript read one. A Sweetener source is not TypeScript where it writes a
+ * macro's own syntax, and there the parser reads what it recovers to; so this
+ * is the answer only for what TypeScript's grammar reads, and it costs a parse
+ * of the whole source. Only the slashes the reader read the other way are
+ * returned.
+ */
+export function typescriptSlashReadings(
+  source: string,
+  variant: ScannerLanguageVariant,
+): SlashReadings {
+  const expressions = new Set(parsedRegularExpressions(source, variant));
+  const readings = new Map<number, SlashReading>();
+  // One slash at a time, earliest first: reading one the other way changes
+  // what is read after it, and the next is looked for in that reading.
+  for (;;) {
+    const misread = scanWithSupportedTypeScript(
+      source,
+      variant,
+      undefined,
+      readings,
+    ).tokens.find((token) => {
+      const regular = token.projectKind === "regular-expression-literal";
+      const slash =
+        token.projectKind === "punctuation" &&
+        (token.raw === "/" || token.raw === "/=");
+      return (
+        (regular && !expressions.has(token.start)) ||
+        (slash && expressions.has(token.start))
+      );
+    });
+    if (misread === undefined) return readings;
+    readings.set(
+      misread.start,
+      misread.projectKind === "regular-expression-literal"
+        ? "division"
+        : "regular-expression",
+    );
+  }
+}
+
+/** Where TypeScript's parser read a regular expression in `source`. */
+function parsedRegularExpressions(
+  source: string,
+  variant: ScannerLanguageVariant,
+): readonly number[] {
+  const file = ts.createSourceFile(
+    variant === "jsx" ? "source.tsx" : "source.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    variant === "jsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const found: number[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.RegularExpressionLiteral)
+      found.push(node.getStart(file));
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
 }

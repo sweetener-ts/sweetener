@@ -441,6 +441,35 @@ function computeEndsExpression(kind: ts.SyntaxKind): boolean {
   }
 }
 
+/**
+ * Where the regular expression a slash at `offset` would begin ends, read as
+ * one; undefined where none would end on the slash's own line.
+ */
+export function regularExpressionEnd(
+  source: string,
+  offset: number,
+): number | undefined {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  scanner.setText(source, offset);
+  const kind = scanner.scan();
+  if (
+    kind !== ts.SyntaxKind.SlashToken &&
+    kind !== ts.SyntaxKind.SlashEqualsToken
+  )
+    throw new RangeError(`No slash at offset ${String(offset)}`);
+  if (
+    scanner.reScanSlashToken() !== ts.SyntaxKind.RegularExpressionLiteral ||
+    scanner.isUnterminated()
+  )
+    return undefined;
+  return scanner.getTokenEnd();
+}
+
 export function scanWithSupportedTypeScript(
   source: string,
   variant: ScannerLanguageVariant,
