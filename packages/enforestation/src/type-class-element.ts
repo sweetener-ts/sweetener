@@ -8,6 +8,7 @@ import {
   isIdentifierToken,
   isPropertyNameToken,
   leadingLineBreak,
+  operandExpectedAfter as expressionOperandExpectedAfter,
   spanEnvelope,
   type GroupSyntax,
   type OriginStore,
@@ -22,7 +23,6 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
-import { operandExpectedAfter as expressionOperandExpectedAfter } from "./core-operators.js";
 import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 

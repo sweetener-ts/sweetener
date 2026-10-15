@@ -4,7 +4,9 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  expressionContinuedBy,
   leadingLineBreak,
+  operandExpectedAfter,
   type GroupSyntax,
   type OriginStore,
   type ProtectedSyntax,
@@ -20,10 +22,6 @@ import {
   type SyntaxConsumer,
   type MacroExtentResolver,
 } from "./consumer.js";
-import {
-  expressionContinuedBy,
-  operandExpectedAfter,
-} from "./core-operators.js";
 import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,

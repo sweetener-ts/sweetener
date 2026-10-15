@@ -1,8 +1,11 @@
 import type { OriginId, SyntaxId } from "@sweetener/shared";
 import {
   angleWidth,
+  assignmentPrecedence,
+  commaPrecedence,
   type DelimiterKind,
   isReservedWord,
+  operatorPrecedence,
   type MissingToken,
   type Origin,
   type OriginStore,
@@ -582,7 +585,9 @@ function typeBindingOperator(token: TokenSyntax): boolean {
  * `$f || q` printed an arrow that returns `1 || q`.
  */
 function holdingPrecedence(expression: ProtectedSyntax): number | undefined {
-  return expression.form === "arrow" ? 20 : expression.precedence;
+  return expression.form === "arrow"
+    ? assignmentPrecedence
+    : expression.precedence;
 }
 
 /**
@@ -783,7 +788,7 @@ export function printExpandedFile<Trace>(
    */
   const markWhole = (expression: ProtectedSyntax) => {
     const inner = unwrapped(expression);
-    if (inner.form !== undefined || (inner.precedence ?? 0) > 10)
+    if (inner.form !== undefined || (inner.precedence ?? 0) > commaPrecedence)
       boundOperands.add(inner);
   };
   const markBoundOperands = (parent: ProtectedSyntax) => {
@@ -803,10 +808,11 @@ export function printExpandedFile<Trace>(
     };
     if (parent.form === "conditional") {
       // `test ? consequent : alternate`: the test is a short-circuit
-      // expression, and the alternate an assignment-level one.
-      bind(children[0], 40);
-      bind(children[2], 11);
-      bind(children[4], 20);
+      // expression, the consequent anything short of a comma, and the
+      // alternate an assignment-level one.
+      bind(children[0], operatorPrecedence("??", "infix"));
+      bind(children[2], commaPrecedence + 1);
+      bind(children[4], assignmentPrecedence);
       return;
     }
     const first = children[0];
@@ -829,7 +835,8 @@ export function printExpandedFile<Trace>(
       const left = operand(first);
       const right = operand(last);
       const logical = (node: ProtectedSyntax | undefined) =>
-        node?.precedence === 50 || node?.precedence === 60;
+        node?.precedence === operatorPrecedence("||", "infix") ||
+        node?.precedence === operatorPrecedence("&&", "infix");
       // `??` cannot sit beside `||` or `&&` unparenthesized, and a unary
       // operand of `**` must keep its parentheses.
       const unaryBase = spelling === "**" && left?.children[0]?.tag === "token";
@@ -1411,7 +1418,8 @@ export function printExpandedFile<Trace>(
           // A unary operand holds together against `as` without help.
           if (
             assertion.operand.tag === "protected" &&
-            (holdingPrecedence(assertion.operand) ?? 0) > 110
+            (holdingPrecedence(assertion.operand) ?? 0) >
+              operatorPrecedence("as", "infix")
           )
             boundOperands.add(assertion.operand);
           pushChildren([assertion.operand]);

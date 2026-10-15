@@ -2,7 +2,8 @@
  * The operators of TypeScript's expression grammar, with the fixity,
  * precedence and associativity the expression parser reads them with. Kept
  * apart from the parser so that readers which only need to know what an
- * operator is -- whether a line can end after one -- need not depend on it.
+ * operator is -- whether a line can end after one, or how tightly an
+ * expression it built holds together when printed -- need not depend on it.
  */
 export type PrattFixity = "prefix" | "infix" | "postfix";
 export type PrattAssociativity = "left" | "right" | "none";
@@ -101,6 +102,33 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
   ),
   ...operators([","], "infix", 10, "left"),
 ]);
+
+/**
+ * What the operator spelled `spelling` with `fixity` binds at. Asking for one
+ * the table does not hold is a mistake in the asker, not a question with a
+ * default answer.
+ */
+export function operatorPrecedence(
+  spelling: string,
+  fixity: PrattFixity,
+): number {
+  const found = coreExpressionOperators.find(
+    (operator) => operator.spelling === spelling && operator.fixity === fixity,
+  );
+  if (found === undefined)
+    throw new RangeError(`No ${fixity} operator is spelled ${spelling}`);
+  return found.precedence;
+}
+
+/**
+ * The levels of the grammar that are not a single operator's. A conditional
+ * binds between `??` and assignment; an assignment expression -- what an
+ * argument, an initializer or an arrow's body is -- is the level `=` and `=>`
+ * stand at; and the comma operator is the loosest of all.
+ */
+export const conditionalPrecedence = 30;
+export const assignmentPrecedence = operatorPrecedence("=", "infix");
+export const commaPrecedence = operatorPrecedence(",", "infix");
 
 /** The spellings the table holds with `fixity`. */
 function spellingsOf(fixity: PrattFixity): ReadonlySet<string> {

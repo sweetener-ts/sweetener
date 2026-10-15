@@ -5,8 +5,10 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  expressionContinuedBy,
   isIdentifierToken,
   leadingLineBreak,
+  operandExpectedAfter,
   spanEnvelope,
   type OriginStore,
   type Precedence,
@@ -21,10 +23,6 @@ import {
   type MacroExtentResolver,
   type SyntaxConsumer,
 } from "./consumer.js";
-import {
-  expressionContinuedBy,
-  operandExpectedAfter,
-} from "./core-operators.js";
 import {
   consumeBalancedTypeArguments,
   typeOperandFollows,

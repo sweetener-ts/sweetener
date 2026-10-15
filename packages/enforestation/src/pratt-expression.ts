@@ -1,7 +1,13 @@
 import type { BindingId } from "@sweetener/shared";
 import {
+  assignmentPrecedence,
+  conditionalPrecedence,
+  coreExpressionOperators,
   createPrecedence,
   createProtectedSyntax,
+  unaryPrecedence,
+  type PrattAssociativity,
+  type PrattFixity,
   leadingLineBreak,
   spanEnvelope,
   type ExpressionForm,
@@ -30,13 +36,7 @@ export {
   type CoreOperator,
   type PrattAssociativity,
   type PrattFixity,
-} from "./core-operators.js";
-import {
-  coreExpressionOperators,
-  unaryPrecedence,
-  type PrattAssociativity,
-  type PrattFixity,
-} from "./core-operators.js";
+} from "@sweetener/syntax";
 
 const coreByKey = new Map(
   coreExpressionOperators.map((operator) => [
@@ -523,20 +523,25 @@ function parseConditional(
   if ("matched" in consequent) return consequent;
   const colon = cursor.peek();
   if (colon?.tag !== "token" || colon.raw !== ":") {
-    return fail(cursor, context, ["':' in conditional expression"], 30);
+    return fail(
+      cursor,
+      context,
+      ["':' in conditional expression"],
+      conditionalPrecedence,
+    );
   }
   cursor.advance();
-  const alternate = parseExpression(cursor, 20, context);
+  const alternate = parseExpression(cursor, assignmentPrecedence, context);
   if ("matched" in alternate) return alternate;
   return {
     syntax: protect(
       context.options,
       [left.syntax, question, consequent.syntax, colon, alternate.syntax],
-      30,
+      conditionalPrecedence,
       "conditional",
     ),
     cursor: alternate.cursor,
-    outerPrecedence: 30,
+    outerPrecedence: conditionalPrecedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
   };
@@ -666,7 +671,7 @@ function arrowRightOperand(
   if (block?.tag === "group" && block.delimiter === "brace") {
     body = cursor.consume()!;
   } else {
-    const parsed = parseExpression(cursor, 20, {
+    const parsed = parseExpression(cursor, assignmentPrecedence, {
       ...context,
       allowComma: false,
       consumer: Object.freeze({
@@ -680,7 +685,12 @@ function arrowRightOperand(
     body = parsed.syntax;
   }
   return {
-    syntax: protect(context.options, [...head, body], 20, "arrow"),
+    syntax: protect(
+      context.options,
+      [...head, body],
+      assignmentPrecedence,
+      "arrow",
+    ),
     cursor,
     outerPrecedence: 20,
     unparenthesizedPrefix: false,
@@ -699,7 +709,7 @@ function parseExpression(
   while (!cursor.atEnd && !context.consumer.stopSet.matches(cursor)) {
     checkWork(context);
     const spelling = tokenSpelling(cursor);
-    if (spelling === "?" && 30 >= minimumPrecedence) {
+    if (spelling === "?" && conditionalPrecedence >= minimumPrecedence) {
       const conditional = parseConditional(left, cursor, context);
       if ("matched" in conditional) return conditional;
       left = conditional;
