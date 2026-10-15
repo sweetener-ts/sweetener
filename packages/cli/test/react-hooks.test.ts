@@ -37,10 +37,10 @@ describe("React hook macro project", () => {
     expect(generated).toContain("startNavigation");
     expect(generated).not.toContain("consttoggleDetailsOpen");
     expect(generated).toContain("useCallback(async");
-    // The cleanup an `effect` writes is an arrow a template wrote, and every
-    // arrow a template writes is printed inside the parentheses that hold it
-    // together, `(a) => a` as much as `() => {}`.
-    expect(generated).toContain("return (() =>");
+    // The cleanup an `effect` writes is an arrow a template wrote. What
+    // `return` returns is a whole expression, so the arrow needs no
+    // parentheses to hold it together there.
+    expect(generated).toContain("return () =>");
     expect(generated).toContain('from "react"');
     expect(generated).not.toContain("for syntax");
   });

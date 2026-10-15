@@ -303,7 +303,11 @@ Printing parenthesizes a protected expression that expansion placed where its
 own operators could re-associate: one whose precedence is not already tighter
 than the operator it is an operand of, and any conditional or arrow that is not
 the whole body of an arrow. An arrow holds together only where an assignment
-expression would. `??` beside an unparenthesized `||` or `&&`, and a unary
+expression would. An expression that stands whole needs no parentheses: an
+argument, an array element, a property value, what a spread spreads, an
+initializer or default, what `return`, `throw` or `export default` takes, the
+expression of an expression statement, and a type argument. The first clause of
+a `for` header is the exception, where `in` stays inside parentheses. `??` beside an unparenthesized `||` or `&&`, and a unary
 base of `**`, keep their parentheses. So does an optional chain that a call,
 an access or a tagged template continues, and an expression `new` constructs
 that holds a call or an optional chain of its own.

@@ -88,7 +88,7 @@ describe("core-shadow composition", () => {
     )?.generated.text;
     expect(generated).toBeDefined();
     expect(generated).toContain('globalThis.console.log("inside")');
-    expect(generated).toMatch(/const value = \(2 \+\s*2\)/u);
+    expect(generated).toMatch(/const value = 2 \+\s*2;/u);
     expect(generated).toContain("<strong>{value}</strong>");
     expect(generated).not.toContain("trace");
     expect(generated).not.toContain("doubled");

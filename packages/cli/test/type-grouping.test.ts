@@ -309,7 +309,7 @@ const captureRows: readonly {
   {
     name: "a union as a template's type argument",
     use: "listOf<string | number>",
-    printed: "Array<(string | number)>",
+    printed: "Array<string | number>",
     identity: "Array<string | number>",
   },
   {

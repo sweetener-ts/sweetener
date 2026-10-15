@@ -51,6 +51,7 @@ export syntax members:expr {
     }
   }
 }
+export syntax listOf:type { rule { listOf($t:type) } => { Array<$t> } }
 export syntax has:expr { rule { has($k:expr, $o:expr) } => { $k in $o } }
 export syntax scale:expr {
   rule { scale($($x:expr),*) } => {
@@ -76,7 +77,7 @@ function expand(main: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, has, scale, list } from "./macros.sts" for syntax;\n${main}`,
+    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has, scale, list } from "./macros.sts" for syntax;\n${main}`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -374,11 +375,11 @@ export const o = members(1);
     );
     expect(messages).toEqual([]);
     expect(text).toContain(
-      "lookup: ((key: string): Map<string, number> => new Map([[key, 1 + 1]]))",
+      "lookup: (key: string): Map<string, number> => new Map([[key, 1 + 1]])",
     );
-    expect(text).toContain("made: (make<string, number>(1 + 2))");
-    expect(text).toContain("pair: (<A, B>(a: A, b: B): [A, B] => [a, b])");
-    expect(text).toContain("low: (1 < 2), high: (1 > 0)");
+    expect(text).toContain("made: make<string, number>(1 + 2)");
+    expect(text).toContain("pair: <A, B>(a: A, b: B): [A, B] => [a, b]");
+    expect(text).toContain("low: 1 < 2, high: 1 > 0");
     const o = exports["o"] as {
       lookup(key: string): Map<string, number>;
       made: Map<string, number>;
@@ -388,6 +389,53 @@ export const o = members(1);
     expect(o.lookup("k").get("k")).toBe(2);
     expect(o.made.get("made")).toBe(3);
     expect(o).toMatchObject({ low: true, high: true });
+  });
+});
+
+describe("an expression standing whole", () => {
+  test("needs no parentheses wherever an assignment expression stands", () => {
+    const { text, messages, exports } = expand(
+      `export const value = sum(1, 2);
+export const held = { total: sum(3, 4), run: arrow(5) };
+const xs = undefined as number[] | undefined, ys = [1, 2];
+export const spread = [...either(xs, ys)];
+export function given() { return sum(7, 8); }
+export function thrown() { throw sum(9, 10); }
+export let seen = 0;
+seen = sum(11, 12);
+sum(seen, 1);
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("export const value = 1 + 2;");
+    expect(text).toContain("{ total: 3 + 4, run: () => 5 }");
+    expect(text).toContain("[...xs || ys]");
+    expect(text).toContain("return 7 + 8;");
+    expect(text).toContain("throw 9 + 10;");
+    expect(text).toContain("seen = 11 + 12;");
+    expect(text).toContain("seen + 1;");
+    expect(exports).toMatchObject({ value: 3, spread: [1, 2], seen: 23 });
+  });
+
+  test("needs no parentheses as a type argument", () => {
+    const { text, messages } = expand(
+      "export const values: listOf(string | null) = [null];\nexport const rows: listOf(number | null)[] = [[null]];\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("values: Array<string | null> =");
+    expect(text).toContain("rows: Array<number | null>[] =");
+  });
+
+  test("keeps `in` out of a for header's first clause", () => {
+    const { text, messages } = expand(
+      `const o = { a: 1 };
+for (has("a", o); ; ) break;
+for (let present = has("a", o); ; ) break;
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain('for (("a" in o); ; )');
+    expect(text).toContain('for (let present = ("a" in o); ; )');
   });
 });
 

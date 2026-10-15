@@ -23,8 +23,8 @@ countSignal.set(
 countSignal.set(
             countSignal.get() >> 1
           );
-(flagSignal.get() ||
-            flagSignal.set(true));
+flagSignal.get() ||
+            flagSignal.set(true);
 labelSignal.set("done");
 
 // An assignment is an expression, so it has the value it wrote.

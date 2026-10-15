@@ -1,6 +1,7 @@
 import type { OriginId, SyntaxId } from "@sweetener/shared";
 import {
   angleWidth,
+  type DelimiterKind,
   isReservedWord,
   type MissingToken,
   type Origin,
@@ -307,6 +308,18 @@ function applies(text: string, memberName: boolean): boolean {
   );
 }
 
+/**
+ * Tokens after which a whole assignment expression is written, where nothing
+ * after it but a separator or the end of its brackets belongs to it.
+ */
+const wholeExpressionHeads: ReadonlySet<string> = new Set([
+  "...",
+  "=",
+  "return",
+  "throw",
+  "default",
+]);
+
 /** Tokens nothing is written after: what follows stands against them. */
 const holdsWhatFollows: ReadonlySet<string> = new Set([
   "(",
@@ -586,23 +599,37 @@ function misreadAt(
 }
 
 /**
+ * The expression `expression` is. A node holding nothing but another
+ * expression -- a capture of one, a macro's result that is one -- is that
+ * expression, and stands wherever it stands: its own precedence is the one
+ * the parser gave the wrapper, not the one the expression inside binds at.
+ */
+function unwrapped(expression: ProtectedSyntax): ProtectedSyntax {
+  let current = expression;
+  for (;;) {
+    const [sole] = current.children;
+    if (
+      current.children.length !== 1 ||
+      sole?.tag !== "protected" ||
+      sole.category !== "expr"
+    )
+      return current;
+    current = sole;
+  }
+}
+
+/**
  * Whether a postfix chain holds `?.`. Whatever is written after it joins the
  * chain and is skipped along with it when the chain short-circuits, so a
  * chain that something else continues keeps its parentheses: `$v()` with
  * `$v` bound to `a?.b` is `(a?.b)()`, which throws where `a` is missing, and
- * `a?.b()` does not. A capture holding nothing but another expression is that
- * expression.
+ * `a?.b()` does not.
  */
 function optionalChain(expression: ProtectedSyntax): boolean {
-  const children = expression.children;
-  const [sole] = children;
-  if (
-    children.length === 1 &&
-    sole?.tag === "protected" &&
-    sole.category === "expr"
-  )
-    return optionalChain(sole);
-  return children.some((child) => child.tag === "token" && child.raw === "?.");
+  const inner = unwrapped(expression);
+  return inner.children.some(
+    (child) => child.tag === "token" && child.raw === "?.",
+  );
 }
 
 /**
@@ -716,16 +743,26 @@ export function printExpandedFile<Trace>(
    * `value * 2 + 1`.
    */
   const boundOperands = new Set<Syntax>();
+  /**
+   * Marks an expression that stands as a whole assignment expression or more,
+   * which nothing around it can re-associate. Only a comma expression, or one
+   * whose precedence is unknown, could run on into what follows.
+   */
+  const markWhole = (expression: ProtectedSyntax) => {
+    const inner = unwrapped(expression);
+    if (inner.form !== undefined || (inner.precedence ?? 0) > 10)
+      boundOperands.add(inner);
+  };
   const markBoundOperands = (parent: ProtectedSyntax) => {
     const precedence = parent.precedence;
     if (parent.category !== "expr" || precedence === undefined) return;
     const children = parent.children;
-    const operand = (node: Syntax | undefined) =>
-      node?.tag === "protected" &&
-      node.category === "expr" &&
-      node.precedence !== undefined
-        ? node
-        : undefined;
+    const operand = (node: Syntax | undefined) => {
+      if (node?.tag !== "protected" || node.category !== "expr")
+        return undefined;
+      const inner = unwrapped(node);
+      return inner.precedence === undefined ? undefined : inner;
+    };
     const bind = (node: Syntax | undefined, minimum: number) => {
       const found = operand(node);
       if (found !== undefined && holdingPrecedence(found)! >= minimum)
@@ -806,10 +843,21 @@ export function printExpandedFile<Trace>(
   const writtenByTemplate = (syntax: Syntax): boolean =>
     kindFor(syntax.origin) === "introduced";
   const pending: PrintItem[] = [...options.syntax].reverse();
-  const pushChildren = (children: readonly Syntax[], list = false) => {
+  const pushChildren = (children: readonly Syntax[], group?: DelimiterKind) => {
+    const list = group === "parenthesis" || group === "bracket";
+    // A parenthesis group holding `;` is a `for` header, and the clause before
+    // its first `;` is the one place an expression may not hold `in` outside
+    // parentheses: `for (("a" in o); ;)` is not `for ("a" in o; ;)`.
+    const firstSemicolon =
+      group === "parenthesis"
+        ? children.findIndex(
+            (child) => child.tag === "token" && child.raw === ";",
+          )
+        : -1;
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index]!;
       const previous = children[index - 1];
+      const before = children[index - 2];
       const next = children[index + 1];
       if (
         previous?.tag === "token" &&
@@ -817,7 +865,11 @@ export function printExpandedFile<Trace>(
         (next === undefined ||
           (next.tag === "token" && arrowBodyEnds.has(next.raw)))
       )
-        wholeArrowBodies.add(child);
+        wholeArrowBodies.add(
+          child.tag === "protected" && child.category === "expr"
+            ? unwrapped(child)
+            : child,
+        );
       if (child.tag === "protected" && child.category === "expr") {
         // Asked of the nodes on either side rather than of a parent: a call
         // or an access need not be a node of its own, and in an arrow's body
@@ -833,10 +885,9 @@ export function printExpandedFile<Trace>(
             ? constructsTooMuch(child)
             : continued && optionalChain(child)
         )
-          continuedHeads.add(child);
+          continuedHeads.add(unwrapped(child));
         if (previous?.tag === "token" && previous.raw === "=>")
           leadingPositions.set(child, "arrow body");
-        const before = children[index - 2];
         if (
           previous?.tag === "token" &&
           previous.raw === "default" &&
@@ -851,11 +902,28 @@ export function printExpandedFile<Trace>(
       // comma expression, or an expression whose precedence is unknown,
       // could run into the next element.
       //
-      // A `for` header's clauses stand the same way, parted by `;` instead --
-      // the only place a semicolon separates expressions inside brackets --
-      // so `for (let at = 0; at < 2; at += 1)` needs no parentheses either.
+      // A `for` header's test and update stand the same way, parted by `;`
+      // instead -- the only place a semicolon separates expressions inside
+      // brackets -- so `for (let at = 0; at < 2; at += 1)` needs no
+      // parentheses either.
+      //
+      // So does what a spread spreads, an initializer or a default after
+      // `=`, what `return`, `throw` or `export default` is followed by, and
+      // what follows a `:` written directly in braces: an object literal's
+      // property value, or the statement after a label or a `case`. Each is
+      // a whole assignment expression or more. None of them can be the clause
+      // of a `for` header that keeps `in` out except an initializer, which is
+      // asked about that clause like any other; a parenthesis group's `:`
+      // could be one.
       const separates = (node: Syntax | undefined) =>
         node?.tag === "token" && (node.raw === "," || node.raw === ";");
+      const opensWhole = (node: Syntax | undefined) =>
+        node === undefined
+          ? list
+          : separates(node) ||
+            (node.tag === "token" &&
+              (wholeExpressionHeads.has(node.raw) ||
+                (group === "brace" && node.raw === ":")));
       // A control statement's body follows its header on the same line.
       const heads =
         previous === undefined ||
@@ -873,9 +941,22 @@ export function printExpandedFile<Trace>(
       if (
         child.tag === "protected" &&
         child.category === "expr" &&
-        (child.form !== undefined || (child.precedence ?? 0) > 10) &&
-        (previous === undefined ? list : separates(previous)) &&
-        (next === undefined ? list : separates(next))
+        !(firstSemicolon >= 0 && index < firstSemicolon) &&
+        opensWhole(previous) &&
+        (next === undefined ? group !== undefined : separates(next))
+      )
+        markWhole(child);
+      // A type argument is a whole type, as an argument is a whole
+      // expression: `useRef<HTMLInputElement | null>` needs nothing around
+      // the union. The angles are tokens rather than a group, so it is asked
+      // of them.
+      const listsTypes = (node: Syntax | undefined, closer: string) =>
+        node?.tag === "token" && (node.raw === "," || node.raw === closer);
+      if (
+        child.tag === "protected" &&
+        child.category === "type" &&
+        listsTypes(previous, "<") &&
+        listsTypes(next, ">")
       )
         boundOperands.add(child);
       pending.push(child);
@@ -1249,10 +1330,7 @@ export function printExpandedFile<Trace>(
           if (region !== undefined) pending.push({ jsx: "leave" });
           pending.push(item.close);
         }
-        pushChildren(
-          item.children,
-          item.delimiter === "parenthesis" || item.delimiter === "bracket",
-        );
+        pushChildren(item.children, item.delimiter);
         if (region === "code") pending.push({ jsx: region }, item.open);
         else {
           pending.push(item.open);
@@ -1322,10 +1400,17 @@ export function printExpandedFile<Trace>(
           pending.push({ text: ")", origin: item.origin, grouping: true });
         const head = item.children[0];
         if (head?.tag === "protected" && head.category === "expr") {
-          // An expression statement is a statement that begins with one.
-          if (item.category === "stmt" || item.category === "item")
+          // An expression statement is a statement that begins with one, and
+          // holds it whole.
+          if (item.category === "stmt" || item.category === "item") {
             leadingPositions.set(head, "statement");
-          else if (leading !== undefined && !group)
+            const after = item.children[1];
+            if (
+              after === undefined ||
+              (after.tag === "token" && after.raw === ";")
+            )
+              markWhole(head);
+          } else if (leading !== undefined && !group)
             leadingPositions.set(head, leading);
         }
         markBoundOperands(item);
