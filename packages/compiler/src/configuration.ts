@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import type { ResourceBudget } from "@sweetener/shared";
 import { isJavaScriptFileName } from "@sweetener/typescript-host";
-import { fileText } from "./consulted-files.js";
+import { InputRecorder, type ExpansionInput } from "./expansion-inputs.js";
 import * as ts from "typescript";
 import {
   isSupportedMacroExtension,
@@ -35,14 +35,16 @@ export interface SweetConfigurationProblem {
 export interface LoadedSweetProject {
   readonly configPath: string;
   /**
-   * Every config file consulted resolving this project -- `configPath`, each
-   * config it `extends` however far, and each place an `extends` was looked
-   * for and not found -- with its text, or `undefined` where there was no
-   * file. Each is read before TypeScript reads it, so a change in between
-   * shows as a difference rather than going unseen. Empty for a project with
+   * What resolving this project's config asked of the disk: the text of
+   * `configPath` and of each config it `extends` however far, and every
+   * lookup made finding those -- the places an `extends` was looked for and
+   * not found, the `node_modules` directories looked in, where a link to one
+   * led. TypeScript is handed exactly the text recorded, so what it parsed is
+   * what these say. The walk of `include` is not among them: which files a
+   * config lists is the file list, not the config. Empty for a project with
    * no config.
    */
-  readonly configurationInputs: ReadonlyMap<string, string | undefined>;
+  readonly configurationInputs: readonly ExpansionInput[];
   readonly sweet: SweetCompilerOptions;
   readonly typescript: ts.ParsedCommandLine;
   readonly problems: readonly SweetConfigurationProblem[];
@@ -274,7 +276,7 @@ export function loadStandaloneProject(
   });
   return Object.freeze({
     configPath: resolve(absolute[0] ?? ".", "..", "tsconfig.json"),
-    configurationInputs: new Map(),
+    configurationInputs: Object.freeze([]),
     sweet,
     typescript: Object.freeze({
       options: Object.freeze({
@@ -295,16 +297,9 @@ export function loadStandaloneProject(
 
 export function loadSweetProject(configPath: string): LoadedSweetProject {
   const absolute = resolve(configPath);
-  const configurationInputs = new Map<string, string | undefined>();
-  const consult = (fileName: string): void => {
-    const path = resolve(fileName);
-    if (!configurationInputs.has(path))
-      configurationInputs.set(path, fileText(path));
-  };
-  const readConfigFile = (fileName: string): string | undefined => {
-    consult(fileName);
-    return ts.sys.readFile(fileName);
-  };
+  const recorder = new InputRecorder(ts.sys);
+  const readConfigFile = (fileName: string): string | undefined =>
+    recorder.file(fileName).text;
   const read = ts.readConfigFile(absolute, readConfigFile);
   const raw = read.config as Record<string, unknown> | undefined;
   const parsedSweet = parseSweetCompilerOptions(raw?.["sweet"]);
@@ -341,10 +336,10 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
     {
       ...ts.sys,
       readFile: readConfigFile,
-      fileExists: (fileName) => {
-        consult(fileName);
-        return ts.sys.fileExists(fileName);
-      },
+      fileExists: (fileName) => readConfigFile(fileName) !== undefined,
+      directoryExists: (directoryName) =>
+        recorder.directory(directoryName).exists,
+      realpath: (fileName) => recorder.realpath(fileName).target,
     },
     dirname(absolute),
     undefined,
@@ -366,7 +361,7 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
   });
   return Object.freeze({
     configPath: absolute,
-    configurationInputs,
+    configurationInputs: recorder.inputs,
     sweet: parsedSweet.options,
     typescript,
     problems: parsedSweet.problems,

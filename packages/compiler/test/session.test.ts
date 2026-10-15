@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
@@ -796,6 +796,191 @@ describe("a session after the project changes", () => {
     await session.close();
   });
 });
+
+/**
+ * A macro naming a binding literal is resolved by a TypeScript program over
+ * the project, which reads what TypeScript's own resolution reaches: `.ts`
+ * files the sources import, packages and their types, where a package link
+ * leads, the type roots it lists. Each case changes one thing only that
+ * program read, and ends where a fresh session answers differently from one
+ * that kept the expansion it had.
+ */
+describe("a session after what TypeScript read for binding literals changes", () => {
+  test("expands again once a `.ts` file a source imports changes", async () => {
+    const fixture = shapesProject('import { Shape } from "./shapes";');
+    const shapes = join(fixture.directory, "shapes.ts");
+    writeFileSync(
+      shapes,
+      "export const Circle = 1;\nexport { Circle as Shape };\n",
+    );
+    writeFileSync(
+      fixture.macros,
+      shapesMacros('import { Circle } from "./shapes";', "Circle"),
+    );
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain('"circle"');
+
+    writeFileSync(
+      shapes,
+      "export const Circle = 1;\nexport const Shape = 2;\n",
+    );
+    const after = await transform(session, fixture.main, fixture.config);
+    expect(after.code).toContain('"other"');
+    expect(answer(after)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+    await session.close();
+  });
+
+  test("expands again once an `@types` package is installed", async () => {
+    const fixture = shapesProject('import { Shape } from "shapes";');
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain('"other"');
+
+    const types = join(fixture.directory, "node_modules", "@types", "shapes");
+    mkdirSync(types, { recursive: true });
+    writeFileSync(
+      join(types, "index.d.ts"),
+      `export { Circle as Shape } from "${relative(types, fixture.local).replaceAll("\\", "/")}";\n`,
+    );
+    const after = await transform(session, fixture.main, fixture.config);
+    expect(after.code).toContain('"circle"');
+    expect(answer(after)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+    await session.close();
+  });
+
+  test("follows a package link TypeScript resolved through, pointed at a new version", async () => {
+    // Both versions read the same through the link -- the same package.json,
+    // the same index.d.ts -- and differ in a file the index reaches from
+    // where the link leads. Only where the link leads tells them apart.
+    const fixture = shapesProject('import { Shape } from "shapes";');
+    const store = join(fixture.directory, "node_modules", ".pnpm");
+    const version = (name: string) =>
+      join(store, name, "node_modules", "shapes");
+    for (const [name, shape] of [
+      [
+        "shapes@1",
+        (root: string) =>
+          `export { Circle as Shape } from "${relative(root, fixture.local).replaceAll("\\", "/")}";\n`,
+      ],
+      ["shapes@2", () => "export declare const Shape: number;\n"],
+    ] as const) {
+      const root = version(name);
+      mkdirSync(root, { recursive: true });
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "shapes",
+          version: "1.0.0",
+          types: "index.d.ts",
+        }),
+      );
+      writeFileSync(join(root, "index.d.ts"), 'export * from "./shape";\n');
+      writeFileSync(join(root, "shape.d.ts"), shape(root));
+    }
+    const link = join(fixture.directory, "node_modules", "shapes");
+    symlinkSync(version("shapes@1"), link);
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain('"circle"');
+
+    rmSync(link);
+    symlinkSync(version("shapes@2"), link);
+    const after = await transform(session, fixture.main, fixture.config);
+    expect(after.code).toContain('"other"');
+    expect(answer(after)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+    await session.close();
+  });
+
+  test("expands again once a package appears in a type root TypeScript listed", async () => {
+    const fixture = shapesProject("", { types: ["*"] });
+    const typeRoot = join(fixture.directory, "node_modules", "@types");
+    mkdirSync(join(typeRoot, "shape-names"), { recursive: true });
+    writeFileSync(
+      join(typeRoot, "shape-names", "index.d.ts"),
+      "declare namespace Shapes {\n  const Circle: number;\n}\n",
+    );
+    writeFileSync(fixture.macros, shapesMacros("", "Shapes.Circle"));
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain('"other"');
+
+    mkdirSync(join(typeRoot, "shape-alias"));
+    writeFileSync(
+      join(typeRoot, "shape-alias", "index.d.ts"),
+      "import Shape = Shapes.Circle;\n",
+    );
+    const after = await transform(session, fixture.main, fixture.config);
+    expect(after.code).toContain('"circle"');
+    expect(answer(after)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+    await session.close();
+  });
+});
+
+/** Macros whose `kind(x)` says whether `x` is the binding `reference` names. */
+function shapesMacros(imports: string, reference: string): string {
+  return [
+    imports,
+    "export syntax kind:expr {",
+    `  literal ${reference} as Circle;`,
+    '  rule { kind(Circle) } => { "circle" }',
+    '  fallback rule { kind($value:expr) } => { "other" }',
+    "}",
+    "",
+  ].join("\n");
+}
+
+/**
+ * A project whose `main.sts` asks `kind(Shape)`, with `Shape` brought in by
+ * `imports`, and whose macros ask after `Circle` from `local.ts`.
+ */
+function shapesProject(
+  imports: string,
+  compilerOptions: Record<string, unknown> = {},
+): {
+  directory: string;
+  config: string;
+  main: string;
+  macros: string;
+  local: string;
+} {
+  const directory = realpathSync(
+    mkdtempSync(join(tmpdir(), "sweet-compiler-literals-")),
+  );
+  const main = join(directory, "main.sts");
+  const macros = join(directory, "macros.sts");
+  const local = join(directory, "local");
+  const config = join(directory, "tsconfig.json");
+  writeFileSync(`${local}.ts`, "export const Circle = 1;\n");
+  writeFileSync(
+    macros,
+    shapesMacros('import { Circle } from "./local";', "Circle"),
+  );
+  writeFileSync(
+    main,
+    `import { kind } from "./macros.sts" for syntax;\n${imports}\nexport const answer = kind(Shape);\n`,
+  );
+  writeFileSync(
+    config,
+    JSON.stringify({
+      compilerOptions: {
+        module: "ESNext",
+        target: "ES2022",
+        ...compilerOptions,
+      },
+      files: ["macros.sts", "main.sts"],
+    }),
+  );
+  return { directory, config, main, macros, local };
+}
 
 function readFile(fileName: string): string {
   return readFileSync(fileName, "utf8");

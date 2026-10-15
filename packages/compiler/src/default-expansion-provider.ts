@@ -73,7 +73,13 @@ import {
   type VirtualTypeScriptFile,
 } from "@sweetener/typescript-host";
 import { planHygienicRenames } from "./hygienic-renaming.js";
-import { fileText } from "./consulted-files.js";
+import {
+  diskFileSystem,
+  InputRecorder,
+  suppliedFileSystem,
+  type ExpansionFileSystem,
+  type ExpansionInput,
+} from "./expansion-inputs.js";
 import * as ts from "typescript";
 import {
   loadStandaloneProject,
@@ -498,7 +504,9 @@ function semanticBindingLiteralMatcher(options: {
   readonly files: readonly ParsedFile[];
   readonly origins: OriginStore;
   readonly compilerOptions: ts.CompilerOptions;
-  readonly system?: ts.System | undefined;
+  readonly system: ts.System;
+  /** What the program reads, so every read of its is an input. */
+  readonly recorder: InputRecorder;
 }) {
   if (
     options.files.every(({ compiled }) => compiled.bindingLiterals.length === 0)
@@ -533,55 +541,50 @@ function semanticBindingLiteralMatcher(options: {
     }
     virtualSources.set(file.kind.virtualFileName, { file, text });
   }
-  const host: ts.CompilerHost = options.system
-    ? {
-        fileExists: options.system.fileExists,
-        readFile: options.system.readFile,
-        getSourceFile: (fileName, languageVersion) => {
-          const text = options.system?.readFile(fileName);
-          return text === undefined
-            ? undefined
-            : ts.createSourceFile(
-                fileName,
-                text,
-                languageVersion,
-                true,
-                scriptKindForFileName(fileName),
-              );
-        },
-        getDefaultLibFileName: () =>
-          resolve(options.system?.getCurrentDirectory() ?? "/", "lib.d.ts"),
-        writeFile: () => {},
-        getCurrentDirectory: options.system.getCurrentDirectory,
-        getCanonicalFileName: (fileName) =>
-          options.system?.useCaseSensitiveFileNames
-            ? fileName
-            : fileName.toLowerCase(),
-        useCaseSensitiveFileNames: () =>
-          options.system?.useCaseSensitiveFileNames ?? true,
-        getNewLine: () => options.system?.newLine ?? "\n",
-        directoryExists: options.system.directoryExists,
-        getDirectories: options.system.getDirectories,
-      }
-    : ts.createCompilerHost(options.compilerOptions, true);
-  const defaultGetSourceFile = host.getSourceFile.bind(host);
-  host.fileExists = (fileName) =>
-    virtualSources.has(resolve(fileName)) ||
-    (options.system ?? ts.sys).fileExists(fileName);
-  host.readFile = (fileName) =>
-    virtualSources.get(resolve(fileName))?.text ??
-    (options.system ?? ts.sys).readFile(fileName);
-  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) => {
-    const source = virtualSources.get(resolve(fileName));
-    return source === undefined
-      ? defaultGetSourceFile(fileName, languageVersion, onError, shouldCreate)
-      : ts.createSourceFile(
-          fileName,
-          source.text,
-          languageVersion,
-          true,
-          scriptKindForFileName(fileName),
-        );
+  // Everything the program reads goes through the expansion's recorder:
+  // module resolution's probes, the type roots it lists, where links lead,
+  // the library files. What it finds decides which symbol a literal names, so
+  // each is an input to the expansion as much as a source is.
+  const { system, recorder } = options;
+  const read = (fileName: string): string | undefined =>
+    virtualSources.get(resolve(fileName))?.text ?? recorder.file(fileName).text;
+  // Where TypeScript keeps its libraries, by the system's own account of
+  // where TypeScript is, as TypeScript's own compiler host has it.
+  const libraryLocation = dirname(system.getExecutingFilePath());
+  const host: ts.CompilerHost = {
+    fileExists: (fileName) => read(fileName) !== undefined,
+    readFile: read,
+    getSourceFile: (fileName, languageVersion) => {
+      const text = read(fileName);
+      return text === undefined
+        ? undefined
+        : ts.createSourceFile(
+            fileName,
+            text,
+            languageVersion,
+            true,
+            scriptKindForFileName(fileName),
+          );
+    },
+    getDefaultLibLocation: () => libraryLocation,
+    getDefaultLibFileName: (compilerOptions) =>
+      join(libraryLocation, ts.getDefaultLibFileName(compilerOptions)),
+    writeFile: () => {},
+    getCurrentDirectory: () => system.getCurrentDirectory(),
+    getCanonicalFileName: (fileName) =>
+      system.useCaseSensitiveFileNames ? fileName : fileName.toLowerCase(),
+    useCaseSensitiveFileNames: () => system.useCaseSensitiveFileNames,
+    getNewLine: () => system.newLine,
+    directoryExists: (directoryName) =>
+      recorder.directory(directoryName).exists,
+    getDirectories: (directoryName) => [
+      ...recorder.subdirectories(directoryName).names,
+    ],
+    ...(system.realpath === undefined
+      ? {}
+      : {
+          realpath: (fileName: string) => recorder.realpath(fileName).target,
+        }),
   };
   const program = ts.createProgram({
     rootNames: [...virtualSources.keys()],
@@ -713,17 +716,17 @@ function originContains(
 
 export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
   /**
-   * Every file the expansion consulted, by the absolute path it looked under,
-   * with the text it read there, or `undefined` where it found no file.
+   * Every question the expansion asked of the file system, with its answer,
+   * asked of the provider's `fileSystem`.
    *
    * Expanding the same project again gives the same output for as long as
-   * each of these holds what it held. The paths are the ones resolution looked
-   * under rather than where a symlink leads, so a package manager pointing a
-   * link at a new version reads as a change. A macro naming a binding literal
-   * is the exception: TypeScript resolves the literal through lookups of its
-   * own, which are not among these.
+   * each gets the same answer. Expansion's own lookups are at the paths it
+   * looked under rather than where a link leads, so a package manager
+   * pointing a link at a new version reads as a change. Where a macro names a
+   * binding literal, these include everything the TypeScript program that
+   * resolves it read and looked for, its libraries among them.
    */
-  readonly inputs: ReadonlyMap<string, string | undefined>;
+  readonly inputs: readonly ExpansionInput[];
   /**
    * Whether a macro named a binding literal, which TypeScript resolves over
    * every source in the project. Each file's expansion then depends on the
@@ -734,28 +737,45 @@ export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
 
 export interface DefaultSourceExpansionInspection extends SourceExpansionInspection {
   /**
-   * Every file this file's expansion consulted, by the path it looked under,
-   * with the text it found there or `undefined` where it found no file: the
-   * file itself, the macro modules it reads macros from, and every lookup made
-   * resolving their imports. While each holds what it held, expanding the
-   * file again gives the same output and the same diagnostics -- unless the
-   * expansion resolved binding literals, when these are all of the project's
-   * inputs and its file list counts too (see `resolvesBindingLiterals`).
+   * What this file's expansion asked of the file system, with the answers:
+   * the file itself, the macro modules it reads macros from, and every lookup
+   * made resolving their imports. While each gets the same answer, expanding
+   * the file again gives the same output and the same diagnostics -- unless
+   * the expansion resolved binding literals, when these are all of the
+   * project's inputs and its file list counts too (see
+   * `resolvesBindingLiterals`).
    */
-  readonly inputs: ReadonlyMap<string, string | undefined>;
+  readonly inputs: readonly ExpansionInput[];
 }
 
 /** Default, synchronous project frontend used by both the API and executable. */
 export class DefaultProjectExpansionProvider
   implements ProjectExpansionProvider, ExpansionInspectionProvider
 {
-  readonly #system: ts.System | undefined;
+  readonly #system: ts.System;
+  readonly #fileSystem: ExpansionFileSystem;
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
   #macroDependencies: readonly string[] = Object.freeze([]);
   #debug: unknown = Object.freeze({ files: 0, modules: 0, invocations: 0 });
 
+  /**
+   * `system` is what expansion reads in place of the disk: every source,
+   * package and lookup, and what TypeScript reads resolving binding literals.
+   */
   constructor(options: { readonly system?: ts.System | undefined } = {}) {
-    this.#system = options.system;
+    this.#system = options.system ?? ts.sys;
+    this.#fileSystem =
+      options.system === undefined
+        ? diskFileSystem
+        : suppliedFileSystem(options.system);
+  }
+
+  /**
+   * The file system expansions read, which is the one to ask whether their
+   * `inputs` still hold.
+   */
+  get fileSystem(): ExpansionFileSystem {
+    return this.#fileSystem;
   }
 
   expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
@@ -775,26 +795,22 @@ export class DefaultProjectExpansionProvider
     const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
     const packageManifests = new Map<string, MacroPackageManifest>();
-    // Every file this expansion consulted, at the path it looked under, with
-    // the text it found there -- or nothing, where it looked and found no
-    // file. A lookup that came back empty decides the result as surely as one
-    // that read something: a package installed later, or an alias target
-    // appearing ahead of the one used, changes what an import resolves to.
-    const inputs = new Map<string, string | undefined>();
-    // Which of those each module consulted: its own text, and every lookup
-    // made resolving its imports. A file's expansion depends on what the
-    // modules it reads macros from consulted, and on nothing else on disk.
-    const consultedBy = new Map<string, Set<string>>();
+    // Every question this expansion asks of the file system, and its answer,
+    // at the path it looked under -- whether or not it found anything there.
+    const recorder = new InputRecorder(this.#fileSystem.system);
+    // Which files each module consulted: its own text, and every lookup made
+    // resolving its imports. A file's expansion depends on what the modules
+    // it reads macros from consulted, and on nothing else on disk.
+    const consultedBy = new Map<string, Set<ExpansionInput>>();
     const consult = (owner: string, fileName: string): string | undefined => {
-      const absolute = resolve(fileName);
-      if (!inputs.has(absolute)) inputs.set(absolute, fileText(absolute));
+      const input = recorder.file(fileName);
       let consulted = consultedBy.get(owner);
       if (consulted === undefined) {
         consulted = new Set();
         consultedBy.set(owner, consulted);
       }
-      consulted.add(absolute);
-      return inputs.get(absolute);
+      consulted.add(input);
+      return input.text;
     };
     // What a module answers for beyond reading and compiling it: what went
     // wrong resolving its imports, and its binding literals. Kept by module
@@ -819,7 +835,7 @@ export class DefaultProjectExpansionProvider
     // packages each importer resolved. Resolution keeps one location per
     // package name for the whole project, so a file using a package depends
     // on every lookup that could have put it there.
-    const packageLookups = new Map<string, Set<string>>();
+    const packageLookups = new Map<string, Set<ExpansionInput>>();
     const packagesResolvedBy = new Map<string, Set<string>>();
     const loadFile = (
       fileName: string,
@@ -831,7 +847,9 @@ export class DefaultProjectExpansionProvider
       const sourceId = sourceIds.allocate();
       const sourceText = consult(absolute, absolute);
       if (sourceText === undefined)
-        throw new Error(`Cannot expand ${absolute}: there is no file there`);
+        throw new Error(
+          `Cannot expand ${absolute}: there is no file there, or it cannot be read`,
+        );
       const kind =
         sourceKind ??
         importedMacroModuleKind(absolute, project.sweet.macroExtensions);
@@ -977,7 +995,7 @@ export class DefaultProjectExpansionProvider
           packageLookups.set(parsedPackage.name, lookups);
         }
         const consultPackage = (fileName: string): string | undefined => {
-          lookups.add(resolve(fileName));
+          lookups.add(recorder.file(fileName));
           return consult(importer.fileName, fileName);
         };
         const packageManifest = findPackageManifest(
@@ -1245,6 +1263,7 @@ export class DefaultProjectExpansionProvider
       origins,
       compilerOptions: project.typescript.options,
       system: this.#system,
+      recorder,
     });
     for (const diagnostic of bindingLiterals.diagnostics)
       reportAgainst(
@@ -1303,6 +1322,9 @@ export class DefaultProjectExpansionProvider
     const resolvesBindingLiterals = [...byPath.values()].some(
       ({ compiled }) => compiled.bindingLiterals.length > 0,
     );
+    // Nothing is read from here on: every source is loaded and the program
+    // resolving binding literals, if any, is built.
+    const inputs = recorder.inputs;
     /**
      * What a file's expansion consulted on disk: what it and each module it
      * reads macros from consulted, and every lookup made for a package any of
@@ -1311,15 +1333,17 @@ export class DefaultProjectExpansionProvider
      */
     const inputsFor = (
       modules: readonly ParsedFile[],
-    ): ReadonlyMap<string, string | undefined> => {
+    ): readonly ExpansionInput[] => {
       if (resolvesBindingLiterals) return inputs;
-      const paths = new Set<string>();
+      const consulted = new Set<ExpansionInput>();
       for (const { fileName } of modules) {
-        for (const path of consultedBy.get(fileName) ?? []) paths.add(path);
+        for (const input of consultedBy.get(fileName) ?? [])
+          consulted.add(input);
         for (const name of packagesResolvedBy.get(fileName) ?? [])
-          for (const path of packageLookups.get(name) ?? []) paths.add(path);
+          for (const input of packageLookups.get(name) ?? [])
+            consulted.add(input);
       }
-      return new Map([...paths].map((path) => [path, inputs.get(path)]));
+      return Object.freeze([...consulted]);
     };
     for (const file of projectFiles) {
       // Everything raised while expanding this file, wherever it points.
@@ -1768,7 +1792,9 @@ export class DefaultProjectExpansionProvider
       ).length,
       invocations: invocationCount,
     });
-    this.#macroDependencies = Object.freeze([...inputs.keys()].sort());
+    this.#macroDependencies = Object.freeze(
+      [...new Set(inputs.map(({ path }) => path))].sort(),
+    );
     return Object.freeze({
       files: Object.freeze(virtualFiles),
       diagnostics: Object.freeze(

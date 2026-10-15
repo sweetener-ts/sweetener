@@ -37,8 +37,9 @@ export interface ProjectExpansionProvider {
     project: LoadedSweetProject,
   ): ProjectExpansionOutput | readonly VirtualTypeScriptFile[];
   /**
-   * Files whose change, appearance or disappearance can change what the last
-   * expansion of `project` produced, for a watcher to watch.
+   * Paths whose change, appearance or disappearance can change what the last
+   * expansion of `project` produced, for a watcher to watch: every file and
+   * directory it looked at, whether or not it found one there.
    */
   macroDependencies?(project: LoadedSweetProject): readonly string[];
   debugState?(): unknown;
@@ -721,7 +722,7 @@ export function watchConfiguredProject(options: {
     if (closed) return;
     const project = loadSweetProject(options.configPath);
     const wanted = new Set([
-      ...project.configurationInputs.keys(),
+      ...project.configurationInputs.map(({ path }) => path),
       ...project.typescript.fileNames,
       ...(expansionProvider.macroDependencies?.(project) ?? []),
     ]);

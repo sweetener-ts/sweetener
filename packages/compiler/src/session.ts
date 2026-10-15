@@ -14,11 +14,13 @@ import {
 } from "./default-expansion-provider.js";
 import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
 import {
+  checkedInputs,
+  diskFileSystem,
+  inputsHold,
   nowNanoseconds,
-  recordConsulted,
-  stillConsulted,
-  type ConsultedFile,
-} from "./consulted-files.js";
+  type CheckedInput,
+  type ExpansionInput,
+} from "./expansion-inputs.js";
 import { selectSweetSources } from "./source-kind.js";
 import type { SourceExpansionInspection } from "./expansion-tools.js";
 
@@ -67,7 +69,14 @@ export interface SweetenerTransformResult {
    * A host reports them; it does not fail over them.
    */
   readonly warnings: readonly ts.Diagnostic[];
+  /** Files whose text expansion read, for a host to watch for changes. */
   readonly dependencies: readonly string[];
+  /**
+   * Files and directories expansion looked for and did not find, for a host
+   * to watch for them to appear. What else it asked -- which directories a
+   * type root holds, where a link leads -- has no field here; the session
+   * asks it again itself before it serves a kept result.
+   */
   readonly missingDependencies: readonly string[];
   readonly trace: unknown;
   readonly cacheKey: string;
@@ -114,7 +123,7 @@ function signatureOf(project: LoadedSweetProject): string {
 interface ConfigState {
   readonly project: LoadedSweetProject;
   readonly signature: string;
-  readonly consulted: readonly ConsultedFile[];
+  readonly consulted: readonly CheckedInput[];
   /** The sources it expands, by resolved path. */
   readonly expanded: ReadonlySet<string>;
   /**
@@ -134,7 +143,7 @@ interface ConfigState {
  * finished, so nothing done to the provider since can change what it says.
  */
 interface FileExpansion {
-  readonly consulted: readonly ConsultedFile[];
+  readonly consulted: readonly CheckedInput[];
   /**
    * The project's file list, when TypeScript resolved binding literals over
    * all of it and so this expansion depends on which files there are.
@@ -247,16 +256,20 @@ export function createSweetenerSession(
     }
     const signature = signatureOf(project);
     const previous = configs.get(configFile);
+    const expanded = new Set(
+      selectSweetSources({
+        fileNames: project.typescript.fileNames,
+        macroExtensions: project.sweet.macroExtensions,
+      }).map(({ fileName }) => resolve(fileName)),
+    );
     const state: ConfigState = {
       project,
       signature,
-      consulted: recordConsulted(loadedAt)(project.configurationInputs),
-      expanded: new Set(
-        selectSweetSources({
-          fileNames: project.typescript.fileNames,
-          macroExtensions: project.sweet.macroExtensions,
-        }).map(({ fileName }) => resolve(fileName)),
-      ),
+      consulted: checkedInputs(
+        diskFileSystem,
+        loadedAt,
+      )(project.configurationInputs),
+      expanded,
       files:
         previous !== undefined && previous.signature === signature
           ? previous.files
@@ -276,7 +289,7 @@ export function createSweetenerSession(
   const expand = (state: ConfigState): Map<string, FileExpansion> => {
     const expandedAt = nowNanoseconds();
     const expanded = provider.expandProject(state.project);
-    const consult = recordConsulted(expandedAt);
+    const check = checkedInputs(provider.fileSystem, expandedAt);
     const canonicalNames = new Map<string, string>();
     const canonicalOf = (fileName: string): string => {
       let name = canonicalNames.get(fileName);
@@ -303,7 +316,7 @@ export function createSweetenerSession(
       });
       return [{ name, inspection }];
     });
-    const configuration = [...state.project.configurationInputs];
+    const configuration = state.project.configurationInputs;
     const fileList = expanded.resolvesBindingLiterals
       ? JSON.stringify(fileNames)
       : undefined;
@@ -319,26 +332,24 @@ export function createSweetenerSession(
         continue;
       }
       const consulted = [...configuration, ...inspection.inputs];
-      const dependencies = Object.freeze(
-        [
-          ...new Set(
-            consulted
-              .filter(([, text]) => text !== undefined)
-              .map(([path]) => canonicalOf(path)),
-          ),
-        ].sort(),
+      const pathsOf = (found: (input: ExpansionInput) => boolean) =>
+        Object.freeze(
+          [
+            ...new Set(
+              consulted.filter(found).map(({ path }) => canonicalOf(path)),
+            ),
+          ].sort(),
+        );
+      const dependencies = pathsOf(
+        (input) => input.kind === "file" && input.text !== undefined,
       );
-      const missingDependencies = Object.freeze(
-        [
-          ...new Set(
-            consulted
-              .filter(([, text]) => text === undefined)
-              .map(([path]) => canonicalOf(path)),
-          ),
-        ].sort(),
+      const missingDependencies = pathsOf(
+        (input) =>
+          (input.kind === "file" && input.text === undefined) ||
+          (input.kind === "directory" && !input.exists),
       );
       const fileExpansion: FileExpansion = {
-        consulted: consult(inspection.inputs),
+        consulted: check(inspection.inputs),
         fileNames: fileList,
         inspection,
         sourceMap,
@@ -386,7 +397,7 @@ export function createSweetenerSession(
     let fresh = false;
     if (
       state === undefined ||
-      !stillConsulted(state.consulted) ||
+      !inputsHold(state.consulted) ||
       !state.expanded.has(filename)
     ) {
       state = load(configFile);
@@ -394,7 +405,7 @@ export function createSweetenerSession(
     }
     if (!state.expanded.has(filename)) throw notOptedIn(filename, configFile);
     let fileExpansion = state.files.get(filename);
-    if (fileExpansion !== undefined && !stillConsulted(fileExpansion.consulted))
+    if (fileExpansion !== undefined && !inputsHold(fileExpansion.consulted))
       fileExpansion = undefined;
     if (fileExpansion?.fileNames !== undefined) {
       if (!fresh) {
@@ -461,8 +472,8 @@ export function createSweetenerSession(
       const invalidated = paths.map(canonical);
       for (const [configFile, state] of configs) {
         if (
-          state.consulted.some(({ path }) =>
-            invalidated.includes(canonical(path)),
+          state.consulted.some(({ input }) =>
+            invalidated.includes(canonical(input.path)),
           )
         ) {
           configs.delete(configFile);
