@@ -272,31 +272,42 @@ declared fields, and `$index` emits the zero-based compile-time index. The body
 becomes the complete next accumulator. Empty input returns the initial template
 unchanged.
 
-What an accumulator is follows from where the fold stands in the expansion, as
-what a capture is follows from the class it matched:
+What an accumulator is follows from how the step writes `$acc`, as what a
+capture is follows from the class it is declared with:
 
-- Standing where one expression or one type is written -- an operand, an
-  initializer, what `return` takes, a property's value, a type annotation, the
-  whole of an `expr` or `type` macro's template -- the fold builds one
-  expression or one type. The initial template and every step must each build
-  exactly one, and `$acc` is spliced as that expression or type, so the syntax
-  around it cannot re-associate it: `$acc * 2 + $item` multiplies the whole
-  accumulator.
-- Standing as a part of a list -- an array element, an argument, a parameter,
-  an object literal's member, a type argument, a tuple member, a statement, an
-  item, a class or type member, a JSX child -- the fold builds parts of that
-  list, and `$acc` is the run of parts built so far, spliced as those parts. It
-  is written only where the list's own parts are: between the list's
-  separators, or beside a separator the run itself ends or begins with. A fold
-  is a part of a list when nothing but the list's separators, its brackets or,
-  among statements, a statement boundary stands on either side of it. Grouped
-  in parentheses there, it is one expression instead.
+- Written as an operand -- beside an operator, inside brackets, or with a call,
+  an index or a tagged template written on it -- `$acc` is one expression or
+  one type, and so are the initial template and every step. The fold builds
+  whichever is read where it stands, as a macro written there would be looked
+  up. It builds it a step at a time, expanding each step
+  and reading it with the accumulator before it as one node, so the syntax
+  around `$acc` cannot re-associate it -- `$acc * 2 + $item` multiplies the
+  whole accumulator -- and the result is spliced as one node, as a capture is.
+  Until it is built the fold stands in the replacement as one operand, so a
+  macro written around it reads it as one: `twice($acc)`,
+  `inner(1 + #fold(...) { ... })`. An accumulator that continues the chain of
+  operators of the step after it -- `$acc + $item`, `$acc | $item`,
+  `$item | $acc` -- is opened into that chain, so a fold of any length nests
+  no deeper than one step's operators do. Any other accumulator nests one level
+  deeper per item, up to the nesting-depth limit, which reports `SWR4015`.
+- Written as a part of a list -- between the list's separators, or directly
+  beside the part before or after it -- `$acc` is the run of parts built so
+  far, spliced as those parts: `$acc, $item`, `$acc $item,`,
+  `$acc logged.push($item);`. The fold's result is spliced the same way, as a
+  repetition's is. In a step that builds a list, a bracket written directly
+  after `$acc` is the part that follows it: `$acc [$item, $index],`.
 
-A step that does not build what the fold's position needs, an accumulator of a
-list written inside a part or beside an operator, or a fold standing where it
-can build neither reports `SWR4026` at the invocation, with the `#fold` as the
-related location. Nothing is spliced as tokens for the syntax around it to
-re-read.
+A step builds a list when a `,` or a `;` stands outside its brackets; a comma
+between angle brackets parts type arguments instead. A step that writes no
+`$acc` builds a list when it is one or is empty, and one operand otherwise.
+
+A step that writes `$acc` both ways, a step that writes it as an operand and
+builds a list, and an initial template that is empty or builds a list where
+`$acc` is an operand report `SWR2020` where the template is defined. An
+operand fold standing where neither an expression nor a type is read, or a step
+that does not build exactly one, reports `SWR4029` at the invocation, with the
+`#fold` as the related location. The fold then stands as one operand, so
+nothing around it is reported again.
 
 A parameterization gives a syntax parameter a meaning for the syntax it wraps:
 

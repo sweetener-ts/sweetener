@@ -150,6 +150,7 @@ describe("Phase 3 hygiene semantic conformance", () => {
       anchor: { start: 0, end: 0 },
       allocateSyntaxId: () => ids.allocate(),
       allocateBindingId: () => bindings.allocate(),
+      category: "expr",
     });
     const [fresh, capturedName, definitionName] = result.syntax;
     expect(result.freshBindings).toHaveLength(1);

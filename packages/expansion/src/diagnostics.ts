@@ -25,7 +25,7 @@ export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
 export const uncopiableClosureCode = diagnosticCode("SWR4023");
 export const bareMacroNameCode = diagnosticCode("SWR4024");
 export const unreadItemCode = diagnosticCode("SWR4025");
-export const foldPositionCode = diagnosticCode("SWR4026");
+export const foldPositionCode = diagnosticCode("SWR4029");
 
 /**
  * The indefinite article for a space's name. The spaces a macro can be
@@ -43,9 +43,9 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "What a `#fold` builds is decided by where it stands. Standing where one expression or one type is written, every step builds one, and each accumulator is spliced as the expression or type it is. Standing as a part of a list -- an element, an argument, a member, a statement, a JSX child -- it builds parts of that list, and its accumulator is a run of them, written only where the list's own parts are. A step that builds something else, or a fold whose position reads neither way, is reported rather than spliced as tokens for the syntax around it to re-read.",
+      "A `#fold` whose step writes `$acc` as an operand builds one expression or one type -- whichever is written where the fold stands -- one step at a time, with the accumulator before each step read as one node. A fold standing where neither is written, or a step that does not build exactly one, is reported at the invocation, with the `#fold` as the related location, and the fold stands as one operand so that nothing around it is reported again.",
     format: (arguments_) =>
-      `This #fold stands where ${String(arguments_[0] ?? "something")} is written, ${String(arguments_[1] ?? "and cannot be read there")}.`,
+      `This #fold ${String(arguments_[0] ?? "cannot be built where it stands")}.`,
   },
   {
     code: unparameterizedSyntaxParameterCode,

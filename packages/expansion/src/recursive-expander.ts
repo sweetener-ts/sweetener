@@ -9,6 +9,8 @@ import {
 } from "@sweetener/shared";
 import {
   angleWidth,
+  coreExpressionOperators,
+  coreTypeOperators,
   createGroup,
   createMissingToken,
   createProtectedSyntax,
@@ -20,6 +22,7 @@ import {
   isIdentifierToken,
   isPropertyNameToken,
   spanEnvelope,
+  type CoreOperator,
   type GroupSyntax,
   type ProtectedSyntax,
   type Syntax,
@@ -48,10 +51,11 @@ import {
   foldPositionCode,
 } from "./diagnostics.js";
 import {
-  foldMarkerAt,
+  foldCarrier,
+  isFoldAccumulator,
   readLetBinding,
   readParameterization,
-  type FoldMarker,
+  type FoldCarrier,
 } from "@sweetener/template";
 import {
   arrowBodyExtent,
@@ -410,11 +414,6 @@ export function expandMacroSyntax(
 ): ExpandMacroSyntaxResult {
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
-  /**
-   * What each `#fold` being walked builds, innermost last: its accumulators
-   * are read as that.
-   */
-  const foldCategories: ("expr" | "type")[] = [];
   const unresolvedNameExplanations: Diagnostic[] = [];
   const offeredOperators = new Set<Syntax["origin"]>();
   const namedOrigins = new Set<Syntax["origin"]>();
@@ -2311,138 +2310,26 @@ export function expandMacroSyntax(
   };
 
   /**
-   * How the parts of a run of syntax are told apart, as far as a `#fold`
-   * standing in it needs to know: one expression or type (`single`), elements
-   * parted by commas -- arguments, array elements, parameters, an object
-   * literal's members, type arguments, a tuple's members -- (`elements`),
-   * statements, items or members (`statements`), or JSX children
-   * (`children`).
+   * The accumulators an operand fold built, each already walked. A step
+   * holding one reads it as one operand and does not walk it again: it holds
+   * the accumulator before it, as deep as the fold has gone.
    */
-  type FoldUnits = "single" | "elements" | "statements" | "children";
+  const builtAccumulators = new WeakSet<Syntax>();
 
-  const foldUnitsOf = (category: SyntaxCategory): FoldUnits =>
-    category === "expr" || category === "type" || category === "binding"
-      ? "single"
-      : category === "jsxChild"
-        ? "children"
-        : "statements";
-
-  /** How the parts of what the group at `at` in `run` holds are told apart. */
-  const foldUnitsInside = (
-    run: readonly Syntax[],
-    at: number,
-    units: FoldUnits,
-  ): FoldUnits => {
-    const group = run[at] as GroupSyntax;
-    const previous = run[at - 1];
-    switch (group.delimiter) {
-      case "jsx-element":
-      case "jsx-fragment":
-        return "children";
-      case "template":
-        return "single";
-      // An index holds one expression; an array or a tuple, elements.
-      case "bracket":
-        return endsOperand(run, at, true) ? "single" : "elements";
-      case "parenthesis":
-        if (parameterList(group, runOf(run), at)) return "elements";
-        if (previous?.tag === "token" && controlKeywords.has(previous.raw))
-          return "single";
-        // Arguments, or the one expression parentheses group.
-        return endsOperand(run, at, true) ? "elements" : "single";
-      case "brace": {
-        // Between JSX children a brace holds one expression.
-        if (units === "children") return "single";
-        const opens = braceOpens(runOf(run), at);
-        if (opens === "enum") return "elements";
-        if (opens !== "other") return "statements";
-        // Where a statement may begin a brace is a block; anywhere else it
-        // is an object literal.
-        return units === "statements" && foldSeparatedBefore(run, at, units)
-          ? "statements"
-          : "elements";
-      }
-    }
-  };
-
-  /**
-   * Whether what stands before the part of `run` at `at` parts it from the
-   * one before: nothing at all, a `,`, a `;`, the `<` of type arguments, or,
-   * among statements, a body that closed, a control statement's header,
-   * `else` or `do`.
-   */
-  const foldSeparatedBefore = (
-    run: readonly Syntax[],
-    at: number,
-    units: FoldUnits,
-  ): boolean => {
-    if (units === "children") return true;
-    const previous = run[at - 1];
-    if (previous === undefined) return units !== "single";
-    if (previous.tag === "token") {
-      if (previous.raw === ",") return true;
-      if (previous.raw === ";") return units === "statements";
-      if (previous.raw === "<")
-        return anglesOpen(run, at - 1, run.slice(0, at - 1), false);
-      return (
-        units === "statements" &&
-        (previous.raw === "else" || previous.raw === "do")
-      );
-    }
-    if (units !== "statements" || previous.tag !== "group") return false;
-    if (previous.delimiter === "brace") return true;
-    const keyword = run[at - 2];
-    return (
-      previous.delimiter === "parenthesis" &&
-      keyword?.tag === "token" &&
-      controlKeywords.has(keyword.raw)
-    );
-  };
-
-  /**
-   * Whether what stands after the two nodes of the fold marker at `at` in
-   * `run` parts it from what follows: nothing at all, a `,`, a `;`, the `>`
-   * that closes type arguments, or, among statements, anything that does not
-   * go on with an operand -- an operator, a member access, a call.
-   */
-  const foldSeparatedAfter = (
-    run: readonly Syntax[],
-    at: number,
-    units: FoldUnits,
-  ): boolean => {
-    if (units === "children") return true;
-    const next = run[at + 2];
-    if (next === undefined) return units !== "single";
-    if (next.tag !== "token")
-      return (
-        units === "statements" &&
-        (next.tag !== "group" || next.delimiter === "brace")
-      );
-    if (next.raw === ",") return true;
-    if (next.raw === ";") return units === "statements";
-    if (angleWidth(next.raw, ">") > 0)
-      return typeArgumentsOpen(run.slice(0, at));
-    return units === "statements" && next.kind !== "punctuation";
-  };
-
-  /** What `units` holds, named for a diagnostic. */
-  const foldUnitsNamed: Readonly<Record<FoldUnits, string>> = {
-    single: "one expression",
-    elements: "a list of elements",
-    statements: "a run of statements or members",
-    children: "a run of JSX children",
-  };
-
-  /** Reports a `#fold` that cannot be read where it stands. */
-  const reportFold = (marker: TokenSyntax, where: string, problem: string) => {
+  /** Reports an operand fold that cannot be built where it stands. */
+  const reportFold = (marker: TokenSyntax, problem: string) => {
     const origin = primaryOrigin(marker);
     if (origin === undefined)
       throw new TypeError("A #fold has no source to report it at");
-    const record = options.origins.get(marker.origin);
+    // A fold handed to another macro reached it as a copy of the one its
+    // template wrote.
+    let record = options.origins.get(marker.origin);
+    while (record?.kind === "copied")
+      record = options.origins.get(record.parent);
     diagnostics.push(
       expansionDiagnosticRegistry.create(foldPositionCode, {
         primaryOrigin: origin,
-        messageArguments: [where, problem],
+        messageArguments: [problem],
         relatedOrigins:
           record?.kind === "introduced"
             ? [
@@ -2457,164 +2344,346 @@ export function expandMacroSyntax(
   };
 
   /**
-   * What a `#fold` standing as a part of a list splices: what it holds, with
-   * each of its accumulators spliced in turn. An accumulator there is a run of
-   * the list's own parts, so it is written only where one of those stands --
-   * between separators, never inside a part or as an operand. One written
-   * anywhere else is reported: an operator beside it would read only the
-   * nearest part of the run.
+   * `syntax` again, with ids of its own, for a step that writes `$acc` more
+   * than once: each place it stands holds a node of its own. Every token is
+   * charged as output, as the template's own copies are, so a step that
+   * doubles its accumulator meets the output limit rather than memory's.
    */
-  const spliceFoldAccumulators = (
-    children: readonly Syntax[],
-    units: FoldUnits,
-    fold: FoldMarker,
-    reported: { done: boolean },
-    nested = false,
-  ): Syntax[] => {
-    const spliced: Syntax[] = [];
-    for (let at = 0; at < children.length; at += 1) {
-      const marker = foldMarkerAt(children, at);
-      // A fold written inside this one has accumulators of its own.
-      if (marker?.part === "result") {
-        spliced.push(children[at]!, children[at + 1]!);
-        at += 1;
-        continue;
-      }
-      if (marker !== undefined) {
-        // A run that begins or ends with a separator of its own -- `1, 2,`
-        // spliced in front of `3` -- parts itself from its neighbour there.
-        const held = marker.body.children;
-        const separator = (node: Syntax | undefined) =>
-          node === undefined ||
-          (node.tag === "token" && (node.raw === "," || node.raw === ";"));
-        if (
-          !reported.done &&
-          held.length > 0 &&
-          (nested ||
-            !(foldSeparatedBefore(children, at, units) || separator(held[0])) ||
-            !(
-              foldSeparatedAfter(children, at, units) || separator(held.at(-1))
-            ))
-        ) {
-          reported.done = true;
-          reportFold(
-            fold.marker,
-            foldUnitsNamed[units],
-            "so its accumulator is a run of those and is written only between them, not inside one or beside an operator",
-          );
-        }
-        spliced.push(
-          ...withLeadingTrivia(
-            createSyntaxSequence(
-              spliceFoldAccumulators(
-                marker.body.children,
-                units,
-                fold,
-                reported,
-                nested,
-              ),
-            ),
-            marker.marker.leadingTrivia,
-          ),
-        );
-        at += 1;
-        continue;
-      }
-      const node = children[at]!;
-      if (node.tag !== "group") {
-        spliced.push(node);
-        continue;
-      }
-      spliced.push(
-        createGroup({
-          ...node,
+  const copyAccumulator = (syntax: Syntax): Syntax => {
+    switch (syntax.tag) {
+      case "token":
+        options.tracker.chargeOutputTokens();
+        return createToken({ ...syntax, id: options.allocateSyntaxId() });
+      case "group":
+        return createGroup({
+          ...syntax,
           id: options.allocateSyntaxId(),
-          children: createSyntaxSequence(
-            spliceFoldAccumulators(node.children, units, fold, reported, true),
-          ),
-        }),
-      );
+          open: copyAccumulator(syntax.open) as TokenSyntax,
+          children: syntax.children.map(copyAccumulator),
+          close:
+            syntax.close.tag === "token"
+              ? (copyAccumulator(syntax.close) as TokenSyntax)
+              : syntax.close,
+        });
+      case "protected": {
+        const copied = createProtectedSyntax({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          children: syntax.children.map(copyAccumulator),
+        });
+        if (builtAccumulators.has(syntax)) builtAccumulators.add(copied);
+        return copied;
+      }
+      case "root":
+        throw new TypeError("A fold's accumulator holds no root");
     }
-    return spliced;
   };
 
   /**
-   * A replacement with every `#fold` that stands as a part of a list -- an
-   * element, an argument, a member, a statement, a child -- spliced as the
-   * parts it built, so that whatever reads the list reads them one by one.
-   * A fold that stands as one expression or one type is left marked: the walk
-   * reads it where it stands, as the expression or type it is.
+   * A step's syntax with each `$acc` it wrote filled with `accumulator`, and
+   * how many it filled. A fold written in the step has accumulators of its
+   * own, and only its initial template, which is evaluated where it is
+   * written, can hold one of this fold's.
    */
-  const settleFoldLists = (
-    run: readonly Syntax[],
-    units: FoldUnits,
-  ): readonly Syntax[] => {
-    const work = [...run];
-    const settled: Syntax[] = [];
-    let changed = false;
-    for (let at = 0; at < work.length; at += 1) {
-      const fold = foldMarkerAt(work, at);
-      if (fold !== undefined) {
-        if (
-          fold.part === "result" &&
-          foldSeparatedBefore(work, at, units) &&
-          foldSeparatedAfter(work, at, units)
-        ) {
-          // Read on from where it stood, so that a fold it built is settled
-          // too.
-          work.splice(
-            at,
-            2,
-            ...withLeadingTrivia(
-              createSyntaxSequence(
-                spliceFoldAccumulators(fold.body.children, units, fold, {
-                  done: false,
-                }),
-              ),
-              fold.marker.leadingTrivia,
-            ),
-          );
-          changed = true;
-          at -= 1;
-          continue;
-        }
-        const body = settleFoldLists(fold.body.children, "single");
-        settled.push(
-          fold.marker,
-          body === fold.body.children
-            ? fold.body
-            : createGroup({
-                ...fold.body,
-                id: options.allocateSyntaxId(),
-                children: createSyntaxSequence(body),
-              }),
-        );
-        changed ||= body !== fold.body.children;
-        at += 1;
-        continue;
+  const fillAccumulators = (
+    nodes: readonly Syntax[],
+    accumulator: ProtectedSyntax,
+  ): { readonly syntax: SyntaxSequence; readonly filled: number } => {
+    let filled = 0;
+    const fill = (children: readonly Syntax[]): readonly Syntax[] => {
+      let changed = false;
+      const result = children.map((node) => {
+        const next = fillNode(node);
+        changed ||= next !== node;
+        return next;
+      });
+      return changed ? result : children;
+    };
+    const fillNode = (node: Syntax): Syntax => {
+      if (isFoldAccumulator(node)) {
+        filled += 1;
+        return filled === 1 ? accumulator : copyAccumulator(accumulator);
       }
-      const node = work[at]!;
-      if (node.tag !== "group") {
-        settled.push(node);
-        continue;
+      if (node.tag === "group") {
+        const children = fill(node.children);
+        return children === node.children
+          ? node
+          : createGroup({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children: createSyntaxSequence(children),
+            });
       }
-      const children = settleFoldLists(
-        node.children,
-        foldUnitsInside(work, at, units),
-      );
-      if (children === node.children) settled.push(node);
-      else {
-        changed = true;
-        settled.push(
-          createGroup({
+      const inner = foldCarrier(node);
+      if (inner === undefined || node.tag !== "protected") return node;
+      const initial = fillNode(inner.initial);
+      return initial === inner.initial
+        ? node
+        : createProtectedSyntax({
             ...node,
             id: options.allocateSyntaxId(),
-            children: createSyntaxSequence(children),
-          }),
-        );
+            children: [inner.marker, initial, ...inner.steps],
+          });
+    };
+    const syntax = fill(nodes);
+    return { syntax: createSyntaxSequence(syntax), filled };
+  };
+
+  /**
+   * The precedence of `node` when it is a chain of one left-associative core
+   * operator's level -- `a + b`, or `a + b - c` held as one node -- whose
+   * operands are all expressions.
+   */
+  const chainPrecedence = (node: Syntax): number | undefined => {
+    if (
+      node.tag !== "protected" ||
+      node.category !== "expr" ||
+      node.form !== undefined ||
+      node.precedence === undefined ||
+      node.children.length < 3 ||
+      node.children[0]!.tag !== "protected"
+    )
+      return undefined;
+    let spelling = "";
+    for (const child of node.children.slice(1)) {
+      if (child.tag === "token") {
+        spelling += child.raw;
+        continue;
       }
+      const operator = coreExpressionOperators.find(
+        (candidate) =>
+          candidate.fixity === "infix" && candidate.spelling === spelling,
+      );
+      if (
+        child.tag !== "protected" ||
+        child.category !== "expr" ||
+        operator?.associativity !== "left" ||
+        operator.precedence !== node.precedence
+      )
+        return undefined;
+      spelling = "";
     }
-    return changed ? settled : run;
+    return spelling === "" ? node.precedence : undefined;
+  };
+
+  /**
+   * The operator a type is a union or an intersection of at its top level,
+   * where nothing there binds looser: `|` for `A | B[]`, nothing for a
+   * function type or a conditional one. Angle brackets are tokens, so what
+   * stands between them is skipped.
+   */
+  const typeChainOperator = (node: Syntax): "|" | "&" | undefined => {
+    if (node.tag !== "protected" || node.category !== "type") return undefined;
+    let loosest: CoreOperator | undefined;
+    let angles = 0;
+    for (const child of node.children) {
+      if (child.tag !== "token") continue;
+      const depth = angles;
+      angles = Math.max(
+        0,
+        angles + angleWidth(child.raw, "<") - angleWidth(child.raw, ">"),
+      );
+      if (depth > 0 || angles > 0) continue;
+      const operator = coreTypeOperators.find(
+        (candidate) =>
+          candidate.fixity === "infix" && candidate.spelling === child.raw,
+      );
+      if (
+        operator !== undefined &&
+        (loosest === undefined || operator.precedence < loosest.precedence)
+      )
+        loosest = operator;
+    }
+    return loosest?.spelling === "|" || loosest?.spelling === "&"
+      ? loosest.spelling
+      : undefined;
+  };
+
+  /**
+   * Where `accumulator` joins the chain of operators `built` is, when it
+   * continues it: what of `built` stands before it and after it, once every
+   * node between the two is opened. An expression joins when it is the head
+   * of a left-associative chain of its own level -- `$acc + $item` -- and a
+   * type when it is a member of a union, or of an intersection, it is one of
+   * too -- `$acc | $item`, `$item | $acc`. Read on, the two say the same.
+   */
+  const chainLink = (
+    built: ProtectedSyntax,
+    accumulator: ProtectedSyntax,
+  ):
+    | { readonly before: readonly Syntax[]; readonly after: readonly Syntax[] }
+    | undefined => {
+    if (built.category === "type") {
+      const operator = typeChainOperator(built);
+      if (operator === undefined || typeChainOperator(accumulator) !== operator)
+        return undefined;
+      const at = built.children.indexOf(accumulator);
+      const parts = (node: Syntax | undefined) =>
+        node === undefined || (node.tag === "token" && node.raw === operator);
+      return at >= 0 &&
+        parts(built.children[at - 1]) &&
+        parts(built.children[at + 1])
+        ? {
+            before: built.children.slice(0, at),
+            after: built.children.slice(at + 1),
+          }
+        : undefined;
+    }
+    const precedence = chainPrecedence(built);
+    if (precedence === undefined || chainPrecedence(accumulator) !== precedence)
+      return undefined;
+    const after: (readonly Syntax[])[] = [];
+    let current: Syntax = built;
+    while (current !== accumulator) {
+      if (
+        current.tag !== "protected" ||
+        chainPrecedence(current) !== precedence
+      )
+        return undefined;
+      after.push(current.children.slice(1));
+      current = current.children[0]!;
+    }
+    return { before: [], after: after.reverse().flat() };
+  };
+
+  /** `node` with `target` replaced by `replacement` wherever it stands in it. */
+  const replacing = (
+    node: Syntax,
+    target: Syntax,
+    replacement: Syntax,
+  ): Syntax => {
+    if (node === target) return replacement;
+    if (node.tag !== "group" && node.tag !== "protected") return node;
+    let changed = false;
+    const children = node.children.map((child) => {
+      const next = replacing(child, target, replacement);
+      changed ||= next !== child;
+      return next;
+    });
+    if (!changed) return node;
+    return node.tag === "group"
+      ? createGroup({
+          ...node,
+          id: options.allocateSyntaxId(),
+          children: createSyntaxSequence(children),
+        })
+      : createProtectedSyntax({
+          ...node,
+          id: options.allocateSyntaxId(),
+          children,
+        });
+  };
+
+  /**
+   * The expression or type a fold's accumulators built, with each one that
+   * continued the chain of the step after it opened into that chain: `0 + a +
+   * b` is one node rather than one per item, as deep as the operators the
+   * steps write and no deeper. The chain is gathered once, in the order the
+   * steps built it, so a fold of any length costs what it built.
+   */
+  const joinedChain = (
+    accumulators: readonly ProtectedSyntax[],
+    links: readonly (
+      | {
+          readonly before: readonly Syntax[];
+          readonly after: readonly Syntax[];
+        }
+      | undefined
+    )[],
+  ): ProtectedSyntax => {
+    let joined: ProtectedSyntax = accumulators[0]!;
+    let open:
+      | {
+          top: ProtectedSyntax;
+          readonly base: readonly Syntax[];
+          readonly befores: (readonly Syntax[])[];
+          readonly afters: (readonly Syntax[])[];
+        }
+      | undefined;
+    const close = () => {
+      if (open === undefined) return;
+      const children: Syntax[] = [];
+      for (let at = open.befores.length - 1; at >= 0; at -= 1)
+        children.push(...open.befores[at]!);
+      children.push(...open.base);
+      for (const after of open.afters) children.push(...after);
+      const origins = [...new Set(children.map(({ origin }) => origin))];
+      joined = createProtectedSyntax({
+        ...open.top,
+        id: options.allocateSyntaxId(),
+        span: spanEnvelope(children.map(({ span }) => span)),
+        origin:
+          origins.length === 1
+            ? origins[0]!
+            : options.origins.composed(origins),
+        children,
+      });
+      open = undefined;
+    };
+    for (let at = 1; at < accumulators.length; at += 1) {
+      const built = accumulators[at]!;
+      const link = links[at];
+      if (link === undefined) {
+        close();
+        const previous = accumulators[at - 1]!;
+        joined =
+          joined === previous
+            ? built
+            : (replacing(built, previous, joined) as ProtectedSyntax);
+        continue;
+      }
+      if (open === undefined) {
+        // A union opened into another needs no `|` of its own in front.
+        const [head, ...rest] = joined.children;
+        open = {
+          top: built,
+          base:
+            joined.category === "type" &&
+            head?.tag === "token" &&
+            typeChainOperator(joined) === head.raw
+              ? rest
+              : joined.children,
+          befores: [],
+          afters: [],
+        };
+      }
+      open.top = built;
+      open.befores.push(link.before);
+      open.afters.push(link.after);
+    }
+    close();
+    return joined;
+  };
+
+  /**
+   * `syntax` wearing `trivia` in front of its first token, whatever that token
+   * wore before: an operand fold's result stands where `#fold` was written,
+   * and wears the layout written there.
+   */
+  const wearingLayout = (syntax: Syntax, trivia: readonly Trivia[]): Syntax => {
+    const path: (GroupSyntax | ProtectedSyntax)[] = [];
+    let current = syntax;
+    while (current.tag !== "token") {
+      if (current.tag === "root")
+        throw new TypeError("An expression or a type holds no root");
+      path.push(current);
+      const head: Syntax | undefined =
+        current.tag === "group" ? current.open : current.children[0];
+      if (head === undefined) return syntax;
+      current = head;
+    }
+    let rebuilt: Syntax = createToken({ ...current, leadingTrivia: trivia });
+    for (let at = path.length - 1; at >= 0; at -= 1) {
+      const node = path[at]!;
+      rebuilt =
+        node.tag === "group"
+          ? createGroup({ ...node, open: rebuilt as TokenSyntax })
+          : createProtectedSyntax({
+              ...node,
+              children: [rebuilt, ...node.children.slice(1)],
+            });
+    }
+    return rebuilt;
   };
 
   /**
@@ -3410,6 +3479,98 @@ export function expandMacroSyntax(
      */
     const typePositionHere = (): boolean =>
       !labelColonEnds(output.length) && typePositionFollows(output);
+    /**
+     * What the operand fold `carrier` builds as `reads`: its initial template,
+     * then each step with the accumulator before it filled in as one node,
+     * walked and read as one expression or type in turn. A step holds the
+     * accumulator built before it rather than the steps that built it, so a
+     * fold of any length is walked one step deep.
+     *
+     * One that cannot be built is reported once, and stands as what it built
+     * so far, read as one operand, so nothing around it is reported again.
+     */
+    const buildFold = (
+      carrier: ProtectedSyntax,
+      fold: FoldCarrier,
+      reads: "expr" | "type" | undefined,
+    ): Syntax => {
+      const failed = (problem: string, built: readonly Syntax[]): Syntax => {
+        reportFold(fold.marker, problem);
+        return createProtectedSyntax({
+          ...carrier,
+          id: options.allocateSyntaxId(),
+          children: built.length > 0 ? built : [fold.marker],
+        });
+      };
+      if (reads === undefined)
+        return failed(
+          `builds one expression or one type, and stands where ${category} syntax is written`,
+          [],
+        );
+      const named = reads === "type" ? "one type" : "one expression";
+      const accumulators: ProtectedSyntax[] = [];
+      const links: (ReturnType<typeof chainLink> | undefined)[] = [undefined];
+      // How deep the accumulators nest: one level for each step that holds
+      // the one before it without continuing its chain.
+      let depth = 0;
+      for (const part of [fold.initial, ...fold.steps]) {
+        const previous = accumulators.at(-1);
+        const filled =
+          previous === undefined
+            ? { syntax: part.children, filled: 0 }
+            : fillAccumulators(part.children, previous);
+        const walked = visit(
+          filled.syntax,
+          currentEnvironment,
+          reads,
+          parentInvocation,
+          lexicalModule,
+          contexts,
+          false,
+          recursiveBinding,
+        );
+        currentEnvironment = walked.environment;
+        if (walked.syntax.length === 0)
+          return failed(
+            `builds ${named}, and one of its steps built nothing`,
+            [],
+          );
+        let built: ProtectedSyntax;
+        try {
+          built = enforestSequence(
+            walked.syntax,
+            reads,
+            lexicalModule,
+            contexts,
+          );
+        } catch (error) {
+          if (!(error instanceof EnforestationError)) throw error;
+          return failed(
+            `builds ${named}, and one of its steps built \`${error.syntaxText}\``,
+            walked.syntax,
+          );
+        }
+        if (previous !== undefined) {
+          const link =
+            filled.filled === 0 ? undefined : chainLink(built, previous);
+          links.push(link);
+          depth =
+            filled.filled === 0 ? 0 : link === undefined ? depth + 1 : depth;
+          if (depth > options.tracker.budget.maxNestingDepth)
+            throw new ResourceLimitError(
+              "nesting-depth",
+              options.tracker.budget.maxNestingDepth,
+              depth,
+            );
+        }
+        builtAccumulators.add(built);
+        accumulators.push(built);
+      }
+      return wearingLayout(
+        joinedChain(accumulators, links),
+        fold.marker.leadingTrivia,
+      );
+    };
     while (index < input.length) {
       const node = input[index]!;
       const walked = output.at(-1);
@@ -3651,72 +3812,9 @@ export function expandMacroSyntax(
               .map((module) => module.get(spelling, category))
               .find((macro) => macro !== undefined);
       };
-      const fold = foldMarkerAt(input, index);
-      if (fold !== undefined) {
-        index += 2;
-        // A fold left marked stands as one expression or one type, and so
-        // does every accumulator in it: settling the replacement spliced the
-        // ones standing as parts of a list.
-        const reads =
-          fold.part === "accumulator"
-            ? foldCategories.at(-1)
-            : category === "type" || typeFollows()
-              ? "type"
-              : category === "expr" ||
-                  category === "stmt" ||
-                  category === "item"
-                ? "expr"
-                : undefined;
-        if (reads === undefined) {
-          if (fold.part === "accumulator")
-            throw new TypeError(
-              "A #fold accumulator was walked outside the fold it belongs to",
-            );
-          reportFold(
-            fold.marker,
-            `${category} syntax`,
-            "and it is not one expression, one type, or a list of them that it could build there",
-          );
-          continue;
-        }
-        if (fold.part === "result") foldCategories.push(reads);
-        let walked;
-        try {
-          walked = visit(
-            fold.body.children,
-            currentEnvironment,
-            reads,
-            parentInvocation,
-            lexicalModule,
-            contexts,
-            false,
-            recursiveBinding,
-          );
-        } finally {
-          if (fold.part === "result") foldCategories.pop();
-        }
-        currentEnvironment = walked.environment;
-        let built: ProtectedSyntax;
-        try {
-          built = enforestSequence(
-            walked.syntax,
-            reads,
-            lexicalModule,
-            contexts,
-          );
-        } catch (error) {
-          if (!(error instanceof EnforestationError)) throw error;
-          const named = reads === "type" ? "one type" : "one expression";
-          reportFold(
-            fold.marker,
-            named,
-            walked.syntax.length === 0
-              ? `so each of its steps builds ${named}, and one built nothing`
-              : `so each of its steps builds ${named}, and one built \`${error.syntaxText}\``,
-          );
-          continue;
-        }
-        output.push(...withLeadingTrivia([built], fold.marker.leadingTrivia));
+      if (builtAccumulators.has(node)) {
+        output.push(node);
+        index += 1;
         continue;
       }
       const compactLet =
@@ -4188,6 +4286,29 @@ export function expandMacroSyntax(
        * for it.
        */
       const readsWalkedSpace = category === "type" || !readsType;
+      // An operand fold builds one expression or one type, whichever this
+      // position reads, as a macro standing here would be looked up.
+      const fold = foldCarrier(node);
+      if (fold !== undefined) {
+        index += 1;
+        output.push(
+          buildFold(
+            node as ProtectedSyntax,
+            fold,
+            readsType
+              ? "type"
+              : category === "expr" ||
+                  category === "stmt" ||
+                  category === "item" ||
+                  classHeritageFollows(output) ||
+                  (!typeAliasInitializerFollows(output) &&
+                    (initializerFollows(output) || expressionRegion))
+                ? "expr"
+                : undefined,
+          ),
+        );
+        continue;
+      }
       let resolvedMacro =
         node.tag === "token" && !namesSomethingElse && readsWalkedSpace
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
@@ -4865,18 +4986,6 @@ export function expandMacroSyntax(
                   syntax: createSyntaxSequence(remaining),
                 };
               }
-              // A fold standing as part of a list is spliced as the parts it
-              // built before anything reads the list.
-              if (request.holdsFolds)
-                request = {
-                  ...request,
-                  syntax: createSyntaxSequence(
-                    settleFoldLists(
-                      request.syntax,
-                      foldUnitsOf(request.category),
-                    ),
-                  ),
-                };
               // Give a statement replacement its interior categories before it
               // is walked, so that a macro spliced into an expression position
               // inside it is recognized as an expression. A replacement that

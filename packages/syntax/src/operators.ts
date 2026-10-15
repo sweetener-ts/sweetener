@@ -178,3 +178,64 @@ export const expressionContinuedBy: ReadonlySet<string> = new Set([
   "?",
   ":",
 ]);
+
+/**
+ * The operators of TypeScript's type grammar, with what each binds at. A
+ * function or constructor type and a conditional type are the loosest -- each
+ * runs on as far as it can, so neither stands bare in a union -- then a
+ * union, then an intersection, then the prefix operators. Postfix `[]` and an
+ * indexed access bind tighter than any of them: `A | B[]` is a union whose
+ * second member is an array.
+ *
+ * `|` and `&` are prefix as well as infix, since a union or an intersection
+ * may begin with its own operator. No parser reads types by this table; it
+ * says how tightly a type a macro built holds together where it is printed,
+ * and which words beside an operand take it as theirs.
+ */
+export const coreTypeOperators: readonly CoreOperator[] = Object.freeze([
+  ...operators(["=>", "extends"], "infix", 10, "right"),
+  ...operators(["|"], "infix", 20, "left"),
+  ...operators(["|"], "prefix", 20, "right"),
+  ...operators(["&"], "infix", 30, "left"),
+  ...operators(["&"], "prefix", 30, "right"),
+  ...operators(["keyof", "unique", "readonly", "infer"], "prefix", 40, "right"),
+]);
+
+/** What `T[]` and `T[K]` bind their operand at: tighter than any operator. */
+export const typePostfixPrecedence = 50;
+
+/**
+ * Spellings that take what is written directly after them as their operand,
+ * in an expression or in a type: every prefix and infix operator, and the
+ * `.`, `?.`, `?`, `:` and `...` an operand is written after.
+ */
+export const operandTakenAfter: ReadonlySet<string> = new Set([
+  ...spellingsOf("prefix"),
+  ...spellingsOf("infix"),
+  ...coreTypeOperators
+    .filter(({ fixity }) => fixity !== "postfix")
+    .map(({ spelling }) => spelling),
+  ".",
+  "?.",
+  "?",
+  ":",
+  "...",
+]);
+
+/**
+ * Spellings that take what is written directly before them as their operand,
+ * in an expression or in a type: every infix and postfix operator, a non-null
+ * assertion's `!`, and the `.`, `?.`, `?` and `:` written after an operand.
+ */
+export const operandTakenBefore: ReadonlySet<string> = new Set([
+  ...spellingsOf("infix"),
+  ...spellingsOf("postfix"),
+  ...coreTypeOperators
+    .filter(({ fixity }) => fixity === "infix")
+    .map(({ spelling }) => spelling),
+  "!",
+  ".",
+  "?.",
+  "?",
+  ":",
+]);

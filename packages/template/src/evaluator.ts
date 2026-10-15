@@ -24,7 +24,6 @@ import type {
 } from "@sweetener/syntax";
 import type {
   ConditionalPredicate,
-  FoldPart,
   HygieneOperation,
   SequenceTemplate,
   TemplateNode,
@@ -103,22 +102,47 @@ export type EvaluatedOperation =
     };
 
 /**
- * What a `#fold` evaluated to, or one of the accumulators its steps spliced.
+ * What a `#fold` whose accumulator is one operand evaluated to: its initial
+ * template and each of its steps, with every `$acc` a step wrote left as a
+ * hole for the accumulator before it.
  *
- * Neither is spliced as the tokens it holds. What an accumulator is -- one
- * expression, one type, or a run of elements or statements -- is decided by
- * where the fold stands in the expansion, which only expansion can see, so
- * both are carried to it marked.
+ * Whether that operand is an expression or a type is decided by where the
+ * fold stands, which only expansion can see, so expansion builds it, one step
+ * at a time, reading each step with the accumulator before it as one node.
  */
 export interface EvaluatedFold {
   readonly kind: "fold";
-  readonly part: FoldPart;
+  readonly origin: OriginId;
+  /** The layout written before `#fold`. */
+  readonly leadingTrivia: readonly Trivia[];
+  readonly initial: readonly EvaluatedTemplate[];
+  readonly steps: readonly (readonly EvaluatedTemplate[])[];
+}
+
+/** A `$acc` an operand fold's step wrote, which the step before it fills. */
+export interface EvaluatedAccumulator {
+  readonly kind: "accumulator";
+  readonly origin: OriginId;
+}
+
+/**
+ * A `$acc` a run fold's step wrote: the parts built so far, spliced where it
+ * stands. They are held rather than copied in, so that each step does not copy
+ * every part before it.
+ */
+export interface EvaluatedRun {
+  readonly kind: "run";
   readonly origin: OriginId;
   readonly body: readonly EvaluatedTemplate[];
 }
 
 export type EvaluatedTemplate =
-  EvaluatedSyntax | EvaluatedGroup | EvaluatedOperation | EvaluatedFold;
+  | EvaluatedSyntax
+  | EvaluatedGroup
+  | EvaluatedOperation
+  | EvaluatedFold
+  | EvaluatedAccumulator
+  | EvaluatedRun;
 
 export interface TemplateOperationTrace {
   readonly operation: HygieneOperation["kind"];
@@ -299,7 +323,11 @@ function stableSyntaxText(syntax: SyntaxSequence): string {
 }
 
 interface FoldLocals {
-  readonly accumulator: readonly EvaluatedTemplate[];
+  /**
+   * The parts a run fold built so far, or `hole` in an operand fold, whose
+   * accumulator is filled by expansion.
+   */
+  readonly accumulator: readonly EvaluatedTemplate[] | "hole";
   readonly element: CaptureValue;
   readonly index: number;
 }
@@ -441,12 +469,13 @@ class Evaluator {
         }
         if (node.local === "accumulator") {
           return [
-            Object.freeze({
-              kind: "fold",
-              part: "accumulator",
-              origin: node.origin,
-              body: locals.accumulator,
-            }),
+            locals.accumulator === "hole"
+              ? Object.freeze({ kind: "accumulator", origin: node.origin })
+              : Object.freeze({
+                  kind: "run",
+                  origin: node.origin,
+                  body: locals.accumulator,
+                }),
           ];
         }
         if (node.local === "index") {
@@ -470,9 +499,31 @@ class Evaluator {
               `Fold driver $${node.driver.rootName} is not a sequence`,
             );
           }
-          let accumulator: readonly EvaluatedTemplate[] = Object.freeze(
+          const initial = Object.freeze(
             this.#sequence(node.initial, indices, locals),
           );
+          if (node.accumulator === "operand") {
+            const steps = driver.elements.map((element, index) => {
+              this.#step();
+              return Object.freeze(
+                this.#sequence(node.body, indices, {
+                  accumulator: "hole",
+                  element,
+                  index,
+                }),
+              );
+            });
+            return [
+              Object.freeze({
+                kind: "fold",
+                origin: node.origin,
+                leadingTrivia: node.leadingTrivia,
+                initial,
+                steps: Object.freeze(steps),
+              }),
+            ];
+          }
+          let accumulator: readonly EvaluatedTemplate[] = initial;
           for (let index = 0; index < driver.elements.length; index += 1) {
             this.#step();
             accumulator = Object.freeze(
@@ -483,14 +534,7 @@ class Evaluator {
               }),
             );
           }
-          return [
-            Object.freeze({
-              kind: "fold",
-              part: "result",
-              origin: node.origin,
-              body: accumulator,
-            }),
-          ];
+          return [...accumulator];
         });
     }
   }

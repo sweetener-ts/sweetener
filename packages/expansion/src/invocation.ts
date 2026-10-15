@@ -146,8 +146,6 @@ export interface BoundaryAdmissionRequest {
 
 export interface ExpandReplacementRequest {
   readonly syntax: readonly Syntax[];
-  /** Whether the syntax holds a marked `#fold` for expansion to read. */
-  readonly holdsFolds: boolean;
   readonly category: SyntaxCategory;
   readonly phase: Phase;
   readonly environmentEpoch: EnvironmentEpoch;
@@ -546,12 +544,12 @@ export function invokeMacro(
         generatedBindings: contracts.generatedBindings,
         tracker: options.tracker,
         cancellation,
+        category: options.category,
       });
       let expanded;
       try {
         expanded = options.expandReplacement({
           syntax: instantiated.syntax,
-          holdsFolds: instantiated.holdsFolds,
           category: options.category,
           phase: options.phase,
           environmentEpoch: options.environmentEpoch,

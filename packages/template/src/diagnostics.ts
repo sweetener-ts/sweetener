@@ -8,6 +8,7 @@ export const incompatibleTemplateDriversCode = diagnosticCode("SWR2015");
 export const malformedTemplateCode = diagnosticCode("SWR2016");
 export const invalidTemplateOperationCode = diagnosticCode("SWR2017");
 export const unknownTemplateOperationCode = diagnosticCode("SWR2018");
+export const foldAccumulatorCode = diagnosticCode("SWR2020");
 
 export const templateDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -78,6 +79,16 @@ export const templateDiagnosticRegistry = new DiagnosticRegistry([
       "Template repetition uses the declarative $(...) separator? form.",
     format: (arguments_) =>
       `Malformed template: ${String(arguments_[0] ?? "invalid syntax")}.`,
+  },
+  {
+    code: foldAccumulatorCode,
+    owner: "pattern-definition",
+    stage: "macro-definition",
+    severity: "error",
+    documentation:
+      "A `#fold`'s step says what its accumulator is by how it writes `$acc`. Written beside an operator or inside brackets, `$acc` is one operand -- one expression or one type -- and every step and the initial template build exactly one. Written as a part of a list, between the list's separators or beside the parts it runs into, it is the run of parts built so far. A step that writes it both ways, a step or an initial template that builds a list where an operand is needed, and an empty initial template there are reported where they are written.",
+    format: (arguments_) =>
+      `This #fold ${String(arguments_[0] ?? "uses $acc ambiguously")}.`,
   },
   {
     code: invalidTemplateOperationCode,
