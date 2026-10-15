@@ -22,6 +22,10 @@ export syntax unless:stmt {
 }
 
 export syntax twice:expr { rule { twice($v:expr) } => { $v * 2 } }
+
+export syntax keep:classElement {
+  rule { keep $member:classElement } => { $member }
+}
 `;
 
 interface Expansion {
@@ -34,7 +38,7 @@ function expand(source: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { unless, twice } from "./macros.sts" for syntax;\n` +
+    `import { unless, twice, keep } from "./macros.sts" for syntax;\n` +
       `declare function run(): void;\n${source}\n`,
   );
   writeFileSync(
@@ -118,5 +122,33 @@ describe("a regular expression the reader judged one where an operator stands", 
     expect(messages).toEqual([]);
     expect(text).toContain("of / 2 / 1 * 2");
     expect(text).toContain("export const z = of\n/ 2 / 1;");
+  });
+});
+
+/**
+ * A class field's initializer is read by the expression consumer, so a macro
+ * in it is expanded as one, and a member macro capturing the field takes the
+ * field and nothing under it.
+ */
+describe("a class field's initializer", () => {
+  test("expands a macro written in it", () => {
+    const { text, messages } = expand(
+      "export class C {\n  x = twice(3)\n  y = 1;\n}\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("x = 3 * 2");
+  });
+
+  test("ends where the expression does, under a member macro", () => {
+    const { text, messages } = expand(
+      "declare const a: unknown;\n" +
+        'const k = "k";\n' +
+        "export class C {\n" +
+        "  keep x = a as string\n" +
+        "  [k] = 1;\n" +
+        "}\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("x = a as string\n  [k] = 1;");
   });
 });

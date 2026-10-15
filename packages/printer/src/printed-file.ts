@@ -732,12 +732,24 @@ export function printExpandedFile<Trace>(
         const first = firstToken(child);
         if (first !== undefined) statementStarts.add(first);
       }
+      // An initializer, or the right side of an assignment, that runs to the
+      // end of its declarator stands the same way: nothing binds more loosely
+      // than `=` but a comma. Parenthesized, it read on across a line break
+      // it should have ended at -- a field `x = (a as B)` and the `[k] = 1;`
+      // under it were one index into the assertion, where the field as
+      // written ends at the line break.
+      const element =
+        (previous === undefined ? list : separates(previous)) &&
+        (next === undefined ? list : separates(next));
+      const initializer =
+        previous?.tag === "token" &&
+        previous.raw === "=" &&
+        (next === undefined || separates(next));
       if (
         child.tag === "protected" &&
         child.category === "expr" &&
         (child.form !== undefined || (child.precedence ?? 0) > 10) &&
-        (previous === undefined ? list : separates(previous)) &&
-        (next === undefined ? list : separates(next))
+        (element || initializer)
       )
         boundOperands.add(child);
       pending.push(child);
@@ -1179,6 +1191,17 @@ export function printExpandedFile<Trace>(
           (options.groupProtectedExpression?.(item) ?? true);
         if (group)
           pending.push({ text: ")", origin: item.origin, grouping: true });
+        // An expression that is nothing but another one -- an initializer
+        // the expression consumer read whole, holding the macro expansion
+        // that replaced it -- stands where its one child does.
+        const [only] = item.children;
+        if (
+          boundOperands.has(item) &&
+          item.children.length === 1 &&
+          only?.tag === "protected" &&
+          only.category === "expr"
+        )
+          boundOperands.add(only);
         markBoundOperands(item);
         const typeParameters = arrowTypeParameters(item);
         if (typeParameters !== undefined) {

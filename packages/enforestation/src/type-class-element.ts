@@ -69,6 +69,14 @@ export interface TypeClassConsumerOptions {
       ) => Syntax)
     | undefined;
   /**
+   * Reads a class field's initializer, the expression after its `=`. Without
+   * it the initializer is scanned as tokens, which cannot tell where an
+   * expression ends: `x = a as B` and the `[k] = 1;` under it are two fields,
+   * because nothing but a binary operator carries an expression on past the
+   * type an `as` asserts.
+   */
+  readonly consumeInitializer?: SyntaxConsumer | undefined;
+  /**
    * Enforests a brace body as a list of type members. Without it an object
    * type stays an opaque token tree and a member macro written in one never
    * expands.
@@ -1157,8 +1165,40 @@ class ClassElementConsumer implements SyntaxConsumer {
       checkWork(context);
       const next = cursor.peek()!;
       if (classMemberEndsBefore(member, next)) break;
+      const initializes = !member.initialized();
       member.take(next);
       children.push(cursor.consume()!);
+      const consumeInitializer = this.options.consumeInitializer;
+      if (
+        initializes &&
+        member.initialized() &&
+        consumeInitializer !== undefined
+      ) {
+        // An initializer is evaluated as a function of its own, where
+        // neither `yield` nor `await` is an expression, and the field ends
+        // where its expression does: at a `;`, or at the line break TypeScript
+        // inserts one at.
+        const initializer = consumeInitializer.consume(cursor, {
+          ...context,
+          category: "expr",
+          allowYield: false,
+          allowAwait: false,
+          stopSet: context.stopSet.union(
+            new StopSet([{ kind: "token", raw: ";" }]),
+          ),
+        });
+        if (!initializer.matched)
+          return failure(
+            "classElement",
+            cursor,
+            start,
+            initializer.failure.expectations,
+            initializer.failure.specificity,
+          );
+        children.push(initializer.syntax);
+        if (token(cursor.peek(), ";")) children.push(cursor.consume()!);
+        break;
+      }
       if (classElementCanEndAtBrace(children)) {
         // The element ended at its body; enforest that body so macros inside a
         // method are reached.

@@ -863,6 +863,10 @@ class StatementConsumer implements SyntaxConsumer {
       ...shared,
       enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
         this.enforestBlock(block, blockContext, allowYield, allowAwait),
+      consumeInitializer: createPrattExpressionConsumer({
+        ...options,
+        allowComma: false,
+      }),
     });
     this.#typeMember = createTypeConsumers({
       ...shared,

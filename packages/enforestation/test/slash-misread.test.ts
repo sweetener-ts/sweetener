@@ -171,3 +171,23 @@ describe("slashes read the other way from the grammar", () => {
     },
   );
 });
+
+/**
+ * A class field's initializer is read by the expression consumer, which knows
+ * where an expression ends; scanned as tokens, the member walk took a bracket
+ * under an asserted type for an index into it.
+ */
+describe("class field initializers", () => {
+  test.each([
+    "class C {\nx = a as B\n[k] = 1;\n}",
+    "class C {\nx = a satisfies B\n[k]() {}\n}",
+    "class C {\nx = a\n[k];\ny = 1;\n}",
+    "class C {\nx = a +\nb\ny = 1;\n}",
+    "class C {\nx = await\nb = 1;\n}",
+    "class C {\nx: T = () => {}\n[k] = 1;\n}",
+  ])("splits %j as TypeScript does", (source) => {
+    expect(split(source, "classElement")).toEqual(
+      typescript(source, "classElement"),
+    );
+  });
+});
