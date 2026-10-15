@@ -583,6 +583,50 @@ describe("public compiler session", () => {
     await session.close();
   });
 
+  test("serves each source its own output, whatever its name shares with another", async () => {
+    // `a.sts` and `a.stsx` expand to `a.ts` and `a.tsx`, and a file
+    // opted in with a directive keeps its own name: matching sources to
+    // output by name with the extension taken off gave one of the first two
+    // the other's code, and found no output at all for the third.
+    const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-names-"));
+    writeFileSync(
+      join(directory, "m.sts"),
+      "export syntax duplicate:expr { rule { duplicate($v:tt) } => { [$v, $v] } }\n",
+    );
+    writeFileSync(join(directory, "a.sts"), "export const fromSts = 1;\n");
+    writeFileSync(
+      join(directory, "a.stsx"),
+      "export const fromStsx = <div />;\n",
+    );
+    writeFileSync(
+      join(directory, "d.ts"),
+      '"use sweetener";\nimport { duplicate } from "./m.sts" for syntax;\nexport const x = duplicate(1);\n',
+    );
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          jsx: "preserve",
+        },
+        include: ["*"],
+      }),
+    );
+    const session = createSweetenerSession();
+    const sts = await transform(session, join(directory, "a.sts"), config);
+    const stsx = await transform(session, join(directory, "a.stsx"), config);
+    const directive = await transform(session, join(directory, "d.ts"), config);
+    expect(sts.code).toContain("fromSts = 1");
+    expect(sts.virtualFilename).toMatch(/a\.ts$/u);
+    expect(stsx.code).toContain("fromStsx = <div />");
+    expect(stsx.virtualFilename).toMatch(/a\.tsx$/u);
+    expect(directive.code).toContain("[1, 1]");
+    expect(directive.virtualFilename).toMatch(/d\.ts$/u);
+    await session.close();
+  });
+
   test("keeps an expansion for each config it serves", async () => {
     const first = project();
     const second = project();

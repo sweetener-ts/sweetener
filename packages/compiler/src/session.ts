@@ -3,14 +3,12 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
 import { composeSourceMap } from "@sweetener/typescript-host";
-import type {
-  RawSourceMap,
-  VirtualTypeScriptFile,
-} from "@sweetener/typescript-host";
+import type { RawSourceMap } from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
   createDefaultProjectExpansionProvider,
   type DefaultProjectExpansionProvider,
+  type DefaultSourceExpansionInspection,
 } from "./default-expansion-provider.js";
 import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
 import {
@@ -22,7 +20,6 @@ import {
   type ExpansionInput,
 } from "./expansion-inputs.js";
 import { selectSweetSources } from "./source-kind.js";
-import type { SourceExpansionInspection } from "./expansion-tools.js";
 
 export interface SweetenerTransformRequest {
   /** Source text supplied to the build tool. It must still match the file. */
@@ -165,9 +162,7 @@ interface FileExpansion {
    * all of it and so this expansion depends on which files there are.
    */
   readonly fileList: string | undefined;
-  readonly inspection: SourceExpansionInspection;
-  readonly sourceMap: RawSourceMap;
-  readonly generated: VirtualTypeScriptFile;
+  readonly inspection: DefaultSourceExpansionInspection;
   readonly virtualFilename: string;
   /**
    * Every source in the project, so a composed map can name a macro module it
@@ -379,12 +374,6 @@ export function createSweetenerSession(
       }
       return name;
     };
-    const generated = new Map(
-      expanded.files.map((file) => [
-        canonicalOf(file.fileName).replace(/\.(?:ts|js)x?$/u, ""),
-        file,
-      ]),
-    );
     const { fileNames } = state.project.typescript;
     const sourceNames = new Map<number, { name: string; text: string }>();
     const inspections = fileNames.flatMap((name) => {
@@ -402,15 +391,7 @@ export function createSweetenerSession(
       : undefined;
     const made = new Map<string, FileExpansion>();
     for (const { name, inspection } of inspections) {
-      const file = generated.get(
-        canonicalOf(name).replace(/\.s(?:ts|js)x?$/u, ""),
-      );
       const key = resolve(name);
-      const { sourceMap } = inspection;
-      if (sourceMap === undefined || file === undefined) {
-        state.files.delete(key);
-        continue;
-      }
       const consulted = [...configuration, ...inspection.inputs];
       const pathsOf = (found: (input: ExpansionInput) => boolean) =>
         Object.freeze(
@@ -432,9 +413,7 @@ export function createSweetenerSession(
         consulted: check(inspection.inputs),
         fileList,
         inspection,
-        sourceMap,
-        generated: file,
-        virtualFilename: canonicalOf(file.fileName),
+        virtualFilename: canonicalOf(inspection.virtualFileName),
         sourceNames,
         dependencies,
         missingDependencies,
@@ -515,11 +494,11 @@ export function createSweetenerSession(
     }
     const existing = fileExpansion.results.get(cacheKey);
     if (existing !== undefined) return existing;
-    const { inspection, generated, sourceNames } = fileExpansion;
+    const { inspection, sourceNames } = fileExpansion;
     const result: SweetenerTransformResult = Object.freeze({
-      code: generated.generated.text,
-      originMap: generated.generated.originMap,
-      map: fileExpansion.sourceMap,
+      code: inspection.generated.text,
+      originMap: inspection.generated.originMap,
+      map: inspection.sourceMap,
       composeMap: (typescriptMap: RawSourceMap) => {
         try {
           return composeSourceMap({

@@ -736,6 +736,10 @@ export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
 }
 
 export interface DefaultSourceExpansionInspection extends SourceExpansionInspection {
+  /** The name the expanded file is presented to TypeScript under. */
+  readonly virtualFileName: string;
+  /** Built the first time it is read. */
+  readonly sourceMap: RawSourceMap;
   /**
    * What this file's expansion asked of the file system, with the answers:
    * the file itself, the macro modules it reads macros from, and every lookup
@@ -1683,6 +1687,7 @@ export class DefaultProjectExpansionProvider
         Object.freeze({
           sourceId: file.sourceId,
           sourceText: file.sourceText,
+          virtualFileName: file.kind.virtualFileName,
           generated,
           origins,
           // Everything raised expanding this file and against this file, so
