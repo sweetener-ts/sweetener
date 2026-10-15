@@ -96,15 +96,74 @@ const annotationContinuedBy = new Set([
   ".",
   "=",
   ";",
-  "is",
 ]);
 
 /**
+ * Whether the keyword `next` carries a type on across a line break after the
+ * two nodes read before it, `before` and `previous`. Each of these words is a
+ * name of its own anywhere else, and the line under a finished type may begin
+ * with one: `let x: Foo` and the `is(x);` under it are two statements.
+ *
+ * - The `extends` of `infer R extends C` gives `R` its constraint, which
+ *   TypeScript reads wherever it is written. Only a conditional's `extends`
+ *   needs its check type on its own line.
+ * - The `is` of `asserts x is T` belongs to the predicate. The `is` of `x is
+ *   T` does not cross a line break, but nothing stops this one.
+ * - `abstract` with `new` after it is a constructor type, however the two are
+ *   broken across lines. With anything else after it, it is a type named
+ *   `abstract`.
+ */
+function typeKeywordContinues(
+  before: Syntax | undefined,
+  previous: Syntax | undefined,
+  next: string,
+): boolean {
+  switch (next) {
+    case "extends":
+      return raw(before) === "infer";
+    case "is":
+      return raw(before) === "asserts" && predicateName(previous);
+    case "new":
+      return raw(previous) === "abstract";
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether `node` is a name a type predicate may be about: a parameter's, or
+ * `this`.
+ */
+function predicateName(node: Syntax | undefined): boolean {
+  return (
+    node?.tag === "token" && (node.kind === "identifier" || node.raw === "this")
+  );
+}
+
+/**
+ * Whether a type still expects an operand after `previous`, `before` being the
+ * node read ahead of it.
+ *
+ * An `is` is a predicate's only after the name the predicate is about, as in
+ * `x is` and `this is`. After anything else it is a type spelled `is`, and
+ * finished: `type A = is` and the statement under it are two.
+ */
+function typeExpectsOperand(
+  before: Syntax | undefined,
+  previous: Syntax | undefined,
+): boolean {
+  if (previous?.tag !== "token" || !typeOperandExpectedAfter.has(previous.raw))
+    return false;
+  return previous.raw !== "is" || predicateName(before);
+}
+
+/**
  * Whether the declarator head read so far carries on across the line break in
- * front of `next`. It does where an operand is still expected after what was
- * last read, and where `next` is one of the few things that may stand in a
- * head at all -- inside the annotation, one of the few that may stand in a
- * type.
+ * front of `next`, `previous` and `before` being the last two nodes it read.
+ * It does where an operand is still expected after what was last read, and
+ * where `next` is one of the few things that may stand in a head at all --
+ * inside the annotation, one of the few that may stand in a type, or a keyword
+ * the two nodes before it carry on.
  *
  * Inside the annotation both halves are the type grammar's: a line cannot end
  * after `keyof`, `infer` or `extends` any more than after `|`, and it is the
@@ -117,458 +176,22 @@ const annotationContinuedBy = new Set([
  * break.
  */
 function headContinues(
+  before: Syntax | undefined,
   previous: Syntax | undefined,
   next: Syntax,
   annotated: boolean,
 ): boolean {
-  const expectsOperand = annotated
-    ? typeOperandExpectedAfter
-    : operandExpectedAfter;
-  if (previous?.tag === "token" && expectsOperand.has(previous.raw))
-    return true;
-  if (next.tag !== "token") return false;
-  return annotated
-    ? annotationContinuedBy.has(next.raw)
-    : headContinuedBy.has(next.raw);
-}
-
-/**
- * Whether `children` are a function declaration rather than some other form
- * that happens to mention the word.
- *
- * Modifiers and `*` may stand in front of `function`. The first word that is
- * none of those decides it, so a class whose heritage mentions a function
- * expression is not one.
- */
-function declarationIsFunction(children: readonly Syntax[]): boolean {
-  for (const child of children) {
-    const spelling = raw(child);
-    if (spelling === undefined) return false;
-    if (spelling === "function") return true;
-    if (
-      spelling === "export" ||
-      spelling === "default" ||
-      spelling === "declare" ||
-      spelling === "async" ||
-      spelling === "abstract" ||
-      spelling === "*"
-    )
-      continue;
-    return false;
-  }
-  return false;
-}
-
-/**
- * The parameter list of a function declaration in `children`, when one has
- * been read.
- *
- * It is the parenthesis group at angle-depth zero after `function`. A group
- * inside `f<T extends () => void>` is the constraint, not the list.
- */
-function functionParameterIndex(
-  children: readonly Syntax[],
-): number | undefined {
-  let angles = 0;
-  let seenFunction = false;
-  for (let index = 0; index < children.length; index += 1) {
-    const child = children[index]!;
-    if (!seenFunction) {
-      if (token(child, "function")) seenFunction = true;
-      continue;
-    }
-    if (
-      angles === 0 &&
-      child.tag === "group" &&
-      child.delimiter === "parenthesis"
-    )
-      return index;
-    const spelling = raw(child);
-    if (spelling === undefined) continue;
-    angles += angleWidth(spelling, "<");
-    angles = Math.max(0, angles - angleWidth(spelling, ">"));
-  }
-  return undefined;
-}
-
-/**
- * Whether a `{...}` after the parameter list is the function body.
- *
- * A brace in type position is the return type: `(): { a: number }`,
- * `(): () => { a: number }`. The same question the body walk asks of
- * `typeOperandFollows`. Counting every brace as a body kept
- * `function f(): { a: number }` open across the line break, and the call
- * under it was swallowed.
- */
-function tookFunctionBody(
-  children: readonly Syntax[],
-  parameters: number,
-): boolean {
-  const after = children.slice(parameters + 1);
-  for (let index = 0; index < after.length; index += 1) {
-    const child = after[index];
-    if (!braceGroup(child)) continue;
-    const previous = index === 0 ? children[parameters] : after[index - 1];
-    if (!typeOperandFollows(previous)) return true;
-  }
-  return false;
-}
-
-/**
- * How the return type after the parameter list stands, if one has started.
- *
- * A conditional type is a stack, and only at angle-depth zero. `extends`
- * opens one that still needs `?`; that `?` leaves it needing `:`; that `:`
- * closes it. `infer Name extends` is a constraint, not that opener: pushing
- * it left `infer R extends C` waiting on `?` and stole the real conditional's
- * `:`. An `extends` written inside `<...>` does not open one either.
- * `Foo<A extends B>` is finished as far as the line break after it is
- * concerned. Nested `A extends B ? C extends D ? E : F : G` keeps the outer
- * `:` waiting under the inner one.
- *
- * `inferName` is set when the type ends in `infer Name`, so the `extends`
- * of the constraint may stand on the next line. A conditional's own
- * `extends` may not: TypeScript writes `CheckType [no LineTerminator here]
- * extends`.
- */
-function returnTypeState(
-  children: readonly Syntax[],
-  parameters: number,
-  cursor?: SyntaxCursor,
-) {
-  let angles = 0;
-  let started = false;
-  let inferOpen = false;
-  let inferName = false;
-  let inferExtendsMayRollBack = false;
-  let brokenTrueBranchInferExtends = false;
-  let nullableQuestion = false;
-  let brackets = 0;
-  let previousLast = "";
-  let last = "";
-  const conditional: Array<"question" | "colon"> = [];
-  for (const child of children.slice(parameters + 1)) {
-    const spelling = raw(child);
-    // A group is the type an operator was waiting for: `{ a: number }` after
-    // `:`, or `(x: number)` before `=>`. Leaving `last` on the operator would
-    // keep the signature open and take the next statement into it.
-    if (spelling === undefined) {
-      if (started) {
-        previousLast = last;
-        last = "";
-      }
-      continue;
-    }
-    angles += angleWidth(spelling, "<");
-    angles = Math.max(0, angles - angleWidth(spelling, ">"));
-    if (angles === 0 && spelling === "[") brackets += 1;
-    else if (angles === 0 && spelling === "]" && brackets > 0) brackets -= 1;
-    if (angles !== 0) continue;
-    previousLast = last;
-    last = spelling;
-    if (spelling === ":" && !started) {
-      started = true;
-      inferOpen = false;
-      inferName = false;
-      continue;
-    }
-    if (!started) continue;
-    brokenTrueBranchInferExtends = false;
-    const constraint = spelling === "extends" && inferName;
-    if (
-      spelling === "extends" &&
-      constraint &&
-      conditional.at(-1) !== "question"
-    ) {
-      // `infer U extends string ? U : never` rolls this `extends` back into
-      // a conditional when `?` follows. Inside `T extends … ?` the stack is
-      // already waiting on `?`, and the same words are the constraint.
-      inferExtendsMayRollBack = true;
-      // A line break in the true branch. Whether this `extends` is recovered
-      // (stop after the keyword) depends on a later `?`, which the cursor
-      // still has. `extends C : D` is a constraint and stays open.
-      brokenTrueBranchInferExtends =
-        conditional.at(-1) === "colon" && leadingLineBreak(child);
-    } else if (spelling === "extends" && !constraint) {
-      conditional.push("question");
-      inferExtendsMayRollBack = false;
-    } else if (spelling === "?" && conditional.at(-1) === "question") {
-      conditional[conditional.length - 1] = "colon";
-      inferExtendsMayRollBack = false;
-    } else if (spelling === "?" && inferExtendsMayRollBack) {
-      conditional.push("colon");
-      inferExtendsMayRollBack = false;
-    } else if (spelling === "?" && conditional.at(-1) === "colon") {
-      // `A extends B ? C \n ? D` — the outer conditional still wants `:`,
-      // and TypeScript takes `? D` as that false branch. The `?` wants a
-      // type; a colon after that type is not the conditional's colon.
-      conditional.pop();
-      nullableQuestion = true;
-    } else if (spelling === ":" && conditional.at(-1) === "colon") {
-      inferExtendsMayRollBack = false;
-      conditional.pop();
-    }
-    if (spelling === "infer") {
-      inferOpen = true;
-      inferName = false;
-    } else if (inferOpen) {
-      inferName = true;
-      inferOpen = false;
-    } else {
-      inferName = false;
-      inferOpen = false;
-    }
-  }
-  const pending = conditional.at(-1);
-  // `infer R\nextends C ?` keeps `extends` and stops before `C`.
-  // `infer R\nextends C : D` does not: no `?` follows, so `C` belongs to it.
-  const recoveredExtends =
-    brokenTrueBranchInferExtends &&
-    last === "extends" &&
-    cursor !== undefined &&
-    questionFollowsExtendedType(cursor, 0);
-  // Only an operator the return type actually accepted keeps it open.
-  // `=`, `,`, and `>` are in the declarator table because a variable
-  // annotation uses them; a function return type does not. A `?`, `:`,
-  // `=>`, `is`, or `extends` keeps it open only in the state that let
-  // the token in.
-  const expectsOperand =
-    started &&
-    (last === "?"
-      ? pending === "colon" || nullableQuestion
-      : last === ":" ||
-        last === "=>" ||
-        last === "is" ||
-        (last === "extends" && !recoveredExtends) ||
-        last === "|" ||
-        last === "&" ||
-        last === "." ||
-        last === "<" ||
-        last === "[" ||
-        last === "keyof" ||
-        last === "typeof" ||
-        last === "readonly" ||
-        last === "unique" ||
-        last === "infer" ||
-        // `new () => T`, `abstract new () => T`, and `import("m").T` stay
-        // open across the line break after the keyword. `asserts` does not:
-        // its name has to share its line, so it is not in this list.
-        last === "new" ||
-        last === "abstract" ||
-        last === "import");
-  return {
-    angles,
-    brackets,
-    started,
-    inferName,
-    expectsOperand,
-    // `asserts x` still wants `is`. Once `is` is consumed, the predicate is
-    // finished and another `is` on the next line is not part of it.
-    awaitingIs: previousLast === "asserts" && last !== "" && last !== "is",
-    inferExtendsMayRollBack,
-    // `asserts` wants its name on the same line only. It is not
-    // `expectsOperand`, or `asserts` and the name under it would be one type.
-    last,
-    pending,
-  };
-}
-
-/**
- * Whether the function signature in `children` has a finished header.
- *
- * The same state decides both this and `functionSignatureContinues`. A
- * return type is unfinished while `<...>` or `[...]` is open, or while
- * the last operator it accepted still wants a type. A `?` wants one only
- * after it opened a conditional's true branch, not after `Foo ?`.
- */
-function returnTypeIsComplete(
-  children: readonly Syntax[],
-  cursor?: SyntaxCursor,
-): boolean {
-  if (!declarationIsFunction(children)) return false;
-  const parameters = functionParameterIndex(children);
-  if (parameters === undefined) return false;
-  if (tookFunctionBody(children, parameters)) return false;
-  const type = returnTypeState(children, parameters, cursor);
-  if (type.angles !== 0 || type.brackets !== 0) return false;
-  if (!type.started) {
-    const last = children.at(-1);
-    return !(last?.tag === "token" && operandExpectedAfter.has(last.raw));
-  }
-  return !type.expectsOperand;
-}
-
-/**
- * Whether `children` are a function signature whose header is finished and
- * which has not taken a body.
- *
- * After the parameter list, a return type is unfinished while a `<` is open
- * or the last token still expects a type — the same question a declarator's
- * annotation asks — and `>` is not one of those tokens, because in a type it
- * only closes arguments.
- */
-function completeFunctionSignature(
-  children: readonly Syntax[],
-  cursor?: SyntaxCursor,
-): boolean {
-  return returnTypeIsComplete(children, cursor);
-}
-
-/**
- * Whether the signature read so far carries on across the line break in front
- * of `next`.
- *
- * Before a return type, only `:` opens one. Once it has started, an unfinished
- * type carries on — `keyof` and the line under it are one type — and so does
- * a function type whose `=>` is written under its parameter list, and the
- * `is` of `asserts x is T`, and the `extends` of `infer Name extends`. A
- * conditional carries on into `?` while its check `extends` still needs one,
- * and into `:` while that `?` still needs one. A finished type still carries
- * on across `|`, `&` and `.`. `Foo` and the `is`, `=>`, `?` or `:` under it
- * do not, and neither does `T` and the `extends` under it: TypeScript ends
- * the signature there.
- */
-function openFunctionReturn(children: readonly Syntax[]): boolean {
-  return declarationIsFunction(children) && !returnTypeIsComplete(children);
-}
-
-/**
- * Whether the type after this `extends` is followed by `?`.
- *
- * `start` is 1 when `cursor` sits on `extends`, and 0 when `extends` has
- * already been read and `cursor` sits on the type after it. A `?` at
- * angle-depth zero means TypeScript rolls the `extends` back into a
- * conditional. A `:`, `;`, function body, or the end of the file means it
- * was a real constraint.
- *
- * The scan runs to that boundary. A fixed node count is not one: a
- * generated union is one member per two nodes, and the old caps of 32, 48,
- * and 64 hid a `?` that stood past them, so a rollback was read as a
- * constraint.
- */
-function questionFollowsExtendedType(
-  cursor: SyntaxCursor,
-  start: number,
-): boolean {
-  let angles = 0;
-  for (let offset = start; offset < cursor.remainingLength; offset += 1) {
-    const node = cursor.peek(offset);
-    if (node === undefined) return false;
-    if (node.tag === "group") {
-      if (angles === 0 && node.delimiter === "brace") return false;
-      continue;
-    }
-    const spelling = raw(node);
-    if (spelling === undefined) continue;
-    angles += angleWidth(spelling, "<");
-    angles = Math.max(0, angles - angleWidth(spelling, ">"));
-    if (angles !== 0) continue;
-    if (spelling === "?") return true;
-    if (spelling === ":" || spelling === ";" || spelling === "{") return false;
-  }
-  return false;
-}
-
-function functionSignatureContinues(
-  children: readonly Syntax[],
-  next: Syntax,
-  cursor?: SyntaxCursor,
-): boolean {
-  const parameters = functionParameterIndex(children);
-  if (parameters === undefined) return true;
-  const type = returnTypeState(children, parameters, cursor);
-  // `readonly number[]` — the brackets are one group on `number`'s line.
   if (
-    type.started &&
-    next.tag === "group" &&
-    next.delimiter === "bracket" &&
-    !leadingLineBreak(next)
+    annotated
+      ? typeExpectsOperand(before, previous)
+      : previous?.tag === "token" && operandExpectedAfter.has(previous.raw)
   )
     return true;
   if (next.tag !== "token") return false;
-  if (!type.started) return next.raw === ":";
-  if (type.last === "asserts" && !leadingLineBreak(next)) return true;
-  // The operator already accepted still wants its operand. This set is the
-  // return type's own, not `typeOperandExpectedAfter`: that table also holds
-  // `=`, `,`, and `>`, which keep a variable annotation open and must not
-  // keep a function signature open.
-  if (type.expectsOperand) return true;
-  const previous = children.at(-1);
-  const broken = leadingLineBreak(next);
-  switch (next.raw) {
-    case "|":
-    case "&":
-    case ".":
-      return true;
-    case "?":
-      // An outer conditional that still wants its false branch keeps a `?`
-      // (`A extends B ? … \n ? F`). A finished conditional does not.
-      return (
-        type.pending === "question" ||
-        type.inferExtendsMayRollBack ||
-        type.pending === "colon"
-      );
-    case ":":
-      return type.pending === "colon";
-    case "=>":
-      return previous?.tag === "group" && previous.delimiter === "parenthesis";
-    case "is":
-      // `Foo is T` shares Foo's line. A line break before `is` ends the type,
-      // except while `asserts x` is still waiting for its `is`. After that
-      // `is` is consumed, a second `is` is not part of the predicate.
-      return type.awaitingIs || !broken;
-    case "extends":
-      // `Foo extends Bar` opens a conditional on Foo's line. A line break
-      // before `extends` ends it. `infer Name extends` crosses that break
-      // when it is a constraint: the stack is already waiting on `?`, or the
-      // type after `extends` is not followed by `?`. `infer R` / `extends A ?`
-      // does not, because that `extends` is the conditional.
-      if (type.pending === "question") return true;
-      if (type.inferName) {
-        const rollsBack =
-          cursor !== undefined &&
-          token(cursor.peek(), "extends") &&
-          questionFollowsExtendedType(cursor, 1);
-        if (!rollsBack) return true;
-        if (!broken) return true;
-        // A line break before a conditional `extends` ends a bare
-        // `infer R`. In the true branch of an outer conditional,
-        // TypeScript still keeps that `extends` and stops after it.
-        return type.pending === "colon";
-      }
-      return !broken;
-    case "<":
-    case "[":
-    case "!":
-      return !broken;
-    default:
-      return false;
-  }
-}
-
-/**
- * Whether a complete function signature with no body ends in front of `next`.
- *
- * TypeScript's rule is automatic semicolon insertion, and it is a property of
- * the signature rather than of the statement written under it: `function f()`
- * and `run();` are two statements, and so are `declare function h(): void`
- * and the call beneath it. Ending only when the next line itself begins a
- * declaration swallowed the call. A body written on the next line, a return
- * type, and a `;` still belong to the signature.
- */
-function functionSignatureEndsBefore(
-  children: readonly Syntax[],
-  next: Syntax,
-  cursor?: SyntaxCursor,
-): boolean {
-  if (children.length === 0) return false;
-  if (token(next, ";") || braceGroup(next)) return false;
-  // Same state as the cross-line question. A finished type ends before
-  // `Foo ?`, `Foo =>`, `Foo :`, `Foo =`, `Foo ,`, or `Foo >` on this line,
-  // not only before the token after the line break: TypeScript's first
-  // statement stops at `Foo`.
-  if (!returnTypeIsComplete(children, cursor)) return false;
-  return !functionSignatureContinues(children, next, cursor);
+  return annotated
+    ? annotationContinuedBy.has(next.raw) ||
+        typeKeywordContinues(before, previous, next.raw)
+    : headContinuedBy.has(next.raw);
 }
 
 /**
@@ -720,7 +343,8 @@ function ambientDeclaration(cursor: SyntaxCursor, offset = 0): boolean {
 
 /**
  * How many modifier words stand in front of the declaration at `offset`: the
- * `declare` that marks it ambient and the `abstract` that marks a class.
+ * `declare` that marks it ambient, the `abstract` that marks a class, and the
+ * `async` that marks a function.
  */
 function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
   let width = 0;
@@ -738,14 +362,12 @@ function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
  * same rule `asyncModifies` states for arrows.
  */
 function modifierAt(cursor: SyntaxCursor, offset: number): boolean {
-  const word = raw(cursor.peek(offset));
   if (
-    declarationModifiers.has(word ?? "") &&
+    declarationModifiers.has(raw(cursor.peek(offset)) ?? "") &&
     noLineTerminatorAfter(cursor, offset)
   )
     return true;
   return (
-    word === "async" &&
     asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
     raw(cursor.peek(offset + 1)) === "function"
   );
@@ -774,65 +396,135 @@ function globalAugmentation(cursor: SyntaxCursor, offset = 0): boolean {
 }
 
 /**
- * Where a type alias's body ends, for the walks that scan a declaration's
- * head.
+ * Where a declaration with no body ends, for the walks that scan a
+ * declaration's head.
  *
- * `type T = A` and the `extends B ? C : D;` written under it are two
- * declarations: TypeScript writes `CheckType [no LineTerminator here] extends`,
- * and an alias's body after the `=` is a type like any other. Neither scanning
- * walk knows the type grammar, so both ask this and both get the same answer.
+ * Two declarations end at a line break rather than at a body. A type alias's
+ * body after the `=` is a type, and `type T = A` and the `extends B ? C : D;`
+ * written under it are two declarations: TypeScript writes `CheckType [no
+ * LineTerminator here] extends`. A function written without a body -- an
+ * overload signature, an ambient declaration -- ends after its parameter list
+ * or its return type, by the same automatic semicolon insertion: `function
+ * f()` and the `run();` written under it are two statements, and so are
+ * `declare function h(): void` and the call under it. Ending a signature only
+ * where the next line began a declaration took that call into it. Neither
+ * scanning walk knows the type grammar, so both ask this and both get the same
+ * answer.
  *
- * `declaresType` is false where the declaration is no alias at all --
- * `import type A = require("m")` and `export type { A }` declare none -- and
- * the tracker then ends nothing.
+ * `declared` is the word that says what the declaration declares, and the
+ * tracker ends nothing unless it is `type` or `function`. `import type A =
+ * require("m")` and `export type { A }` declare no alias, and their `type` is
+ * never followed by the `=` that opens a body.
  */
-function createAliasBodyTracker(declaresType: boolean) {
-  /** Whether the walk has passed the `=` that opens the alias's body. */
-  let inBody = false;
+function createBodilessTracker(declared: string | undefined) {
   /**
-   * How deep in type parameters the walk stands. The `=` of a parameter's
-   * default is written inside them and does not open the body; a `<` still
-   * open encloses whatever is written under it, so a line break there ends
-   * nothing.
+   * Whether the walk has passed where a line break may end the declaration:
+   * an alias's `=`, or a function's parameter list.
+   */
+  let ending = false;
+  /**
+   * Whether the walk reads a type: an alias's body, or a function's return
+   * type after the `:` that opens it.
+   */
+  let annotated = false;
+  /**
+   * How deep in type parameters or arguments the walk stands. The `=` of a
+   * parameter's default is written inside them and does not open an alias's
+   * body, and a parenthesis there is no parameter list; a `<` still open
+   * encloses whatever is written under it, so a line break there ends nothing.
    */
   let typeArguments = 0;
+  /**
+   * Whether the outermost `<` the walk last opened was written where a type
+   * was expected. Such a `<` opens a generic function type's type parameters
+   * rather than type arguments, and the parameter list after its `>` belongs
+   * to the same type: `<T>` and the `(x: T) => T` under it are one.
+   */
+  let typeParameters = false;
+  /** The last two nodes taken, the one before `previous` first. */
+  let before: Syntax | undefined;
+  let previous: Syntax | undefined;
+  /**
+   * Whether the type being read still expects an operand where the walk
+   * stands, so that the line break in front of the next node ends nothing,
+   * whatever that node begins: `function f():` and the `import("m").T`
+   * written under it are one signature.
+   */
+  const expectsType = (): boolean =>
+    annotated &&
+    ((typeParameters &&
+      typeArguments === 0 &&
+      angleWidth(raw(previous) ?? "", ">") > 0) ||
+      typeExpectsOperand(before, previous));
   return Object.freeze({
     /**
-     * Whether the walk stands inside the alias's body, where it is the type
-     * grammar that says what a line break ends and no other rule may.
+     * Whether the walk stands inside a type, where it is the type grammar that
+     * says what a line break ends and no other rule may.
      */
-    readsBody(): boolean {
-      return inBody;
+    readsType(): boolean {
+      return annotated;
     },
-    /** Whether the alias's body ends in front of `next`. */
-    endsBefore(previous: Syntax | undefined, next: Syntax): boolean {
+    expectsType,
+    /**
+     * Whether the declaration may end where the walk stands with no body: a
+     * function whose head is finished, written as an overload or an ambient
+     * signature. TypeScript reads `function f()` on its own as that signature
+     * rather than as a declaration missing a brace.
+     */
+    complete(): boolean {
+      return ending && typeArguments === 0 && !expectsType();
+    },
+    /** Whether the declaration ends in front of `next`. */
+    endsBefore(next: Syntax): boolean {
       return (
-        inBody &&
+        ending &&
         typeArguments === 0 &&
         leadingLineBreak(next) &&
-        !headContinues(previous, next, true)
+        // A brace written under a function's head is its body.
+        !(declared === "function" && braceGroup(next)) &&
+        !expectsType() &&
+        !headContinues(before, previous, next, annotated)
       );
     },
     /** Takes a node the walk has read. */
     take(node: Syntax): void {
-      if (!declaresType) return;
+      if (declared !== "type" && declared !== "function") return;
+      const opensParameters =
+        declared === "function" &&
+        !ending &&
+        typeArguments === 0 &&
+        node.tag === "group" &&
+        node.delimiter === "parenthesis";
       const spelling = raw(node);
-      if (spelling === undefined) return;
-      typeArguments += angleWidth(spelling, "<");
-      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-      if (typeArguments === 0 && spelling === "=") inBody = true;
+      if (spelling !== undefined) {
+        if (typeArguments === 0 && angleWidth(spelling, "<") > 0)
+          typeParameters = expectsType();
+        typeArguments += angleWidth(spelling, "<");
+        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+      }
+      before = previous;
+      previous = node;
+      if (opensParameters) ending = true;
+      if (typeArguments !== 0) return;
+      if (declared === "type" && spelling === "=") ending = annotated = true;
+      if (declared === "function" && ending && spelling === ":")
+        annotated = true;
     },
   });
 }
 
 /**
- * Whether the words at the head of a declaration open a type alias. `export`
- * and `declare` stand in front of one; `import type A = require("m")` and
- * `export type { A }` declare no alias, and their first word is not `type`.
+ * The word that says what the declaration with these head words declares: the
+ * first that is no modifier. `export` and `declare` stand in front of an alias
+ * or a function, and `default` and `async` in front of a function.
  */
-function declaresAlias(headWords: readonly string[]): boolean {
-  return (
-    headWords.find((word) => word !== "export" && word !== "declare") === "type"
+function declaredBy(headWords: readonly string[]): string | undefined {
+  return headWords.find(
+    (word) =>
+      word !== "export" &&
+      word !== "declare" &&
+      word !== "default" &&
+      word !== "async",
   );
 }
 
@@ -851,14 +543,15 @@ function annotationExtent(
 ): number {
   let typeArguments = 0;
   let width = 0;
+  let before: Syntax | undefined;
+  let previous = colon;
   while (width < cursor.remainingLength) {
     checkWork(context);
     const next = cursor.peek(width)!;
-    const previous = width === 0 ? colon : cursor.peek(width - 1)!;
     if (
       typeArguments === 0 &&
       leadingLineBreak(next) &&
-      !headContinues(previous, next, true)
+      !headContinues(before, previous, next, true)
     )
       break;
     const spelling = raw(next);
@@ -866,6 +559,8 @@ function annotationExtent(
       typeArguments += angleWidth(spelling, "<");
       typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
     }
+    before = previous;
+    previous = next;
     width += 1;
   }
   return width;
@@ -1506,7 +1201,14 @@ class StatementConsumer implements SyntaxConsumer {
           : declared === "interface"
             ? ("typeMember" as const)
             : undefined;
-      return this.#consumeScanned(cursor, context, start, true, bodyCategory);
+      return this.#consumeScanned(
+        cursor,
+        context,
+        start,
+        true,
+        bodyCategory,
+        declared,
+      );
     }
     // A type alias stands in a function body as readily as it does at a
     // module's top level, and its body after the `=` is a type. Refused here,
@@ -1520,7 +1222,7 @@ class StatementConsumer implements SyntaxConsumer {
         start,
         false,
         undefined,
-        true,
+        declared,
       );
     // `import` and `export` are refused. TypeScript parses both in a function
     // body and rejects them afterwards, as a grammar error rather than a parse
@@ -2062,7 +1764,7 @@ class StatementConsumer implements SyntaxConsumer {
         bound &&
         typeArguments === 0 &&
         leadingLineBreak(next) &&
-        !headContinues(children.at(-1), next, annotated)
+        !headContinues(children.at(-2), children.at(-1), next, annotated)
       )
         break;
       // A declarator ends where its initializer does, so only another
@@ -2148,30 +1850,27 @@ class StatementConsumer implements SyntaxConsumer {
     endsAtBlock: boolean,
     bodyCategory:
       "stmt" | "classElement" | "typeMember" | undefined = undefined,
-    declaresType = false,
+    declared: string | undefined = undefined,
   ): ConsumerAttempt {
     const children: Syntax[] = [];
-    const alias = createAliasBodyTracker(declaresType);
+    const head = createBodilessTracker(declared);
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
+      // A word that begins a statement also begins a type where one is still
+      // expected: `type T =` and the `import("m").A;` under it are one alias.
       if (
         children.length > 0 &&
         leadingLineBreak(next) &&
         beginsStatement(cursor) &&
-        // `import` begins a statement and is also a type. Only an open
-        // function return type still owns it; every other declaration ends.
-        !openFunctionReturn(children)
+        !head.expectsType()
       )
         break;
-      // A finished function signature ends at the line break, whatever is
-      // written under it. `run();` begins no statement keyword, and taking it
-      // into the signature made one statement out of two.
-      if (functionSignatureEndsBefore(children, next, cursor)) break;
       // An alias's body is a type, and a type ends at a line break the type
-      // grammar does not carry across. The item reader asks the same question
-      // of the same tracker.
-      if (alias.endsBefore(children.at(-1), next)) break;
+      // grammar does not carry across; a function with no body ends at one
+      // its head does not carry across. The item reader asks the same
+      // question of the same tracker.
+      if (head.endsBefore(next)) break;
       // A `<...>` region holds type parameters or type arguments, and a brace
       // inside one is an object type: `class E extends make()<{ a: string }>`,
       // or `class C<T extends { a: string }>`. Taking the first brace as the
@@ -2180,8 +1879,11 @@ class StatementConsumer implements SyntaxConsumer {
       if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
         const region = consumeBalancedTypeArguments(cursor, context);
         if (region !== undefined) {
-          for (let taken = 0; taken < region.width; taken += 1)
-            children.push(cursor.consume()!);
+          for (let taken = 0; taken < region.width; taken += 1) {
+            const node = cursor.consume()!;
+            children.push(node);
+            head.take(node);
+          }
           continue;
         }
       }
@@ -2211,17 +1913,14 @@ class StatementConsumer implements SyntaxConsumer {
         break;
       }
       children.push(next);
-      alias.take(next);
+      head.take(next);
       if (token(next, ";")) break;
     }
     if (
       endsAtBlock &&
       !token(children.at(-1), ";") &&
       !braceGroup(children.at(-1)) &&
-      // A function signature may be the whole declaration. An overload and an
-      // ambient one have no body, and TypeScript reads `function f()` on its
-      // own as that signature rather than as a declaration missing a brace.
-      !completeFunctionSignature(children, cursor)
+      !head.complete()
     ) {
       return failure("stmt", cursor, start, ["declaration body"], 40);
     }
@@ -2500,7 +2199,7 @@ class ItemConsumer implements SyntaxConsumer {
       // An import or export declaration, or a type alias: an item with no
       // body of its own, which ends at a line break rather than at a brace.
       const moduleItem = !endsAtBlock;
-      const alias = createAliasBodyTracker(declaresAlias(headWords));
+      const head = createBodilessTracker(declaredBy(headWords));
       /**
        * Whether the item is whole where the walk left it, because what stands
        * under it cannot belong to it. Such an item needs no terminator: what
@@ -2519,55 +2218,50 @@ class ItemConsumer implements SyntaxConsumer {
           leadingLineBreak(next) &&
           beginsItem(cursor) &&
           !headExpectsMore(raw(children.at(-1))) &&
-          !openFunctionReturn(children)
+          !head.expectsType()
         ) {
           break;
         }
         // The alias's body is a type, and a type ends at a line break the type
         // grammar does not carry across: TypeScript writes
         // `CheckType [no LineTerminator here] extends`, so `type T = A` and
-        // the `extends B ? C : D;` written under it are two items. Nothing
-        // else in this walk knows the type grammar, and reading straight past
-        // the break took both as one item -- a parse the host compiler does
-        // not share, and one that swallows whatever the next item invokes. A
-        // heritage clause's `extends` is written in a header rather than in a
-        // type and TypeScript does carry it across a break, so only the body
-        // of an alias is asked.
-        if (alias.endsBefore(children.at(-1), next)) break;
+        // the `extends B ? C : D;` written under it are two items. A function
+        // with no body ends at a line break its head does not carry across,
+        // so `function f()` and the `run();` under it are two items as well.
+        // Nothing else in this walk knows the type grammar, and reading
+        // straight past the break took both as one item -- a parse the host
+        // compiler does not share, and one that swallows whatever the next
+        // item invokes. A heritage clause's `extends` is written in a header
+        // rather than in a type and TypeScript does carry it across a break,
+        // so only an alias and a function are asked.
+        if (head.endsBefore(next)) break;
         // An item with no body of its own is terminated by a `;` or by the
         // line break that stands for one, wherever TypeScript terminates it.
         // A type alias's body is asked of the tracker above instead, which
         // knows the type grammar this does not.
         if (
           moduleItem &&
-          !alias.readsBody() &&
+          !head.readsType() &&
           children.length > 0 &&
           leadingLineBreak(next) &&
           !moduleItemContinues(children, next)
         )
           break;
-        // The same signature rule as the statement reader. A function whose
-        // header is finished and which has no body ends at the line break,
-        // including when the next line is a call rather than another
-        // declaration.
-        if (functionSignatureEndsBefore(children, next, cursor)) {
-          // The next token ended the signature. It is not a `;` this item
-          // was missing, including when that token shares the last line.
-          whole = true;
-          break;
-        }
         // A brace inside a `<...>` region is an object type, not the body of
         // the declaration being read.
         if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
           const region = consumeBalancedTypeArguments(cursor, context);
           if (region !== undefined) {
-            for (let taken = 0; taken < region.width; taken += 1)
-              children.push(cursor.consume()!);
+            for (let taken = 0; taken < region.width; taken += 1) {
+              const node = cursor.consume()!;
+              children.push(node);
+              head.take(node);
+            }
             continue;
           }
         }
         children.push(cursor.consume()!);
-        alias.take(next);
+        head.take(next);
         if (token(next, ";")) break;
         // A brace where a return type is written is an object type; the body
         // is the brace after the whole type.
@@ -2581,17 +2275,10 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (
         endsAtBlock &&
-        !completeFunctionSignature(children, cursor) &&
-        !(
-          headWords.includes("function") &&
-          (headWords.includes("declare") ||
-            raw(cursor.peek()) === "function" ||
-            (raw(cursor.peek()) === "export" &&
-              raw(cursor.peek(1)) === "function"))
-        ) &&
         !token(children.at(-1), ";") &&
         !braceGroup(children.at(-1)) &&
-        !braceGroup(children.at(-2))
+        !braceGroup(children.at(-2)) &&
+        !head.complete()
       ) {
         return failure("item", cursor, start, ["declaration body"], 40);
       }
