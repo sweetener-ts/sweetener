@@ -969,6 +969,28 @@ describe("a session after what TypeScript read for binding literals changes", ()
  * one that lives through many projects does not keep them all.
  */
 describe("a session dropping what it can no longer serve", () => {
+  test("drops a config whose file is gone once another config is loaded", async () => {
+    const kept = project();
+    const gone = project();
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, gone.main, gone.config);
+    const texts = [gone.config, gone.macros, gone.main].map(
+      (fileName) => [fileName, readFile(fileName)] as const,
+    );
+    rmSync(gone.directory, { recursive: true });
+    await transform(session, kept.main, kept.config);
+    expect(counting.expansions()).toBe(2);
+
+    // The same project made again: a session that had kept the first would
+    // find every file it read saying the same, and serve it unexpanded.
+    mkdirSync(gone.directory);
+    for (const [fileName, text] of texts) writeFileSync(fileName, text);
+    await transform(session, gone.main, gone.config);
+    expect(counting.expansions()).toBe(3);
+    await session.close();
+  });
+
   test("drops a config a host says was deleted", async () => {
     const fixture = project();
     const counting = countingProvider();
