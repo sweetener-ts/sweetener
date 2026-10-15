@@ -147,6 +147,25 @@ describe("type and class-element consumers", () => {
     "Array<T & { id: string }>",
     "typeof import('module').Value",
     "new <T>(value: T) => Instance<T>",
+    // A negative number is a literal type, wherever its digits are written.
+    "-1",
+    "-1n",
+    "-\n1",
+    "T extends -1 ? A : B",
+    // Where a type is expected, a word the type grammar writes no operator
+    // with names a type, reserved or not; TypeScript leaves what it names to
+    // the checker.
+    "if",
+    "type",
+    "abstract",
+    "extends",
+    "is | in",
+    "keyof extends",
+    "infer is",
+    "typeof if",
+    "A.class<B>",
+    "abstract new () => A",
+    "abstract\nnew () => A",
   ])("consumes TypeScript type %s", (source) => {
     const { result } = consume(source, "type");
     expect(result.matched).toBe(true);

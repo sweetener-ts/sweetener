@@ -40,6 +40,7 @@ import {
   createTypeConsumers,
   declaresAsync,
   decoratorWidth,
+  namesType,
   typeOperandExpectedAfter,
   typeOperandFollows,
 } from "./type-class-element.js";
@@ -159,39 +160,17 @@ function typeExpectsOperand(
 
 /**
  * Whether the declarator head read so far carries on across the line break in
- * front of `next`, `previous` and `before` being the last two nodes it read.
- * It does where an operand is still expected after what was last read, and
- * where `next` is one of the few things that may stand in a head at all --
- * inside the annotation, one of the few that may stand in a type, or a keyword
- * the two nodes before it carry on.
+ * front of `next`, `previous` being the last node it read, before any type is
+ * read: where an operand is still expected after `previous`, and where `next`
+ * is one of the few things that may stand in a head at all.
  *
- * Inside the annotation both halves are the type grammar's: a line cannot end
- * after `keyof`, `infer` or `extends` any more than after `|`, and it is the
- * type reader that says so.
- *
- * This is the one question both readers of a declaration ask. The statement
- * reader walks the head and asks it at each line break; the item reader asks
- * it of the annotation before handing it to the type consumer, which reads a
- * type wherever it is written and would otherwise read straight past the
- * break.
+ * A type is asked of the type tracker instead, which knows what a line break
+ * ends inside one.
  */
-function headContinues(
-  before: Syntax | undefined,
-  previous: Syntax | undefined,
-  next: Syntax,
-  annotated: boolean,
-): boolean {
-  if (
-    annotated
-      ? typeExpectsOperand(before, previous)
-      : previous?.tag === "token" && operandExpectedAfter.has(previous.raw)
-  )
+function headContinues(previous: Syntax | undefined, next: Syntax): boolean {
+  if (previous?.tag === "token" && operandExpectedAfter.has(previous.raw))
     return true;
-  if (next.tag !== "token") return false;
-  return annotated
-    ? annotationContinuedBy.has(next.raw) ||
-        typeKeywordContinues(before, previous, next.raw)
-    : headContinuedBy.has(next.raw);
+  return next.tag === "token" && headContinuedBy.has(next.raw);
 }
 
 /**
@@ -403,6 +382,102 @@ function globalAugmentation(cursor: SyntaxCursor, offset = 0): boolean {
 }
 
 /**
+ * A type read one node at a time by a walk that scans it, and where a line
+ * break ends it. `opening` is what the type is written after: an annotation's
+ * or a return type's `:`, or an alias's `=`.
+ *
+ * Every walk that scans a type asks this one tracker -- a declarator's
+ * annotation, an alias's body and a function's return type alike -- so what a
+ * line break ends inside a type is decided once. Each node is taken once, in
+ * constant time.
+ */
+function createTypeTracker(opening: Syntax) {
+  /**
+   * How deep in type parameters or arguments the walk stands. A `<` still open
+   * encloses whatever is written under it, so `let x: Array<\nnumber\n>` is one
+   * type however its lines are broken, and an `=` or a `,` there -- `<T =
+   * string>`, `Map<K, V>` -- is the type's own.
+   */
+  let typeArguments = 0;
+  /**
+   * Whether the outermost `<` the walk last opened was written where a type
+   * was expected. Such a `<` opens a generic function type's type parameters
+   * rather than type arguments, and the parameter list after its `>` belongs
+   * to the same type: `<T>` and the `(x: T) => T` under it are one.
+   */
+  let typeParameters = false;
+  /** The last two nodes taken, the one before `previous` first. */
+  let before: Syntax | undefined;
+  let previous: Syntax = opening;
+  /**
+   * Whether `previous` was read where a type was expected and names one. A
+   * word the grammar writes as an operator elsewhere is a name there and
+   * finishes the type: `keyof extends` and the statement under it are two,
+   * where `A extends` waits for the type it compares against. `abstract` is
+   * taken before what follows it is seen, and the `new` that makes it an
+   * operator carries the type on by `typeKeywordContinues`.
+   */
+  let named = false;
+  /**
+   * Whether the type still expects an operand where the walk stands, so that
+   * the line break in front of the next node ends nothing, whatever that node
+   * begins: `function f():` and the `import("m").T` written under it are one
+   * signature.
+   */
+  const expectsType = (): boolean =>
+    !named &&
+    ((typeParameters &&
+      typeArguments === 0 &&
+      angleWidth(raw(previous) ?? "", ">") > 0) ||
+      typeExpectsOperand(before, previous));
+  /**
+   * Whether the type is unfinished where the walk stands: it still expects an
+   * operand, or a `<` it opened is still open. A word that begins a statement
+   * begins a type there instead: `let x:` and the `import("m").T;` under it
+   * are one declaration.
+   */
+  const unfinished = (): boolean => typeArguments !== 0 || expectsType();
+  return Object.freeze({
+    unfinished,
+    /** Whether the walk stands inside type parameters or arguments. */
+    nested(): boolean {
+      return typeArguments !== 0;
+    },
+    /**
+     * Whether the type carries on across a line break in front of `next`: where
+     * it still expects an operand, and where `next` is one of the few things
+     * that may stand in a type there, or a keyword the two nodes before it
+     * carry on. A line cannot end after `keyof`, `infer` or `extends` any more
+     * than after `|`.
+     */
+    continuesAcross(next: Syntax): boolean {
+      return (
+        unfinished() ||
+        (next.tag === "token" &&
+          (annotationContinuedBy.has(next.raw) ||
+            typeKeywordContinues(before, previous, next.raw)))
+      );
+    },
+    /** Takes a node the walk has read. */
+    take(node: Syntax): void {
+      const operand = expectsType();
+      const spelling = raw(node);
+      if (spelling !== undefined) {
+        if (typeArguments === 0 && angleWidth(spelling, "<") > 0)
+          typeParameters = operand;
+        typeArguments += angleWidth(spelling, "<");
+        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+      }
+      named = operand && namesType(node, undefined);
+      before = previous;
+      previous = node;
+    },
+  });
+}
+
+type TypeTracker = ReturnType<typeof createTypeTracker>;
+
+/**
  * Where a declaration with no body ends, for the walks that scan a
  * declaration's head.
  *
@@ -416,7 +491,8 @@ function globalAugmentation(cursor: SyntaxCursor, offset = 0): boolean {
  * `declare function h(): void` and the call under it. Ending a signature only
  * where the next line began a declaration took that call into it. Neither
  * scanning walk knows the type grammar, so both ask this and both get the same
- * answer.
+ * answer, and what the type itself carries across a line break is asked of
+ * the type tracker a declarator's annotation is read with.
  *
  * `declared` is the word that says what the declaration declares, and the
  * tracker ends nothing unless it is `type` or `function`. `import type A =
@@ -430,48 +506,34 @@ function createBodilessTracker(declared: string | undefined) {
    */
   let ending = false;
   /**
-   * Whether the walk reads a type: an alias's body, or a function's return
-   * type after the `:` that opens it.
+   * The type the walk reads, once it reads one: an alias's body, or a
+   * function's return type after the `:` that opens it.
    */
-  let annotated = false;
+  let type: TypeTracker | undefined;
   /**
-   * How deep in type parameters or arguments the walk stands. The `=` of a
-   * parameter's default is written inside them and does not open an alias's
-   * body, and a parenthesis there is no parameter list; a `<` still open
-   * encloses whatever is written under it, so a line break there ends nothing.
+   * How deep in the head's own type parameters the walk stands, before any
+   * type is read. The `=` of a parameter's default is written inside them and
+   * does not open an alias's body, and a parenthesis there is no parameter
+   * list.
    */
-  let typeArguments = 0;
-  /**
-   * Whether the outermost `<` the walk last opened was written where a type
-   * was expected. Such a `<` opens a generic function type's type parameters
-   * rather than type arguments, and the parameter list after its `>` belongs
-   * to the same type: `<T>` and the `(x: T) => T` under it are one.
-   */
-  let typeParameters = false;
-  /** The last two nodes taken, the one before `previous` first. */
-  let before: Syntax | undefined;
+  let typeParameters = 0;
+  /** The last node taken before the type. */
   let previous: Syntax | undefined;
-  /**
-   * Whether the type being read still expects an operand where the walk
-   * stands, so that the line break in front of the next node ends nothing,
-   * whatever that node begins: `function f():` and the `import("m").T`
-   * written under it are one signature.
-   */
-  const expectsType = (): boolean =>
-    annotated &&
-    ((typeParameters &&
-      typeArguments === 0 &&
-      angleWidth(raw(previous) ?? "", ">") > 0) ||
-      typeExpectsOperand(before, previous));
   return Object.freeze({
     /**
      * Whether the walk stands inside a type, where it is the type grammar that
      * says what a line break ends and no other rule may.
      */
     readsType(): boolean {
-      return annotated;
+      return type !== undefined;
     },
-    expectsType,
+    /**
+     * Whether the type being read is unfinished where the walk stands, so
+     * that the line break in front of the next node ends nothing.
+     */
+    unfinished(): boolean {
+      return type?.unfinished() ?? false;
+    },
     /**
      * Whether the declaration may end where the walk stands with no body: a
      * function whose head is finished, written as an overload or an ambient
@@ -479,43 +541,47 @@ function createBodilessTracker(declared: string | undefined) {
      * rather than as a declaration missing a brace.
      */
     complete(): boolean {
-      return ending && typeArguments === 0 && !expectsType();
+      return ending && typeParameters === 0 && !(type?.unfinished() ?? false);
     },
     /** Whether the declaration ends in front of `next`. */
     endsBefore(next: Syntax): boolean {
-      return (
-        ending &&
-        typeArguments === 0 &&
-        leadingLineBreak(next) &&
-        // A brace written under a function's head is its body.
-        !(declared === "function" && braceGroup(next)) &&
-        !expectsType() &&
-        !headContinues(before, previous, next, annotated)
-      );
+      if (!ending || !leadingLineBreak(next)) return false;
+      // A brace written under a function's head is its body.
+      if (declared === "function" && braceGroup(next)) return false;
+      return type === undefined
+        ? typeParameters === 0 && !headContinues(previous, next)
+        : !type.continuesAcross(next);
     },
     /** Takes a node the walk has read. */
     take(node: Syntax): void {
       if (declared !== "type" && declared !== "function") return;
+      if (type !== undefined) {
+        type.take(node);
+        return;
+      }
       const opensParameters =
         declared === "function" &&
         !ending &&
-        typeArguments === 0 &&
+        typeParameters === 0 &&
         node.tag === "group" &&
         node.delimiter === "parenthesis";
       const spelling = raw(node);
       if (spelling !== undefined) {
-        if (typeArguments === 0 && angleWidth(spelling, "<") > 0)
-          typeParameters = expectsType();
-        typeArguments += angleWidth(spelling, "<");
-        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
+        typeParameters += angleWidth(spelling, "<");
+        typeParameters = Math.max(
+          0,
+          typeParameters - angleWidth(spelling, ">"),
+        );
       }
-      before = previous;
       previous = node;
       if (opensParameters) ending = true;
-      if (typeArguments !== 0) return;
-      if (declared === "type" && spelling === "=") ending = annotated = true;
+      if (typeParameters !== 0) return;
+      if (declared === "type" && spelling === "=") {
+        ending = true;
+        type = createTypeTracker(node);
+      }
       if (declared === "function" && ending && spelling === ":")
-        annotated = true;
+        type = createTypeTracker(node);
     },
   });
 }
@@ -538,36 +604,20 @@ function declaredBy(headWords: readonly string[]): string | undefined {
 /**
  * How many nodes the type annotation standing at the cursor may span before a
  * line break ends the declarator's head, `colon` being the `:` that opened it.
- *
- * A `<` still open encloses whatever is written under it, so
- * `let x: Array<\nnumber\n>` is one annotation however its lines are broken --
- * the same allowance the statement reader makes as it walks a head.
+ * The type tracker says where, as it does for the statement reader's walk.
  */
 function annotationExtent(
   cursor: SyntaxCursor,
   colon: Syntax,
   context: ConsumerContext,
 ): number {
-  let typeArguments = 0;
+  const type = createTypeTracker(colon);
   let width = 0;
-  let before: Syntax | undefined;
-  let previous = colon;
   while (width < cursor.remainingLength) {
     checkWork(context);
     const next = cursor.peek(width)!;
-    if (
-      typeArguments === 0 &&
-      leadingLineBreak(next) &&
-      !headContinues(before, previous, next, true)
-    )
-      break;
-    const spelling = raw(next);
-    if (spelling !== undefined) {
-      typeArguments += angleWidth(spelling, "<");
-      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-    }
-    before = previous;
-    previous = next;
+    if (leadingLineBreak(next) && !type.continuesAcross(next)) break;
+    type.take(next);
     width += 1;
   }
   return width;
@@ -1751,14 +1801,12 @@ class StatementConsumer implements SyntaxConsumer {
     let initialized = false;
     /** Whether the declarator being read has taken its binder. */
     let bound = false;
-    /** Whether it has taken the `:` that opens its type annotation. */
-    let annotated = false;
     /**
-     * How deep in type arguments the head stands. A `<` still open encloses
-     * whatever is written under it, so `let x: Array<\nnumber\n>` is one head
-     * however its lines are broken.
+     * The declarator's type annotation, once its `:` is read. The item reader
+     * measures an annotation with the same tracker, so the two readers end a
+     * head at the same line break.
      */
-    let typeArguments = 0;
+    let annotation: TypeTracker | undefined;
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
@@ -1769,9 +1817,10 @@ class StatementConsumer implements SyntaxConsumer {
       // `let x` and the `foo();` written under it are two statements.
       if (
         bound &&
-        typeArguments === 0 &&
         leadingLineBreak(next) &&
-        !headContinues(children.at(-2), children.at(-1), next, annotated)
+        !(annotation === undefined
+          ? headContinues(children.at(-1), next)
+          : annotation.continuesAcross(next))
       )
         break;
       // A declarator ends where its initializer does, so only another
@@ -1786,7 +1835,9 @@ class StatementConsumer implements SyntaxConsumer {
       // was swallowed as loose tokens and never measured at all, so its body
       // was left in whatever context held the declaration.
       if (initialized && !token(next, ",") && asiAllowed(cursor)) break;
-      if (token(next, "=")) {
+      // The `=` of a type parameter's default, `let f: <T = A>() => T`, is the
+      // annotation's own and opens no initializer.
+      if (token(next, "=") && !annotation?.nested()) {
         children.push(cursor.consume()!);
         const expression = this.#expression.consume(cursor, {
           ...context,
@@ -1818,27 +1869,22 @@ class StatementConsumer implements SyntaxConsumer {
       if (
         children.length > 1 &&
         leadingLineBreak(next) &&
-        beginsStatement(cursor)
+        beginsStatement(cursor) &&
+        !(annotation?.unfinished() ?? false)
       )
         break;
-      const spelling = raw(next);
-      if (spelling !== undefined) {
-        typeArguments += angleWidth(spelling, "<");
-        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-      }
       // A `,` or a `:` written inside type arguments is the type's own, not
       // the declarator list's: `let x: Map<string, number>` declares one
       // binder, and reading its comma as a separator left the walk believing
       // it stood in a binder rather than in an annotation -- so the line break
       // under it was measured by the expression grammar, and the statement
       // written there was taken into the declaration.
-      if (typeArguments === 0) {
-        if (spelling === ",") {
-          bound = false;
-          annotated = false;
-        } else if (spelling === ":") annotated = true;
-        else bound = true;
-      }
+      if (annotation?.nested() !== true && token(next, ",")) {
+        bound = false;
+        annotation = undefined;
+      } else if (annotation !== undefined) annotation.take(next);
+      else if (token(next, ":")) annotation = createTypeTracker(next);
+      else bound = true;
       children.push(cursor.consume()!);
     }
     const terminator = requireTerminator("stmt", cursor, start, children);
@@ -1870,7 +1916,7 @@ class StatementConsumer implements SyntaxConsumer {
         children.length > 0 &&
         leadingLineBreak(next) &&
         beginsStatement(cursor) &&
-        !head.expectsType()
+        !head.unfinished()
       )
         break;
       // An alias's body is a type, and a type ends at a line break the type
@@ -2225,7 +2271,7 @@ class ItemConsumer implements SyntaxConsumer {
           leadingLineBreak(next) &&
           beginsItem(cursor) &&
           !headExpectsMore(raw(children.at(-1))) &&
-          !head.expectsType()
+          !head.unfinished()
         ) {
           break;
         }

@@ -683,6 +683,32 @@ describe("statement and item consumers", () => {
       "let f: <T\nextends A>(v: T) => T = g;",
       "let f: <T\nextends A>(v: T) => T = g;",
     ],
+    // A declarator's annotation is read by the tracker an alias's body and a
+    // return type are read by. A word that begins a statement begins the type
+    // where one is still expected, and a generic function type's parameter
+    // list belongs to the type parameters in front of it.
+    ['let x:\nimport("m").A;', 'let x:\nimport("m").A;'],
+    ['let x: typeof\nimport("m");', 'let x: typeof\nimport("m");'],
+    ["let x: <T>\n(v: T) => T;", "let x: <T>\n(v: T) => T;"],
+    ["let x: new <T>\n() => T;", "let x: new <T>\n() => T;"],
+    ["let x: abstract new <T>\n() => T;", "let x: abstract new <T>\n() => T;"],
+    // Type arguments are no type parameters, and the parenthesis under them
+    // begins a statement.
+    ["let x: A<B>\n(y);", "let x: A<B>"],
+    // The `=` of a type parameter's default is the type's own, and opens no
+    // initializer.
+    ["let f: <T = A>() => T = g;", "let f: <T = A>() => T = g;"],
+    ["let f: <T = A>\n() => T = g;", "let f: <T = A>\n() => T = g;"],
+    // A word the type grammar writes as an operator is a name where a type is
+    // expected, and finishes the type: TypeScript reads `keyof extends` as
+    // the keys of a type named `extends`.
+    ["let x: keyof extends\nfoo();", "let x: keyof extends"],
+    ["let x: extends\nfoo();", "let x: extends"],
+    ["let x: in\nfoo();", "let x: in"],
+    ["let x: as\nfoo();", "let x: as"],
+    ["let x: typeof if\nfoo();", "let x: typeof if"],
+    ["let x: infer\nis = 1;", "let x: infer\nis = 1;"],
+    ["let x: is\nfoo();", "let x: is"],
     // A definite assignment's `!` stands in a head, and TypeScript writes it
     // `BindingIdentifier [no LineTerminator here] !`.
     ["let x!: A;", "let x!: A;"],
@@ -707,6 +733,21 @@ describe("statement and item consumers", () => {
     // under an initializer begins a statement.
     ["const x = a\n!b;", "const x = a"],
     ["const x = a!\n!b;", "const x = a!"],
+    // The item reader reads an annotation with the type consumer, which reads
+    // a negative number and a type spelled like a keyword as the types they
+    // are. It refused them, and with them the whole item.
+    ["let x: -1\nfoo();", "let x: -1"],
+    ["let x: -1n\nfoo();", "let x: -1n"],
+    ["let x: -\n1;", "let x: -\n1;"],
+    ["let x: A extends -1 ? B : C;", "let x: A extends -1 ? B : C;"],
+    ["let x: type\nfoo();", "let x: type"],
+    ["let x: declare\nfoo();", "let x: declare"],
+    ["let x: module\nfoo();", "let x: module"],
+    ["let x: async\nfoo();", "let x: async"],
+    ["let x: of\nfoo();", "let x: of"],
+    ["let x: abstract\nfoo();", "let x: abstract"],
+    ["let x: if | class;", "let x: if | class;"],
+    ["let x: A.class<B>\nfoo();", "let x: A.class<B>"],
   ])(
     "reads %j as %j at statement level and at item level",
     (source, extent) => {

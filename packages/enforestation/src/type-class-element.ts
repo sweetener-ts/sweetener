@@ -376,6 +376,23 @@ class TypeConsumer implements SyntaxConsumer {
         children.length > 0
       )
         break;
+      if (expectingOperand && namesType(next, cursor.peek(1))) {
+        children.push(cursor.consume()!);
+        expectingOperand = false;
+        continue;
+      }
+      // A `-` is a type only in front of the number it negates, which
+      // TypeScript reads wherever that number is written: `-1` and `-\n1n`
+      // are literal types.
+      if (
+        expectingOperand &&
+        spelling === "-" &&
+        numericLiteral(cursor.peek(1))
+      ) {
+        children.push(cursor.consume()!, cursor.consume()!);
+        expectingOperand = false;
+        continue;
+      }
       if (spelling === ":") {
         if (conditionalDepth === 0 || expectingOperand) break;
         children.push(cursor.consume()!);
@@ -477,6 +494,35 @@ class TypeConsumer implements SyntaxConsumer {
       cursor,
     });
   }
+}
+
+/**
+ * Whether `node`, written where a type is expected with `following` after it,
+ * is the name of a type: a word the type grammar writes no operator with
+ * there, reserved or not. TypeScript reads `let x: if`, `let x: extends` and
+ * `A.class` as references to types spelled that way, and leaves what they name
+ * to the checker.
+ *
+ * `abstract` is an operator only in front of the `new` of a constructor type,
+ * which TypeScript looks for across a line break; anywhere else it names a
+ * type. `import` names none: it is no type until its argument is written.
+ */
+export function namesType(
+  node: Syntax,
+  following: Syntax | undefined,
+): boolean {
+  if (!token(node) || node.kind !== "keyword" || node.raw === "import")
+    return false;
+  if (node.raw === "abstract") return !token(following, "new");
+  return !prefixTypeWords.has(node.raw);
+}
+
+/** Whether `node` is a number or a bigint, the operands a `-` type takes. */
+function numericLiteral(node: Syntax | undefined): boolean {
+  return (
+    token(node) &&
+    (node.kind === "numeric-literal" || node.kind === "bigint-literal")
+  );
 }
 
 /**
