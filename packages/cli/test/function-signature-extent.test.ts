@@ -120,3 +120,46 @@ describe("the extent of a function declaration under a macro", () => {
     },
   );
 });
+
+/**
+ * Where a variable declaration ends, as a macro sees it.
+ *
+ * A declarator's annotation is read by the same type tracker as a signature's
+ * return type. Read by a model of its own, it cut a generic function type at
+ * the `>` of its type parameters, so a statement macro wrapped half a
+ * declaration; and the item reader refused an annotation it could not read --
+ * a negative literal, a type spelled like a keyword -- and the module's items
+ * were walked as raw tokens, where a statement macro written under the
+ * declaration was never expanded.
+ */
+describe("the extent of a variable declaration under a macro", () => {
+  test.each([
+    ["a generic function type", "<T>\n(v: T) => T", "(v) => v"],
+    ["a generic constructor type", "new <T>\n() => T", "null as any"],
+  ])(
+    "wraps a whole declaration whose annotation is %s broken after its type parameters",
+    (_label, type, value) => {
+      const { text, messages } = expand(
+        "export function outer() {\n" +
+          `  block const x: ${type} = ${value};\n` +
+          "}\n",
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(`{ const x: ${type.replace("\n", " ")} = `);
+    },
+  );
+
+  test.each([
+    ["a negative literal", "-1", "-1"],
+    ["a negative bigint", "-1n", "-1n"],
+  ])(
+    "expands a statement macro under a module declaration annotated with %s",
+    (_label, type, value) => {
+      const { text, messages } = expand(
+        `export const x: ${type} = ${value};\n` + "unless(false) { run(); }\n",
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("if (!(false)) { run(); }");
+    },
+  );
+});
