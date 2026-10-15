@@ -532,6 +532,106 @@ function typeBindingOperator(token: TokenSyntax): boolean {
   );
 }
 
+/**
+ * The precedence an expression holds together at against the operators around
+ * it.
+ *
+ * The parser reads an unparenthesized arrow as one operand, as it reads a
+ * call, and records it at primary precedence. TypeScript reads an arrow as an
+ * assignment expression, whose body runs on past any operator written after
+ * it, so an arrow holds together only where an assignment would: `p && $f`
+ * with `$f` an arrow printed `p && () => 1`, which does not parse, and
+ * `$f || q` printed an arrow that returns `1 || q`.
+ */
+function holdingPrecedence(expression: ProtectedSyntax): number | undefined {
+  return expression.form === "arrow" ? 20 : expression.precedence;
+}
+
+/**
+ * The places where an expression begins something whose grammar keeps certain
+ * tokens out of its first place: an expression statement, an arrow's concise
+ * body, and what `export default` exports. An expression that begins with one
+ * of those tokens there is read as something else.
+ */
+type LeadingPosition = "statement" | "arrow body" | "export default";
+
+/**
+ * Whether `expression`, standing first in `position`, begins with a token
+ * TypeScript reads there as something other than an expression.
+ *
+ * ECMAScript writes these as lookahead restrictions. A statement beginning
+ * with `{` is a block and one beginning with `function`, `async function` or
+ * `class` is a declaration, so `$v;` with `$v` an object literal printed a
+ * block holding a label, and `$f();` with `$f` a function expression printed
+ * a declaration with no name. An arrow's body beginning with `{` is a block,
+ * so `() => $v` printed a function that returns nothing. `export default`
+ * reads `function` and `class` as declarations too, but an object literal as
+ * the object it is.
+ */
+function misreadAt(
+  expression: ProtectedSyntax,
+  position: LeadingPosition,
+): boolean {
+  const [first, second] = expression.children;
+  if (first?.tag === "group")
+    return first.delimiter === "brace" && position !== "export default";
+  if (first?.tag !== "token" || position === "arrow body") return false;
+  return (
+    first.raw === "function" ||
+    first.raw === "class" ||
+    (first.raw === "async" &&
+      second?.tag === "token" &&
+      second.raw === "function")
+  );
+}
+
+/**
+ * Whether a postfix chain holds `?.`. Whatever is written after it joins the
+ * chain and is skipped along with it when the chain short-circuits, so a
+ * chain that something else continues keeps its parentheses: `$v()` with
+ * `$v` bound to `a?.b` is `(a?.b)()`, which throws where `a` is missing, and
+ * `a?.b()` does not. A capture holding nothing but another expression is that
+ * expression.
+ */
+function optionalChain(expression: ProtectedSyntax): boolean {
+  const children = expression.children;
+  const [sole] = children;
+  if (
+    children.length === 1 &&
+    sole?.tag === "protected" &&
+    sole.category === "expr"
+  )
+    return optionalChain(sole);
+  return children.some((child) => child.tag === "token" && child.raw === "?.");
+}
+
+/**
+ * Whether what `new` constructs would take arguments or an optional chain of
+ * its own along with it: `new $C()` with `$C` bound to `make()` is
+ * `new (make())()`, and `new make()()` constructs `make` and calls the result.
+ * Neither a function expression's parameters nor a call in a class
+ * expression's heritage is an argument list of its own, and an operand nested
+ * anywhere but at the head is bounded by what precedes it.
+ */
+function constructsTooMuch(expression: ProtectedSyntax): boolean {
+  const [head] = expression.children;
+  if (
+    head?.tag === "token" &&
+    (head.raw === "function" || head.raw === "class")
+  )
+    return false;
+  return (
+    optionalChain(expression) ||
+    expression.children.some(
+      (child, at) =>
+        at > 0 && child.tag === "group" && child.delimiter === "parenthesis",
+    ) ||
+    (head?.tag === "protected" &&
+      head.category === "expr" &&
+      constructsTooMuch(head))
+  );
+}
+
 export function printExpandedFile<Trace>(
   options: PrintExpandedFileOptions<Trace>,
 ): PrintedExpandedFile<Trace> {
@@ -589,6 +689,17 @@ export function printExpandedFile<Trace>(
    * printed as `type F<T> = Array<T> export interface Functor`.
    */
   const statementStarts = new Set<Syntax>();
+  /**
+   * Expressions that stand first in a statement, an arrow's concise body or an
+   * `export default`, and the one place each stands. An expression passes its
+   * place on to the operand it begins with, unless it is parenthesized itself.
+   */
+  const leadingPositions = new Map<Syntax, LeadingPosition>();
+  /**
+   * Expressions a call, an access, a tagged template or a `new` would reach
+   * into and take part of, if they were printed without parentheses.
+   */
+  const continuedHeads = new Set<Syntax>();
   /** Each `<` the parser read as opening an arrow's type parameters. */
   const typeParameterOpens = new Set<Syntax>();
   /** Each `>` closing type parameters that `needsComma` before it. */
@@ -617,7 +728,7 @@ export function printExpandedFile<Trace>(
         : undefined;
     const bind = (node: Syntax | undefined, minimum: number) => {
       const found = operand(node);
-      if (found !== undefined && found.precedence! >= minimum)
+      if (found !== undefined && holdingPrecedence(found)! >= minimum)
         boundOperands.add(found);
     };
     if (parent.form === "conditional") {
@@ -659,9 +770,9 @@ export function printExpandedFile<Trace>(
       return;
     }
     // A prefix operator other than `new`, whose operand's parentheses decide
-    // what is constructed.
+    // what is constructed. `yield` takes a whole assignment expression.
     if (first?.tag === "token" && first.raw !== "new" && children.length === 2)
-      bind(last, precedence + 1);
+      bind(last, parent.form === "yield" ? precedence : precedence + 1);
   };
   const emit = (text: string, origin: OriginId, kind: GeneratedRegionKind) => {
     if (text.length === 0) return;
@@ -707,6 +818,33 @@ export function printExpandedFile<Trace>(
           (next.tag === "token" && arrowBodyEnds.has(next.raw)))
       )
         wholeArrowBodies.add(child);
+      if (child.tag === "protected" && child.category === "expr") {
+        // Asked of the nodes on either side rather than of a parent: a call
+        // or an access need not be a node of its own, and in an arrow's body
+        // it is often only a run of siblings.
+        const continued =
+          (next?.tag === "token" && next.raw === ".") ||
+          (next?.tag === "group" &&
+            (next.delimiter === "parenthesis" ||
+              next.delimiter === "bracket" ||
+              next.delimiter === "template"));
+        if (
+          previous?.tag === "token" && previous.raw === "new"
+            ? constructsTooMuch(child)
+            : continued && optionalChain(child)
+        )
+          continuedHeads.add(child);
+        if (previous?.tag === "token" && previous.raw === "=>")
+          leadingPositions.set(child, "arrow body");
+        const before = children[index - 2];
+        if (
+          previous?.tag === "token" &&
+          previous.raw === "default" &&
+          before?.tag === "token" &&
+          before.raw === "export"
+        )
+          leadingPositions.set(child, "export default");
+      }
       // An argument or an array element is a whole assignment expression, so
       // an arrow, a conditional or an operator expression written as one
       // needs no parentheses of its own: `map(values, (n) => n * 10)`. Only a
@@ -1143,7 +1281,7 @@ export function printExpandedFile<Trace>(
           // A unary operand holds together against `as` without help.
           if (
             assertion.operand.tag === "protected" &&
-            (assertion.operand.precedence ?? 0) > 110
+            (holdingPrecedence(assertion.operand) ?? 0) > 110
           )
             boundOperands.add(assertion.operand);
           pushChildren([assertion.operand]);
@@ -1171,14 +1309,25 @@ export function printExpandedFile<Trace>(
             !item.children.some(
               (child) => child.tag === "token" && binds(child),
             ));
+        const leading = leadingPositions.get(item);
         const group =
           (item.category === "expr" || item.category === "type") &&
-          !atomic &&
-          !wholeArrowBodies.has(item) &&
-          !boundOperands.has(item) &&
+          ((!atomic &&
+            !wholeArrowBodies.has(item) &&
+            !boundOperands.has(item)) ||
+            continuedHeads.has(item) ||
+            (leading !== undefined && misreadAt(item, leading))) &&
           (options.groupProtectedExpression?.(item) ?? true);
         if (group)
           pending.push({ text: ")", origin: item.origin, grouping: true });
+        const head = item.children[0];
+        if (head?.tag === "protected" && head.category === "expr") {
+          // An expression statement is a statement that begins with one.
+          if (item.category === "stmt" || item.category === "item")
+            leadingPositions.set(head, "statement");
+          else if (leading !== undefined && !group)
+            leadingPositions.set(head, leading);
+        }
         markBoundOperands(item);
         const typeParameters = arrowTypeParameters(item);
         if (typeParameters !== undefined) {

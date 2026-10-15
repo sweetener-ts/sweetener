@@ -302,8 +302,19 @@ assignment, `yield`, or `await`. Parentheses make an expression of no form.
 Printing parenthesizes a protected expression that expansion placed where its
 own operators could re-associate: one whose precedence is not already tighter
 than the operator it is an operand of, and any conditional or arrow that is not
-the whole body of an arrow. `??` beside an unparenthesized `||` or `&&`, and a
-unary base of `**`, keep their parentheses.
+the whole body of an arrow. An arrow holds together only where an assignment
+expression would. `??` beside an unparenthesized `||` or `&&`, and a unary
+base of `**`, keep their parentheses. So does an optional chain that a call,
+an access or a tagged template continues, and an expression `new` constructs
+that holds a call or an optional chain of its own.
+
+An expression a macro produces keeps its node even when it is a single group,
+and printing also parenthesizes one whose first token the position it begins
+would read as something else: `{`, `function`, `async function` or `class` at
+the start of an expression statement, `{` at the start of an arrow's concise
+body, and `function`, `async function` or `class` after `export default`.
+Where such an expression begins with an operand rather than with the token
+itself, that operand is parenthesized instead: `({ value: 1 }).value;`.
 
 ## 8. TypeScript built-in parsing boundary
 

@@ -305,6 +305,18 @@ const macroSpaces = Object.freeze([
   "jsxChild",
 ] as const);
 
+/**
+ * Whether an expression or a type spliced as `syntax` still says where it
+ * begins and ends without a node around it: a lone token, or a node that
+ * already bounds itself.
+ *
+ * A lone group does not. The braces of `{ value: 1 }` spliced loose after
+ * `=>` read as a block holding a label, and the function returns nothing.
+ */
+function boundsItself(syntax: readonly Syntax[]): boolean {
+  return syntax.length === 1 && syntax[0]!.tag !== "group";
+}
+
 function punctuationSpelled(spelling: string): boolean {
   return !/^[\p{ID_Start}_$]/u.test(spelling);
 }
@@ -4269,7 +4281,7 @@ export function expandMacroSyntax(
           // around the use would re-bind against the replacement's own.
           if (
             (macro.category === "expr" || macro.category === "type") &&
-            replaced.length > 1
+            !boundsItself(replaced)
           ) {
             const origins = [...new Set(replaced.map(({ origin }) => origin))];
             output.push(
@@ -4516,7 +4528,7 @@ export function expandMacroSyntax(
           const spliceWhole =
             (result.syntax.category === "expr" ||
               result.syntax.category === "type") &&
-            result.syntax.children.length > 1;
+            !boundsItself(result.syntax.children);
           output.push(
             ...withLeadingTrivia(
               spliceWhole ? [result.syntax] : result.syntax.children,
