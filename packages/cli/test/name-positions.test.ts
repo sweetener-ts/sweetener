@@ -243,6 +243,116 @@ describe("a function type's parameter", () => {
 });
 
 /**
+ * A name declared in the type namespace: a type parameter, a mapped type's
+ * key, what `infer` declares.
+ *
+ * Each binds a type for the declaration, the signature or the type it is
+ * written in, and nothing recorded that it did: the name was dispatched to a
+ * type macro of its spelling where it was declared and everywhere it was used,
+ * so `type P<T> = T[]` came out as `type P<number> = number[]`.
+ */
+describe("a name the type namespace declares", () => {
+  const binders: readonly (readonly [string, string])[] = [
+    ["a type alias's type parameter", "export type P<boxed> = boxed[];"],
+    [
+      "an interface's type parameter",
+      "export interface I<boxed> { v: boxed; }",
+    ],
+    ["a class's type parameter", "export class C<boxed> { v!: boxed; }"],
+    [
+      "a class expression's type parameter",
+      "export const C = class<boxed> { v!: boxed; };",
+    ],
+    [
+      "a function's type parameter",
+      "export function f<boxed>(v: boxed): boxed { return v; }",
+    ],
+    [
+      "an overload signature's type parameter",
+      "export function f<boxed>(v: boxed): boxed;\nexport function f<boxed>(v: boxed): boxed { return v; }",
+    ],
+    [
+      "a method's type parameter",
+      "export class C { m<boxed>(v: boxed): boxed { return v; } }",
+    ],
+    [
+      "an abstract method's type parameter",
+      "export abstract class C { abstract m<boxed>(v: boxed): boxed; }",
+    ],
+    [
+      "a method signature's type parameter",
+      "export interface I { m<boxed>(v: boxed): boxed; }",
+    ],
+    [
+      "a call signature's type parameter",
+      "export interface I { <boxed>(v: boxed): boxed; }",
+    ],
+    [
+      "a construct signature's type parameter",
+      "export interface I { new <boxed>(v: boxed): I; }",
+    ],
+    [
+      "a generic arrow's type parameter",
+      "export const g = <boxed,>(v: boxed): boxed => v;",
+    ],
+    [
+      "a generic function type's type parameter",
+      "export type F = <boxed>(v: boxed) => boxed;",
+    ],
+    [
+      "a mapped type's key",
+      "export type M<K extends string> = { [boxed in K]: boxed };",
+    ],
+    [
+      "what `infer` declares",
+      "export type E<X> = X extends Array<infer boxed> ? boxed : never;",
+    ],
+    [
+      "what `infer` declares inside a group",
+      "export type E<X> = X extends [infer boxed] ? boxed : never;",
+    ],
+    [
+      "what `infer` declares in a function type",
+      "export type E<X> = X extends (v: never) => infer boxed ? boxed : never;",
+    ],
+  ];
+  for (const [name, source] of binders) {
+    test(`${name} is not dispatched as one`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("boxed");
+      expect(text).not.toContain("readonly number[]");
+    });
+  }
+
+  const references: readonly (readonly [string, string])[] = [
+    [
+      "a type parameter's constraint and default",
+      "export type D<U extends boxed = boxed> = U;",
+    ],
+    [
+      "a type argument",
+      "declare function f<U>(v: U): U;\nexport const x = f<boxed>([1]);",
+    ],
+    [
+      "a type parameter's name beyond the declaration it binds in",
+      "export type A<boxed> = boxed;\nexport type B = boxed;",
+    ],
+    [
+      "a method's type parameter's name in another member",
+      "export class C { m<boxed>(v: boxed): boxed { return v; } n: boxed = [1]; }",
+    ],
+  ];
+  for (const [name, source] of references) {
+    test(`${name} is still dispatched`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("readonly number[]");
+    });
+  }
+});
+
+/**
  * A name written inside an import or export specifier list, or as the one a
  * `* as` introduces, is a specifier: it names an export of a module, or the
  * local binding a clause re-exports, and nothing there can be an invocation.

@@ -1335,9 +1335,123 @@ export function expandMacroSyntax(
   };
 
   /**
+   * Where the type parameter list whose `>` stands just before `end` in `run`
+   * opens: the index of its `<`. Undefined where no `>` stands there, or where
+   * the list it closes never opened.
+   */
+  const typeParametersOpenBefore = (
+    run: SyntaxRun,
+    end: number,
+  ): number | undefined => {
+    if (angles(nodeAt(run, end - 1), ">") === 0) return undefined;
+    let depth = 0;
+    for (let at = end - 1; at >= 0; at -= 1) {
+      const node = nodeAt(run, at)!;
+      depth += angles(node, ">") - angles(node, "<");
+      if (depth <= 0) return at;
+    }
+    return undefined;
+  };
+
+  /** The words that may modify a type parameter, written before its name. */
+  const typeParameterModifiers = new Set(["const", "in", "out"]);
+
+  /**
+   * Records the names the type parameter list whose `<` stands at `open` in
+   * `nodes` binds: the name each entry begins with, past the modifiers that
+   * may stand in front of it. A constraint and a default are types the list
+   * reads, not names it binds.
+   */
+  const bindTypeParameters = (
+    nodes: readonly Syntax[],
+    open: number,
+    into: CollectedBindings,
+  ): void => {
+    let depth = angles(nodes[open], "<");
+    let entryBegins = true;
+    for (let at = open + 1; at < nodes.length && depth > 0; at += 1) {
+      const node = nodes[at]!;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth !== 1 || node.tag !== "token") continue;
+      if (node.raw === ",") {
+        entryBegins = true;
+        continue;
+      }
+      if (!entryBegins) continue;
+      const next = nodes[at + 1];
+      if (
+        typeParameterModifiers.has(node.raw) &&
+        next?.tag === "token" &&
+        next.kind === "identifier"
+      )
+        continue;
+      if (node.kind === "identifier") recordType(into, node.raw);
+      entryBegins = false;
+    }
+  };
+
+  /** Records what each `infer` written in `nodes`, at any depth, declares. */
+  const bindInferred = (
+    nodes: readonly Syntax[],
+    into: CollectedBindings,
+  ): void => {
+    for (let at = 0; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      if (node.tag === "group" || node.tag === "protected")
+        bindInferred(node.children, into);
+      const name = nodes[at + 1];
+      if (
+        spelling(node) === "infer" &&
+        name?.tag === "token" &&
+        name.kind === "identifier"
+      )
+        recordType(into, name.raw);
+    }
+  };
+
+  /** Tokens a conditional type's `extends` clause cannot hold. */
+  const extendsClauseEndsBefore = new Set([";", "=", ",", ":", "implements"]);
+
+  /**
+   * Where the type a conditional type tests against ends, when the `extends`
+   * before it stands just before `from` in `nodes`: the index of the `?` the
+   * conditional continues with. Undefined where the `extends` is not a
+   * conditional's -- a class's or an interface's heritage, a type parameter's
+   * constraint.
+   */
+  const conditionalCheckEnd = (
+    nodes: readonly Syntax[],
+    from: number,
+  ): number | undefined => {
+    let depth = 0;
+    for (let at = from; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth < 0) return undefined;
+      if (depth > 0 || node.tag !== "token") continue;
+      if (node.raw === "?") return at;
+      if (extendsClauseEndsBefore.has(node.raw)) return undefined;
+    }
+    return undefined;
+  };
+
+  /**
    * A statement list's entries arrive protected, so the declarations in them
    * are one level down. A brace is never entered: what it binds belongs to
    * the region it opens, not to this one.
+   *
+   * A type parameter binds in the type namespace, for the declaration, the
+   * function or the signature it is written in, and `infer` and a mapped
+   * type's key do the same for the type they are written in. Each belongs to
+   * the region that construct opens, so only the run of that region records
+   * one. Read as references, `type List<T> = T[]` had both its `T`s dispatched
+   * to a type macro of that spelling.
+   *
+   * A region is a run, so a binder written in a construct the reader did not
+   * make a node of its own binds in the whole of the run holding it, as a
+   * parameter does in a run walked as tokens: a method signature's type
+   * parameter in every member of a type literal, an `infer` in the false
+   * branch of its conditional as well as the true one.
    */
   const collect = (
     nodes: readonly Syntax[],
@@ -1348,15 +1462,44 @@ export function expandMacroSyntax(
     // module and shadowed the macro for the whole file.
     nested: boolean,
     into: CollectedBindings,
+    /** What the run is walked as, which says where a type is written. */
+    category: SyntaxCategory,
   ): void => {
+    // A run of types or of type members applies type arguments to nothing
+    // written in parentheses, so a `<…>` in front of a parenthesis group there
+    // is the type parameter list of a signature or a function type.
+    const typesRun = category === "type" || category === "typeMember";
+    // Where the class member being read begins, in a run of class members. A
+    // method declared without a body -- an overload, an abstract method --
+    // has no body to say the parenthesis group after its name is its
+    // parameter list, and its name is all that says so.
+    let memberStart = 0;
     for (let at = 0; at < nodes.length; at += 1) {
       const node = nodes[at]!;
+      if (
+        !nested &&
+        category === "classElement" &&
+        classElementEndsBefore(nodes.slice(memberStart, at), node)
+      )
+        memberStart = at;
       if (node.tag === "protected") {
         addBindings(bindingsFrom(node), into);
         continue;
       }
       if (node.tag === "group") {
         if (nested && node.delimiter === "parenthesis") continue;
+        // `[K in keyof T]` heads a mapped type, and binds `K` in the type
+        // it maps to.
+        const mappedKey = node.children[0];
+        if (
+          !nested &&
+          category === "typeMember" &&
+          node.delimiter === "bracket" &&
+          mappedKey?.tag === "token" &&
+          mappedKey.kind === "identifier" &&
+          spelling(node.children[1]) === "in"
+        )
+          recordType(into, mappedKey.raw);
         // `#parameterize(name = replacement) { body }` has the shape of a
         // parameter list and a body, but names a syntax parameter rather
         // than binding anything. Read as parameters, it shadowed the very
@@ -1373,7 +1516,18 @@ export function expandMacroSyntax(
         )
           continue;
         if (node.delimiter !== "parenthesis") continue;
-        if (bindsParameters(nodes, at))
+        const parameters = bindsParameters(nodes, at);
+        const open = typeParametersOpenBefore(runOf(nodes), at);
+        if (
+          open !== undefined &&
+          (parameters ||
+            typesRun ||
+            (category === "classElement" &&
+              open > memberStart &&
+              classMemberNameFollows(nodes.slice(memberStart, open - 1))))
+        )
+          bindTypeParameters(nodes, open, into);
+        if (parameters)
           // A parameter's binder stands after the modifiers of a parameter
           // property and after the `...` of a rest parameter, so what a
           // parameter list binds is read from the binder rather than from
@@ -1384,7 +1538,7 @@ export function expandMacroSyntax(
             ),
             into,
           );
-        else addBindings(bindingsWithin(node), into);
+        else addBindings(bindingsWithin(node, category), into);
         continue;
       }
       if (node.tag !== "token") continue;
@@ -1410,7 +1564,19 @@ export function expandMacroSyntax(
         if (name?.tag === "token" && name.kind === "identifier") {
           if (named !== "type") recordValue(into, name.raw);
           if (named !== "value") recordType(into, name.raw);
-        }
+          if (!nested && spelling(nodes[at + 2]) === "<")
+            bindTypeParameters(nodes, at + 2, into);
+        } else if (!nested && node.raw === "class" && spelling(name) === "<")
+          // A class expression may go unnamed and still declare type
+          // parameters.
+          bindTypeParameters(nodes, at + 1, into);
+        continue;
+      }
+      // `infer U` declares `U` for the conditional type whose `extends`
+      // clause it is written in, however deeply the clause nests it.
+      if (!nested && node.raw === "extends") {
+        const end = conditionalCheckEnd(nodes, at + 1);
+        if (end !== undefined) bindInferred(nodes.slice(at + 1, end), into);
         continue;
       }
       // An arrow's single parameter is written without parentheses.
@@ -1429,11 +1595,11 @@ export function expandMacroSyntax(
    * statement or item node is not a region of its own, so what it declares
    * belongs to the list it stands in.
    */
-  const bindingsFrom = (node: SyntaxWithChildren): RegionBindings => {
+  const bindingsFrom = (node: ProtectedSyntax): RegionBindings => {
     const read = outwardBindings.get(node);
     if (read !== undefined) return read;
     const into = collecting();
-    collect(node.children, true, into);
+    collect(node.children, true, into, node.category);
     const bindings = bindingsOf(into);
     outwardBindings.set(node, bindings);
     return bindings;
@@ -1443,20 +1609,26 @@ export function expandMacroSyntax(
    * What a parenthesis group binds where it is not a parameter list: the
    * binders of a `for` head, and of whatever a parenthesized expression holds.
    */
-  const bindingsWithin = (node: SyntaxWithChildren): RegionBindings => {
+  const bindingsWithin = (
+    node: SyntaxWithChildren,
+    category: SyntaxCategory,
+  ): RegionBindings => {
     const read = innerBindings.get(node);
     if (read !== undefined) return read;
     const into = collecting();
-    collect(node.children, false, into);
+    collect(node.children, false, into, category);
     const bindings = bindingsOf(into);
     innerBindings.set(node, bindings);
     return bindings;
   };
 
-  const regionBindings = (sequence: SyntaxSequence): RegionBindings => {
+  const regionBindings = (
+    sequence: SyntaxSequence,
+    category: SyntaxCategory,
+  ): RegionBindings => {
     if (extractBinders === undefined) return noBindings;
     const into = collecting();
-    collect(sequence, false, into);
+    collect(sequence, false, into, category);
     return bindingsOf(into);
   };
 
@@ -1563,14 +1735,9 @@ export function expandMacroSyntax(
   const arrowHeadBefore = (run: SyntaxRun, end: number): number | undefined => {
     let at = end - 1;
     if (angles(nodeAt(run, at), ">") > 0) {
-      let depth = 0;
-      for (; at >= 0; at -= 1) {
-        const node = nodeAt(run, at)!;
-        depth += angles(node, ">") - angles(node, "<");
-        if (depth <= 0) break;
-      }
-      if (at < 0) return undefined;
-      at -= 1;
+      const open = typeParametersOpenBefore(run, end);
+      if (open === undefined) return undefined;
+      at = open - 1;
     }
     const modifier = nodeAt(run, at);
     if (modifier?.tag === "token" && modifier.raw === "async") at -= 1;
@@ -2802,7 +2969,7 @@ export function expandMacroSyntax(
       contexts = withinOpenArrow(next);
     };
     let input = initialInput;
-    regions.push(regionBindings(initialInput));
+    regions.push(regionBindings(initialInput, category));
     const output: Syntax[] = [];
     /**
      * Everything walked so far, read by position. The array is held rather
