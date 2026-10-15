@@ -240,3 +240,20 @@ describe("a block-bodied arrow in a body the walk reads", () => {
     });
   }
 });
+
+/**
+ * The same arrow written as a template literal's substitution, which the walk
+ * reads as one expression before it enters it. That reading came through the
+ * route that reads a single node, which handed it over unnormalized like the
+ * list routes did.
+ */
+describe("a block-bodied arrow in a template literal's substitution", () => {
+  test("binds the parameter rather than dispatching it", () => {
+    const { text, messages } = expand(
+      "type Fn = (v: number) => number;\nexport const s = `${(twice: Fn) => { return twice(1); }}`;",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toMatch(/\btwice\b/u);
+    expect(text).not.toContain(" + ");
+  });
+});

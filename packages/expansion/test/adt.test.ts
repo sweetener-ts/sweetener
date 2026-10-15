@@ -42,6 +42,8 @@ import {
   expandMacroSyntax,
   ExpansionEnvironmentStore,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/adt";
@@ -234,7 +236,10 @@ function createHarness(fixturePath = fixture) {
           throw new TypeError(
             `expanded ADT syntax is not ${category}: ${printLosslessSequence(syntax)}`,
           );
-        return result.syntax;
+        return normalizeProtectedInput(result.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

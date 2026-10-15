@@ -63,6 +63,7 @@ import {
 } from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
 import { separatesList } from "./macro-extent.js";
+import type { NormalizedSyntax } from "./normalized-syntax.js";
 import { ExpansionCycleError } from "./progress.js";
 import type { CompiledMacroBinding, MacroContext } from "./invocation.js";
 import {
@@ -147,7 +148,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
     readonly category: SyntaxCategory;
     readonly lexicalModule: CompileParsedMacrosResult;
     readonly contexts: ReadonlySet<MacroContext>;
-  }) => ProtectedSyntax;
+  }) => NormalizedSyntax;
   /**
    * Enforest a brace body as a statement list, or return undefined when it
    * does not parse as one.
@@ -163,7 +164,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly contexts: ReadonlySet<MacroContext>;
         /** Module whose macros are in scope for the syntax being enforested. */
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => SyntaxSequence | undefined)
+      }) => readonly NormalizedSyntax[] | undefined)
     | undefined;
   readonly enforestItems?:
     | ((request: {
@@ -171,7 +172,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly contexts: ReadonlySet<MacroContext>;
         /** Module whose macros are in scope for the syntax being enforested. */
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => SyntaxSequence | undefined)
+      }) => readonly NormalizedSyntax[] | undefined)
     | undefined;
   /** Enforests a run of JSX children, for a macro that emits several. */
   readonly enforestJsxChildren?:
@@ -179,7 +180,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly syntax: SyntaxSequence;
         readonly contexts: ReadonlySet<MacroContext>;
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => SyntaxSequence | undefined)
+      }) => readonly NormalizedSyntax[] | undefined)
     | undefined;
   /** Enforests a run of interface members, for a macro that emits several. */
   readonly enforestTypeMembers?:
@@ -187,7 +188,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly syntax: SyntaxSequence;
         readonly contexts: ReadonlySet<MacroContext>;
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => SyntaxSequence | undefined)
+      }) => readonly NormalizedSyntax[] | undefined)
     | undefined;
   /** Enforests a run of class members, for a macro that emits several. */
   readonly enforestClassElements?:
@@ -195,7 +196,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly syntax: SyntaxSequence;
         readonly contexts: ReadonlySet<MacroContext>;
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => SyntaxSequence | undefined)
+      }) => readonly NormalizedSyntax[] | undefined)
     | undefined;
   /** Enforest one expression without throwing when the sequence is a fragment. */
   readonly enforestExpression?:
@@ -204,7 +205,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
         readonly contexts: ReadonlySet<MacroContext>;
         /** Module whose macros are in scope for the syntax being enforested. */
         readonly lexicalModule?: CompileParsedMacrosResult | undefined;
-      }) => ProtectedSyntax | undefined)
+      }) => NormalizedSyntax | undefined)
     | undefined;
 }
 

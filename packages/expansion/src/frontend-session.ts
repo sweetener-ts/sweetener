@@ -35,7 +35,6 @@ import type {
   SyntaxId,
 } from "@sweetener/shared";
 import {
-  createGroup,
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
@@ -68,6 +67,11 @@ import {
 } from "./recursive-expander.js";
 import type { ExpansionGuard } from "./progress.js";
 import { coreFormKind, isCoreForm } from "./core-shadowing.js";
+import {
+  handedIn,
+  normalizeProtectedInput,
+  type NormalizedSyntax,
+} from "./normalized-syntax.js";
 import type { CoreDispatchTrace } from "./core-shadowing.js";
 
 export interface CreateExpansionFrontendSessionOptions {
@@ -770,12 +774,19 @@ export function createExpansionFrontendSession(
   }
   const consumeClass = classConsumerByModule.get(options.module)!;
 
+  /**
+   * `syntax` read as one node of `category`, normalized as every other route
+   * is. The walk reads what this hands back where it reads a substitution of
+   * a template literal, and `${x => { return x; }}` left the parameter
+   * protected as the expression the infix `=>` read it as, so `x` was
+   * dispatched as a macro wherever one was in scope.
+   */
   const enforest = (
     syntax: SyntaxSequence,
     category: SyntaxCategory,
     lexicalModule = options.module,
     contexts: ReadonlySet<MacroContext> = new Set(),
-  ) => {
+  ): NormalizedSyntax => {
     const consumer =
       category === "expr"
         ? expression
@@ -794,7 +805,12 @@ export function createExpansionFrontendSession(
                     : category === "jsxChild"
                       ? jsxChild
                       : undefined;
-    if (consumer === undefined) return protect(syntax, category);
+    if (consumer === undefined)
+      return normalizeProtectedInput(
+        protect(syntax, category),
+        handedIn(syntax),
+        options,
+      );
     const previousOperatorModule = activeOperatorModule;
     activeOperatorModule = lexicalModule;
     let attempted;
@@ -808,7 +824,7 @@ export function createExpansionFrontendSession(
     }
     if (!attempted.matched || !attempted.cursor.atEnd)
       throw new EnforestationError(category, diagnosticSyntaxText(syntax));
-    return attempted.syntax;
+    return normalizeProtectedInput(attempted.syntax, handedIn(syntax), options);
   };
   const protect = (
     syntax: SyntaxSequence,
@@ -825,144 +841,6 @@ export function createExpansionFrontendSession(
       category,
       children: syntax,
     });
-
-  /** Whether syntax came from source text alone, with no expansion in it. */
-  const writtenInSource = (origin: OriginId): boolean => {
-    const record = options.origins.get(origin);
-    if (record === undefined) return false;
-    if (record.kind === "source") return true;
-    return (
-      record.kind === "composed" &&
-      record.parts.every((part) => writtenInSource(part))
-    );
-  };
-
-  /**
-   * The protected nodes a run hands the reader: those standing in it, and
-   * those in its groups. A reader that meets one takes it as it stands, so
-   * a reading holds these nodes themselves rather than copies of them.
-   */
-  const handedIn = (syntax: SyntaxSequence): ReadonlySet<Syntax> => {
-    const handed = new Set<Syntax>();
-    const collect = (nodes: SyntaxSequence): void => {
-      for (const node of nodes) {
-        if (node.tag === "protected") handed.add(node);
-        else if (node.tag === "group") collect(node.children);
-      }
-    };
-    collect(syntax);
-    return handed;
-  };
-
-  /**
-   * `node` with the nesting the reader built while reading it removed, where
-   * that nesting is redundant with the text it was read from.
-   *
-   * What the reader was handed is kept as it stands, `handed` saying which
-   * nodes those are. A protected node in the run was not built by this
-   * reading, and the reader takes it whole rather than reading it again; an
-   * expansion may have built it to say something the text does not. A
-   * replacement of several items arrives as one item holding them, and
-   * `#core` in item position wraps the item it read in one more. Flattening
-   * the first ran two declarations together as one. Flattening the second
-   * spliced the bare declaration into the template around the call, where the
-   * item reader met a function whose body was read already and could not
-   * read it again, and a `function` the wrapping had kept from being read
-   * again was handed to the macro shadowing it.
-   */
-  const normalizeProtectedInput = (
-    node: ProtectedSyntax,
-    handed: ReadonlySet<Syntax>,
-  ): ProtectedSyntax => {
-    if (handed.has(node)) return node;
-    /**
-     * What `child` normalizes to, or undefined where it normalizes to itself.
-     * Saying so rather than returning a one-element run of it lets a node
-     * whose whole subtree is already normal be kept rather than rebuilt.
-     */
-    const normalizeChild = (
-      child: Syntax,
-      category: SyntaxCategory | undefined,
-      siblings: number,
-    ): readonly Syntax[] | undefined => {
-      if (child.tag === "protected") {
-        if (handed.has(child)) return undefined;
-        const normalized = normalizeProtectedInput(child, handed);
-        // An expression or type an expansion built inside another is not
-        // redundant: it is the boundary its operators bind within, and
-        // nothing in the text says so. An operator's expansion arrives
-        // here holding its operands that way, and flattening them printed
-        // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
-        // the parser built over source text is redundant with that text.
-        const bounds =
-          (category === "expr" || category === "type") &&
-          !writtenInSource(normalized.origin);
-        // A statement standing beside other syntax inside a statement is
-        // a substatement, not a redundant wrapping: `here: log(x);` and
-        // `while (c) log(x);` each read one statement inside another, and
-        // the syntax beside it is the label or the header that reads it.
-        // Flattened, the head of that statement stood right after the
-        // `:` or the header, where a type is written -- so a statement
-        // macro written there was refused for being declared `stmt`.
-        const substatement =
-          category === "stmt" && normalized.category === "stmt" && siblings > 1;
-        if (normalized.category === category && !bounds && !substatement)
-          return normalized.children;
-        return normalized === child ? undefined : [normalized];
-      }
-      if (child.tag === "group") {
-        const children = normalizeChildren(child.children, undefined);
-        if (children === child.children) return undefined;
-        return [
-          createGroup({
-            ...child,
-            id: options.allocateSyntaxId(),
-            children,
-          }),
-        ];
-      }
-      return undefined;
-    };
-
-    /**
-     * The children of a node, normalized. The run handed in is returned
-     * itself where nothing in it changed, which is what almost every prepared
-     * statement finds: rebuilding it anyway allocated a fresh id for every
-     * protected node and every group beneath it, so the id space filled with
-     * new nodes standing for syntax that had not moved.
-     */
-    const normalizeChildren = (
-      children: SyntaxSequence,
-      // Undefined inside a group: nesting is only redundant when the protected
-      // node sits directly in a protected node of its own category. A group
-      // delimits, so what it holds is a list of its own -- an interface body
-      // is protected as a `typeMember` run and holds one protected member per
-      // member, and carrying the category through the brace flattened every
-      // member back into loose tokens.
-      category: SyntaxCategory | undefined,
-    ): readonly Syntax[] => {
-      let normalized: Syntax[] | undefined;
-      for (let at = 0; at < children.length; at += 1) {
-        const child = children[at]!;
-        const replacement = normalizeChild(child, category, children.length);
-        if (replacement === undefined) {
-          normalized?.push(child);
-          continue;
-        }
-        normalized ??= children.slice(0, at);
-        normalized.push(...replacement);
-      }
-      return normalized ?? children;
-    };
-
-    const children = normalizeChildren(node.children, node.category);
-    if (children === node.children) return node;
-    return createProtectedSyntax({
-      ...node,
-      id: options.allocateSyntaxId(),
-      children,
-    });
-  };
 
   /** The macro names a file's own text can invoke: its own and its imports. */
   const macroSpellingsInScope = (): ReadonlySet<string> =>
@@ -1356,7 +1234,7 @@ export function createExpansionFrontendSession(
         continue;
       }
       cursor.advance(attempted.cursor.index - cursor.index);
-      prepared.push(normalizeProtectedInput(attempted.syntax, handed));
+      prepared.push(normalizeProtectedInput(attempted.syntax, handed, options));
     }
     return createSyntaxSequence(prepared);
   };
@@ -1390,13 +1268,13 @@ export function createExpansionFrontendSession(
       readonly contexts: ReadonlySet<MacroContext>;
       readonly lexicalModule?: CompileParsedMacrosResult | undefined;
     },
-  ): SyntaxSequence | undefined => {
+  ): readonly NormalizedSyntax[] | undefined => {
     const restore = enforestingModule;
     enforestingModule = request.lexicalModule ?? restore;
     try {
       const handed = handedIn(request.syntax);
       let cursor = createSyntaxCursor(request.syntax);
-      const read: Syntax[] = [];
+      const read: NormalizedSyntax[] = [];
       while (!cursor.atEnd) {
         const before = cursor.index;
         const attempted = consumer.consume(cursor, {
@@ -1405,7 +1283,7 @@ export function createExpansionFrontendSession(
         });
         if (!attempted.matched || attempted.cursor.index <= before)
           return undefined;
-        read.push(normalizeProtectedInput(attempted.syntax, handed));
+        read.push(normalizeProtectedInput(attempted.syntax, handed, options));
         cursor = attempted.cursor;
       }
       return createSyntaxSequence(read);
@@ -1493,7 +1371,11 @@ export function createExpansionFrontendSession(
             // been wrapped as. Both routes into the expander hand it the same
             // shape, or the two disagree about what a reading means.
             return attempted.matched && attempted.cursor.atEnd
-              ? normalizeProtectedInput(attempted.syntax, handedIn(syntax))
+              ? normalizeProtectedInput(
+                  attempted.syntax,
+                  handedIn(syntax),
+                  options,
+                )
               : undefined;
           } finally {
             enforestingModule = restore;

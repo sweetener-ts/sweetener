@@ -40,6 +40,8 @@ import {
   ExpansionEnvironmentStore,
   ExpansionGuard,
   resolveCoreDispatch,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/core-rewrites";
@@ -268,7 +270,10 @@ function createHarness() {
           throw new TypeError(
             `expanded core rewrite is not ${category}: ${printLosslessSequence(syntax)}`,
           );
-        return result.syntax;
+        return normalizeProtectedInput(result.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

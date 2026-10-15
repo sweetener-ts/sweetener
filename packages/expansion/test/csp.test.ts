@@ -41,6 +41,8 @@ import {
   compileParsedMacros,
   expandMacroSyntax,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/csp";
@@ -231,14 +233,18 @@ function createHarness() {
           if (!result.matched) break;
           cursor.advance(result.cursor.index - cursor.index);
         }
-        return createProtectedSyntax({
-          id: syntaxIds.allocate(),
-          span: spanEnvelope(syntax.map(({ span }) => span)),
-          origin: syntax[0]!.origin,
-          scopes: syntax[0]!.scopes,
-          category: "stmt",
-          children: syntax,
-        });
+        return normalizeProtectedInput(
+          createProtectedSyntax({
+            id: syntaxIds.allocate(),
+            span: spanEnvelope(syntax.map(({ span }) => span)),
+            origin: syntax[0]!.origin,
+            scopes: syntax[0]!.scopes,
+            category: "stmt",
+            children: syntax,
+          }),
+          handedIn(syntax),
+          { origins, allocateSyntaxId: syntaxIds.allocate },
+        );
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

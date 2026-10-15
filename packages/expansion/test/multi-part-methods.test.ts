@@ -44,6 +44,8 @@ import {
   ExpansionEnvironmentStore,
   ExpansionGuard,
   type CompileParsedMacrosResult,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/multi-part-methods";
@@ -252,7 +254,10 @@ function createHarness() {
           throw new TypeError(
             `expanded multi-part syntax is not ${outputCategory}: ${printLosslessSequence(syntax)}`,
           );
-        return result.syntax;
+        return normalizeProtectedInput(result.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

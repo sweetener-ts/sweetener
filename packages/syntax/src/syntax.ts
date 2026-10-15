@@ -107,9 +107,9 @@ function requireFrozenSyntax(
   }
 }
 
-export function createSyntaxSequence(
-  syntax: readonly Syntax[],
-): SyntaxSequence {
+export function createSyntaxSequence<Node extends Syntax>(
+  syntax: readonly Node[],
+): readonly Node[] {
   for (const child of syntax) {
     requireFrozenSyntax(child, "Syntax sequence child");
   }

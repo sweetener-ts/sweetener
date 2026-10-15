@@ -255,6 +255,35 @@ describe("a replacement read again", () => {
 });
 
 /**
+ * A chain of operators is read as one node per operator, each holding the one
+ * before it. Normalizing that reading by recursion exhausted the call stack at
+ * a couple of thousand operands, which a file can be written with and a
+ * template can produce.
+ */
+describe("a long chain of operators", () => {
+  const names = Array.from(
+    { length: 2_000 },
+    (_, index) => `v${String(index)}`,
+  ).join(" + ");
+
+  test("is read from source", () => {
+    const expand = harness("");
+    expect(expand(`const s = ${names};`, "item")).toBe(
+      `consts=${names.replaceAll(" ", "")};`,
+    );
+  });
+
+  test("is read from a replacement", () => {
+    const expand = harness(`
+      export syntax wide:expr {
+        rule { wide } => { ${names} }
+      }
+    `);
+    expect(expand("wide", "expr")).toBe(names.replaceAll(" ", ""));
+  });
+});
+
+/**
  * A capture of more than one node arrives protected. Returning it as a
  * complete operand without reading what follows leaves a template's own postfix
  * -- `$value.every(check)`, `$value[0]`, `$value(arg)` -- for a caller with

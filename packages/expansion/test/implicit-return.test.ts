@@ -39,6 +39,8 @@ import {
   ExpansionEnvironmentStore,
   ExpansionGuard,
   resolveCoreDispatch,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const definitionSource = 730 as SourceId;
@@ -274,7 +276,10 @@ function createHarness() {
           throw new TypeError(
             `expanded implicit-return syntax is not one expression: ${printLosslessSequence(syntax)}`,
           );
-        return attempt.syntax;
+        return normalizeProtectedInput(attempt.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

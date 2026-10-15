@@ -13,3 +13,4 @@ export * from "./local-definition-context.js";
 export * from "./generated-definitions.js";
 export * from "./operator-dispatch.js";
 export * from "./frontend-session.js";
+export * from "./normalized-syntax.js";
