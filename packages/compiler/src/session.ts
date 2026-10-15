@@ -3,14 +3,23 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
 import { composeSourceMap } from "@sweetener/typescript-host";
-import type { RawSourceMap } from "@sweetener/typescript-host";
+import type {
+  RawSourceMap,
+  VirtualTypeScriptFile,
+} from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
   createDefaultProjectExpansionProvider,
   type DefaultProjectExpansionProvider,
 } from "./default-expansion-provider.js";
 import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
-import type { ProjectExpansionOutput } from "./project-command.js";
+import {
+  consulted,
+  nowNanoseconds,
+  stillConsulted,
+  type ConsultedFile,
+} from "./consulted-files.js";
+import type { SourceExpansionInspection } from "./expansion-tools.js";
 
 export interface SweetenerTransformRequest {
   /** Source text supplied to the build tool. It must still match the file. */
@@ -73,28 +82,52 @@ export interface SweetenerSession {
   close(): Promise<void>;
 }
 
-interface CacheEntry {
-  readonly result: SweetenerTransformResult;
-  readonly dependencies: ReadonlySet<string>;
-  readonly dependencyFingerprint: string;
+/** Everything about a project that its expansion is given. */
+function signatureOf(project: LoadedSweetProject): string {
+  return JSON.stringify({
+    configPath: project.configPath,
+    sweet: project.sweet,
+    options: project.typescript.options,
+    fileNames: project.typescript.fileNames,
+  });
 }
 
 /**
- * One expansion of a project, kept so the next file does not expand it again.
+ * One expansion of a project, kept so the files after the first are served
+ * from it rather than each expanding the whole project again.
  *
- * `transformSync` is asked per file. A miss used to call `expandProject`,
- * which clears its inspections and rebuilds every file, then threw away all
- * but the one that was asked for. The following file was a different cache
- * key, so a build paid for a full expansion once per file. The inputs are the
- * config and every project file, plus macro dependencies found while
- * expanding. Reuse asks whether those bytes are still the ones expanded.
+ * It is kept while the config says what it said and every file it consulted
+ * holds what it held, which is what the expansion is a function of -- short of
+ * what TypeScript reads to resolve a binding literal, which
+ * `DefaultProjectExpansionOutput.inputs` does not cover. What `transformSync`
+ * serves comes from here alone, inspections included, taken as the expansion
+ * finished: another expansion on the same provider, or one that throws,
+ * cannot change what this one answers.
  */
 interface ProjectExpansion {
-  readonly configFile: string;
-  readonly inputs: readonly string[];
+  readonly signature: string;
+  readonly consulted: readonly ConsultedFile[];
+  readonly diagnostics: readonly ts.Diagnostic[];
+  readonly inspections: ReadonlyMap<string, SourceExpansionInspection>;
+  /** Each generated file, by its canonical name without the extension. */
+  readonly generated: ReadonlyMap<
+    string,
+    { readonly file: VirtualTypeScriptFile; readonly fileName: string }
+  >;
+  /**
+   * Every source in the project, so a composed map can name a macro module it
+   * reaches through as well as the file being transformed.
+   */
+  readonly sourceNames: ReadonlyMap<
+    number,
+    { readonly name: string; readonly text: string }
+  >;
   readonly dependencies: readonly string[];
-  readonly fingerprint: string;
-  readonly expanded: ProjectExpansionOutput;
+  readonly missingDependencies: readonly string[];
+  /** Both of the above, for `invalidate` to look a changed path up in. */
+  readonly watched: ReadonlySet<string>;
+  /** Transform results served from this expansion, by cache key. */
+  readonly results: Map<string, SweetenerTransformResult>;
 }
 
 function canonical(fileName: string): string {
@@ -139,17 +172,6 @@ function fingerprint(parts: readonly string[]): string {
   return hash.digest("hex");
 }
 
-function fingerprintDependencies(paths: Iterable<string>): string {
-  return fingerprint(
-    [...paths]
-      .sort()
-      .flatMap((fileName) => [
-        fileName,
-        existsSync(fileName) ? readFileSync(fileName, "utf8") : "<missing>",
-      ]),
-  );
-}
-
 /**
  * Create a long-lived compiler session for a build, dev server, or test run.
  *
@@ -164,40 +186,73 @@ export function createSweetenerSession(
   } = {},
 ): SweetenerSession {
   const provider = options.provider ?? createDefaultProjectExpansionProvider();
-  const cache = new Map<string, CacheEntry>();
-  let projectExpansion: ProjectExpansion | undefined;
+  const expansions = new Map<string, ProjectExpansion>();
   let closed = false;
 
   const expansionFor = (
     configFile: string,
     project: LoadedSweetProject,
   ): ProjectExpansion => {
-    const listed = [
-      ...project.configurationDependencies,
-      ...project.typescript.fileNames,
-    ].map(canonical);
-    const remembered = projectExpansion;
+    const signature = signatureOf(project);
+    const remembered = expansions.get(configFile);
     if (
       remembered !== undefined &&
-      remembered.configFile === configFile &&
-      listed.every((fileName) => remembered.inputs.includes(fileName)) &&
-      fingerprintDependencies(remembered.inputs) === remembered.fingerprint
+      remembered.signature === signature &&
+      stillConsulted(remembered.consulted)
     )
       return remembered;
+    expansions.delete(configFile);
+    const expandedAt = nowNanoseconds();
     const expanded = provider.expandProject(project);
-    const dependencies = [
-      ...project.configurationDependencies,
-      ...expanded.inputs.keys(),
-    ].map(canonical);
-    const inputs = [...new Set([...listed, ...dependencies])].sort();
-    projectExpansion = {
-      configFile,
-      inputs,
-      dependencies: [...new Set(dependencies)].sort(),
-      fingerprint: fingerprintDependencies(inputs),
-      expanded,
+    const inspections = new Map<string, SourceExpansionInspection>();
+    const sourceNames = new Map<number, { name: string; text: string }>();
+    for (const name of project.typescript.fileNames) {
+      const inspected = provider.inspectSource(name);
+      if (inspected === undefined) continue;
+      inspections.set(resolve(name), inspected);
+      sourceNames.set(inspected.sourceId as number, {
+        name,
+        text: inspected.sourceText,
+      });
+    }
+    const read = [...expanded.inputs]
+      .filter(([, text]) => text !== undefined)
+      .map(([path]) => path);
+    const missing = [...expanded.inputs]
+      .filter(([, text]) => text === undefined)
+      .map(([path]) => path);
+    const dependencies = Object.freeze(
+      [
+        ...new Set(
+          [...project.configurationDependencies, ...read].map(canonical),
+        ),
+      ].sort(),
+    );
+    const missingDependencies = Object.freeze(missing.map(canonical).sort());
+    const expansion: ProjectExpansion = {
+      signature,
+      consulted: consulted(expanded.inputs, expandedAt),
+      diagnostics: Object.freeze([...expanded.diagnostics]),
+      inspections,
+      generated: new Map(
+        expanded.files.map((file) => {
+          const fileName = canonical(file.fileName);
+          return [fileName.replace(/\.(?:ts|js)x?$/u, ""), { file, fileName }];
+        }),
+      ),
+      sourceNames,
+      dependencies,
+      missingDependencies,
+      watched: new Set([...dependencies, ...missingDependencies]),
+      results: new Map(),
     };
-    return projectExpansion;
+    // A failed expansion is not one to keep: partial results must not enter a
+    // content-addressed cache, and this is the one this pipeline has.
+    // Recomputing a failure is cheap and always correct; serving one from a
+    // cache outlives the reason for it.
+    if (expanded.diagnostics.length === 0)
+      expansions.set(configFile, expansion);
+    return expansion;
   };
 
   const transformSync = (
@@ -219,14 +274,6 @@ export function createSweetenerSession(
       configFile,
       request.mode ?? "development",
     ]);
-    const existing = cache.get(cacheKey);
-    if (
-      existing !== undefined &&
-      existing.dependencyFingerprint ===
-        fingerprintDependencies(existing.dependencies)
-    )
-      return existing.result;
-    if (existing !== undefined) cache.delete(cacheKey);
 
     const project = loadSweetProject(configFile);
     // A config that cannot be read parses as an empty project, and every file
@@ -246,12 +293,11 @@ export function createSweetenerSession(
         `Sweetener cannot use ${configFile}: ${configurationErrors.join("; ")}`,
       );
     const expansion = expansionFor(configFile, project);
-    const expanded = expansion.expanded;
-    const inspected = provider.inspectSource(filename);
-    const sourceStem = filename.replace(/\.s(?:ts|js)x?$/u, "");
-    const generated = expanded.files.find(
-      (file) =>
-        canonical(file.fileName).replace(/\.(?:ts|js)x?$/u, "") === sourceStem,
+    const existing = expansion.results.get(cacheKey);
+    if (existing !== undefined) return existing;
+    const inspected = expansion.inspections.get(filename);
+    const generated = expansion.generated.get(
+      filename.replace(/\.s(?:ts|js)x?$/u, ""),
     );
     if (
       inspected === undefined ||
@@ -261,21 +307,10 @@ export function createSweetenerSession(
       throw new Error(
         `${filename} is not opted into Sweetener expansion by ${configFile}. List it there, under "files" or "include".`,
       );
-    const dependencies = Object.freeze([...expansion.dependencies].sort());
-    // Every source in the project, so a composed map can name a macro module
-    // it reaches through as well as the file being transformed.
-    const sourceNames = new Map<number, { name: string; text: string }>();
-    for (const name of project.typescript.fileNames) {
-      const other = provider.inspectSource(name);
-      if (other !== undefined)
-        sourceNames.set(other.sourceId as number, {
-          name,
-          text: other.sourceText,
-        });
-    }
+    const { sourceNames } = expansion;
     const result: SweetenerTransformResult = Object.freeze({
-      code: generated.generated.text,
-      originMap: generated.generated.originMap,
+      code: generated.file.generated.text,
+      originMap: generated.file.generated.originMap,
       map: inspected.sourceMap,
       composeMap: (typescriptMap: RawSourceMap) => {
         try {
@@ -292,24 +327,15 @@ export function createSweetenerSession(
           return undefined;
         }
       },
-      diagnostics: Object.freeze([...expanded.diagnostics]),
+      diagnostics: expansion.diagnostics,
       warnings: inspected.warnings ?? Object.freeze([]),
-      dependencies,
-      missingDependencies: Object.freeze([]),
+      dependencies: expansion.dependencies,
+      missingDependencies: expansion.missingDependencies,
       trace: inspected.trace,
       cacheKey,
-      virtualFilename: canonical(generated.fileName),
+      virtualFilename: generated.fileName,
     });
-    // A failed expansion is not a result to remember: partial results must not
-    // enter a content-addressed cache, and this is the one this pipeline has.
-    // Recomputing a failure is cheap and always correct; serving one from a
-    // cache outlives the reason for it.
-    if (result.diagnostics.length === 0)
-      cache.set(cacheKey, {
-        result,
-        dependencies: new Set(dependencies),
-        dependencyFingerprint: fingerprintDependencies(dependencies),
-      });
+    expansion.results.set(cacheKey, result);
     return result;
   };
 
@@ -324,20 +350,14 @@ export function createSweetenerSession(
       return transformSync(request);
     },
     invalidate(paths: readonly string[]): void {
-      const invalidated = new Set(paths.map(canonical));
-      for (const [key, entry] of cache)
-        if ([...invalidated].some((path) => entry.dependencies.has(path)))
-          cache.delete(key);
-      if (
-        projectExpansion !== undefined &&
-        [...invalidated].some((path) => projectExpansion?.inputs.includes(path))
-      )
-        projectExpansion = undefined;
+      const invalidated = paths.map(canonical);
+      for (const [configFile, expansion] of expansions)
+        if (invalidated.some((path) => expansion.watched.has(path)))
+          expansions.delete(configFile);
     },
     async close(): Promise<void> {
       closed = true;
-      cache.clear();
-      projectExpansion = undefined;
+      expansions.clear();
     },
   });
 }

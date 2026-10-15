@@ -3,16 +3,20 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
   createSweetenerSession,
   type DefaultProjectExpansionProvider,
+  type SweetenerSession,
+  type SweetenerTransformResult,
 } from "../src/index.js";
 
 function project(): {
@@ -162,295 +166,6 @@ describe("public compiler session", () => {
     await session.close();
   });
 
-  test("expands the project once when several files are transformed", async () => {
-    const fixture = project();
-    const other = join(fixture.directory, "other.sts");
-    writeFileSync(
-      other,
-      `import { duplicate } from "./macros.sts" for syntax;\nexport const other = duplicate(7);\n`,
-    );
-    writeFileSync(
-      fixture.config,
-      JSON.stringify({
-        compilerOptions: { module: "ESNext", target: "ES2022" },
-        files: ["macros.sts", "main.sts", "other.sts"],
-      }),
-    );
-    const inner = createDefaultProjectExpansionProvider();
-    let expansions = 0;
-    const counting = new Proxy(inner, {
-      get(target, property) {
-        if (property === "expandProject")
-          return (
-            project: Parameters<
-              DefaultProjectExpansionProvider["expandProject"]
-            >[0],
-          ) => {
-            expansions += 1;
-            return target.expandProject(project);
-          };
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const session = createSweetenerSession({ provider: counting });
-    const main = await session.transform({
-      code: readFile(fixture.main),
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    const second = await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    const mainAgain = await session.transform({
-      code: readFile(fixture.main),
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-
-    expect(expansions).toBe(1);
-    expect(main.diagnostics).toEqual([]);
-    expect(second.diagnostics).toEqual([]);
-    expect(main.code).toContain("[21, 21]");
-    expect(second.code).toContain("[7, 7]");
-    expect(mainAgain).toBe(main);
-
-    writeFileSync(
-      fixture.macros,
-      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, $value, $value] } }\n`,
-    );
-    const rebuilt = await session.transform({
-      code: readFile(fixture.main),
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(2);
-    expect(rebuilt.code).toContain("[21, 21, 21]");
-    const otherAfter = await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(2);
-    expect(otherAfter.code).toContain("[7, 7, 7]");
-    await session.close();
-  });
-
-  test("re-expands after an extended config changes", async () => {
-    const fixture = project();
-    const other = join(fixture.directory, "other.sts");
-    const base = join(fixture.directory, "base.json");
-    writeFileSync(other, readFile(fixture.main));
-    writeFileSync(
-      base,
-      JSON.stringify({
-        compilerOptions: { module: "ESNext", target: "ES2022" },
-      }),
-    );
-    writeFileSync(
-      fixture.config,
-      JSON.stringify({
-        extends: "./base.json",
-        files: ["macros.sts", "main.sts", "other.sts"],
-      }),
-    );
-    const inner = createDefaultProjectExpansionProvider();
-    let expansions = 0;
-    const provider = new Proxy(inner, {
-      get(target, property) {
-        if (property === "expandProject")
-          return (...args: Parameters<typeof inner.expandProject>) => {
-            expansions += 1;
-            return target.expandProject(...args);
-          };
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const session = createSweetenerSession({ provider });
-    await session.transform({
-      code: readFile(fixture.main),
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(1);
-
-    session.invalidate([base]);
-    await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(2);
-
-    writeFileSync(
-      base,
-      JSON.stringify({
-        compilerOptions: { module: "ESNext", target: "ES2020" },
-      }),
-    );
-    const afterConfigChange = await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(3);
-    expect(afterConfigChange.diagnostics).toEqual([]);
-    await session.close();
-  });
-
-  test("re-expands after package metadata changes", async () => {
-    const fixture = project();
-    const other = join(fixture.directory, "other.sts");
-    const packageRoot = join(
-      fixture.directory,
-      "node_modules",
-      "@acme",
-      "forms",
-    );
-    const packageJson = join(packageRoot, "package.json");
-    const manifest = join(packageRoot, "sweet-macros.json");
-    mkdirSync(packageRoot, { recursive: true });
-    writeFileSync(other, readFile(fixture.main));
-    writeFileSync(
-      packageJson,
-      JSON.stringify({
-        name: "@acme/forms",
-        version: "1.0.0",
-        sweetMacros: "./sweet-macros.json",
-      }),
-    );
-    writeFileSync(
-      manifest,
-      JSON.stringify({
-        formatVersion: 1,
-        name: "@acme/forms",
-        languageVersion: "1",
-        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
-        entry: "./macros.sts",
-        exports: {
-          packaged: { source: "./forms.sts", category: "expr", phase: 1 },
-        },
-        dependencies: [],
-      }),
-    );
-    writeFileSync(
-      join(packageRoot, "macros.sts"),
-      `export const metadata = "macro package entry";\n`,
-    );
-    writeFileSync(
-      join(packageRoot, "forms.sts"),
-      `export syntax packaged:expr { rule { packaged($value:tt) } => { [$value, $value] } }\n`,
-    );
-    writeFileSync(
-      join(packageRoot, "forms2.sts"),
-      `export syntax packaged:expr { rule { packaged($value:tt) } => { [$value, $value, $value] } }\n`,
-    );
-    const source = `import { packaged } from "@acme/forms" for syntax;\nexport const answer = packaged(21);\n`;
-    writeFileSync(fixture.main, source);
-    writeFileSync(other, source.replace("21", "7"));
-    writeFileSync(
-      fixture.config,
-      JSON.stringify({
-        compilerOptions: { module: "ESNext", target: "ES2022" },
-        files: ["main.sts", "other.sts"],
-      }),
-    );
-    const inner = createDefaultProjectExpansionProvider();
-    let expansions = 0;
-    const provider = new Proxy(inner, {
-      get(target, property) {
-        if (property === "expandProject")
-          return (...args: Parameters<typeof inner.expandProject>) => {
-            expansions += 1;
-            return target.expandProject(...args);
-          };
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const session = createSweetenerSession({ provider });
-    const first = await session.transform({
-      code: source,
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(1);
-    expect(first.code).toContain("[21, 21]");
-
-    session.invalidate([packageJson]);
-    await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(2);
-
-    writeFileSync(
-      packageJson,
-      JSON.stringify({
-        name: "@acme/forms",
-        version: "2.0.0",
-        sweetMacros: "./sweet-macros.json",
-      }),
-    );
-    await session.transform({
-      code: readFile(other),
-      filename: other,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(3);
-
-    writeFileSync(
-      manifest,
-      JSON.stringify({
-        formatVersion: 1,
-        name: "@acme/forms",
-        languageVersion: "1",
-        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
-        entry: "./macros.sts",
-        exports: {
-          packaged: { source: "./forms2.sts", category: "expr", phase: 1 },
-        },
-        dependencies: [],
-      }),
-    );
-    const afterManifestChange = await session.transform({
-      code: source,
-      filename: fixture.main,
-      configFile: fixture.config,
-      mode: "test",
-    });
-    expect(expansions).toBe(4);
-    expect(afterManifestChange.code).toContain("[21, 21, 21]");
-    await session.close();
-  });
-
   test("caches stable transforms and invalidates macro dependents", async () => {
     const fixture = project();
     const source = readFile(fixture.main);
@@ -548,10 +263,504 @@ describe("public compiler session", () => {
     expect(result.code).not.toContain("new( Error");
     await session.close();
   });
+  test("expands the project once when several files are transformed", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(
+      other,
+      `import { duplicate } from "./macros.sts" for syntax;\nexport const other = duplicate(7);\n`,
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const main = await transform(session, fixture.main, fixture.config);
+    const second = await transform(session, other, fixture.config);
+    const mainAgain = await transform(session, fixture.main, fixture.config);
+
+    expect(counting.expansions()).toBe(1);
+    expect(main.diagnostics).toEqual([]);
+    expect(second.diagnostics).toEqual([]);
+    expect(main.code).toContain("[21, 21]");
+    expect(second.code).toContain("[7, 7]");
+    expect(mainAgain).toBe(main);
+
+    writeFileSync(
+      fixture.macros,
+      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, $value, $value] } }\n`,
+    );
+    const rebuilt = await transform(session, fixture.main, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    expect(rebuilt.code).toContain("[21, 21, 21]");
+    const otherAfter = await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    expect(otherAfter.code).toContain("[7, 7, 7]");
+    await session.close();
+  });
+
+  test("re-expands after an extended config changes", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const base = join(fixture.directory, "base.json");
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      base,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+      }),
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        extends: "./base.json",
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const first = await transform(session, fixture.main, fixture.config);
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(1);
+    expect(first.dependencies).toContain(realpathSync(base));
+
+    session.invalidate([base]);
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(2);
+
+    writeFileSync(
+      base,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2020" },
+      }),
+    );
+    const afterConfigChange = await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(3);
+    expect(afterConfigChange.diagnostics).toEqual([]);
+    await session.close();
+  });
+
+  test("re-expands after package metadata changes", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const packageRoot = join(
+      fixture.directory,
+      "node_modules",
+      "@acme",
+      "forms",
+    );
+    writeFormsPackage(packageRoot);
+    writeFileSync(
+      join(packageRoot, "forms2.sts"),
+      `export syntax packaged:expr { rule { packaged($value:tt) } => { [$value, $value, $value] } }\n`,
+    );
+    writeFileSync(fixture.main, formsSource(21));
+    writeFileSync(other, formsSource(7));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["main.sts", "other.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const first = await transform(session, fixture.main, fixture.config);
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(1);
+    expect(first.code).toContain("[21, 21]");
+
+    const packageJson = join(packageRoot, "package.json");
+    session.invalidate([packageJson]);
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(2);
+
+    writeFileSync(
+      packageJson,
+      JSON.stringify({
+        name: "@acme/forms",
+        version: "2.0.0",
+        sweetMacros: "./sweet-macros.json",
+      }),
+    );
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(3);
+
+    writeFileSync(
+      join(packageRoot, "sweet-macros.json"),
+      formsManifest("./forms2.sts"),
+    );
+    const afterManifestChange = await transform(
+      session,
+      fixture.main,
+      fixture.config,
+    );
+    expect(counting.expansions()).toBe(4);
+    expect(afterManifestChange.code).toContain("[21, 21, 21]");
+    await session.close();
+  });
+
+  test("re-expands when a file joins the project", async () => {
+    const fixture = project();
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, fixture.main, fixture.config);
+
+    const added = join(fixture.directory, "added.sts");
+    writeFileSync(
+      added,
+      `import { dup } from "./missing.sts" for syntax;\nexport const added = 1;\n`,
+    );
+    const again = await transform(session, fixture.main, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    // The new file's mistake is the project's, as a fresh session reports it.
+    expect(String(again.diagnostics[0]?.messageText)).toContain(
+      "Cannot resolve macro module ./missing.sts",
+    );
+    await session.close();
+  });
+
+  test("keeps an expansion for each config it serves", async () => {
+    const first = project();
+    const second = project();
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, first.main, first.config);
+    await transform(session, second.main, second.config);
+    await transform(session, first.macros, first.config);
+    await transform(session, second.macros, second.config);
+    expect(counting.expansions()).toBe(2);
+    await session.close();
+  });
+
+  test("sees a macro module rewritten at the same size straight after it was read", async () => {
+    // Written within one tick of the file system's clock, the second version
+    // can carry the first one's size and modification time, so a stat alone
+    // cannot tell them apart.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    writeFileSync(
+      fixture.macros,
+      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { ($value, $value) } }\n`,
+    );
+    const after = await transform(session, other, fixture.config);
+    expect(before.code).toContain("[21, 21]");
+    expect(after.code).toContain("(21, 21)");
+    await session.close();
+  });
+});
+
+/**
+ * What one long-lived session answers after the project on disk changes under
+ * it. Each case ends where a fresh session would give a different answer from
+ * one that kept the expansion it had, so each is a way a kept expansion went
+ * stale: every file expansion looked for -- found or not, and under the path
+ * it looked, not where a symlink led -- decides its result.
+ */
+describe("a session after the project changes", () => {
+  test("expands once a manifest's missing entry is created", async () => {
+    const fixture = formsProject();
+    writeFormsPackage(fixture.packageRoot, { entry: false });
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(String(before.diagnostics[0]?.messageText)).toContain(
+      "entry or export source does not exist",
+    );
+
+    writeFileSync(
+      join(fixture.packageRoot, "macros.sts"),
+      `export const metadata = "macro package entry";\n`,
+    );
+    const after = await transform(session, fixture.other, fixture.config);
+    expect(after.diagnostics).toEqual([]);
+    expect(after.code).toContain("[2, 2]");
+    await session.close();
+  });
+
+  test("expands once a missing package is installed", async () => {
+    const fixture = formsProject();
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(String(before.diagnostics[0]?.messageText)).toContain(
+      "Cannot resolve macro module @acme/forms",
+    );
+
+    writeFormsPackage(fixture.packageRoot);
+    const after = await transform(session, fixture.other, fixture.config);
+    expect(after.diagnostics).toEqual([]);
+    expect(after.code).toContain("[2, 2]");
+    // Where it was looked for, so a host can watch for it to appear.
+    expect(before.missingDependencies).toContain(
+      join(
+        realpathSync(fixture.directory),
+        "node_modules/@acme/forms/package.json",
+      ),
+    );
+    await session.close();
+  });
+
+  test("follows a package link pointed at a new version", async () => {
+    // How pnpm upgrades: the link moves and the old version stays in its
+    // store, unchanged, until it is pruned.
+    const fixture = formsProject();
+    const store = join(fixture.directory, "node_modules", ".pnpm");
+    const version = (name: string) =>
+      join(store, name, "node_modules", "@acme", "forms");
+    writeFormsPackage(version("forms@1"));
+    writeFormsPackage(version("forms@2"), {
+      rule: "[$value, $value, $value]",
+    });
+    mkdirSync(dirname(fixture.packageRoot), { recursive: true });
+    symlinkSync(version("forms@1"), fixture.packageRoot);
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain("[1, 1]");
+
+    rmSync(fixture.packageRoot);
+    symlinkSync(version("forms@2"), fixture.packageRoot);
+    const after = await transform(session, fixture.other, fixture.config);
+    expect(after.code).toContain("[2, 2, 2]");
+    await session.close();
+  });
+
+  test("resolves to an earlier alias target once it appears", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-alias-"));
+    mkdirSync(join(directory, "fallback"));
+    mkdirSync(join(directory, "override"));
+    writeFileSync(
+      join(directory, "fallback", "m.sts"),
+      `export syntax dup:expr { rule { dup($v:tt) } => { [$v, $v] } }\n`,
+    );
+    const source = (value: number) =>
+      `import { dup } from "@m/m.sts" for syntax;\nexport const answer = dup(${value});\n`;
+    const a = join(directory, "a.sts");
+    const b = join(directory, "b.sts");
+    writeFileSync(a, source(1));
+    writeFileSync(b, source(2));
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          paths: { "@m/*": ["./override/*", "./fallback/*"] },
+        },
+        files: ["a.sts", "b.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    const before = await transform(session, a, config);
+    expect(before.code).toContain("[1, 1]");
+
+    writeFileSync(
+      join(directory, "override", "m.sts"),
+      `export syntax dup:expr { rule { dup($v:tt) } => { [$v, $v, $v] } }\n`,
+    );
+    const after = await transform(session, b, config);
+    expect(after.code).toContain("[2, 2, 2]");
+    await session.close();
+  });
+
+  test("expands a file again once the macro module it lacked is created", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-outside-"));
+    mkdirSync(join(directory, "src"));
+    const main = join(directory, "src", "main.sts");
+    writeFileSync(
+      main,
+      `import { dup } from "../shared/m.sts" for syntax;\nexport const answer = dup(1);\n`,
+    );
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["src"],
+      }),
+    );
+    const session = createSweetenerSession();
+    const before = await transform(session, main, config);
+    expect(String(before.diagnostics[0]?.messageText)).toContain(
+      "Cannot resolve macro module ../shared/m.sts",
+    );
+
+    mkdirSync(join(directory, "shared"));
+    writeFileSync(
+      join(directory, "shared", "m.sts"),
+      `export syntax dup:expr { rule { dup($v:tt) } => { [$v, $v] } }\n`,
+    );
+    const after = await transform(session, main, config);
+    expect(after.diagnostics).toEqual([]);
+    expect(after.code).toContain("[1, 1]");
+    await session.close();
+  });
+
+  test("answers from its own expansion after another config's expansion throws", async () => {
+    const working = project();
+    const other = join(working.directory, "other.sts");
+    writeFileSync(other, readFile(working.main).replace("21", "7"));
+    writeFileSync(
+      working.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    // A file the config lists that is not there is not a configuration
+    // error, so it reaches expansion, which cannot read it and throws.
+    const broken = project();
+    writeFileSync(
+      broken.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "gone.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    await transform(session, working.main, working.config);
+    await expect(
+      transform(session, broken.main, broken.config),
+    ).rejects.toThrow(/gone\.sts/u);
+    const after = await transform(session, other, working.config);
+    expect(after.diagnostics).toEqual([]);
+    expect(after.code).toContain("[7, 7]");
+    await session.close();
+  });
 });
 
 function readFile(fileName: string): string {
   return readFileSync(fileName, "utf8");
+}
+
+/** The default provider, counting how many times it expands a project. */
+function countingProvider(): {
+  readonly provider: DefaultProjectExpansionProvider;
+  readonly expansions: () => number;
+} {
+  let expansions = 0;
+  const provider = new Proxy(createDefaultProjectExpansionProvider(), {
+    get(target, property) {
+      if (property === "expandProject")
+        return (
+          ...args: Parameters<DefaultProjectExpansionProvider["expandProject"]>
+        ) => {
+          expansions += 1;
+          return target.expandProject(...args);
+        };
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { provider, expansions: () => expansions };
+}
+
+function transform(
+  session: SweetenerSession,
+  filename: string,
+  configFile: string,
+): Promise<SweetenerTransformResult> {
+  return session.transform({
+    code: readFile(filename),
+    filename,
+    configFile,
+    mode: "test",
+  });
+}
+
+function formsManifest(source: string): string {
+  return JSON.stringify({
+    formatVersion: 1,
+    name: "@acme/forms",
+    languageVersion: "1",
+    compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+    entry: "./macros.sts",
+    exports: { packaged: { source, category: "expr", phase: 1 } },
+    dependencies: [],
+  });
+}
+
+/** An installed `@acme/forms` whose `packaged(x)` expands to `rule`. */
+function writeFormsPackage(
+  packageRoot: string,
+  options: { readonly entry?: boolean; readonly rule?: string } = {},
+): void {
+  mkdirSync(packageRoot, { recursive: true });
+  writeFileSync(
+    join(packageRoot, "package.json"),
+    JSON.stringify({
+      name: "@acme/forms",
+      version: "1.0.0",
+      sweetMacros: "./sweet-macros.json",
+    }),
+  );
+  writeFileSync(
+    join(packageRoot, "sweet-macros.json"),
+    formsManifest("./forms.sts"),
+  );
+  if (options.entry ?? true)
+    writeFileSync(
+      join(packageRoot, "macros.sts"),
+      `export const metadata = "macro package entry";\n`,
+    );
+  writeFileSync(
+    join(packageRoot, "forms.sts"),
+    `export syntax packaged:expr { rule { packaged($value:tt) } => { ${options.rule ?? "[$value, $value]"} } }\n`,
+  );
+}
+
+function formsSource(value: number): string {
+  return `import { packaged } from "@acme/forms" for syntax;\nexport const answer = packaged(${value});\n`;
+}
+
+/** Two files using `@acme/forms`, which is not installed yet. */
+function formsProject(): {
+  directory: string;
+  config: string;
+  main: string;
+  other: string;
+  packageRoot: string;
+} {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-forms-"));
+  const main = join(directory, "main.sts");
+  const other = join(directory, "other.sts");
+  const config = join(directory, "tsconfig.json");
+  writeFileSync(main, formsSource(1));
+  writeFileSync(other, formsSource(2));
+  writeFileSync(
+    config,
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      files: ["main.sts", "other.sts"],
+    }),
+  );
+  return {
+    directory,
+    config,
+    main,
+    other,
+    packageRoot: join(directory, "node_modules", "@acme", "forms"),
+  };
 }
 
 test("does not cache an expansion that failed", async () => {
