@@ -31,6 +31,21 @@ export interface PathAlias {
   readonly targets: readonly string[];
 }
 
+/**
+ * Where a host found a specifier leads from a module, by the module's path as
+ * the host gave it, or `undefined` where it found nothing.
+ *
+ * A host that resolved each module's imports against the file system says so
+ * here, and resolution takes its answers in place of `aliases` and
+ * `packages`: those are the same for every module, so they can only say where
+ * a specifier leads from anywhere -- one location for each package name, every
+ * alias target some module loaded -- which is not where it led from this one.
+ */
+export type ResolveSpecifier = (
+  from: string,
+  specifier: string,
+) => string | undefined;
+
 export interface ResolveMacroProjectOptions {
   readonly entry: string;
   readonly languageVersion: string;
@@ -38,6 +53,7 @@ export interface ResolveMacroProjectOptions {
   readonly modules: readonly MacroModuleSource[];
   readonly packages?: readonly MacroPackageManifest[];
   readonly aliases?: readonly PathAlias[];
+  readonly resolve?: ResolveSpecifier | undefined;
 }
 
 export interface ModuleDependencyGraph {
@@ -76,6 +92,7 @@ export interface ResolveSourceMacroImportsOptions {
   readonly modules: readonly MacroModuleSource[];
   readonly packages?: readonly MacroPackageManifest[];
   readonly aliases?: readonly PathAlias[];
+  readonly resolve?: ResolveSpecifier | undefined;
 }
 
 export interface ResolvedSourceMacroImports {
@@ -155,14 +172,22 @@ function graph(
 }
 
 function moduleCandidates(options: {
+  /** The importing module's path as the caller gave it. */
   readonly from: string;
   readonly specifier: string;
   readonly packages: ReadonlyMap<string, MacroPackageManifest>;
   readonly aliases: readonly PathAlias[];
+  readonly resolve: ResolveSpecifier | undefined;
 }): readonly string[] {
+  if (options.resolve !== undefined) {
+    const target = options.resolve(options.from, options.specifier);
+    return target === undefined ? [] : [canonical(target)];
+  }
   if (options.specifier.startsWith("."))
     return [
-      canonical(posix.join(posix.dirname(options.from), options.specifier)),
+      canonical(
+        posix.join(posix.dirname(canonical(options.from)), options.specifier),
+      ),
     ];
   const matchingAliases = options.aliases.flatMap(({ pattern, targets }) => {
     const capture = aliasCapture(pattern, options.specifier);
@@ -211,10 +236,11 @@ export function resolveSourceMacroImports(
   const localNames = new Set<string>();
   for (const sourceImport of options.imports) {
     const matches = moduleCandidates({
-      from: canonical(options.entry),
+      from: options.entry,
       specifier: sourceImport.specifier,
       packages,
       aliases,
+      resolve: options.resolve,
     }).filter((path) => modules.has(path));
     if (matches.length !== 1) {
       for (const binding of sourceImport.bindings)
@@ -359,21 +385,25 @@ export function resolveMacroProject(
 
   function resolveDependency(
     from: string,
-    sourceId: SourceId,
+    module: MacroModuleSource,
     dependency: MacroModuleDependency,
   ): string | undefined {
     const matches = moduleCandidates({
-      from,
+      from: module.path,
       specifier: dependency.specifier,
       packages,
       aliases,
+      resolve: options.resolve,
     }).filter((path) => modules.has(path));
     if (matches.length === 0) {
-      report(unresolvedMacroModuleCode, sourceId, [dependency.specifier, from]);
+      report(unresolvedMacroModuleCode, module.sourceId, [
+        dependency.specifier,
+        from,
+      ]);
       return undefined;
     }
     if (matches.length > 1) {
-      report(ambiguousMacroAliasCode, sourceId, [
+      report(ambiguousMacroAliasCode, module.sourceId, [
         dependency.specifier,
         matches.length,
       ]);
@@ -400,7 +430,7 @@ export function resolveMacroProject(
     }
     active.push(path);
     for (const dependency of manifest.dependencies) {
-      const target = resolveDependency(path, module.sourceId, dependency);
+      const target = resolveDependency(path, module, dependency);
       if (target === undefined) continue;
       (dependency.kind === "macro" ? macroEdges : runtimeEdges).push({
         from: path,

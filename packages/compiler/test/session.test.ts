@@ -667,6 +667,179 @@ describe("public compiler session", () => {
  * it looked, not where a symlink led -- decides its result.
  */
 describe("a session after the project changes", () => {
+  test("resolves a package from each importer, whatever else the project lists", async () => {
+    // Node resolves a package from the importing file's own directory, so a
+    // file outside `sub` never reaches `sub/node_modules`. One location
+    // kept per package name for the whole project made `a.sts` expand with
+    // whichever copy the last importer found, so deleting or adding
+    // `sub/g.sts` changed `a.sts` without changing anything it read.
+    const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-nearest-"));
+    writeFormsPackage(join(directory, "node_modules", "@acme", "forms"), {
+      rule: "[$value, 1]",
+    });
+    writeFormsPackage(
+      join(directory, "sub", "node_modules", "@acme", "forms"),
+      { rule: "[$value, 2]" },
+    );
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["**/*.sts"],
+        exclude: ["node_modules", "sub/node_modules"],
+      }),
+    );
+    const a = join(directory, "a.sts");
+    const g = join(directory, "sub", "g.sts");
+    writeFileSync(a, formsSource(10));
+    writeFileSync(g, formsSource(20));
+    const session = createSweetenerSession();
+    expect((await transform(session, a, config)).code).toContain("[10, 1]");
+    expect((await transform(session, g, config)).code).toContain("[20, 2]");
+
+    rmSync(g);
+    const deleted = await transform(session, a, config);
+    expect(deleted.code).toContain("[10, 1]");
+    expect(answer(deleted)).toEqual(answer(await freshly(a, config)));
+
+    writeFileSync(g, formsSource(20));
+    const added = await transform(session, a, config);
+    expect(added.code).toContain("[10, 1]");
+    expect(answer(added)).toEqual(answer(await freshly(a, config)));
+    await session.close();
+  });
+
+  test("takes the first alias target that is there, whatever other files import", async () => {
+    // TypeScript tries `paths` targets in order and takes the first that is
+    // there. Counting every target some other file happened to load made
+    // `f.sts`'s import ambiguous the moment another file imported the second.
+    const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-targets-"));
+    const macro = (n: number) =>
+      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, ${n}] } }\n`;
+    mkdirSync(join(directory, "a"));
+    mkdirSync(join(directory, "b"));
+    mkdirSync(join(directory, "src"));
+    writeFileSync(join(directory, "a", "m.sts"), macro(1));
+    writeFileSync(join(directory, "b", "m.sts"), macro(2));
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          paths: { "@m/*": ["./a/*", "./b/*"] },
+        },
+        include: ["src/**/*.sts"],
+      }),
+    );
+    const f = join(directory, "src", "f.sts");
+    writeFileSync(
+      f,
+      'import { duplicate } from "@m/m.sts" for syntax;\nexport const answer = duplicate(10);\n',
+    );
+    const session = createSweetenerSession();
+    expect((await transform(session, f, config)).code).toContain("[10, 1]");
+
+    writeFileSync(
+      join(directory, "src", "g.sts"),
+      'import { duplicate } from "../b/m.sts" for syntax;\nexport const other = duplicate(20);\n',
+    );
+    const after = await transform(session, f, config);
+    expect(after.diagnostics).toEqual([]);
+    expect(after.code).toContain("[10, 1]");
+    expect(answer(after)).toEqual(answer(await freshly(f, config)));
+    await session.close();
+  });
+
+  test.each([
+    ["0.1.0", []],
+    ["0.5.0", ["SWR5003"]],
+  ] as const)(
+    "checks a package's declared dependency from the package (base needs %s)",
+    async (minimum, codes) => {
+      // `@acme/forms` expands through `@acme/base`, which only its export
+      // source imports. The manifest declares the dependency for the package,
+      // so it leads where an import in the package's entry would, and the
+      // dependency's own compiler range is checked there.
+      const directory = mkdtempSync(join(tmpdir(), "sweet-compiler-declared-"));
+      const modules = join(directory, "node_modules", "@acme");
+      const manifest = (
+        name: string,
+        exported: string,
+        dependencies: readonly unknown[],
+      ) =>
+        JSON.stringify({
+          formatVersion: 1,
+          name,
+          languageVersion: "1",
+          compiler: {
+            minimum: name === "@acme/base" ? minimum : "0.1.0",
+            maximum: "0.9.x",
+          },
+          entry: "./macros.sts",
+          exports: {
+            [exported]: {
+              source: "./exported.sts",
+              category: "expr",
+              phase: 1,
+            },
+          },
+          dependencies,
+        });
+      for (const [name, exported, dependencies, source] of [
+        [
+          "base",
+          "base",
+          [],
+          "export syntax base:expr { rule { base($value:tt) } => { [$value, $value] } }\n",
+        ],
+        [
+          "forms",
+          "packaged",
+          [{ specifier: "@acme/base", kind: "macro", exports: ["base"] }],
+          'import { base } from "@acme/base" for syntax;\nexport syntax packaged:expr { rule { packaged($value:tt) } => { base($value) } }\n',
+        ],
+      ] as const) {
+        const root = join(modules, name);
+        mkdirSync(root, { recursive: true });
+        writeFileSync(
+          join(root, "package.json"),
+          JSON.stringify({
+            name: `@acme/${name}`,
+            version: "1.0.0",
+            sweetMacros: "./sweet-macros.json",
+          }),
+        );
+        writeFileSync(
+          join(root, "sweet-macros.json"),
+          manifest(`@acme/${name}`, exported, dependencies),
+        );
+        writeFileSync(
+          join(root, "macros.sts"),
+          `export const metadata = "macro package entry";\n`,
+        );
+        writeFileSync(join(root, "exported.sts"), source);
+      }
+      const main = join(directory, "main.sts");
+      writeFileSync(main, formsSource(3));
+      const config = join(directory, "tsconfig.json");
+      writeFileSync(
+        config,
+        JSON.stringify({
+          compilerOptions: { module: "ESNext", target: "ES2022" },
+          files: ["main.sts"],
+        }),
+      );
+      const result = await freshly(main, config);
+      expect(
+        result.diagnostics.map(({ code }) => `SWR${String(code)}`),
+      ).toEqual(codes);
+      if (codes.length === 0) expect(result.code).toContain("[3, 3]");
+    },
+  );
+
   test("expands once a manifest's missing entry is created", async () => {
     const fixture = formsProject();
     writeFormsPackage(fixture.packageRoot, { entry: false });
