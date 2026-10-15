@@ -3273,6 +3273,37 @@ export function expandMacroSyntax(
      * list and reading what follows it; over loose tokens these are the
      * questions the walk can answer.
      */
+    /**
+     * The `<` tokens walked so far that nothing has closed, as how many each
+     * still holds open, innermost last. No type-argument list spans a
+     * statement boundary, so a `;` or a `}` closes them all.
+     *
+     * They are read forward as the walk goes, each token once, rather than
+     * back from the end every time the question is asked: asked after every
+     * `,` of a long list, reading back cost the square of its length.
+     */
+    const openAngles: number[] = [];
+    let anglesRead = 0;
+    /** How many `<` the innermost one still open holds open. */
+    const unclosedAngles = (): number => {
+      for (; anglesRead < output.length; anglesRead += 1) {
+        const node = output[anglesRead]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ";" || node.raw === "}") {
+          openAngles.length = 0;
+          continue;
+        }
+        let closes = angles(node, ">");
+        while (closes > 0 && openAngles.length > 0) {
+          const open = openAngles.pop()!;
+          if (open > closes) openAngles.push(open - closes);
+          closes -= Math.min(open, closes);
+        }
+        const opens = angles(node, "<");
+        if (opens > 0) openAngles.push(opens);
+      }
+      return openAngles.at(-1) ?? 0;
+    };
     const typeArgumentsEnclose = (at: number): boolean => {
       const previous = output.at(-1);
       if (
@@ -3280,22 +3311,7 @@ export function expandMacroSyntax(
         (previous.raw !== "," && angles(previous, "<") === 0)
       )
         return false;
-      // How many `<` behind stand open. No type-argument list spans a
-      // statement boundary, which is where the scan back stops.
-      let closed = 0;
-      let depth = 0;
-      for (let back = output.length - 1; back >= 0; back -= 1) {
-        const node = output[back]!;
-        if (node.tag !== "token") continue;
-        if (node.raw === ";" || node.raw === "}") break;
-        closed += angles(node, ">");
-        const opens = angles(node, "<");
-        if (opens > closed) {
-          depth = opens - closed;
-          break;
-        }
-        closed -= opens;
-      }
+      let depth = unclosedAngles();
       if (depth === 0) return false;
       for (let forward = at + 1; forward < input.length; forward += 1) {
         const node = input[forward]!;
