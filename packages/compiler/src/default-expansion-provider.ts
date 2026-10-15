@@ -585,19 +585,22 @@ function semanticBindingLiteralMatcher(options: {
   const identifierAt = (fileName: string, start: number, end?: number) => {
     const source = program.getSourceFile(fileName);
     if (source === undefined) return undefined;
-    let found: ts.Identifier | undefined;
-    const visit = (node: ts.Node) => {
-      if (found !== undefined || start < node.pos || start >= node.end) return;
+    // Descended a level at a time rather than by recursion: a chain of binary
+    // operators is one node deep per operator, and a long one ran out of
+    // stack.
+    let node: ts.Node | undefined = source;
+    while (node !== undefined) {
       if (
         ts.isIdentifier(node) &&
         node.getStart(source) === start &&
         (end === undefined || node.end === end)
       )
-        found = node;
-      else ts.forEachChild(node, visit);
-    };
-    visit(source);
-    return found;
+        return node;
+      node = ts.forEachChild(node, (child) =>
+        start >= child.pos && start < child.end ? child : undefined,
+      );
+    }
+    return undefined;
   };
   const unalias = (symbol: ts.Symbol | undefined) =>
     symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0

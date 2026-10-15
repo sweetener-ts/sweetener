@@ -41,6 +41,26 @@ interface IdentifierClassification {
   readonly exportSpecifierOffsets: ReadonlySet<number>;
 }
 
+/**
+ * Every node of `root`, read from a stack of its own rather than by recursion.
+ * TypeScript nests a chain of binary operators one node per operator, so `0 +
+ * 1 + ... + 9999` -- which a fold builds as readily as an author writes it --
+ * is ten thousand nodes deep, and a recursive walk ran out of stack on it.
+ */
+function* everyNode(root: ts.Node): Generator<ts.Node> {
+  const pending: ts.Node[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    yield node;
+    const children: ts.Node[] = [];
+    ts.forEachChild(node, (child) => {
+      children.push(child);
+    });
+    for (let at = children.length - 1; at >= 0; at -= 1)
+      pending.push(children[at]!);
+  }
+}
+
 function nameOf(node: ts.Node): ts.Node | undefined {
   return (node as { readonly name?: ts.Node }).name;
 }
@@ -67,16 +87,13 @@ function namespaceFor(identifier: ts.Identifier): NameNamespace {
  */
 function parameterPropertyNames(parsed: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
-  const visit = (node: ts.Node): void => {
+  for (const node of everyNode(parsed))
     if (
       ts.isParameter(node) &&
       ts.isParameterPropertyDeclaration(node, node.parent) &&
       ts.isIdentifier(node.name)
     )
       names.add(node.name.text);
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
   return names;
 }
 
@@ -213,7 +230,7 @@ function classifyIdentifiers(
   const importBindingOffsets = new Set<number>();
   const publicBinderOffsets = new Set<number>();
   const exportSpecifierOffsets = new Set<number>();
-  const visit = (node: ts.Node): void => {
+  for (const node of everyNode(parsed)) {
     if (ts.isIdentifier(node)) {
       const start = node.getStart(parsed);
       const role = roleFor(node, parameterProperties);
@@ -248,9 +265,7 @@ function classifyIdentifiers(
         exportSpecifierOffsets.add(start);
       }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
+  }
   return Object.freeze({
     roleByOffset,
     namespaceByOffset,
