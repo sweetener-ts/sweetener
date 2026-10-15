@@ -129,7 +129,7 @@ interface ConfigState {
   /**
    * Each source's last expansion, kept while everything it consulted holds
    * what it held. Kept across loads of the config while the config still
-   * says the same thing.
+   * says the same thing, for the sources it still lists.
    */
   readonly files: Map<string, FileExpansion>;
 }
@@ -262,6 +262,15 @@ export function createSweetenerSession(
         macroExtensions: project.sweet.macroExtensions,
       }).map(({ fileName }) => resolve(fileName)),
     );
+    // A source the config no longer lists is not served under it, and its
+    // expansion would hold the origins of a whole project's expansion for as
+    // long as the session lives. One listed again is expanded again.
+    const files =
+      previous !== undefined && previous.signature === signature
+        ? previous.files
+        : new Map<string, FileExpansion>();
+    for (const fileName of files.keys())
+      if (!expanded.has(fileName)) files.delete(fileName);
     const state: ConfigState = {
       project,
       signature,
@@ -270,10 +279,7 @@ export function createSweetenerSession(
         loadedAt,
       )(project.configurationInputs),
       expanded,
-      files:
-        previous !== undefined && previous.signature === signature
-          ? previous.files
-          : new Map(),
+      files,
     };
     configs.set(configFile, state);
     return state;
