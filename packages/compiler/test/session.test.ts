@@ -9,13 +9,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test, vi } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
   createSweetenerSession,
   type DefaultProjectExpansionProvider,
+  type ExpansionFileSystem,
   type SweetenerSession,
   type SweetenerTransformResult,
 } from "../src/index.js";
@@ -965,6 +966,99 @@ describe("a session after what TypeScript read for binding literals changes", ()
 });
 
 /**
+ * Requests made together are answered together, after the last of them was
+ * made, so one check of what their expansions read serves them all.
+ */
+describe("a session answering requests made together", () => {
+  test("checks what files share once for all the requests made together", async () => {
+    const fixture = project();
+    writeFileSync(
+      fixture.macros,
+      [
+        "export syntax typeof:expr shadows core {",
+        "  literal globalThis.NaN as NaN;",
+        '  rule { typeof NaN } => { "NaN" }',
+        "  fallback rule { typeof $value:expr } => { #core(typeof $value) }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const files = Array.from({ length: 5 }, (_, index) => {
+      const fileName = join(fixture.directory, `file${index}.sts`);
+      writeFileSync(
+        fileName,
+        `import { typeof } from "./macros.sts" for syntax shadows core;\nexport const kind${index} = typeof NaN;\n`,
+      );
+      return fileName;
+    });
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", ...files.map((fileName) => basename(fileName))],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const all = () =>
+      Promise.all(
+        files.map((fileName) => transform(session, fileName, fixture.config)),
+      );
+    for (const result of await all()) expect(result.code).toContain('"NaN"');
+    expect(counting.expansions()).toBe(1);
+
+    // Every file's expansion depends on everything the project read, which
+    // the files made together check once, and the files made one at a time
+    // check once each.
+    let before = counting.stats();
+    await all();
+    const together = counting.stats() - before;
+    before = counting.stats();
+    for (const fileName of files)
+      session.transformSync({
+        code: readFile(fileName),
+        filename: fileName,
+        configFile: fixture.config,
+        mode: "test",
+      });
+    const apart = counting.stats() - before;
+    expect(together).toBeGreaterThan(0);
+    expect(apart).toBe(together * files.length);
+    expect(counting.expansions()).toBe(1);
+    await session.close();
+  });
+
+  test("answers a request made before a change with what came after it", async () => {
+    // Checked when it is answered, not when it was made, so a request made
+    // before a change and one made after it answer alike.
+    const fixture = shapesProject('import { Shape } from "./shapes";');
+    const shapes = join(fixture.directory, "shapes.ts");
+    writeFileSync(
+      shapes,
+      "export const Circle = 1;\nexport { Circle as Shape };\n",
+    );
+    writeFileSync(
+      fixture.macros,
+      shapesMacros('import { Circle } from "./shapes";', "Circle"),
+    );
+    const session = createSweetenerSession();
+    expect(
+      (await transform(session, fixture.main, fixture.config)).code,
+    ).toContain('"circle"');
+
+    const before = transform(session, fixture.main, fixture.config);
+    writeFileSync(
+      shapes,
+      "export const Circle = 1;\nexport const Shape = 2;\n",
+    );
+    const after = transform(session, fixture.main, fixture.config);
+    expect((await before).code).toContain('"other"');
+    expect((await after).code).toContain('"other"');
+    await session.close();
+  });
+});
+
+/**
  * A session keeps an expansion only for a config that can still use it, so
  * one that lives through many projects does not keep them all.
  */
@@ -1068,13 +1162,29 @@ function readFile(fileName: string): string {
   return readFileSync(fileName, "utf8");
 }
 
-/** The default provider, counting how many times it expands a project. */
+/**
+ * The default provider, counting how many times it expands a project and how
+ * many times what an expansion read is checked by stat.
+ */
 function countingProvider(): {
   readonly provider: DefaultProjectExpansionProvider;
   readonly expansions: () => number;
+  readonly stats: () => number;
 } {
   let expansions = 0;
-  const provider = new Proxy(createDefaultProjectExpansionProvider(), {
+  let stats = 0;
+  const target = createDefaultProjectExpansionProvider();
+  const { system, stat } = target.fileSystem;
+  if (stat === undefined)
+    throw new Error("The default provider reads the disk, which has stats");
+  const fileSystem: ExpansionFileSystem = {
+    system,
+    stat: (path) => {
+      stats += 1;
+      return stat(path);
+    },
+  };
+  const provider = new Proxy(target, {
     get(target, property) {
       if (property === "expandProject")
         return (
@@ -1083,11 +1193,12 @@ function countingProvider(): {
           expansions += 1;
           return target.expandProject(...args);
         };
+      if (property === "fileSystem") return fileSystem;
       const value: unknown = Reflect.get(target, property, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  return { provider, expansions: () => expansions };
+  return { provider, expansions: () => expansions, stats: () => stats };
 }
 
 function transform(

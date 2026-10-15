@@ -16,7 +16,7 @@ import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
 import {
   checkedInputs,
   diskFileSystem,
-  inputsHold,
+  InputCheckRound,
   nowNanoseconds,
   type CheckedInput,
   type ExpansionInput,
@@ -84,6 +84,15 @@ export interface SweetenerTransformResult {
 }
 
 export interface SweetenerSession {
+  /**
+   * Expand a file, answered together with every other request made before
+   * the session gets to it.
+   *
+   * Whether what a kept expansion read still holds is asked once for all of
+   * them: each was made before the asking began, so each answer is current
+   * for each of them. A bundler transforming a project's files at once has
+   * every file it shares inputs with checked once, not once per file.
+   */
   transform(
     request: SweetenerTransformRequest,
   ): Promise<SweetenerTransformResult>;
@@ -92,7 +101,9 @@ export interface SweetenerSession {
    *
    * Expanding a file is synchronous work — it reads from disk and runs the
    * compiler — and some hosts can only accept a synchronous answer. Deno's
-   * module loader hooks are one: they cannot await.
+   * module loader hooks are one: they cannot await. Each call is answered on
+   * its own: nothing checked for an earlier call can stand for this one,
+   * since the disk may have changed in between.
    */
   transformSync(request: SweetenerTransformRequest): SweetenerTransformResult;
   invalidate(paths: readonly string[]): void;
@@ -127,6 +138,11 @@ interface ConfigState {
   /** The sources it expands, by resolved path. */
   readonly expanded: ReadonlySet<string>;
   /**
+   * Every file it lists, as one string, kept from the previous load while
+   * the list is the same so comparing it with an expansion's is immediate.
+   */
+  readonly fileList: string;
+  /**
    * Each source's last expansion, kept while everything it consulted holds
    * what it held. Kept across loads of the config while the config still
    * says the same thing, for the sources it still lists.
@@ -148,7 +164,7 @@ interface FileExpansion {
    * The project's file list, when TypeScript resolved binding literals over
    * all of it and so this expansion depends on which files there are.
    */
-  readonly fileNames: string | undefined;
+  readonly fileList: string | undefined;
   readonly inspection: SourceExpansionInspection;
   readonly sourceMap: RawSourceMap;
   readonly generated: VirtualTypeScriptFile;
@@ -220,6 +236,30 @@ function fingerprint(parts: readonly string[]): string {
 }
 
 /**
+ * Requests answered together, every one of which arrived before any of their
+ * checks began, so one answer to each question serves them all.
+ */
+interface Round {
+  readonly inputs: InputCheckRound;
+  /** Configs loaded during the round, which are as current as the round. */
+  readonly loaded: Set<string>;
+  /**
+   * Each config's expansion made during the round, by source -- failures
+   * included, which are not kept past the round but read everything after
+   * the round's requests were made.
+   */
+  readonly expanded: Map<string, Map<string, FileExpansion>>;
+}
+
+function newRound(): Round {
+  return {
+    inputs: new InputCheckRound(),
+    loaded: new Set(),
+    expanded: new Map(),
+  };
+}
+
+/**
  * Create a long-lived compiler session for a build, dev server, or test run.
  *
  * The current frontend reads a coherent TypeScript project from disk. Rejecting
@@ -279,6 +319,7 @@ export function createSweetenerSession(
         : new Map<string, FileExpansion>();
     for (const fileName of files.keys())
       if (!expanded.has(fileName)) files.delete(fileName);
+    const fileList = JSON.stringify(project.typescript.fileNames);
     const state: ConfigState = {
       project,
       signature,
@@ -287,6 +328,7 @@ export function createSweetenerSession(
         loadedAt,
       )(project.configurationInputs),
       expanded,
+      fileList: previous?.fileList === fileList ? previous.fileList : fileList,
       files,
     };
     configs.set(configFile, state);
@@ -355,7 +397,7 @@ export function createSweetenerSession(
     });
     const configuration = state.project.configurationInputs;
     const fileList = expanded.resolvesBindingLiterals
-      ? JSON.stringify(fileNames)
+      ? state.fileList
       : undefined;
     const made = new Map<string, FileExpansion>();
     for (const { name, inspection } of inspections) {
@@ -387,7 +429,7 @@ export function createSweetenerSession(
       );
       const fileExpansion: FileExpansion = {
         consulted: check(inspection.inputs),
-        fileNames: fileList,
+        fileList,
         inspection,
         sourceMap,
         generated: file,
@@ -406,7 +448,8 @@ export function createSweetenerSession(
     return made;
   };
 
-  const transformSync = (
+  const transformIn = (
+    round: Round,
     request: SweetenerTransformRequest,
   ): SweetenerTransformResult => {
     if (closed) throw new Error("Sweetener session is closed");
@@ -426,43 +469,47 @@ export function createSweetenerSession(
       request.mode ?? "development",
     ]);
 
-    // The config is loaded again at most once a request: when a file it was
+    // The config is loaded again at most once a round: when a file it was
     // loaded from changed, when it does not list this file yet, when an
     // expansion is about to be made from it, or when this file's expansion
     // depends on its whole file list.
+    const loadedInRound = (): boolean => round.loaded.has(configFile);
+    const reload = (): ConfigState => {
+      const loaded = load(configFile);
+      round.loaded.add(configFile);
+      return loaded;
+    };
     let state = configs.get(configFile);
-    let fresh = false;
     if (
       state === undefined ||
-      !inputsHold(state.consulted) ||
-      !state.expanded.has(filename)
-    ) {
-      state = load(configFile);
-      fresh = true;
-    }
+      (!loadedInRound() &&
+        (!round.inputs.hold(state.consulted) || !state.expanded.has(filename)))
+    )
+      state = reload();
     if (!state.expanded.has(filename)) {
       // Nothing it lists has been asked for, so nothing is kept for it.
       if (state.files.size === 0) configs.delete(configFile);
       throw notOptedIn(filename, configFile);
     }
     let fileExpansion = state.files.get(filename);
-    if (fileExpansion !== undefined && !inputsHold(fileExpansion.consulted))
+    if (
+      fileExpansion !== undefined &&
+      !round.inputs.hold(fileExpansion.consulted)
+    )
       fileExpansion = undefined;
-    if (fileExpansion?.fileNames !== undefined) {
-      if (!fresh) {
-        state = load(configFile);
-        fresh = true;
-      }
+    if (fileExpansion?.fileList !== undefined) {
+      if (!loadedInRound()) state = reload();
       fileExpansion = state.files.get(filename);
-      if (
-        fileExpansion?.fileNames !==
-        JSON.stringify(state.project.typescript.fileNames)
-      )
-        fileExpansion = undefined;
+      if (fileExpansion?.fileList !== state.fileList) fileExpansion = undefined;
     }
     if (fileExpansion === undefined) {
-      if (!fresh) state = load(configFile);
-      fileExpansion = expand(state).get(filename);
+      let made = round.expanded.get(configFile);
+      if (made === undefined) {
+        if (!loadedInRound()) state = reload();
+        made = expand(state);
+        round.expanded.set(configFile, made);
+      }
+      fileExpansion = made.get(filename);
       if (fileExpansion === undefined) throw notOptedIn(filename, configFile);
     }
     const existing = fileExpansion.results.get(cacheKey);
@@ -499,15 +546,41 @@ export function createSweetenerSession(
     return result;
   };
 
+  // Requests made through `transform` and not yet answered, answered together
+  // once this turn of the event loop is over.
+  let queued:
+    | {
+        readonly request: SweetenerTransformRequest;
+        readonly resolve: (result: SweetenerTransformResult) => void;
+        readonly reject: (error: unknown) => void;
+      }[]
+    | undefined;
+  const answerQueued = (): void => {
+    const requests = queued ?? [];
+    queued = undefined;
+    const round = newRound();
+    for (const { request, resolve, reject } of requests) {
+      try {
+        resolve(transformIn(round, request));
+      } catch (error) {
+        reject(error);
+      }
+    }
+  };
+
   return Object.freeze({
-    transformSync,
-    // Declared async so a failure is still a rejected promise rather than a
-    // synchronous throw, which is what every existing caller expects. There is
-    // nothing to await inside it.
-    async transform(
+    transformSync: (request: SweetenerTransformRequest) =>
+      transformIn(newRound(), request),
+    transform(
       request: SweetenerTransformRequest,
     ): Promise<SweetenerTransformResult> {
-      return transformSync(request);
+      return new Promise((resolve, reject) => {
+        if (queued === undefined) {
+          queued = [];
+          setImmediate(answerQueued);
+        }
+        queued.push({ request, resolve, reject });
+      });
     },
     invalidate(paths: readonly string[]): void {
       const invalidated = paths.map(canonical);

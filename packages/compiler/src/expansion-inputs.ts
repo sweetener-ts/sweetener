@@ -237,7 +237,8 @@ export interface CheckedInput {
  * Records of inputs read from `fileSystem` after `readAfter`, confirmed
  * against their stats now, one per input however many lists name it -- so a
  * macro module every file of a project reads is confirmed once for all of
- * them.
+ * them. A list asked for again is the same list of records, so files whose
+ * expansions all depend on one list share it.
  *
  * Each file was read after `readAfter`. One whose last write is settled by
  * then has not been written since, so it still holds what was read and its
@@ -246,24 +247,29 @@ export interface CheckedInput {
 export function checkedInputs(
   fileSystem: ExpansionFileSystem,
   readAfter: bigint,
-): (inputs: readonly ExpansionInput[]) => CheckedInput[] {
+): (inputs: readonly ExpansionInput[]) => readonly CheckedInput[] {
   const records = new Map<ExpansionInput, CheckedInput>();
+  const lists = new Map<readonly ExpansionInput[], readonly CheckedInput[]>();
   return (inputs) =>
-    inputs.map((input) =>
-      remember(records, input, () => {
-        const stats =
-          input.kind === "file" && input.text !== undefined
-            ? fileSystem.stat?.(input.path)
-            : undefined;
-        return {
-          fileSystem,
-          input,
-          confirmed:
-            stats?.isFile() === true && settled(stats, readAfter)
-              ? statKey(stats)
-              : undefined,
-        };
-      }),
+    remember(lists, inputs, () =>
+      Object.freeze(
+        inputs.map((input) =>
+          remember(records, input, () => {
+            const stats =
+              input.kind === "file" && input.text !== undefined
+                ? fileSystem.stat?.(input.path)
+                : undefined;
+            return {
+              fileSystem,
+              input,
+              confirmed:
+                stats?.isFile() === true && settled(stats, readAfter)
+                  ? statKey(stats)
+                  : undefined,
+            };
+          }),
+        ),
+      ),
     );
 }
 
@@ -296,35 +302,55 @@ function fileHolds(checked: CheckedInput, input: ExpansionFileInput): boolean {
   return true;
 }
 
-/**
- * Whether every question an expansion asked still gets the answer it got,
- * asked of the file system that answered it.
- *
- * Asked on every transform, so it has to cost little: reading back and hashing
- * every input each time made a build quadratic in the size of its project.
- * Files are confirmed by stat where the file system keeps one. Whether a
- * directory is there, which directories it holds and where a link leads are
- * asked again outright; none of them reads a file.
- */
-export function inputsHold(checked: readonly CheckedInput[]): boolean {
-  for (const record of checked) {
-    const { input } = record;
-    const { system } = record.fileSystem;
-    switch (input.kind) {
-      case "file":
-        if (!fileHolds(record, input)) return false;
-        break;
-      case "directory":
-        if (system.directoryExists(input.path) !== input.exists) return false;
-        break;
-      case "subdirectories":
-        if (!sameNames(system.getDirectories(input.path), input.names))
-          return false;
-        break;
-      case "realpath":
-        if (realpathOf(system, input.path) !== input.target) return false;
-        break;
-    }
+/** Whether one question still gets the answer it got. */
+function inputHolds(record: CheckedInput): boolean {
+  const { input } = record;
+  const { system } = record.fileSystem;
+  switch (input.kind) {
+    case "file":
+      return fileHolds(record, input);
+    case "directory":
+      return system.directoryExists(input.path) === input.exists;
+    case "subdirectories":
+      return sameNames(system.getDirectories(input.path), input.names);
+    case "realpath":
+      return realpathOf(system, input.path) === input.target;
   }
-  return true;
+}
+
+/**
+ * One round of asking whether inputs still hold, whose answers serve every
+ * request that arrived before the round began.
+ *
+ * An answer is as of the moment it was asked, and a request is answered
+ * rightly from anything asked after the request arrived, so the requests
+ * that arrived before a round began can share its answers: each input is
+ * asked once for all of them, and a list of inputs that many files share is
+ * walked once. A request arriving later needs a round of its own; reusing
+ * an answer from before it arrived could miss a change made in between.
+ */
+export class InputCheckRound {
+  readonly #answers = new Map<CheckedInput, boolean>();
+  readonly #lists = new Map<readonly CheckedInput[], boolean>();
+
+  /**
+   * Whether every question an expansion asked still gets the answer it got,
+   * asked of the file system that answered it.
+   *
+   * Files are confirmed by stat where the file system keeps one. Whether a
+   * directory is there, which directories it holds and where a link leads
+   * are asked again outright; none of them reads a file.
+   */
+  hold(checked: readonly CheckedInput[]): boolean {
+    return remember(this.#lists, checked, () =>
+      checked.every((record) =>
+        remember(this.#answers, record, () => inputHolds(record)),
+      ),
+    );
+  }
+}
+
+/** Whether every question an expansion asked still gets the answer it got. */
+export function inputsHold(checked: readonly CheckedInput[]): boolean {
+  return new InputCheckRound().hold(checked);
 }
