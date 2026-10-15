@@ -17,11 +17,11 @@ declare const normalizedSyntaxBrand: unique symbol;
  *
  * Each route the expander asks to read syntax for it -- `enforest` and the
  * `enforest...` options of `ExpandMacroSyntaxOptions` -- answers with this,
- * so a route that skips normalization does not compile. Every route that
- * skipped it handed the walk a shape the normalized routes never produce, and
- * the walk read it differently: an arrow's parameter list left protected as
- * the expression the infix `=>` read it as had a parameter spelled like a
- * macro dispatched.
+ * so a route that skips normalization does not compile. A route that skipped
+ * it handed the walk a shape the normalized routes never produce, and the walk
+ * read the two differently: while the infix `=>` protected an arrow's
+ * parameter list as an expression, a route that left it that way had a
+ * parameter spelled like a macro dispatched.
  */
 export type NormalizedSyntax = ProtectedSyntax & {
   readonly [normalizedSyntaxBrand]: "NormalizedSyntax";
@@ -223,12 +223,19 @@ function replacement(
   options: NormalizationOptions,
 ): readonly Syntax[] | undefined {
   if (normalized.tag === "protected") {
-    // An expression or type an expansion built inside another is not
-    // redundant: it is the boundary its operators bind within, and
-    // nothing in the text says so. An operator's expansion arrives
-    // here holding its operands that way, and flattening them printed
-    // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
-    // the parser built over source text is redundant with that text.
+    // An expression or type nested in another is not redundant where an
+    // expansion produced it. Such syntax is printed from its structure
+    // rather than copied from text, so the nesting is the boundary its
+    // operators bind within, and nothing else says so. An operator's
+    // expansion arrives here holding its operands that way, and
+    // flattening them printed `$value * $n` over `1 + 2` and `3 + 4` as
+    // `1 + 2 * 3 + 4`; a template's `<$asserted>-$value * 2` lost the
+    // assertion the printer respells as `as`, and was printed as written.
+    // What the parser built over source text is redundant with that text.
+    // Keeping it is right only where the reader builds nothing as an
+    // expression that is not one: the infix `=>` once protected an arrow's
+    // parameters as an expression, this kept the wrapping in a template,
+    // and the parameters were walked as the expression it said they were.
     const bounds =
       (category === "expr" || category === "type") &&
       !writtenInSource(options.origins, normalized.origin);

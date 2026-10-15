@@ -176,8 +176,8 @@ describe("primary and postfix expressions", () => {
  * How far an arrow reaches, which this consumer measures from the arrow's head
  * rather than from the operand before its `=>`.
  *
- * The infix `=>` reads an arrow by protecting what stands to its left as the
- * parameters, so it reads exactly the heads that are one operand and then
+ * The infix `=>` reads an arrow from the operand standing to its left, which
+ * it takes as the parameters, so it reads exactly the heads that are one operand and then
  * `=>`: `v => …` and `(v) => …`. Every other head has to be measured here. In
  * `async v => …` the head is two operands and only the name would stand to the
  * arrow's left, so that route dropped the `async`, the statement holding the
@@ -268,12 +268,11 @@ describe("arrow extent", () => {
  * Whether an arrow's nodes say it is async, which is what decides whether
  * `await` is an expression in its body.
  *
- * The nodes arrive in either of two shapes. Measured from its head an arrow is
- * flat -- `async`, the parameters, `=>`, the body -- while read through the
- * infix `=>` it is one operand, `=>` and the body, with the parameters already
- * protected. The question is the same in both: whether the leading `async`
- * stands in front of parameters, rather than being the one parameter itself or
- * an ordinary name on a line of its own.
+ * The nodes are the arrow as it was written -- `async`, the parameters, `=>`,
+ * the body -- whether it was measured from its head or read through the
+ * infix `=>`. The question is whether the leading `async` stands in front of
+ * parameters, rather than being the one parameter itself or an ordinary name
+ * on a line of its own.
  */
 describe("asyncArrowHead", () => {
   function tokens(source: string): readonly Syntax[] {
@@ -288,7 +287,7 @@ describe("asyncArrowHead", () => {
     );
   }
 
-  /** The nodes the infix `=>` builds an arrow from: one operand, then `=>`. */
+  /** The nodes of an arrow the infix `=>` read: its one operand, then `=>`. */
   function infixArrow(source: string): readonly Syntax[] {
     const origins = new OriginStore();
     const read = readSyntax(source, {

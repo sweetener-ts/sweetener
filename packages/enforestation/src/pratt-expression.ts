@@ -108,6 +108,11 @@ interface ParsedExpression {
   readonly outerPrecedence: number;
   readonly unparenthesizedPrefix: boolean;
   readonly mixingFamily: "logical" | "nullish" | undefined;
+  /**
+   * Whether `syntax` is one operand as the primary reader read it, with no
+   * operator applied to it: the only operand an arrow's parameters can be.
+   */
+  readonly primary: boolean;
 }
 
 interface PrattContext {
@@ -425,6 +430,7 @@ function parsePrefix(
       outerPrecedence: prefix.precedence,
       unparenthesizedPrefix: true,
       mixingFamily: undefined,
+      primary: false,
     };
   }
   const operandStart = cursor.index;
@@ -448,6 +454,7 @@ function parsePrefix(
     outerPrecedence: attempt.syntax.precedence ?? 1_000,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
+    primary: true,
   };
 }
 
@@ -500,6 +507,7 @@ function parseTypeAssertion(
     outerPrecedence: unaryPrecedence,
     unparenthesizedPrefix: true,
     mixingFamily: undefined,
+    primary: false,
   };
 }
 
@@ -539,6 +547,7 @@ function parseConditional(
     outerPrecedence: 30,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
+    primary: false,
   };
 }
 
@@ -566,6 +575,7 @@ function parseAssertedType(
         outerPrecedence: precedence,
         unparenthesizedPrefix: false,
         mixingFamily: undefined,
+        primary: false,
       };
   }
   const consumer = context.options.consumeType;
@@ -579,6 +589,7 @@ function parseAssertedType(
     outerPrecedence: precedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
+    primary: false,
   };
 }
 
@@ -625,6 +636,7 @@ function literalRightOperand(
       outerPrecedence: 1_000,
       unparenthesizedPrefix: false,
       mixingFamily: undefined,
+      primary: false,
     };
   }
   return undefined;
@@ -685,6 +697,60 @@ function arrowRightOperand(
     outerPrecedence: 20,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
+    primary: false,
+  };
+}
+
+/**
+ * The arrow the infix `=>` reads, with `left` the operand standing to its
+ * left: `v => …` and `(v) => …`.
+ *
+ * That operand is the arrow's parameters, not an expression, so the arrow
+ * holds what it was read from rather than the operand itself, as an arrow the
+ * primary reader takes does. Held as an expression, the parameters were walked
+ * as one, and a parameter spelled like a macro was dispatched: `x => x` in a
+ * template, with an expression macro `x` in scope, emitted `99 => 99`. Nothing
+ * said the name was a binder, so the `x` in the body was dispatched too. A
+ * block body is a statement list, not an operand, and is held as the brace
+ * it is for the same reason.
+ */
+function infixArrow(
+  left: ParsedExpression,
+  operator: readonly Syntax[],
+  precedence: number,
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  const block = cursor.peek();
+  let body: Syntax;
+  if (block?.tag === "group" && block.delimiter === "brace") {
+    body = cursor.consume()!;
+  } else {
+    // No arrow this route reads is async: an operand spelled `async` is the
+    // parameter's own name, as in `async => body`.
+    const parsed = parseExpression(
+      cursor,
+      precedence,
+      arrowBodyContext(context, false),
+    );
+    if ("matched" in parsed) return parsed;
+    body = parsed.syntax;
+  }
+  // An operand an operator built is no parameter list, and the arrow holds
+  // it whole rather than taking apart what the operator built.
+  const parameters = left.primary ? left.syntax.children : [left.syntax];
+  return {
+    syntax: protect(
+      context.options,
+      [...parameters, ...operator, body],
+      precedence,
+      "arrow",
+    ),
+    cursor,
+    outerPrecedence: precedence,
+    unparenthesizedPrefix: false,
+    mixingFamily: undefined,
+    primary: false,
   };
 }
 
@@ -746,6 +812,7 @@ function parseExpression(
         outerPrecedence: postfix.precedence,
         unparenthesizedPrefix: false,
         mixingFamily: left.mixingFamily,
+        primary: false,
       };
       continue;
     }
@@ -789,6 +856,18 @@ function parseExpression(
       );
     }
     const operator = consumeOperator(cursor, infix);
+    if (infix.macro === undefined && infix.spelling === "=>") {
+      const arrow = infixArrow(
+        left,
+        operator,
+        infix.precedence,
+        cursor,
+        context,
+      );
+      if ("matched" in arrow) return arrow;
+      left = arrow;
+      continue;
+    }
     const rightMinimum =
       infix.associativity === "right" ? infix.precedence : infix.precedence + 1;
     const macroOperand =
@@ -802,17 +881,7 @@ function parseExpression(
       macroOperand ??
       (infix.spelling === "as" || infix.spelling === "satisfies"
         ? parseAssertedType(cursor, context, infix.precedence)
-        : parseExpression(
-            cursor,
-            rightMinimum,
-            // An arrow read through the infix `=>` has its parameters as the
-            // operand to its left, and `async` is never part of one: an
-            // operand spelled `async` is the parameter's own name, as in
-            // `async => body`.
-            infix.spelling === "=>"
-              ? arrowBodyContext(context, false)
-              : context,
-          ));
+        : parseExpression(cursor, rightMinimum, context));
     if ("matched" in right) return right;
     if (
       (mixingFamily === "logical" && right.mixingFamily === "nullish") ||
@@ -849,6 +918,7 @@ function parseExpression(
       outerPrecedence: infix.precedence,
       unparenthesizedPrefix: false,
       mixingFamily,
+      primary: false,
     };
   }
   return left;

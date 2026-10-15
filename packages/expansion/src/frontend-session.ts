@@ -777,9 +777,9 @@ export function createExpansionFrontendSession(
   /**
    * `syntax` read as one node of `category`, normalized as every other route
    * is. The walk reads what this hands back where it reads a substitution of
-   * a template literal, and `${x => { return x; }}` left the parameter
-   * protected as the expression the infix `=>` read it as, so `x` was
-   * dispatched as a macro wherever one was in scope.
+   * a template literal, and while the infix `=>` protected an arrow's
+   * parameters as an expression, `${x => { return x; }}` reached it that way
+   * and `x` was dispatched as a macro wherever one was in scope.
    */
   const enforest = (
     syntax: SyntaxSequence,
@@ -1248,17 +1248,17 @@ export function createExpansionFrontendSession(
    * of this loop, which is how they came to differ from `prepareInput` and
    * from the expression route in the first place.
    *
-   * Each normalizes what it reads, as those two routes do. A statement list
-   * and a class body are read here before the walk enters them, and an
-   * arrow's parameter list left protected as the expression the infix `=>`
-   * read it as had its parameters walked as that expression: one spelled like
-   * a macro was dispatched. Normalizing `item` here once emitted TypeScript
-   * that does not parse -- the React memoization fixture -- because what is
-   * read here is often a replacement, and normalizing took apart what the
-   * expansion had built; that is why `normalizeProtectedInput` keeps what the
-   * reader was handed. The item, type member and JSX child routes read a
-   * replacement only after it has been walked, and no reading of theirs is
-   * known that normalizing changes.
+   * Each normalizes what it reads, as those two routes do, so the walk is
+   * handed one shape whichever route read it. A statement list and a class
+   * body are read here before the walk enters them, and while the infix `=>`
+   * protected an arrow's parameter list as an expression, a reading left that
+   * way had its parameters walked as that expression: one spelled like a
+   * macro was dispatched. The infix `=>` now holds the parameters as written,
+   * and no output is known to change if these routes stop normalizing.
+   * Normalizing `item` here once emitted TypeScript that does not parse --
+   * the React memoization fixture -- because what is read here is often a
+   * replacement, and normalizing took apart what the expansion had built;
+   * that is why `normalizeProtectedInput` keeps what the reader was handed.
    */
   const enforestList = (
     consumer: SyntaxConsumer,
@@ -1363,13 +1363,12 @@ export function createExpansionFrontendSession(
               ...context("expr", contexts),
               stopSet: StopSet.empty,
             });
-            // Normalized, as the items handed over by `prepareInput` are. A
-            // block-bodied arrow whose head is one operand is read through the
-            // infix `=>`, which protects its parameter list as an expression;
-            // left that way the walk found no parameter list in front of the
-            // `=>` and walked the binders in it as the expression they had
-            // been wrapped as. Both routes into the expander hand it the same
-            // shape, or the two disagree about what a reading means.
+            // Normalized, as the items handed over by `prepareInput` are. Both
+            // routes into the expander hand it the same shape, or the two
+            // disagree about what a reading means: while the infix `=>`
+            // protected an arrow's parameter list as an expression, the walk
+            // found no parameter list in front of the `=>` of a reading left
+            // that way, and walked the binders in it as an expression.
             return attempted.matched && attempted.cursor.atEnd
               ? normalizeProtectedInput(
                   attempted.syntax,
