@@ -39,6 +39,18 @@ export syntax parameter it:expr;
 export syntax withObject:expr {
   rule { withObject($body:expr) } => { #parameterize(it = { value: 6 }) { $body } }
 }
+export syntax sum:expr { rule { sum($a:expr, $b:expr) } => { $a + $b } }
+export syntax members:expr {
+  rule { members($v:expr) } => {
+    {
+      lookup: (key: string): Map<string, number> => new Map([[key, sum($v, 1)]]),
+      made: make<string, number>(sum($v, 2)),
+      pair: <A, B>(a: A, b: B): [A, B] => [a, b],
+      low: $v < 2,
+      high: $v > 0,
+    }
+  }
+}
 export syntax has:expr { rule { has($k:expr, $o:expr) } => { $k in $o } }
 export syntax scale:expr {
   rule { scale($($x:expr),*) } => {
@@ -64,7 +76,7 @@ function expand(main: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, has, scale, list } from "./macros.sts" for syntax;\n${main}`,
+    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, has, scale, list } from "./macros.sts" for syntax;\n${main}`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -345,6 +357,37 @@ export const sawIt = found;
     expect(new (exports["K"] as new () => object)()).toMatchObject({
       kind: "a",
     });
+  });
+});
+
+describe("an object literal a template writes", () => {
+  test("keeps a member whole across the commas of its angle brackets", () => {
+    // Split at those commas, `made: make<string, number>(...)` printed
+    // `(make<string), number>(...)`, and the `Map` of the return type was
+    // taken for a binder and renamed.
+    const { text, messages, exports } = expand(
+      `function make<K, V>(value: V): Map<K, V> {
+  return new Map<K, V>([["made" as K, value]]);
+}
+export const o = members(1);
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain(
+      "lookup: ((key: string): Map<string, number> => new Map([[key, 1 + 1]]))",
+    );
+    expect(text).toContain("made: (make<string, number>(1 + 2))");
+    expect(text).toContain("pair: (<A, B>(a: A, b: B): [A, B] => [a, b])");
+    expect(text).toContain("low: (1 < 2), high: (1 > 0)");
+    const o = exports["o"] as {
+      lookup(key: string): Map<string, number>;
+      made: Map<string, number>;
+      low: boolean;
+      high: boolean;
+    };
+    expect(o.lookup("k").get("k")).toBe(2);
+    expect(o.made.get("made")).toBe(3);
+    expect(o).toMatchObject({ low: true, high: true });
   });
 });
 

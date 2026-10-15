@@ -1916,6 +1916,42 @@ export function expandMacroSyntax(
     }
   };
 
+  /**
+   * Whether the `<` at `at` among the members of an object literal opens
+   * angle brackets -- type parameters or type arguments, whose commas do not
+   * end the member -- rather than comparing. `member` is what of the member
+   * stands before it.
+   *
+   * Only an expression compares, so in a method's head, which is a signature,
+   * every `<` opens. In a value one opens where an operand begins, which makes
+   * it a generic arrow's type parameters. After an operand it is TypeScript's
+   * question for an instantiation, and the same rule answers it: once the
+   * angles close, a call or a tagged template, or something that cannot go on
+   * as a comparison's operand, says they held type arguments --
+   * `make<A, B>()`, the return type in `(x): Map<K, V> => x`, the type after
+   * `as`. Anything else is a comparison: `{ low: a < b, high: c > d }`.
+   */
+  const anglesOpen = (
+    members: readonly Syntax[],
+    at: number,
+    member: readonly Syntax[],
+    signature: boolean,
+  ): boolean => {
+    if (signature || !endsOperand(member, member.length, true)) return true;
+    let depth = 0;
+    for (let ahead = at; ahead < members.length; ahead += 1) {
+      const node = members[ahead]!;
+      if (node.tag !== "token") continue;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth > 0) continue;
+      const following = members[ahead + 1];
+      return (
+        callFollowsTypeArguments(following) || typeArgumentsFollow(following)
+      );
+    }
+    return false;
+  };
+
   const shadowsMacro = (spelling: string, category: SyntaxCategory): boolean =>
     regions.some((region) =>
       category === "type"
@@ -4819,6 +4855,131 @@ export function expandMacroSyntax(
               expandMember();
               children.push(child);
             } else member.push(child);
+          }
+          expandMember();
+          output.push(
+            createGroup({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children: createSyntaxSequence(children),
+            }),
+          );
+          index += 1;
+          continue;
+        }
+        // A brace holds an object literal where the walk reads it as an
+        // expression: the run itself is one, or the brace stands after the `=`
+        // of an initializer or a default, whatever the run around it is
+        // categorized as. Asked only of the run's own category, a literal
+        // written in a block walked as tokens was descended into as an
+        // expression all the same -- and there the key of each member stood
+        // at the head of an expression and was dispatched as a macro.
+        if (
+          node.tag === "group" &&
+          node.delimiter === "brace" &&
+          (category === "expr" || initializerFollows(output)) &&
+          !typeFollows() &&
+          node.children.some(
+            (child) => child.tag === "token" && child.raw === ":",
+          )
+        ) {
+          const children: Syntax[] = [];
+          let member: Syntax[] = [];
+          const expandMember = () => {
+            if (member.length === 0) return;
+            const colon = member.findIndex(
+              (child) => child.tag === "token" && child.raw === ":",
+            );
+            const methodHead =
+              colon >= 0 &&
+              member
+                .slice(0, colon)
+                .some(
+                  (child) =>
+                    child.tag === "group" && child.delimiter === "parenthesis",
+                );
+            if (colon >= 0 && !methodHead) {
+              // A property name is not an expression, but a computed one holds
+              // one inside its brackets.
+              const key = member.slice(0, colon + 1).map((child) => {
+                if (child.tag !== "group" || child.delimiter !== "bracket") {
+                  if (child.tag === "token" && child.kind === "identifier")
+                    namedOrigins.add(child.origin);
+                  return child;
+                }
+                const nested = visit(
+                  child.children,
+                  currentEnvironment,
+                  "expr",
+                  parentInvocation,
+                  lexicalModule,
+                  contexts,
+                  false,
+                  recursiveBinding,
+                );
+                currentEnvironment = nested.environment;
+                return createGroup({
+                  ...child,
+                  id: options.allocateSyntaxId(),
+                  children: nested.syntax,
+                });
+              });
+              children.push(
+                ...key,
+                ...expandAsExpression(member.slice(colon + 1)),
+              );
+            } else {
+              children.push(...expandAsExpression(member, true));
+            }
+            member = [];
+          };
+          // Type parameters and type arguments hold commas of their own --
+          // `*run(): Generator<number, void, unknown> {`,
+          // `<T, U>(a: T, b: U) => [a, b]` -- which do not end the member.
+          let methodHead = true;
+          let typeArguments = 0;
+          for (let at = 0; at < node.children.length; at += 1) {
+            const child = node.children[at]!;
+            if (
+              child.tag === "token" &&
+              child.raw === "," &&
+              typeArguments === 0
+            ) {
+              expandMember();
+              children.push(child);
+              methodHead = true;
+              continue;
+            }
+            const previous = member.at(-1);
+            const opensAngles =
+              typeArguments > 0 ||
+              (child.tag === "token" &&
+                child.raw === "<" &&
+                anglesOpen(node.children, at, member, methodHead));
+            member.push(child);
+            if (opensAngles)
+              typeArguments = Math.max(
+                0,
+                typeArguments + angles(child, "<") - angles(child, ">"),
+              );
+            if (!methodHead) continue;
+            if (child.tag !== "token") {
+              if (child.tag === "group" && child.delimiter === "brace") {
+                methodHead = false;
+                typeArguments = 0;
+              }
+              continue;
+            }
+            if (
+              typeArguments === 0 &&
+              ((child.raw === "..." && previous === undefined) ||
+                (child.raw === ":" &&
+                  !(
+                    previous?.tag === "group" &&
+                    previous.delimiter === "parenthesis"
+                  )))
+            )
+              methodHead = false;
           }
           expandMember();
           output.push(
