@@ -117,13 +117,32 @@ interface GroupFrame {
   readonly next: ProgramCounter;
 }
 
+/**
+ * What one capture of a repetition has matched so far, newest first. Each turn
+ * adds a link rather than copying the run, and the states a turn forks share
+ * the run behind them, so matching a repetition of any length costs one link
+ * per turn. It becomes a sequence only when a state leaves the repetition.
+ */
+interface Matched {
+  readonly value: CaptureValue;
+  readonly before: Matched | undefined;
+  readonly length: number;
+}
+
+function matchedValues(matched: Matched | undefined): CaptureValue[] {
+  const values: CaptureValue[] = [];
+  for (let link = matched; link !== undefined; link = link.before)
+    values.push(link.value);
+  return values.reverse();
+}
+
 interface RepeatFrame {
   readonly repetition: RepetitionId;
   readonly cardinalityGroup: CardinalityGroupId;
   readonly captures: readonly CaptureSlotId[];
   readonly depthBySlot: ReadonlyMap<CaptureSlotId, number>;
   readonly baseline: ReadonlyMap<CaptureSlotId, CaptureValue>;
-  readonly accumulated: ReadonlyMap<CaptureSlotId, readonly CaptureValue[]>;
+  readonly accumulated: ReadonlyMap<CaptureSlotId, Matched | undefined>;
   readonly count: number;
   readonly minimum: number;
   readonly maximum: number | undefined;
@@ -137,17 +156,12 @@ interface ExecutionState {
   captures: Map<CaptureSlotId, CaptureValue>;
   groups: GroupFrame[];
   repeats: RepeatFrame[];
-}
-
-function cloneRepeat(frame: RepeatFrame): RepeatFrame {
-  return {
-    ...frame,
-    baseline: new Map(frame.baseline),
-    accumulated: new Map(
-      [...frame.accumulated].map(([slot, values]) => [slot, [...values]]),
-    ),
-    depthBySlot: new Map(frame.depthBySlot),
-  };
+  /**
+   * The repetition this state left, whose captures it has not yet made
+   * sequences of. A state that leaves after a turn is forked on every turn and
+   * almost never run, so it builds them only once it runs.
+   */
+  left: RepeatFrame | undefined;
 }
 
 function cloneState(state: ExecutionState): ExecutionState {
@@ -156,7 +170,8 @@ function cloneState(state: ExecutionState): ExecutionState {
     cursor: state.cursor.fork(),
     captures: new Map(state.captures),
     groups: [...state.groups],
-    repeats: state.repeats.map(cloneRepeat),
+    repeats: [...state.repeats],
+    left: state.left,
   };
 }
 
@@ -221,7 +236,7 @@ function materializeRepeat(
       createCaptureSequence({
         depth: frame.depthBySlot.get(slot)!,
         cardinalityGroup: frame.cardinalityGroup,
-        elements: frame.accumulated.get(slot) ?? [],
+        elements: matchedValues(frame.accumulated.get(slot)),
       }),
     );
   }
@@ -294,6 +309,7 @@ export function executeMatcher(
       captures: new Map(),
       groups: [],
       repeats: [],
+      left: undefined,
     },
   ];
   const failedMemo = new Set<string>();
@@ -357,6 +373,10 @@ export function executeMatcher(
   while (pending.length > 0) {
     const state = pending.pop();
     if (state === undefined) break;
+    if (state.left !== undefined) {
+      state.captures = materializeRepeat(state.left, state.captures);
+      state.left = undefined;
+    }
     let running = true;
     while (running) {
       cancellation.throwIfCancellationRequested();
@@ -540,7 +560,7 @@ export function executeMatcher(
             depthBySlot,
             baseline: new Map(state.captures),
             accumulated: new Map(
-              instruction.captures.map((slot) => [slot, []]),
+              instruction.captures.map((slot) => [slot, undefined]),
             ),
             count: 0,
             minimum: instruction.minimum,
@@ -579,7 +599,12 @@ export function executeMatcher(
               complete = false;
               break;
             }
-            accumulated.set(slot, [...(accumulated.get(slot) ?? []), value]);
+            const before = accumulated.get(slot);
+            accumulated.set(slot, {
+              value,
+              before,
+              length: (before?.length ?? 0) + 1,
+            });
           }
           if (!complete) {
             failedMemo.add(memoKey);
@@ -588,19 +613,18 @@ export function executeMatcher(
           }
           const count = frame.count + 1;
           const updated: RepeatFrame = { ...frame, accumulated, count };
-          const finalized = materializeRepeat(updated, state.captures);
           const canExit = count >= frame.minimum;
           const canLoop = frame.maximum === undefined || count < frame.maximum;
           if (canExit && canLoop) {
             const exitState = cloneState(state);
             exitState.repeats.pop();
-            exitState.captures = finalized;
+            exitState.left = updated;
             exitState.pc = frame.exit;
             pending.push(exitState);
           }
           if (!canLoop) {
             state.repeats.pop();
-            state.captures = finalized;
+            state.captures = materializeRepeat(updated, state.captures);
             state.pc = frame.exit;
             break;
           }
