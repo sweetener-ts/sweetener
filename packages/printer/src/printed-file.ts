@@ -291,9 +291,17 @@ const operandHeads: ReadonlySet<string> = new Set([
  *
  * A word written after `.` is a property name however it is spelled, so
  * `values.of(1)` is a call and the `<` in `Array.of<string>()` opens type
- * arguments.
+ * arguments. A closing bracket says by its spelling only what usually
+ * follows it, and `ends` is what the syntax says where the two differ: the
+ * `}` of an object literal or a function expression ends an operand, and the
+ * `)` of an `if` header does not.
  */
-function applies(text: string, memberName: boolean): boolean {
+function applies(
+  text: string,
+  memberName: boolean,
+  ends: boolean | undefined,
+): boolean {
+  if (ends !== undefined) return ends;
   if (text === ")" || text === "]" || text === ">" || text.endsWith("`"))
     return true;
   if (!/^[\p{ID_Start}$_][\p{ID_Continue}$]*$/u.test(text)) return false;
@@ -318,6 +326,18 @@ const wholeExpressionHeads: ReadonlySet<string> = new Set([
   "return",
   "throw",
   "default",
+]);
+
+/**
+ * The keywords whose parenthesized header a statement follows: `if (ready)
+ * (value)` is a statement after a header, not a call on it.
+ */
+const controlHeads: ReadonlySet<string> = new Set([
+  "if",
+  "while",
+  "for",
+  "with",
+  "switch",
 ]);
 
 /** Tokens nothing is written after: what follows stands against them. */
@@ -382,6 +402,11 @@ interface SeamContext {
   readonly prefix: boolean;
   /** Whether the word just printed was written after `.`, and so names a member. */
   readonly memberName: boolean;
+  /**
+   * Whether the bracket just printed closed an operand, where the syntax says
+   * otherwise than its spelling would.
+   */
+  readonly closedOperand: boolean | undefined;
   /** Whether the `>` just printed closed a list of type arguments. */
   readonly closedTypeArguments: boolean;
 }
@@ -426,10 +451,10 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
   if (holdsToWhatPrecedes.has(right)) return "";
   if (right === "}") return " ";
   if (right === "(" || right === "[")
-    return applies(left, context.memberName) ? "" : " ";
+    return applies(left, context.memberName, context.closedOperand) ? "" : " ";
   if (
     (right === "!" || right === "++" || right === "--") &&
-    applies(left, context.memberName)
+    applies(left, context.memberName, context.closedOperand)
   )
     return "";
   return " ";
@@ -727,6 +752,14 @@ export function printExpandedFile<Trace>(
    * into and take part of, if they were printed without parentheses.
    */
   const continuedHeads = new Set<Syntax>();
+  /**
+   * Closing brackets whose spelling misleads the spacing after them, and
+   * whether each ends an operand: the `}` of an expression's own braces --
+   * an object literal, a function or class expression -- which a call or an
+   * operator may follow, and the `)` of a control statement's header, which a
+   * statement does.
+   */
+  const closerEnds = new Map<Syntax | MissingToken, boolean>();
   /** Each `<` the parser read as opening an arrow's type parameters. */
   const typeParameterOpens = new Set<Syntax>();
   /** Each `>` closing type parameters that `needsComma` before it. */
@@ -924,6 +957,17 @@ export function printExpandedFile<Trace>(
             (node.tag === "token" &&
               (wholeExpressionHeads.has(node.raw) ||
                 (group === "brace" && node.raw === ":")));
+      if (
+        child.tag === "group" &&
+        child.delimiter === "parenthesis" &&
+        previous?.tag === "token" &&
+        (controlHeads.has(previous.raw) ||
+          // `for await (...)`.
+          (previous.raw === "await" &&
+            before?.tag === "token" &&
+            before.raw === "for"))
+      )
+        closerEnds.set(child.close, false);
       // A control statement's body follows its header on the same line.
       const heads =
         previous === undefined ||
@@ -974,6 +1018,7 @@ export function printExpandedFile<Trace>(
     for (const open of pendingOpens) {
       emit(open.text, open.origin, "grouping");
       trackBrackets(open.text, "");
+      closedOperand = undefined;
       lastPrinted = open.text;
       previousWritten = undefined;
     }
@@ -1070,6 +1115,8 @@ export function printExpandedFile<Trace>(
   let memberName = false;
   /** Whether the `>` last printed closed a list of type arguments. */
   let closedTypeArguments = false;
+  /** What `closerEnds` says of the bracket last printed, if anything. */
+  let closedOperand: boolean | undefined;
   /**
    * Where the seam about to be printed stands. Only one seam is being spaced
    * at a time and `seamSpace` only reads what it is handed, so the same record
@@ -1081,6 +1128,7 @@ export function printExpandedFile<Trace>(
     prefix: false,
     memberName: false,
     closedTypeArguments: false,
+    closedOperand: undefined as boolean | undefined,
   };
   const seamContext = (): SeamContext => {
     const innermost = brackets[brackets.length - 1]!;
@@ -1089,6 +1137,7 @@ export function printExpandedFile<Trace>(
     seam.prefix = prefix;
     seam.memberName = memberName;
     seam.closedTypeArguments = closedTypeArguments;
+    seam.closedOperand = closedOperand;
     return seam;
   };
   const trackBrackets = (
@@ -1098,6 +1147,7 @@ export function printExpandedFile<Trace>(
   ) => {
     const before = lastPrinted;
     const wasMemberName = memberName;
+    const wasClosedOperand = closedOperand;
     const closes =
       text === ")" || text === "]" || text === "}" || text.startsWith("}");
     // A `<` taken for type arguments may never have closed, so a closing
@@ -1121,13 +1171,13 @@ export function printExpandedFile<Trace>(
       text === "<" &&
       (opensTypeParameters ||
         before === undefined ||
-        (gap === "" && applies(before, wasMemberName)) ||
+        (gap === "" && applies(before, wasMemberName, wasClosedOperand)) ||
         typeArgumentsCanFollow.has(before));
     prefix =
       ((text === "-" || text === "+") &&
         (before === undefined ||
           !(
-            applies(before, wasMemberName) ||
+            applies(before, wasMemberName, wasClosedOperand) ||
             /[\p{ID_Continue}"'`]$/u.test(before)
           ))) ||
       typeArguments;
@@ -1212,7 +1262,7 @@ export function printExpandedFile<Trace>(
         text === "<" &&
         trivia === "" &&
         lastPrinted !== undefined &&
-        applies(lastPrinted, memberName));
+        applies(lastPrinted, memberName, closedOperand));
     const spacing = keep
       ? trivia
       : startsStatement
@@ -1274,6 +1324,7 @@ export function printExpandedFile<Trace>(
     for (const piece of token.trailingTrivia) trailing += piece.raw;
     emit(trailing, token.origin, "synthesized");
     trackBrackets(text, leading, typeParameterOpens.has(token));
+    closedOperand = closerEnds.get(token);
     lastPrinted = text;
     previousKind = kind;
     previousWritten =
@@ -1303,6 +1354,7 @@ export function printExpandedFile<Trace>(
       if (wordCharacter(item.text[0])) emit(" ", item.origin, "grouping");
       emit(item.text, item.origin, "grouping");
       trackBrackets(item.text, "");
+      closedOperand = undefined;
       lastPrinted = item.text;
       previousKind = undefined;
       previousWritten = undefined;
@@ -1414,6 +1466,10 @@ export function printExpandedFile<Trace>(
             leadingPositions.set(head, leading);
         }
         markBoundOperands(item);
+        if (item.category === "expr")
+          for (const child of item.children)
+            if (child.tag === "group" && child.delimiter === "brace")
+              closerEnds.set(child.close, true);
         const typeParameters = arrowTypeParameters(item);
         if (typeParameters !== undefined) {
           typeParameterOpens.add(typeParameters.open);

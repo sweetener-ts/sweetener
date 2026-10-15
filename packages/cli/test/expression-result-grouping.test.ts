@@ -200,7 +200,7 @@ describe("an expression a macro produces, where it begins something", () => {
     expect(messages).toEqual([]);
     expect(text).toContain("export const held = { value: 1 };");
     expect(text).toContain(
-      "export const called = function () { return 2; } ();",
+      "export const called = function () { return 2; }();",
     );
     expect(text).toContain("export const listed = [{ value: 3 }, () => 4];");
   });
@@ -436,6 +436,23 @@ for (let present = has("a", o); ; ) break;
     expect(messages).toEqual([]);
     expect(text).toContain('for (("a" in o); ; )');
     expect(text).toContain('for (let present = ("a" in o); ; )');
+  });
+});
+
+describe("the space after a closing bracket", () => {
+  test("follows what the bracket closed, not how it is spelled", () => {
+    const { text } = expand(
+      `export const called = fn1(1)();
+const flag = true as boolean;
+if (flag) obj(2);
+export const joined = obj(3) + "";
+`,
+    );
+    // The braces of a function expression and of an object literal end an
+    // operand; the parenthesis of an `if` header does not.
+    expect(text).toContain("function () { return 1; }();");
+    expect(text).toContain("if (flag) ({ value: 2 });");
+    expect(text).toContain('{ value: 3 } + ""');
   });
 });
 
