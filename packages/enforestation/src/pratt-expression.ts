@@ -35,6 +35,7 @@ export {
 } from "./core-operators.js";
 import {
   coreExpressionOperators,
+  sameLineInfix,
   unaryPrecedence,
   type PrattAssociativity,
   type PrattFixity,
@@ -823,12 +824,9 @@ function parseExpression(
       infix.precedence >= assignmentPrecedence
     )
       break;
-    // TypeScript writes `UnaryExpression [no LineTerminator here] as Type`,
-    // and the same of `satisfies`: an `as` beginning a line names something
-    // rather than asserting a type.
     if (
       infix.macro === undefined &&
-      (infix.spelling === "as" || infix.spelling === "satisfies") &&
+      sameLineInfix.has(infix.spelling) &&
       leadingLineBreak(cursor.peek())
     )
       break;

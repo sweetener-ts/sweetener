@@ -24,6 +24,7 @@ import {
 import {
   expressionContinuedBy,
   operandExpectedAfter,
+  sameLineInfix,
 } from "./core-operators.js";
 import {
   consumeBalancedTypeArguments,
@@ -783,7 +784,9 @@ export function typeArgumentsFollow(following: Syntax | undefined): boolean {
       spelling === "-"
     )
       return false;
-    if (expressionContinuedBy.has(spelling)) return true;
+    // TypeScript's binary operators, `as` and `satisfies` among them.
+    if (expressionContinuedBy.has(spelling) || sameLineInfix.has(spelling))
+      return true;
   }
   return leadingLineBreak(following) || !beginsExpression(following);
 }

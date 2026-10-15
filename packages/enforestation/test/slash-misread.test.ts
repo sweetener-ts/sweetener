@@ -163,13 +163,17 @@ describe("slashes read the other way from the grammar", () => {
     expect(split(source, "item")).toEqual(typescript(source, "item"));
   });
 
-  // TypeScript writes `UnaryExpression [no LineTerminator here] as Type`.
-  test.each(["x = a\nas;", "x = a\nsatisfies;"])(
-    "reads %j as two statements",
-    (source) => {
-      expect(split(source, "item")).toEqual(typescript(source, "item"));
-    },
-  );
+  // TypeScript writes `UnaryExpression [no LineTerminator here] as Type`, and
+  // an arrow's body is an expression like any other.
+  test.each([
+    "x = a\nas;",
+    "x = a\nsatisfies;",
+    "f = (a) => a\nas = 1;",
+    "const f = (a) => a\nsatisfies = 1;",
+    "f = async (a) => a\nas = 1;",
+  ])("reads %j as two statements", (source) => {
+    expect(split(source, "item")).toEqual(typescript(source, "item"));
+  });
 });
 
 /**
@@ -185,6 +189,10 @@ describe("class field initializers", () => {
     "class C {\nx = a +\nb\ny = 1;\n}",
     "class C {\nx = await\nb = 1;\n}",
     "class C {\nx: T = () => {}\n[k] = 1;\n}",
+    "abstract class C {\n  x = (a) => a\n  as = 1\n}",
+    "abstract class C {\n  x = async (a) => a\n  satisfies = 1\n}",
+    "abstract class C {\n  x = <T>(v: T) => v\n  as = 1\n}",
+    "abstract class C {\n  x = () =>\n1\n  as = 1\n}",
   ])("splits %j as TypeScript does", (source) => {
     expect(split(source, "classElement")).toEqual(
       typescript(source, "classElement"),

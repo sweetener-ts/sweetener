@@ -135,16 +135,27 @@ export const operandExpectedAfter: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The infix operators written only on the line of their left operand.
+ * TypeScript writes `UnaryExpression [no LineTerminator here] as Type`, and
+ * the same of `satisfies`, so an `as` beginning a line names something rather
+ * than asserting a type: `x = a` and the `as = 1` under it are two
+ * statements, and in a class body two members.
+ */
+export const sameLineInfix: ReadonlySet<string> = new Set(["as", "satisfies"]);
+
+/**
  * Spellings that carry an expression on from the line before, so that a line
- * break in front of one ends nothing: every infix operator, a conditional's
- * `?` and `:`, and a member access.
+ * break in front of one ends nothing: every infix operator that may begin a
+ * line, a conditional's `?` and `:`, and a member access.
  *
  * A postfix operator is not among them. The grammar writes
  * `LeftHandSideExpression [no LineTerminator here] ++`, so `a` and the `++b`
  * under it are two statements rather than one.
  */
 export const expressionContinuedBy: ReadonlySet<string> = new Set([
-  ...spellingsOf("infix"),
+  ...[...spellingsOf("infix")].filter(
+    (spelling) => !sameLineInfix.has(spelling),
+  ),
   ".",
   "?.",
   "?",
