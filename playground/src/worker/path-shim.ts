@@ -8,6 +8,9 @@ function normalizeParts(parts: string[]): string[] {
   return output;
 }
 
+/** The playground's paths are POSIX paths, whatever the host's are. */
+export const sep = "/";
+
 export function resolve(...parts: string[]): string {
   const joined = parts.filter(Boolean).join("/");
   return `/${normalizeParts(joined.split("/")).join("/")}`;
@@ -72,6 +75,7 @@ export function parse(fileName: string): {
 }
 
 export const posix = {
+  sep,
   resolve,
   normalize,
   join,

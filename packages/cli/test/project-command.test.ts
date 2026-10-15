@@ -907,9 +907,9 @@ describe("project commands", () => {
     const expansionProvider = createDefaultProjectExpansionProvider();
     const project = loadSweetProject(config);
     expansionProvider.expandProject(project);
-    expect(expansionProvider.macroDependencies(project)).toContain(
-      join(packageRoot, "forms.sts"),
-    );
+    expect(
+      expansionProvider.expansionInputs(project).map(({ path }) => path),
+    ).toContain(join(packageRoot, "forms.sts"));
 
     writeFileSync(
       join(packageRoot, "sweet-macros.json"),

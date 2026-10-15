@@ -755,7 +755,13 @@ export class DefaultProjectExpansionProvider
   readonly #system: ts.System;
   readonly #fileSystem: ExpansionFileSystem;
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
-  #macroDependencies: readonly string[] = Object.freeze([]);
+  /** The config the last expansion was of, and what it asked. */
+  #lastInputs:
+    | {
+        readonly configPath: string;
+        readonly inputs: readonly ExpansionInput[];
+      }
+    | undefined;
   #debug: unknown = Object.freeze({ files: 0, modules: 0, invocations: 0 });
 
   /**
@@ -780,6 +786,7 @@ export class DefaultProjectExpansionProvider
 
   expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
     this.#inspections.clear();
+    this.#lastInputs = undefined;
     const origins = new OriginStore();
     const scopes = new ScopeStore();
     const sourceIds = createIdAllocator<SourceId>(1);
@@ -1792,9 +1799,7 @@ export class DefaultProjectExpansionProvider
       ).length,
       invocations: invocationCount,
     });
-    this.#macroDependencies = Object.freeze(
-      [...new Set(inputs.map(({ path }) => path))].sort(),
-    );
+    this.#lastInputs = { configPath: project.configPath, inputs };
     return Object.freeze({
       files: Object.freeze(virtualFiles),
       diagnostics: Object.freeze(
@@ -1819,13 +1824,14 @@ export class DefaultProjectExpansionProvider
     });
   }
 
-  macroDependencies(project: LoadedSweetProject): readonly string[] {
-    return this.#macroDependencies.length > 0
-      ? this.#macroDependencies
-      : selectSweetSources({
-          fileNames: project.typescript.fileNames,
-          macroExtensions: project.sweet.macroExtensions,
-        }).map(({ fileName }) => fileName);
+  /**
+   * What the last expansion asked of the file system, if it was of `project`;
+   * nothing if it was of another project or none finished.
+   */
+  expansionInputs(project: LoadedSweetProject): readonly ExpansionInput[] {
+    return this.#lastInputs?.configPath === project.configPath
+      ? this.#lastInputs.inputs
+      : Object.freeze([]);
   }
 
   debugState(): unknown {
