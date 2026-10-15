@@ -487,10 +487,13 @@ export function scanWithSupportedTypeScript(
     source,
   );
   scanner.setOnError((message, length) => {
-    const end = scanner.getTextPos();
+    // TypeScript moves the scanner to where the error begins for the length
+    // of the callback, so the position it reports is the start; taking it for
+    // the end put an unterminated regular expression `length` characters in
+    // front of its slash.
     errors.push(
       Object.freeze({
-        start: Math.max(0, end - length),
+        start: scanner.getTextPos(),
         length,
         message: ts.flattenDiagnosticMessageText(message.message, "\n"),
       }),

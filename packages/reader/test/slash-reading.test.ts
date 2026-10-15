@@ -174,6 +174,15 @@ describe("slash readings", () => {
     expect(regularExpressionEnd(source, offset)).toBe(end);
   });
 
+  it("reports an unterminated regular expression where it begins", () => {
+    const source = "let y = /abc";
+    const [diagnostic] = readSyntax(source, { sourceId, scopes }).diagnostics;
+    expect(diagnostic?.primaryOrigin).toMatchObject({ start: 8 });
+    expect(diagnostic?.messageArguments).toEqual([
+      "Unterminated regular expression literal.",
+    ]);
+  });
+
   it("reads slashes as TypeScript's parser reads them", () => {
     const source = "if (c) /(/.test(s);\nx = of / 2 / 3;";
     const readings = typescriptSlashReadings(source, "standard");
