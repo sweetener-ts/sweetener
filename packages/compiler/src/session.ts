@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
 import { composeSourceMap } from "@sweetener/typescript-host";
 import type {
@@ -169,12 +169,20 @@ interface FileExpansion {
   readonly results: Map<string, SweetenerTransformResult>;
 }
 
+/**
+ * A path by where it leads. Of a path that is not there -- a file just
+ * deleted, or one looked for and not found -- the part that is there is
+ * resolved and the rest kept, so a host naming a deleted file through a link
+ * names the same place the session recorded while the file was there.
+ */
 function canonical(fileName: string): string {
-  const absolute = resolve(fileName);
-  return (existsSync(absolute) ? realpathSync(absolute) : absolute).replaceAll(
-    "\\",
-    "/",
-  );
+  let existing = resolve(fileName);
+  const missing: string[] = [];
+  while (!existsSync(existing)) {
+    missing.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  return join(realpathSync(existing), ...missing).replaceAll("\\", "/");
 }
 
 /**

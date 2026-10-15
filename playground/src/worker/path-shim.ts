@@ -27,6 +27,14 @@ export function dirname(fileName: string): string {
   return index <= 0 ? "/" : value.slice(0, index);
 }
 
+export function basename(fileName: string, suffix?: string): string {
+  const value = resolve(fileName);
+  const base = value.slice(value.lastIndexOf("/") + 1);
+  return suffix !== undefined && suffix !== base && base.endsWith(suffix)
+    ? base.slice(0, -suffix.length)
+    : base;
+}
+
 export function isAbsolute(fileName: string): boolean {
   return fileName.startsWith("/");
 }
@@ -68,6 +76,7 @@ export const posix = {
   normalize,
   join,
   dirname,
+  basename,
   isAbsolute,
   relative,
   parse,

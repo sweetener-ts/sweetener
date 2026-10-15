@@ -964,6 +964,27 @@ describe("a session after what TypeScript read for binding literals changes", ()
   });
 });
 
+/**
+ * A session keeps an expansion only for a config that can still use it, so
+ * one that lives through many projects does not keep them all.
+ */
+describe("a session dropping what it can no longer serve", () => {
+  test("drops a config a host says was deleted", async () => {
+    const fixture = project();
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, fixture.main, fixture.config);
+    const config = readFile(fixture.config);
+    rmSync(fixture.config);
+    session.invalidate([fixture.config]);
+
+    writeFileSync(fixture.config, config);
+    await transform(session, fixture.main, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    await session.close();
+  });
+});
+
 /** Macros whose `kind(x)` says whether `x` is the binding `reference` names. */
 function shapesMacros(imports: string, reference: string): string {
   return [
