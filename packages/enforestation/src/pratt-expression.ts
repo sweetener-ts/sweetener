@@ -555,19 +555,6 @@ function parseAssertedType(
   context: PrattContext,
   precedence: number,
 ): ParsedExpression | ConsumerAttempt {
-  // `const` is a type only here, so the type consumer does not accept it.
-  const spelling = tokenSpelling(cursor);
-  if (spelling === "const") {
-    const token = cursor.consume();
-    if (token !== undefined)
-      return {
-        syntax: protect(context.options, [token], precedence),
-        cursor,
-        outerPrecedence: precedence,
-        unparenthesizedPrefix: false,
-        mixingFamily: undefined,
-      };
-  }
   const consumer = context.options.consumeType;
   if (consumer === undefined)
     return parseExpression(cursor, precedence + 1, context);

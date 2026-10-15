@@ -748,6 +748,14 @@ describe("statement and item consumers", () => {
     ["let x: abstract\nfoo();", "let x: abstract"],
     ["let x: if | class;", "let x: if | class;"],
     ["let x: A.class<B>\nfoo();", "let x: A.class<B>"],
+    // The type an `as` or a `satisfies` asserts ends where the type grammar
+    // ends one, and nothing after a type continues the expression but an
+    // operator: the `[k]` under it begins a statement rather than indexing.
+    ["const x = a as B\n[k] = 1;", "const x = a as B"],
+    ["const x = a satisfies B\n[k] = 1;", "const x = a satisfies B"],
+    ["const x = a as B[]\n`t`;", "const x = a as B[]"],
+    ["const x = a as B\n<C>(d);", "const x = a as B\n<C>(d);"],
+    ["const x = a as const\n.y;", "const x = a as const\n.y;"],
   ])(
     "reads %j as %j at statement level and at item level",
     (source, extent) => {
