@@ -126,10 +126,15 @@ function isFile(fileName: string): boolean {
   return statSync(fileName, { throwIfNoEntry: false })?.isFile() === true;
 }
 
+/**
+ * The nearest `node_modules/<packageName>/package.json` above `from`, read
+ * through `consult` so every place it looked is one the caller knows about.
+ */
 function findPackageManifest(
   from: string,
   packageName: string,
-): string | undefined {
+  consult: (fileName: string) => string | undefined,
+): { readonly path: string; readonly text: string } | undefined {
   let directory = dirname(from);
   const root = parse(directory).root;
   while (true) {
@@ -139,7 +144,8 @@ function findPackageManifest(
       packageName,
       "package.json",
     );
-    if (isFile(candidate)) return candidate;
+    const text = consult(candidate);
+    if (text !== undefined) return { path: candidate, text };
     if (directory === root) return undefined;
     directory = dirname(directory);
   }
@@ -713,6 +719,21 @@ function originContains(
   return originContains(origins, origin.invocation, wanted, seen);
 }
 
+export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
+  /**
+   * Every file the expansion consulted, by the absolute path it looked under,
+   * with the text it read there, or `undefined` where it found no file.
+   *
+   * Expanding the same project again gives the same output for as long as
+   * each of these holds what it held. The paths are the ones resolution looked
+   * under rather than where a symlink leads, so a package manager pointing a
+   * link at a new version reads as a change. A macro naming a binding literal
+   * is the exception: TypeScript resolves the literal through lookups of its
+   * own, which are not among these.
+   */
+  readonly inputs: ReadonlyMap<string, string | undefined>;
+}
+
 /** Default, synchronous project frontend used by both the API and executable. */
 export class DefaultProjectExpansionProvider
   implements ProjectExpansionProvider, ExpansionInspectionProvider
@@ -726,7 +747,7 @@ export class DefaultProjectExpansionProvider
     this.#system = options.system;
   }
 
-  expandProject(project: LoadedSweetProject): ProjectExpansionOutput {
+  expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
     this.#inspections.clear();
     const origins = new OriginStore();
     const scopes = new ScopeStore();
@@ -743,7 +764,21 @@ export class DefaultProjectExpansionProvider
     const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
     const packageManifests = new Map<string, MacroPackageManifest>();
-    const dependencies = new Set<string>();
+    // Every file this expansion consulted, at the path it looked under, with
+    // the text it found there -- or nothing, where it looked and found no
+    // file. A lookup that came back empty decides the result as surely as one
+    // that read something: a package installed later, or an alias target
+    // appearing ahead of the one used, changes what an import resolves to.
+    const inputs = new Map<string, string | undefined>();
+    const consult = (fileName: string): string | undefined => {
+      const absolute = resolve(fileName);
+      if (!inputs.has(absolute))
+        inputs.set(
+          absolute,
+          isFile(absolute) ? readFileSync(absolute, "utf8") : undefined,
+        );
+      return inputs.get(absolute);
+    };
     const loadFile = (
       fileName: string,
       sourceKind?: SourceKind,
@@ -752,7 +787,9 @@ export class DefaultProjectExpansionProvider
       const existing = byPath.get(absolute);
       if (existing !== undefined) return existing;
       const sourceId = sourceIds.allocate();
-      const sourceText = readFileSync(absolute, "utf8");
+      const sourceText = consult(absolute);
+      if (sourceText === undefined)
+        throw new Error(`Cannot expand ${absolute}: there is no file there`);
       const kind =
         sourceKind ??
         importedMacroModuleKind(absolute, project.sweet.macroExtensions);
@@ -876,7 +913,7 @@ export class DefaultProjectExpansionProvider
         });
         const localTarget = [relativeTarget, ...aliasTargets].find(
           (candidate): candidate is string =>
-            candidate !== undefined && isFile(candidate),
+            candidate !== undefined && consult(candidate) !== undefined,
         );
         if (localTarget !== undefined) {
           const target = loadFile(localTarget);
@@ -885,18 +922,19 @@ export class DefaultProjectExpansionProvider
           continue;
         }
         const parsedPackage = packageParts(sourceImport.specifier);
-        const packageJsonPath = findPackageManifest(
+        const packageManifest = findPackageManifest(
           importer.fileName,
           parsedPackage.name,
+          consult,
         );
-        if (packageJsonPath === undefined) continue;
-        dependencies.add(resolve(packageJsonPath));
-        const packageRoot = dirname(packageJsonPath);
+        if (packageManifest === undefined) continue;
+        const packageRoot = dirname(packageManifest.path);
         let packageJson: Record<string, unknown>;
         try {
-          packageJson = JSON.parse(
-            readFileSync(packageJsonPath, "utf8"),
-          ) as Record<string, unknown>;
+          packageJson = JSON.parse(packageManifest.text) as Record<
+            string,
+            unknown
+          >;
         } catch {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
@@ -906,7 +944,7 @@ export class DefaultProjectExpansionProvider
                 end: sourceImport.span.end,
                 originId: sourceImport.origin,
               },
-              messageArguments: [packageJsonPath, "invalid package JSON"],
+              messageArguments: [packageManifest.path, "invalid package JSON"],
             }),
           );
           continue;
@@ -939,8 +977,8 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
-        dependencies.add(manifestPath);
-        if (!isFile(manifestPath)) {
+        const manifestText = consult(manifestPath);
+        if (manifestText === undefined) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
@@ -957,7 +995,7 @@ export class DefaultProjectExpansionProvider
         const manifestSourceId = sourceIds.allocate();
         let manifestJson: unknown;
         try {
-          manifestJson = JSON.parse(readFileSync(manifestPath, "utf8"));
+          manifestJson = JSON.parse(manifestText);
         } catch {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
@@ -1006,7 +1044,10 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
-        if (!isFile(entry) || exportSources.some((source) => !isFile(source))) {
+        if (
+          consult(entry) === undefined ||
+          exportSources.some((source) => consult(source) === undefined)
+        ) {
           diagnostics.push(
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
@@ -1619,7 +1660,7 @@ export class DefaultProjectExpansionProvider
       ).length,
       invocations: invocationCount,
     });
-    this.#macroDependencies = Object.freeze([...byPath.keys()].sort());
+    this.#macroDependencies = Object.freeze([...inputs.keys()].sort());
     return Object.freeze({
       files: Object.freeze(virtualFiles),
       diagnostics: Object.freeze(
@@ -1627,7 +1668,7 @@ export class DefaultProjectExpansionProvider
           asTypeScriptDiagnostic(diagnostic, bySource),
         ),
       ),
-      dependencies: Object.freeze([...dependencies].sort()),
+      inputs,
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
           // The name travels with the sentence. Every name one macro writes is

@@ -173,8 +173,7 @@ export function createSweetenerSession(
     project: LoadedSweetProject,
   ): ProjectExpansion => {
     const listed = [
-      configFile,
-      ...(project.configurationDependencies ?? [configFile]),
+      ...project.configurationDependencies,
       ...project.typescript.fileNames,
     ].map(canonical);
     const remembered = projectExpansion;
@@ -187,9 +186,8 @@ export function createSweetenerSession(
       return remembered;
     const expanded = provider.expandProject(project);
     const dependencies = [
-      ...(project.configurationDependencies ?? [configFile]),
-      ...provider.macroDependencies(project),
-      ...(expanded.dependencies ?? []),
+      ...project.configurationDependencies,
+      ...expanded.inputs.keys(),
     ].map(canonical);
     const inputs = [...new Set([...listed, ...dependencies])].sort();
     projectExpansion = {

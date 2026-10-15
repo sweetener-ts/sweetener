@@ -36,6 +36,10 @@ export interface ProjectExpansionProvider {
   expandProject(
     project: LoadedSweetProject,
   ): ProjectExpansionOutput | readonly VirtualTypeScriptFile[];
+  /**
+   * Files whose change, appearance or disappearance can change what the last
+   * expansion of `project` produced, for a watcher to watch.
+   */
   macroDependencies?(project: LoadedSweetProject): readonly string[];
   debugState?(): unknown;
 }
@@ -43,8 +47,6 @@ export interface ProjectExpansionProvider {
 export interface ProjectExpansionOutput {
   readonly files: readonly VirtualTypeScriptFile[];
   readonly diagnostics: readonly ts.Diagnostic[];
-  /** Files read outside the project sources while producing this expansion. */
-  readonly dependencies?: readonly string[];
   /**
    * What expansion can say about a name it left alone, for the places
    * TypeScript reports it cannot resolve one.
@@ -719,7 +721,7 @@ export function watchConfiguredProject(options: {
     if (closed) return;
     const project = loadSweetProject(options.configPath);
     const wanted = new Set([
-      ...(project.configurationDependencies ?? [project.configPath]),
+      ...project.configurationDependencies,
       ...project.typescript.fileNames,
       ...(expansionProvider.macroDependencies?.(project) ?? []),
     ]);
@@ -732,10 +734,13 @@ export function watchConfiguredProject(options: {
       if (!fileWatchers.has(fileName))
         fileWatchers.set(fileName, system.watchFile!(fileName, schedule));
     // A file the project has yet to see has no watcher to fire, so the
-    // directories it could appear in are watched as well.
+    // directories it could appear in are watched as well. A file expansion
+    // looked for and did not find is already watched where it would appear.
     if (system.watchDirectory === undefined) return;
     const directories = new Set(
-      [...wanted].map((fileName) => dirname(fileName)),
+      [...wanted]
+        .filter((fileName) => system.fileExists(fileName))
+        .map((fileName) => dirname(fileName)),
     );
     for (const [directory, watcher] of directoryWatchers)
       if (!directories.has(directory)) {

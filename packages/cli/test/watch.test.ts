@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as ts from "typescript";
@@ -95,6 +95,78 @@ describe("watching a project", () => {
           fileName.endsWith("main.ts"),
         )?.generated.text,
       ).toContain("[2, 2, 2]");
+    } finally {
+      watch.close();
+    }
+  });
+
+  test("follows a macro package from before it is installed", async () => {
+    const directory = project();
+    writeFileSync(
+      join(directory, "main.sts"),
+      'import { packaged } from "@acme/forms" for syntax;\nexport const a = packaged(1);\n',
+    );
+    const { system, files } = recordingSystem();
+    const watch = watchConfiguredProject({
+      configPath: join(directory, "tsconfig.json"),
+      system,
+      writeThrough: false,
+      debounceMilliseconds: 0,
+      onResult: () => {},
+    });
+    const packageRoot = join(directory, "node_modules", "@acme", "forms");
+    const generated = () =>
+      watch.result.virtualFiles.find(({ fileName }) =>
+        fileName.endsWith("main.ts"),
+      )?.generated.text;
+    const manifest = (source: string) =>
+      JSON.stringify({
+        formatVersion: 1,
+        name: "@acme/forms",
+        languageVersion: "1",
+        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+        entry: "./macros.sts",
+        exports: { packaged: { source, category: "expr", phase: 1 } },
+        dependencies: [],
+      });
+    try {
+      expect(watch.result.diagnostics).not.toEqual([]);
+      const packageJson = join(packageRoot, "package.json");
+      expect(files.has(packageJson)).toBe(true);
+
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(
+        packageJson,
+        JSON.stringify({
+          name: "@acme/forms",
+          version: "1.0.0",
+          sweetMacros: "./sweet-macros.json",
+        }),
+      );
+      writeFileSync(
+        join(packageRoot, "sweet-macros.json"),
+        manifest("./macros.sts"),
+      );
+      writeFileSync(
+        join(packageRoot, "macros.sts"),
+        "export syntax packaged:expr { rule { packaged($x:tt) } => { [$x, $x] } }",
+      );
+      writeFileSync(
+        join(packageRoot, "more.sts"),
+        "export syntax packaged:expr { rule { packaged($x:tt) } => { [$x, $x, $x] } }",
+      );
+      files.get(packageJson)!();
+      await settle();
+      expect(watch.result.diagnostics).toEqual([]);
+      expect(generated()).toContain("[1, 1]");
+
+      // The manifest is package metadata, not a macro module, and is watched
+      // all the same: pointing it elsewhere rebuilds.
+      const manifestPath = join(packageRoot, "sweet-macros.json");
+      writeFileSync(manifestPath, manifest("./more.sts"));
+      files.get(manifestPath)!();
+      await settle();
+      expect(generated()).toContain("[1, 1, 1]");
     } finally {
       watch.close();
     }

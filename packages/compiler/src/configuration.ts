@@ -33,8 +33,11 @@ export interface SweetConfigurationProblem {
 
 export interface LoadedSweetProject {
   readonly configPath: string;
-  /** Config files read while resolving this project, including `configPath`. */
-  readonly configurationDependencies?: readonly string[];
+  /**
+   * Config files read while resolving this project: `configPath` and every
+   * config it `extends`, however far. None for a project with no config.
+   */
+  readonly configurationDependencies: readonly string[];
   readonly sweet: SweetCompilerOptions;
   readonly typescript: ts.ParsedCommandLine;
   readonly problems: readonly SweetConfigurationProblem[];
