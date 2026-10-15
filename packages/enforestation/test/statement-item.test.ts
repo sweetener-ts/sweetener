@@ -963,6 +963,10 @@ describe("statement and item consumers", () => {
     ["declare(1);", "declare(1);"],
     ["declare: foo();", "declare: foo();"],
     ["declare\nlet x = 1;", "declare"],
+    // Nor does `abstract` modify anything where no class follows it on its
+    // line, and then neither does the `declare` in front of it.
+    ["declare abstract class C {}", "declare abstract class C {}"],
+    ["declare abstract\nclass C {}", "declare"],
   ])(
     "reads the ambient declaration %j as %j at statement level and at item level",
     (source, extent) => {

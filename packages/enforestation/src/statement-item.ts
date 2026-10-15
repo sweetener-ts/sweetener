@@ -253,18 +253,18 @@ function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
 /**
  * Whether the word at `offset` modifies the declaration after it.
  *
- * `declare` and `abstract` do, with no line break between the word and what
- * it modifies. `async` does only in front of `function`, on that function's
- * own line: `async function f()` is the declaration, and `async (v) => v` is
- * an arrow, which is an expression. A line break makes `async` a name, the
- * same rule `asyncModifies` states for arrows.
+ * `declare` and `abstract` do where a declaration follows them on their line,
+ * through any modifiers of its own: TypeScript reads `declare abstract` and
+ * the class under it as two names and the class, because the `abstract` the
+ * `declare` stands in front of modifies nothing. `async` does only in front
+ * of `function`, on that function's own line: `async function f()` is the
+ * declaration, and `async (v) => v` is an arrow, which is an expression. A
+ * line break makes `async` a name, the same rule `asyncModifies` states for
+ * arrows.
  */
 function modifierAt(cursor: SyntaxCursor, offset: number): boolean {
-  if (
-    declarationModifiers.has(raw(cursor.peek(offset)) ?? "") &&
-    noLineTerminatorAfter(cursor, offset)
-  )
-    return true;
+  if (declarationModifiers.has(raw(cursor.peek(offset)) ?? ""))
+    return declarationHead(cursor, offset);
   return (
     asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
     raw(cursor.peek(offset + 1)) === "function"
@@ -1830,13 +1830,28 @@ class StatementConsumer implements SyntaxConsumer {
     }
     const children: Syntax[] = [expression.syntax];
     const terminator = requireTerminator("stmt", cursor, start, children);
-    if (terminator !== undefined) return terminator;
+    // TypeScript reads a `declare` that modifies nothing after it as a
+    // statement of its own, terminated or not: it takes the word for the
+    // modifier of a declaration that failed to read, and leaves reporting it
+    // to that declaration (`parseErrorForMissingSemicolonAfter`). So `declare
+    // abstract` and the class under it are three statements.
+    if (terminator !== undefined && !bareDeclare(expression.syntax))
+      return terminator;
     return Object.freeze({
       matched: true,
       syntax: protect("stmt", this.options, children),
       cursor,
     });
   }
+}
+
+/** Whether `syntax` is the name `declare` and nothing more. */
+function bareDeclare(syntax: Syntax): boolean {
+  return (
+    syntax.tag === "protected" &&
+    syntax.children.length === 1 &&
+    raw(syntax.children[0]) === "declare"
+  );
 }
 
 /** Whether a token is one or more `<`, which opens a type-argument region. */
