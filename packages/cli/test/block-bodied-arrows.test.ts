@@ -207,3 +207,36 @@ describe("a block-bodied arrow written as an object literal's member", () => {
     expect(text).toContain("return (1 + 1);");
   });
 });
+
+/**
+ * The same arrow in a body the walk reads as a list of its own: the block of
+ * an arrow, which is read as statements, and the body of a class expression,
+ * which is read as members.
+ *
+ * Neither is read until the walk reaches it, so neither came through the item
+ * reader, and the routes that read them handed their readings over without
+ * unwrapping the parameter list. The parameter was walked as the expression it
+ * had been protected as, and a parameter spelled like a macro was dispatched
+ * in binder position, as it was in an object literal's member.
+ */
+describe("a block-bodied arrow in a body the walk reads", () => {
+  const alias = "type Fn = (v: number) => number;";
+  const bodies: readonly (readonly [string, string])[] = [
+    [
+      "a statement list",
+      "export const outer = () => { const g = (twice: Fn) => { return twice(1); }; return g; };",
+    ],
+    [
+      "a class expression's method",
+      "export const C = class { m() { const g = (twice: Fn) => { return twice(1); }; return g; } };",
+    ],
+  ];
+  for (const [name, statement] of bodies) {
+    test(`binds the parameter in ${name} rather than dispatching it`, () => {
+      const { text, messages } = expand(`${alias}\n${statement}`);
+      expect(messages).toEqual([]);
+      expect(text).toMatch(/\btwice\b/u);
+      expect(text).not.toContain(" + ");
+    });
+  }
+});

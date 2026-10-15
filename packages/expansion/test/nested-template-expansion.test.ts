@@ -90,6 +90,7 @@ function harness(definitionText: string) {
     const result = session.expand(withoutEof(read.root.children), category);
     return {
       text: compact(result.syntax),
+      syntax: result.syntax,
       diagnostics: result.diagnostics,
       unresolvedNameExplanations: result.unresolvedNameExplanations,
     };
@@ -204,6 +205,52 @@ describe("macros nested in a template", () => {
     expect(expand("alias Names;", "item")).toBe(
       "typeNames=ReadonlyArray<string>",
     );
+  });
+});
+
+/**
+ * A replacement is read again by the macro whose template wrote the call that
+ * produced it, and what one expansion built has to survive that reading.
+ * `#core` in item position wraps the item it read in one more, so that the
+ * item is spliced into the outer template whole: unwrapped, the item reader is
+ * handed a function whose body was read already, which it cannot read again.
+ * A replacement of several items arrives as one item holding them, and they
+ * are still several.
+ */
+describe("a replacement read again", () => {
+  test("keeps a `#core` declaration whole through a second item macro", () => {
+    const expand = harness(`
+      export syntax inner:item {
+        rule { inner $name:binding; }
+        bind $name in following as recursive value;
+        => { #core(function $name() { return 1; }) }
+      }
+      export syntax outer:item {
+        rule { outer $name:binding; }
+        bind $name in following as recursive value;
+        => { inner $name; }
+      }
+    `);
+    expect(expand("outer a;", "item")).toBe("functiona(){return1;}");
+  });
+
+  test("keeps the items one replacement writes as separate items", () => {
+    const { syntax, diagnostics } = harness(`
+      export syntax pair:item {
+        rule { pair $name:ident; } => { const $name = 1; const other = 2; }
+      }
+    `).run("pair a;", "item");
+    expect(diagnostics).toEqual([]);
+    expect(syntax).toHaveLength(1);
+    const [written] = syntax;
+    if (written?.tag !== "protected") throw new Error("expected an item");
+    expect(
+      written.children.map((child) =>
+        child.tag === "protected"
+          ? `${child.category}:${compact([child])}`
+          : child.tag,
+      ),
+    ).toEqual(["item:consta=1;", "item:constother=2;"]);
   });
 });
 

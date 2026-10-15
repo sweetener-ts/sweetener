@@ -837,7 +837,44 @@ export function createExpansionFrontendSession(
     );
   };
 
-  const normalizeProtectedInput = (node: ProtectedSyntax): ProtectedSyntax => {
+  /**
+   * The protected nodes a run hands the reader: those standing in it, and
+   * those in its groups. A reader that meets one takes it as it stands, so
+   * a reading holds these nodes themselves rather than copies of them.
+   */
+  const handedIn = (syntax: SyntaxSequence): ReadonlySet<Syntax> => {
+    const handed = new Set<Syntax>();
+    const collect = (nodes: SyntaxSequence): void => {
+      for (const node of nodes) {
+        if (node.tag === "protected") handed.add(node);
+        else if (node.tag === "group") collect(node.children);
+      }
+    };
+    collect(syntax);
+    return handed;
+  };
+
+  /**
+   * `node` with the nesting the reader built while reading it removed, where
+   * that nesting is redundant with the text it was read from.
+   *
+   * What the reader was handed is kept as it stands, `handed` saying which
+   * nodes those are. A protected node in the run was not built by this
+   * reading, and the reader takes it whole rather than reading it again; an
+   * expansion may have built it to say something the text does not. A
+   * replacement of several items arrives as one item holding them, and
+   * `#core` in item position wraps the item it read in one more. Flattening
+   * the first ran two declarations together as one. Flattening the second
+   * spliced the bare declaration into the template around the call, where the
+   * item reader met a function whose body was read already and could not
+   * read it again, and a `function` the wrapping had kept from being read
+   * again was handed to the macro shadowing it.
+   */
+  const normalizeProtectedInput = (
+    node: ProtectedSyntax,
+    handed: ReadonlySet<Syntax>,
+  ): ProtectedSyntax => {
+    if (handed.has(node)) return node;
     /**
      * What `child` normalizes to, or undefined where it normalizes to itself.
      * Saying so rather than returning a one-element run of it lets a node
@@ -849,7 +886,8 @@ export function createExpansionFrontendSession(
       siblings: number,
     ): readonly Syntax[] | undefined => {
       if (child.tag === "protected") {
-        const normalized = normalizeProtectedInput(child);
+        if (handed.has(child)) return undefined;
+        const normalized = normalizeProtectedInput(child, handed);
         // An expression or type an expansion built inside another is not
         // redundant: it is the boundary its operators bind within, and
         // nothing in the text says so. An operator's expansion arrives
@@ -1219,6 +1257,7 @@ export function createExpansionFrontendSession(
     category: SyntaxCategory,
   ): SyntaxSequence => {
     if (category !== "item") return syntax;
+    const handed = handedIn(syntax);
     const cursor = createSyntaxCursor(syntax);
     const prepared: ProtectedSyntax[] = [];
     const fallbackItem = (raw: readonly Syntax[]): ProtectedSyntax => {
@@ -1317,7 +1356,7 @@ export function createExpansionFrontendSession(
         continue;
       }
       cursor.advance(attempted.cursor.index - cursor.index);
-      prepared.push(normalizeProtectedInput(attempted.syntax));
+      prepared.push(normalizeProtectedInput(attempted.syntax, handed));
     }
     return createSyntaxSequence(prepared);
   };
@@ -1331,15 +1370,17 @@ export function createExpansionFrontendSession(
    * of this loop, which is how they came to differ from `prepareInput` and
    * from the expression route in the first place.
    *
-   * What they still do not do is normalize what they build, which those two
-   * routes do. That looked like the same omission and is not: normalizing
-   * `item` here emits TypeScript that does not parse -- the React memoization
-   * fixture is the reproduction -- because the rules in
-   * `normalizeProtectedInput` were written for a run read from source, and an
-   * item read out of a macro's replacement is not one. The other four pass
-   * their suites normalized, but nothing here asked them to be, so none of
-   * them is: one shape for the five, and a measurement rather than a guess
-   * about what the sixth should be.
+   * Each normalizes what it reads, as those two routes do. A statement list
+   * and a class body are read here before the walk enters them, and an
+   * arrow's parameter list left protected as the expression the infix `=>`
+   * read it as had its parameters walked as that expression: one spelled like
+   * a macro was dispatched. Normalizing `item` here once emitted TypeScript
+   * that does not parse -- the React memoization fixture -- because what is
+   * read here is often a replacement, and normalizing took apart what the
+   * expansion had built; that is why `normalizeProtectedInput` keeps what the
+   * reader was handed. The item, type member and JSX child routes read a
+   * replacement only after it has been walked, and no reading of theirs is
+   * known that normalizing changes.
    */
   const enforestList = (
     consumer: SyntaxConsumer,
@@ -1353,6 +1394,7 @@ export function createExpansionFrontendSession(
     const restore = enforestingModule;
     enforestingModule = request.lexicalModule ?? restore;
     try {
+      const handed = handedIn(request.syntax);
       let cursor = createSyntaxCursor(request.syntax);
       const read: Syntax[] = [];
       while (!cursor.atEnd) {
@@ -1363,7 +1405,7 @@ export function createExpansionFrontendSession(
         });
         if (!attempted.matched || attempted.cursor.index <= before)
           return undefined;
-        read.push(attempted.syntax);
+        read.push(normalizeProtectedInput(attempted.syntax, handed));
         cursor = attempted.cursor;
       }
       return createSyntaxSequence(read);
@@ -1451,7 +1493,7 @@ export function createExpansionFrontendSession(
             // been wrapped as. Both routes into the expander hand it the same
             // shape, or the two disagree about what a reading means.
             return attempted.matched && attempted.cursor.atEnd
-              ? normalizeProtectedInput(attempted.syntax)
+              ? normalizeProtectedInput(attempted.syntax, handedIn(syntax))
               : undefined;
           } finally {
             enforestingModule = restore;
