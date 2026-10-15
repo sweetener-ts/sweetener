@@ -713,6 +713,218 @@ describe("public compiler session", () => {
  * it looked, not where a symlink led -- decides its result.
  */
 describe("a session after the project changes", () => {
+  test.each([
+    ["written within the window", 0n],
+    ["written long ago, then changed within the window", 10_000_000_000n],
+  ])(
+    "reads a file whose stat cannot yet stand for its text: %s",
+    async (_, age) => {
+      // On a file system stamping writes coarsely, a file rewritten at the
+      // same size within one tick keeps its stat. Here every stat stays the
+      // same however the file changes, with the change time -- and with it,
+      // in the first case, the modification time -- inside the window in
+      // which a stat cannot stand for the text, so the file is read.
+      const fixture = project();
+      const other = join(fixture.directory, "other.sts");
+      writeFileSync(other, readFile(fixture.main));
+      writeFileSync(
+        fixture.config,
+        JSON.stringify({
+          compilerOptions: { module: "ESNext", target: "ES2022" },
+          files: ["macros.sts", "main.sts", "other.sts"],
+        }),
+      );
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const now = BigInt(Date.now()) * 1_000_000n;
+        const target = createDefaultProjectExpansionProvider();
+        const { system, stat } = target.fileSystem;
+        if (stat === undefined)
+          throw new Error(
+            "The default provider reads the disk, which has stats",
+          );
+        const unchanging: ExpansionFileSystem = {
+          system,
+          stat: (path) => {
+            const stats = stat(path);
+            if (stats === undefined) return undefined;
+            const fixed: Record<PropertyKey, bigint> = {
+              ino: 1n,
+              size: 1n,
+              mtimeNs: now - age,
+              ctimeNs: now,
+            };
+            return new Proxy(stats, {
+              get: (stats, property) =>
+                fixed[property] ?? Reflect.get(stats, property),
+            });
+          },
+        };
+        const provider = new Proxy(target, {
+          get(target, property) {
+            if (property === "fileSystem") return unchanging;
+            const value: unknown = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const session = createSweetenerSession({ provider });
+        expect(
+          (await transform(session, fixture.main, fixture.config)).code,
+        ).toContain("[21, 21]");
+        writeFileSync(
+          fixture.macros,
+          `export syntax duplicate:expr { rule { duplicate($value:tt) } => { ($value, $value) } }\n`,
+        );
+        expect(
+          (await transform(session, other, fixture.config)).code,
+        ).toContain("(21, 21)");
+        await session.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  describe("a config extending a package", () => {
+    // The package's config says where `@m/*` leads, and so which macro
+    // module `main.sts` expands with. Each case changes only what one kind
+    // of lookup resolving the `extends` saw.
+    const extending = () => {
+      const directory = realpathSync(
+        mkdtempSync(join(tmpdir(), "sweet-compiler-extends-")),
+      );
+      for (const [name, value] of [
+        ["one", 1],
+        ["two", 2],
+      ] as const) {
+        mkdirSync(join(directory, name));
+        writeFileSync(
+          join(directory, name, "m.sts"),
+          `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, ${value}] } }\n`,
+        );
+      }
+      const app = join(directory, "app");
+      mkdirSync(app);
+      const config = join(app, "tsconfig.json");
+      writeFileSync(
+        config,
+        JSON.stringify({
+          extends: "@tsconfig/base/tsconfig.json",
+          compilerOptions: { module: "ESNext", target: "ES2022" },
+          files: ["main.sts"],
+        }),
+      );
+      const main = join(app, "main.sts");
+      writeFileSync(
+        main,
+        'import { duplicate } from "@m/m.sts" for syntax;\nexport const answer = duplicate(10);\n',
+      );
+      const base = (root: string, target: string) => {
+        mkdirSync(root, { recursive: true });
+        writeFileSync(
+          join(root, "package.json"),
+          JSON.stringify({ name: "@tsconfig/base", version: "1.0.0" }),
+        );
+        writeFileSync(
+          join(root, "tsconfig.json"),
+          JSON.stringify({
+            compilerOptions: {
+              paths: { "@m/*": [join(directory, target, "*")] },
+            },
+          }),
+        );
+      };
+      return { directory, app, config, main, base };
+    };
+    const expectFresh = async (
+      session: SweetenerSession,
+      main: string,
+      config: string,
+      expected: string,
+    ) => {
+      const result = await transform(session, main, config);
+      expect(result.code).toContain(expected);
+      expect(answer(result)).toEqual(answer(await freshly(main, config)));
+    };
+
+    test("follows a nearer node_modules that appears", async () => {
+      // TypeScript looks in no directory that is not there, so only whether
+      // it was there says the nearer copy was not looked for.
+      const fixture = extending();
+      fixture.base(
+        join(fixture.directory, "node_modules", "@tsconfig", "base"),
+        "one",
+      );
+      const session = createSweetenerSession();
+      await expectFresh(session, fixture.main, fixture.config, "[10, 1]");
+      fixture.base(
+        join(fixture.app, "node_modules", "@tsconfig", "base"),
+        "two",
+      );
+      await expectFresh(session, fixture.main, fixture.config, "[10, 2]");
+      await session.close();
+    });
+
+    test("follows the config appearing in a package it looked in", async () => {
+      // The nearer package is there from the start, without its config: only
+      // the look for that file says it was not found.
+      const fixture = extending();
+      fixture.base(
+        join(fixture.directory, "node_modules", "@tsconfig", "base"),
+        "one",
+      );
+      const nearer = join(fixture.app, "node_modules", "@tsconfig", "base");
+      fixture.base(nearer, "two");
+      const config = readFile(join(nearer, "tsconfig.json"));
+      rmSync(join(nearer, "tsconfig.json"));
+      const session = createSweetenerSession();
+      await expectFresh(session, fixture.main, fixture.config, "[10, 1]");
+      writeFileSync(join(nearer, "tsconfig.json"), config);
+      await expectFresh(session, fixture.main, fixture.config, "[10, 2]");
+      await session.close();
+    });
+
+    test("follows a package link pointed at a new version", async () => {
+      // Both versions read the same through the link; each extends an
+      // `inner.json` beside it, found from where the link leads.
+      const fixture = extending();
+      const version = (name: string) =>
+        join(
+          fixture.directory,
+          "node_modules",
+          ".pnpm",
+          name,
+          "node_modules",
+          "@tsconfig",
+          "base",
+        );
+      for (const [name, target] of [
+        ["base@1", "one"],
+        ["base@2", "two"],
+      ] as const) {
+        const root = version(name);
+        fixture.base(root, target);
+        writeFileSync(
+          join(root, "inner.json"),
+          readFile(join(root, "tsconfig.json")),
+        );
+        writeFileSync(
+          join(root, "tsconfig.json"),
+          JSON.stringify({ extends: "./inner.json" }),
+        );
+      }
+      const link = join(fixture.app, "node_modules", "@tsconfig", "base");
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(version("base@1"), link);
+      const session = createSweetenerSession();
+      await expectFresh(session, fixture.main, fixture.config, "[10, 1]");
+      rmSync(link);
+      symlinkSync(version("base@2"), link);
+      await expectFresh(session, fixture.main, fixture.config, "[10, 2]");
+      await session.close();
+    });
+  });
+
   test("resolves a package from each importer, whatever else the project lists", async () => {
     // Node resolves a package from the importing file's own directory, so a
     // file outside `sub` never reaches `sub/node_modules`. One location
@@ -1334,6 +1546,119 @@ describe("a session answering requests made together", () => {
     await session.close();
   });
 
+  test("checks an input many files read once for all the requests made together", async () => {
+    // Two files read the same macro module. Made together, the module is
+    // checked once for both; made one at a time, once each.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(other, readFile(fixture.main));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const files = [fixture.main, other];
+    await Promise.all(
+      files.map((fileName) => transform(session, fileName, fixture.config)),
+    );
+    let before = counting.stats();
+    for (const fileName of files)
+      session.transformSync({
+        code: readFile(fileName),
+        filename: fileName,
+        configFile: fixture.config,
+        mode: "test",
+      });
+    const apart = counting.stats() - before;
+    before = counting.stats();
+    await Promise.all(
+      files.map((fileName) => transform(session, fileName, fixture.config)),
+    );
+    const together = counting.stats() - before;
+    expect(together).toBe(apart - 1);
+    expect(counting.expansions()).toBe(1);
+    await session.close();
+  });
+
+  test("expands once for all the requests made together that need it", async () => {
+    // Neither file can be kept -- both fail -- and the one expansion made
+    // for the first answers the second: it read everything after both were
+    // made.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const broken = `import { duplicate } from "./macros.sts" for syntax;\nexport const broken = duplicate(1, 2);\n`;
+    writeFileSync(fixture.main, broken);
+    writeFileSync(other, broken);
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const results = await Promise.all(
+      [fixture.main, other].map((fileName) =>
+        transform(session, fileName, fixture.config),
+      ),
+    );
+    for (const result of results) expect(result.diagnostics).not.toEqual([]);
+    expect(counting.expansions()).toBe(1);
+    await session.close();
+  });
+
+  test("loads a config once for all the requests made together", async () => {
+    // Each file of a project whose macros name binding literals depends on
+    // which files the config lists, so each asks for the config to be loaded
+    // and its `include` walked; made together, they share one walk.
+    const fixture = project();
+    writeFileSync(
+      fixture.macros,
+      [
+        "export syntax typeof:expr shadows core {",
+        "  literal globalThis.NaN as NaN;",
+        '  rule { typeof NaN } => { "NaN" }',
+        "  fallback rule { typeof $value:expr } => { #core(typeof $value) }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const files = Array.from({ length: 3 }, (_, index) => {
+      const fileName = join(fixture.directory, `file${index}.sts`);
+      writeFileSync(
+        fileName,
+        `import { typeof } from "./macros.sts" for syntax shadows core;\nexport const kind${index} = typeof NaN;\n`,
+      );
+      return fileName;
+    });
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    const all = () =>
+      Promise.all(
+        files.map((fileName) => transform(session, fileName, fixture.config)),
+      );
+    await all();
+    const walks = vi.spyOn(ts.sys, "readDirectory");
+    try {
+      await all();
+      expect(walks).toHaveBeenCalledTimes(1);
+    } finally {
+      walks.mockRestore();
+    }
+    await session.close();
+  });
+
   test("answers a request made before a change with what came after it", async () => {
     // Checked when it is answered, not when it was made, so a request made
     // before a change and one made after it answer alike.
@@ -1387,6 +1712,48 @@ describe("a session dropping what it can no longer serve", () => {
     mkdirSync(gone.directory);
     for (const [fileName, text] of texts) writeFileSync(fileName, text);
     await transform(session, gone.main, gone.config);
+    expect(counting.expansions()).toBe(3);
+    await session.close();
+  });
+
+  test("drops the expansion of a file its config stops listing", async () => {
+    // Listed again, the file is expanded again: nothing of it was kept.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(other, readFile(fixture.main));
+    const listing = (files: readonly string[]) =>
+      writeFileSync(
+        fixture.config,
+        JSON.stringify({
+          compilerOptions: { module: "ESNext", target: "ES2022" },
+          files,
+        }),
+      );
+    listing(["macros.sts", "main.sts", "other.sts"]);
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, other, fixture.config);
+    listing(["macros.sts", "main.sts"]);
+    await transform(session, fixture.main, fixture.config);
+    listing(["macros.sts", "main.sts", "other.sts"]);
+    await transform(session, other, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    await session.close();
+  });
+
+  test("drops the expansion of another config's source that is gone", async () => {
+    // Loading one config sweeps what is kept for the others: the source's
+    // expansion goes with the source, so made again it is expanded again.
+    const kept = project();
+    const swept = project();
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    await transform(session, swept.main, swept.config);
+    const text = readFile(swept.main);
+    rmSync(swept.main);
+    await transform(session, kept.main, kept.config);
+    writeFileSync(swept.main, text);
+    await transform(session, swept.main, swept.config);
     expect(counting.expansions()).toBe(3);
     await session.close();
   });
@@ -1623,6 +1990,24 @@ function formsProject(): {
     packageRoot: join(directory, "node_modules", "@acme", "forms"),
   };
 }
+
+test("expands a failing file again each time it is asked for", async () => {
+  // A failure may come of a limit or a deadline as much as of the source, so
+  // it is never served from a cache: asked for again, unchanged, the file is
+  // expanded again.
+  const fixture = project();
+  writeFileSync(
+    fixture.main,
+    `import { duplicate } from "./macros.sts" for syntax;\nexport const broken = duplicate(1, 2);\n`,
+  );
+  const counting = countingProvider();
+  const session = createSweetenerSession({ provider: counting.provider });
+  const first = await transform(session, fixture.main, fixture.config);
+  expect(first.diagnostics).not.toEqual([]);
+  await transform(session, fixture.main, fixture.config);
+  expect(counting.expansions()).toBe(2);
+  await session.close();
+});
 
 test("does not cache an expansion that failed", async () => {
   // The public surface says a partial or failed result must not be cached,

@@ -759,7 +759,7 @@ export class DefaultProjectExpansionProvider
   readonly #system: ts.System;
   readonly #fileSystem: ExpansionFileSystem;
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
-  /** The config the last expansion was of, and what it asked. */
+  /** The config the last expansion to finish was of, and what it asked. */
   #lastInputs:
     | {
         readonly configPath: string;
@@ -790,7 +790,6 @@ export class DefaultProjectExpansionProvider
 
   expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
     this.#inspections.clear();
-    this.#lastInputs = undefined;
     const origins = new OriginStore();
     const scopes = new ScopeStore();
     const sourceIds = createIdAllocator<SourceId>(1);
@@ -1813,8 +1812,8 @@ export class DefaultProjectExpansionProvider
   }
 
   /**
-   * What the last expansion asked of the file system, if it was of `project`;
-   * nothing if it was of another project or none finished.
+   * What the last expansion to finish asked of the file system, if it was of
+   * `project`; nothing if it was of another project, or none has finished.
    */
   expansionInputs(project: LoadedSweetProject): readonly ExpansionInput[] {
     return this.#lastInputs?.configPath === project.configPath

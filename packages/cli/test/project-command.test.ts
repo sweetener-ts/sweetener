@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import type { PrintedExpandedFile } from "@sweetener/printer";
@@ -910,6 +910,13 @@ describe("project commands", () => {
     expect(
       expansionProvider.expansionInputs(project).map(({ path }) => path),
     ).toContain(join(packageRoot, "forms.sts"));
+    // What it asked is of this project, not of another it is asked about.
+    expect(
+      expansionProvider.expansionInputs({
+        ...project,
+        configPath: join(dirname(config), "other.json"),
+      }),
+    ).toEqual([]);
 
     writeFileSync(
       join(packageRoot, "sweet-macros.json"),

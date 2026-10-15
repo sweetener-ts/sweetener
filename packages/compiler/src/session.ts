@@ -336,12 +336,12 @@ export function createSweetenerSession(
   };
 
   /**
-   * Drop what is kept for other configs that can no longer serve anything:
-   * a config whose file is gone, each kept expansion whose source is gone,
-   * and a config left with none. A session that lives through many projects
-   * -- a test runner's, whose fixtures come and go -- otherwise keeps every
-   * one it ever saw. Only a load can add a config, so a session holds no
-   * more configs than are still there, plus the one being loaded.
+   * Drop what is kept for other configs that can no longer serve it: a
+   * config whose file is gone, and each kept expansion whose source is gone.
+   * A session that lives through many projects -- a test runner's, whose
+   * fixtures come and go -- otherwise keeps every one it ever saw. Only a
+   * load can add a config, so a session holds no more configs than are
+   * still there, plus the one being loaded.
    */
   const sweep = (loaded: string): void => {
     const { system } = diskFileSystem;
@@ -353,7 +353,6 @@ export function createSweetenerSession(
       }
       for (const fileName of state.files.keys())
         if (!system.fileExists(fileName)) state.files.delete(fileName);
-      if (state.files.size === 0) configs.delete(configFile);
     }
   };
 
@@ -469,11 +468,7 @@ export function createSweetenerSession(
         (!round.inputs.hold(state.consulted) || !state.expanded.has(filename)))
     )
       state = reload();
-    if (!state.expanded.has(filename)) {
-      // Nothing it lists has been asked for, so nothing is kept for it.
-      if (state.files.size === 0) configs.delete(configFile);
-      throw notOptedIn(filename, configFile);
-    }
+    if (!state.expanded.has(filename)) throw notOptedIn(filename, configFile);
     let fileExpansion = state.files.get(filename);
     if (
       fileExpansion !== undefined &&

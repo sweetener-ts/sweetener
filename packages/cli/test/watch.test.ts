@@ -3,10 +3,11 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { watchConfiguredProject } from "../src/index.js";
@@ -250,6 +251,155 @@ describe("watching a project", () => {
     watch.close();
     await settle();
     expect(builds).toBe(1);
+  });
+});
+
+/**
+ * Each kind of answer a build got from the file system is watched where a
+ * change to it shows: what a directory holds, where a link leads, whether a
+ * directory looked for is there. Macros naming a binding literal have
+ * TypeScript resolve them, and TypeScript asks all three.
+ */
+describe("watching what a build asked", () => {
+  const literalProject = (options: {
+    readonly imports: string;
+    readonly reference: string;
+    readonly mainImports: string;
+    readonly compilerOptions?: Record<string, unknown>;
+  }): string => {
+    const directory = realpathSync(
+      mkdtempSync(join(tmpdir(), "sweet-watch-literal-")),
+    );
+    writeFileSync(
+      join(directory, "macros.sts"),
+      [
+        options.imports,
+        "export syntax kind:expr {",
+        `  literal ${options.reference} as Circle;`,
+        '  rule { kind(Circle) } => { "circle" }',
+        '  fallback rule { kind($value:expr) } => { "other" }',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(directory, "main.sts"),
+      `import { kind } from "./macros.sts" for syntax;\n${options.mainImports}\nexport const answer = kind(Shape);\n`,
+    );
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          noEmit: true,
+          strict: false,
+          module: "ESNext",
+          target: "ES2022",
+          ...options.compilerOptions,
+        },
+        files: ["macros.sts", "main.sts"],
+      }),
+    );
+    return directory;
+  };
+  const watching = (directory: string) => {
+    const recording = recordingSystem();
+    let builds = 0;
+    const watch = watchConfiguredProject({
+      configPath: join(directory, "tsconfig.json"),
+      system: recording.system,
+      writeThrough: false,
+      debounceMilliseconds: 0,
+      onResult: () => (builds += 1),
+    });
+    return { ...recording, watch, builds: () => builds };
+  };
+
+  test("rebuilds when a directory TypeScript listed holds something new", async () => {
+    const directory = literalProject({
+      imports: "",
+      reference: "Shapes.Circle",
+      mainImports: "",
+      compilerOptions: { types: ["*"] },
+    });
+    const typeRoot = join(directory, "node_modules", "@types");
+    mkdirSync(join(typeRoot, "shape-names"), { recursive: true });
+    writeFileSync(
+      join(typeRoot, "shape-names", "index.d.ts"),
+      "declare namespace Shapes {\n  const Circle: number;\n}\n",
+    );
+    const { directories, watch, builds } = watching(directory);
+    try {
+      directories.get(typeRoot)!(join(typeRoot, "shape-alias"));
+      await settle();
+      expect(builds()).toBe(2);
+    } finally {
+      watch.close();
+    }
+  });
+
+  test("rebuilds when a link on the way to what TypeScript read moves", async () => {
+    // The project sits below a link, so where a package in it leads depends
+    // on where the link points. TypeScript looks for a `package.json` from
+    // each source up to the project's own, and for a `node_modules` beside
+    // each directory above it -- never at the directories above themselves,
+    // so only where the package led says the link is on the way.
+    const directory = literalProject({
+      imports: 'import { Circle } from "shapes";',
+      reference: "Circle",
+      mainImports: 'import { Shape } from "shapes";',
+    });
+    writeFileSync(
+      join(directory, "package.json"),
+      JSON.stringify({ name: "linked", private: true }),
+    );
+    const shapes = join(directory, "node_modules", "shapes");
+    mkdirSync(shapes, { recursive: true });
+    writeFileSync(
+      join(shapes, "package.json"),
+      JSON.stringify({ name: "shapes", types: "index.d.ts" }),
+    );
+    writeFileSync(
+      join(shapes, "index.d.ts"),
+      "export declare const Circle: number;\nexport { Circle as Shape };\n",
+    );
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "sweet-watch-link-")));
+    const alias = join(base, "alias");
+    symlinkSync(dirname(directory), alias);
+    const recording = recordingSystem();
+    let builds = 0;
+    const watch = watchConfiguredProject({
+      configPath: join(alias, basename(directory), "tsconfig.json"),
+      system: recording.system,
+      writeThrough: false,
+      debounceMilliseconds: 0,
+      onResult: () => (builds += 1),
+    });
+    try {
+      recording.directories.get(base)!(alias);
+      await settle();
+      expect(builds).toBe(2);
+    } finally {
+      watch.close();
+    }
+  });
+
+  test("rebuilds when a directory TypeScript found missing appears", async () => {
+    // No `node_modules` at all, so TypeScript looked in none of it: only
+    // whether it was there says where `shapes` would be found.
+    const directory = literalProject({
+      imports: 'import { Circle } from "./local";',
+      reference: "Circle",
+      mainImports: 'import { Shape } from "shapes";',
+    });
+    writeFileSync(join(directory, "local.ts"), "export const Circle = 1;\n");
+    const { directories, watch, builds } = watching(directory);
+    try {
+      directories.get(directory)!(join(directory, "node_modules"));
+      await settle();
+      expect(builds()).toBe(2);
+    } finally {
+      watch.close();
+    }
   });
 });
 
