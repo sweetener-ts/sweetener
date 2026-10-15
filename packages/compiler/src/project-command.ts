@@ -721,7 +721,7 @@ export function watchConfiguredProject(options: {
     if (closed) return;
     const project = loadSweetProject(options.configPath);
     const wanted = new Set([
-      ...project.configurationDependencies,
+      ...project.configurationInputs.keys(),
       ...project.typescript.fileNames,
       ...(expansionProvider.macroDependencies?.(project) ?? []),
     ]);

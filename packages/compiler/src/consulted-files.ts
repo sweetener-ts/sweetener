@@ -1,6 +1,17 @@
 import { readFileSync, statSync, type BigIntStats } from "node:fs";
 
 /**
+ * The text of the file at a path, or `undefined` where there is no file there:
+ * nothing at all, or a directory, which reading as a module crashed expansion
+ * with a bare `EISDIR` instead of saying the import resolves to nothing.
+ */
+export function fileText(fileName: string): string | undefined {
+  return statSync(fileName, { throwIfNoEntry: false })?.isFile() === true
+    ? readFileSync(fileName, "utf8")
+    : undefined;
+}
+
+/**
  * How long ago a file's last write has to be before its stat can stand in for
  * its text.
  *
@@ -37,30 +48,37 @@ export interface ConsultedFile {
 }
 
 /**
- * The files an expansion consulted, confirmed against their stats now.
+ * Records of what was consulted after `consultedAt`, confirmed against their
+ * stats now, one per path however many lists name it -- so a macro module
+ * every file of a project reads is confirmed once for all of them.
  *
- * The expansion read each one after `expandedAt`. A file whose last write is
- * settled by then has not been written since, so it still holds what was read
- * and its stat can say so from here on.
+ * Each file was read after `consultedAt`. One whose last write is settled by
+ * then has not been written since, so it still holds what was read and its
+ * stat can say so from here on.
  */
-export function consulted(
-  inputs: ReadonlyMap<string, string | undefined>,
-  expandedAt: bigint,
-): ConsultedFile[] {
-  return [...inputs].map(([path, text]) => {
-    const stats =
-      text === undefined
-        ? undefined
-        : statSync(path, { bigint: true, throwIfNoEntry: false });
-    return {
-      path,
-      text,
-      confirmed:
-        stats?.isFile() === true && settled(stats, expandedAt)
-          ? statKey(stats)
-          : undefined,
-    };
-  });
+export function recordConsulted(
+  consultedAt: bigint,
+): (inputs: ReadonlyMap<string, string | undefined>) => ConsultedFile[] {
+  const records = new Map<string, ConsultedFile>();
+  return (inputs) =>
+    [...inputs].map(([path, text]) => {
+      const existing = records.get(path);
+      if (existing !== undefined) return existing;
+      const stats =
+        text === undefined
+          ? undefined
+          : statSync(path, { bigint: true, throwIfNoEntry: false });
+      const record: ConsultedFile = {
+        path,
+        text,
+        confirmed:
+          stats?.isFile() === true && settled(stats, consultedAt)
+            ? statKey(stats)
+            : undefined,
+      };
+      records.set(path, record);
+      return record;
+    });
 }
 
 /**

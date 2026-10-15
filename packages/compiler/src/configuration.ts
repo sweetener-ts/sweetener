@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import type { ResourceBudget } from "@sweetener/shared";
 import { isJavaScriptFileName } from "@sweetener/typescript-host";
+import { fileText } from "./consulted-files.js";
 import * as ts from "typescript";
 import {
   isSupportedMacroExtension,
@@ -34,10 +35,14 @@ export interface SweetConfigurationProblem {
 export interface LoadedSweetProject {
   readonly configPath: string;
   /**
-   * Config files read while resolving this project: `configPath` and every
-   * config it `extends`, however far. None for a project with no config.
+   * Every config file consulted resolving this project -- `configPath`, each
+   * config it `extends` however far, and each place an `extends` was looked
+   * for and not found -- with its text, or `undefined` where there was no
+   * file. Each is read before TypeScript reads it, so a change in between
+   * shows as a difference rather than going unseen. Empty for a project with
+   * no config.
    */
-  readonly configurationDependencies: readonly string[];
+  readonly configurationInputs: ReadonlyMap<string, string | undefined>;
   readonly sweet: SweetCompilerOptions;
   readonly typescript: ts.ParsedCommandLine;
   readonly problems: readonly SweetConfigurationProblem[];
@@ -269,7 +274,7 @@ export function loadStandaloneProject(
   });
   return Object.freeze({
     configPath: resolve(absolute[0] ?? ".", "..", "tsconfig.json"),
-    configurationDependencies: Object.freeze([]),
+    configurationInputs: new Map(),
     sweet,
     typescript: Object.freeze({
       options: Object.freeze({
@@ -290,9 +295,14 @@ export function loadStandaloneProject(
 
 export function loadSweetProject(configPath: string): LoadedSweetProject {
   const absolute = resolve(configPath);
-  const configurationDependencies = new Set([absolute]);
+  const configurationInputs = new Map<string, string | undefined>();
+  const consult = (fileName: string): void => {
+    const path = resolve(fileName);
+    if (!configurationInputs.has(path))
+      configurationInputs.set(path, fileText(path));
+  };
   const readConfigFile = (fileName: string): string | undefined => {
-    configurationDependencies.add(resolve(fileName));
+    consult(fileName);
     return ts.sys.readFile(fileName);
   };
   const read = ts.readConfigFile(absolute, readConfigFile);
@@ -328,7 +338,14 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
       : raw;
   const parsedTypeScript = ts.parseJsonConfigFileContent(
     rawWithJavaScript ?? {},
-    { ...ts.sys, readFile: readConfigFile },
+    {
+      ...ts.sys,
+      readFile: readConfigFile,
+      fileExists: (fileName) => {
+        consult(fileName);
+        return ts.sys.fileExists(fileName);
+      },
+    },
     dirname(absolute),
     undefined,
     absolute,
@@ -349,9 +366,7 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
   });
   return Object.freeze({
     configPath: absolute,
-    configurationDependencies: Object.freeze(
-      [...configurationDependencies].sort(),
-    ),
+    configurationInputs,
     sweet: parsedSweet.options,
     typescript,
     problems: parsedSweet.problems,

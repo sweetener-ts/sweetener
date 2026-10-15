@@ -67,7 +67,7 @@ function compile(request: CompileRequest) {
 
   const project: LoadedSweetProject = {
     configPath: `${root}/tsconfig.json`,
-    configurationDependencies: [],
+    configurationInputs: new Map(),
     sweet: {
       languageVersion: "1",
       typescriptVersionPolicy: "exact",

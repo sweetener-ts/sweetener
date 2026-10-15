@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import {
   compileParsedMacros,
@@ -73,6 +73,7 @@ import {
   type VirtualTypeScriptFile,
 } from "@sweetener/typescript-host";
 import { planHygienicRenames } from "./hygienic-renaming.js";
+import { fileText } from "./consulted-files.js";
 import * as ts from "typescript";
 import {
   loadStandaloneProject,
@@ -115,15 +116,6 @@ function packageParts(specifier: string): { name: string; subpath: string } {
     name: parts.slice(0, count).join("/"),
     subpath: parts.length === count ? "." : `./${parts.slice(count).join("/")}`,
   };
-}
-
-/**
- * Whether a path names a file. A directory exists too, and reading one as a
- * module crashed expansion with a bare `EISDIR` instead of saying the import
- * resolves to nothing.
- */
-function isFile(fileName: string): boolean {
-  return statSync(fileName, { throwIfNoEntry: false })?.isFile() === true;
 }
 
 /**
@@ -732,6 +724,25 @@ export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
    * own, which are not among these.
    */
   readonly inputs: ReadonlyMap<string, string | undefined>;
+  /**
+   * Whether a macro named a binding literal, which TypeScript resolves over
+   * every source in the project. Each file's expansion then depends on the
+   * project's whole file list and every one of `inputs`, not only on its own.
+   */
+  readonly resolvesBindingLiterals: boolean;
+}
+
+export interface DefaultSourceExpansionInspection extends SourceExpansionInspection {
+  /**
+   * Every file this file's expansion consulted, by the path it looked under,
+   * with the text it found there or `undefined` where it found no file: the
+   * file itself, the macro modules it reads macros from, and every lookup made
+   * resolving their imports. While each holds what it held, expanding the
+   * file again gives the same output and the same diagnostics -- unless the
+   * expansion resolved binding literals, when these are all of the project's
+   * inputs and its file list counts too (see `resolvesBindingLiterals`).
+   */
+  readonly inputs: ReadonlyMap<string, string | undefined>;
 }
 
 /** Default, synchronous project frontend used by both the API and executable. */
@@ -739,7 +750,7 @@ export class DefaultProjectExpansionProvider
   implements ProjectExpansionProvider, ExpansionInspectionProvider
 {
   readonly #system: ts.System | undefined;
-  readonly #inspections = new Map<string, SourceExpansionInspection>();
+  readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
   #macroDependencies: readonly string[] = Object.freeze([]);
   #debug: unknown = Object.freeze({ files: 0, modules: 0, invocations: 0 });
 
@@ -770,15 +781,46 @@ export class DefaultProjectExpansionProvider
     // that read something: a package installed later, or an alias target
     // appearing ahead of the one used, changes what an import resolves to.
     const inputs = new Map<string, string | undefined>();
-    const consult = (fileName: string): string | undefined => {
+    // Which of those each module consulted: its own text, and every lookup
+    // made resolving its imports. A file's expansion depends on what the
+    // modules it reads macros from consulted, and on nothing else on disk.
+    const consultedBy = new Map<string, Set<string>>();
+    const consult = (owner: string, fileName: string): string | undefined => {
       const absolute = resolve(fileName);
-      if (!inputs.has(absolute))
-        inputs.set(
-          absolute,
-          isFile(absolute) ? readFileSync(absolute, "utf8") : undefined,
-        );
+      if (!inputs.has(absolute)) inputs.set(absolute, fileText(absolute));
+      let consulted = consultedBy.get(owner);
+      if (consulted === undefined) {
+        consulted = new Set();
+        consultedBy.set(owner, consulted);
+      }
+      consulted.add(absolute);
       return inputs.get(absolute);
     };
+    // What a module answers for beyond reading and compiling it: what went
+    // wrong resolving its imports, and its binding literals. Kept by module
+    // so each file reports what its own macros depend on, whichever file
+    // happened to be expanded first.
+    const moduleDiagnostics = new Map<string, Diagnostic[]>();
+    const reportAgainst = (
+      module: ParsedFile,
+      ...reported: readonly Diagnostic[]
+    ): void => {
+      diagnostics.push(...reported);
+      const existing = moduleDiagnostics.get(module.fileName);
+      if (existing === undefined)
+        moduleDiagnostics.set(module.fileName, [...reported]);
+      else existing.push(...reported);
+    };
+    const answerableFor = (module: ParsedFile): readonly Diagnostic[] => [
+      ...module.diagnostics,
+      ...(moduleDiagnostics.get(module.fileName) ?? []),
+    ];
+    // Every lookup made resolving each package, by whichever importer, and the
+    // packages each importer resolved. Resolution keeps one location per
+    // package name for the whole project, so a file using a package depends
+    // on every lookup that could have put it there.
+    const packageLookups = new Map<string, Set<string>>();
+    const packagesResolvedBy = new Map<string, Set<string>>();
     const loadFile = (
       fileName: string,
       sourceKind?: SourceKind,
@@ -787,7 +829,7 @@ export class DefaultProjectExpansionProvider
       const existing = byPath.get(absolute);
       if (existing !== undefined) return existing;
       const sourceId = sourceIds.allocate();
-      const sourceText = consult(absolute);
+      const sourceText = consult(absolute, absolute);
       if (sourceText === undefined)
         throw new Error(`Cannot expand ${absolute}: there is no file there`);
       const kind =
@@ -913,7 +955,8 @@ export class DefaultProjectExpansionProvider
         });
         const localTarget = [relativeTarget, ...aliasTargets].find(
           (candidate): candidate is string =>
-            candidate !== undefined && consult(candidate) !== undefined,
+            candidate !== undefined &&
+            consult(importer.fileName, candidate) !== undefined,
         );
         if (localTarget !== undefined) {
           const target = loadFile(localTarget);
@@ -922,10 +965,25 @@ export class DefaultProjectExpansionProvider
           continue;
         }
         const parsedPackage = packageParts(sourceImport.specifier);
+        let resolved = packagesResolvedBy.get(importer.fileName);
+        if (resolved === undefined) {
+          resolved = new Set();
+          packagesResolvedBy.set(importer.fileName, resolved);
+        }
+        resolved.add(parsedPackage.name);
+        let lookups = packageLookups.get(parsedPackage.name);
+        if (lookups === undefined) {
+          lookups = new Set();
+          packageLookups.set(parsedPackage.name, lookups);
+        }
+        const consultPackage = (fileName: string): string | undefined => {
+          lookups.add(resolve(fileName));
+          return consult(importer.fileName, fileName);
+        };
         const packageManifest = findPackageManifest(
           importer.fileName,
           parsedPackage.name,
-          consult,
+          consultPackage,
         );
         if (packageManifest === undefined) continue;
         const packageRoot = dirname(packageManifest.path);
@@ -936,7 +994,8 @@ export class DefaultProjectExpansionProvider
             unknown
           >;
         } catch {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -961,7 +1020,8 @@ export class DefaultProjectExpansionProvider
         if (typeof pointer !== "string") continue;
         const manifestPath = resolve(packageRoot, pointer);
         if (isAbsolute(pointer) || !inside(packageRoot, manifestPath)) {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -977,9 +1037,10 @@ export class DefaultProjectExpansionProvider
           );
           continue;
         }
-        const manifestText = consult(manifestPath);
+        const manifestText = consultPackage(manifestPath);
         if (manifestText === undefined) {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -997,7 +1058,8 @@ export class DefaultProjectExpansionProvider
         try {
           manifestJson = JSON.parse(manifestText);
         } catch {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -1014,7 +1076,7 @@ export class DefaultProjectExpansionProvider
           sourceId: manifestSourceId,
           label: manifestPath,
         });
-        diagnostics.push(...parsedManifest.diagnostics);
+        reportAgainst(importer, ...parsedManifest.diagnostics);
         if (parsedManifest.manifest === undefined) continue;
         const entry = resolve(packageRoot, parsedManifest.manifest.entry);
         const exportSources = Object.values(
@@ -1028,7 +1090,8 @@ export class DefaultProjectExpansionProvider
           !inside(packageRoot, entry) ||
           exportSources.some((source) => !inside(packageRoot, source))
         ) {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -1045,10 +1108,11 @@ export class DefaultProjectExpansionProvider
           continue;
         }
         if (
-          consult(entry) === undefined ||
-          exportSources.some((source) => consult(source) === undefined)
+          consultPackage(entry) === undefined ||
+          exportSources.some((source) => consultPackage(source) === undefined)
         ) {
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -1112,7 +1176,8 @@ export class DefaultProjectExpansionProvider
           )
           .map(([name]) => name);
         if (undeclared.length > 0 || invalidExports.length > 0)
-          diagnostics.push(
+          reportAgainst(
+            importer,
             moduleDiagnosticRegistry.create(invalidMacroManifestCode, {
               primaryOrigin: {
                 sourceId: importer.sourceId,
@@ -1181,7 +1246,11 @@ export class DefaultProjectExpansionProvider
       compilerOptions: project.typescript.options,
       system: this.#system,
     });
-    diagnostics.push(...bindingLiterals.diagnostics);
+    for (const diagnostic of bindingLiterals.diagnostics)
+      reportAgainst(
+        bySource.get(diagnostic.primaryOrigin.sourceId)!,
+        diagnostic,
+      );
     let invocationCount = 0;
     // One array for the whole project: resolution below remembers the indexes
     // it derives from these, which it can only do if they stay the same array.
@@ -1226,7 +1295,39 @@ export class DefaultProjectExpansionProvider
         moduleFile.sourceId,
       ]),
     );
+    const projectFileNames = new Set(
+      projectFiles.map(({ fileName }) => fileName),
+    );
+    // Whether TypeScript resolved binding literals, over every source in the
+    // project, which then makes every file's expansion depend on all of it.
+    const resolvesBindingLiterals = [...byPath.values()].some(
+      ({ compiled }) => compiled.bindingLiterals.length > 0,
+    );
+    /**
+     * What a file's expansion consulted on disk: what it and each module it
+     * reads macros from consulted, and every lookup made for a package any of
+     * them resolved -- or, once TypeScript resolved binding literals over the
+     * whole project, everything.
+     */
+    const inputsFor = (
+      modules: readonly ParsedFile[],
+    ): ReadonlyMap<string, string | undefined> => {
+      if (resolvesBindingLiterals) return inputs;
+      const paths = new Set<string>();
+      for (const { fileName } of modules) {
+        for (const path of consultedBy.get(fileName) ?? []) paths.add(path);
+        for (const name of packagesResolvedBy.get(fileName) ?? [])
+          for (const path of packageLookups.get(name) ?? []) paths.add(path);
+      }
+      return new Map([...paths].map((path) => [path, inputs.get(path)]));
+    };
     for (const file of projectFiles) {
+      // Everything raised while expanding this file, wherever it points.
+      const raised: Diagnostic[] = [];
+      const raise = (...reported: readonly Diagnostic[]): void => {
+        diagnostics.push(...reported);
+        raised.push(...reported);
+      };
       const resolvedGraph = resolveMacroProject({
         entry: file.fileName,
         languageVersion: project.sweet.languageVersion,
@@ -1235,7 +1336,7 @@ export class DefaultProjectExpansionProvider
         aliases,
         packages: packageList,
       });
-      diagnostics.push(
+      raise(
         ...resolvedGraph.diagnostics.filter(
           ({ code }) => code === "SWR5003" || code === "SWR5005",
         ),
@@ -1285,7 +1386,7 @@ export class DefaultProjectExpansionProvider
           aliases,
           packages: packageList,
         });
-        diagnostics.push(...resolvedImports.diagnostics);
+        raise(...resolvedImports.diagnostics);
         const importerBindings =
           importsByModule.get(importer.compiled) ?? new Map();
         importsByModule.set(importer.compiled, importerBindings);
@@ -1348,7 +1449,7 @@ export class DefaultProjectExpansionProvider
                   coreFormKind(macro.binding),
                 );
               if (!definitionAuthorized)
-                diagnostics.push(
+                raise(
                   expansionDiagnosticRegistry.create(
                     unauthorizedCoreShadowImportCode,
                     {
@@ -1436,7 +1537,7 @@ export class DefaultProjectExpansionProvider
               unresolvedNameExplanations: [],
             }
           : session.expand(runtime, "item");
-      diagnostics.push(...result.diagnostics);
+      raise(...result.diagnostics);
       unresolvedNameExplanations.push(...result.unresolvedNameExplanations);
       invocationCount += result.traces.length;
 
@@ -1555,6 +1656,9 @@ export class DefaultProjectExpansionProvider
         ]),
       );
       let expansionSourceMap: RawSourceMap | undefined;
+      const macroModules = [...macroSourcesFor(file.fileName)]
+        .map((sourceId) => bySource.get(sourceId)!)
+        .filter((module) => module !== file);
       this.#inspections.set(
         resolve(file.fileName),
         Object.freeze({
@@ -1562,31 +1666,35 @@ export class DefaultProjectExpansionProvider
           sourceText: file.sourceText,
           generated,
           origins,
-          // The ones raised against this file, so an inspection can say that
-          // what it holds is unexpanded rather than presenting it as output --
-          // and the errors raised against the macro modules it reads its
-          // macros from, which stop those macros running and leave this file
-          // expanding into itself. Reporting only the first would have `expand`
-          // print the unexpanded source and report success whenever the fault
-          // is in the macros rather than in their use.
+          // Everything raised expanding this file and against this file, so
+          // an inspection can say that what it holds is unexpanded rather
+          // than presenting it as output -- and what is wrong with the macro
+          // modules it reads its macros from, which stops those macros
+          // running and leaves this file expanding into itself. Reporting
+          // only the first would have `expand` print the unexpanded source and
+          // report success whenever the fault is in the macros rather than in
+          // their use. A module in the project reports its own warnings; one
+          // outside it, in a package, has no one else to report them.
           diagnostics: Object.freeze(
-            diagnostics
-              .filter(
-                ({ primaryOrigin, severity }) =>
-                  primaryOrigin.sourceId === file.sourceId ||
-                  (severity === "error" &&
-                    macroSourcesFor(file.fileName).has(primaryOrigin.sourceId)),
-              )
-              .map((diagnostic) =>
-                asTypeScriptDiagnostic(diagnostic, bySource),
+            [
+              ...answerableFor(file),
+              ...macroModules.flatMap((module) =>
+                answerableFor(module).filter(
+                  ({ severity }) =>
+                    severity === "error" ||
+                    !projectFileNames.has(module.fileName),
+                ),
               ),
+              ...raised,
+            ].map((diagnostic) => asTypeScriptDiagnostic(diagnostic, bySource)),
           ),
+          inputs: inputsFor([file, ...macroModules]),
           // What is held about a name this file left standing. `expand` and a
           // build tool's transform read an inspection and then stop; there is
           // no checker behind either, so this is the last chance anything has
           // to say the name is a macro's.
           warnings: warnAboutHeldNames(
-            unresolvedNameExplanations
+            result.unresolvedNameExplanations
               .filter(
                 ({ primaryOrigin }) => primaryOrigin.sourceId === file.sourceId,
               )
@@ -1669,6 +1777,7 @@ export class DefaultProjectExpansionProvider
         ),
       ),
       inputs,
+      resolvesBindingLiterals,
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
           // The name travels with the sentence. Every name one macro writes is
@@ -1697,11 +1806,15 @@ export class DefaultProjectExpansionProvider
     return this.#debug;
   }
 
-  inspectSource(fileName: string): SourceExpansionInspection | undefined {
+  inspectSource(
+    fileName: string,
+  ): DefaultSourceExpansionInspection | undefined {
     return this.#inspections.get(resolve(fileName));
   }
 
-  prepareSource(fileName: string): SourceExpansionInspection | undefined {
+  prepareSource(
+    fileName: string,
+  ): DefaultSourceExpansionInspection | undefined {
     const absolute = resolve(fileName);
     let directory = dirname(absolute);
     const root = parse(directory).root;

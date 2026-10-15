@@ -404,7 +404,7 @@ describe("public compiler session", () => {
     await session.close();
   });
 
-  test("re-expands when a file joins the project", async () => {
+  test("answers a file as a fresh session does once another joins the project", async () => {
     const fixture = project();
     writeFileSync(
       fixture.config,
@@ -422,11 +422,159 @@ describe("public compiler session", () => {
       added,
       `import { dup } from "./missing.sts" for syntax;\nexport const added = 1;\n`,
     );
+    // The new file's mistake is its own: this file still expands as it did,
+    // which is what a session that never saw the project without it says.
+    const again = await transform(session, fixture.main, fixture.config);
+    expect(counting.expansions()).toBe(1);
+    expect(answer(again)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+
+    const joined = await transform(session, added, fixture.config);
+    expect(counting.expansions()).toBe(2);
+    expect(String(joined.diagnostics[0]?.messageText)).toContain(
+      "Cannot resolve macro module ./missing.sts",
+    );
+    expect(answer(joined)).toEqual(
+      answer(await freshly(added, fixture.config)),
+    );
+    await session.close();
+  });
+
+  test("answers a file as a fresh session does once another leaves the project", async () => {
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    const leaving = join(fixture.directory, "leaving.sts");
+    writeFileSync(other, readFile(fixture.main).replace("21", "7"));
+    writeFileSync(leaving, readFile(fixture.main).replace("21", "3"));
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    await transform(session, fixture.main, fixture.config);
+
+    rmSync(leaving);
+    expect(
+      answer(await transform(session, fixture.main, fixture.config)),
+    ).toEqual(answer(await freshly(fixture.main, fixture.config)));
+
+    // Left out by the config while it is still on disk.
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts"],
+      }),
+    );
+    expect(
+      answer(await transform(session, fixture.main, fixture.config)),
+    ).toEqual(answer(await freshly(fixture.main, fixture.config)));
+    await expect(transform(session, other, fixture.config)).rejects.toThrow(
+      /is not opted into Sweetener expansion/u,
+    );
+    await session.close();
+  });
+
+  test("reports a file's mistake for that file, and keeps the others", async () => {
+    const fixture = project();
+    const broken = join(fixture.directory, "broken.sts");
+    writeFileSync(
+      broken,
+      `import { duplicate } from "./macros.sts" for syntax;\nexport const broken = duplicate(1, 2);\n`,
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "broken.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const main = await transform(session, fixture.main, fixture.config);
+    expect(main.diagnostics).toEqual([]);
+    expect(main.code).toContain("[21, 21]");
+
+    const failed = await transform(session, broken, fixture.config);
+    expect(failed.diagnostics.length).toBeGreaterThan(0);
+    expect(answer(failed)).toEqual(
+      answer(await freshly(broken, fixture.config)),
+    );
+    // Expanding again for the failed file made this one's anew, so it is
+    // answered from that without another expansion.
+    const expansions = counting.expansions();
+    const mainAgain = await transform(session, fixture.main, fixture.config);
+    expect(counting.expansions()).toBe(expansions);
+    expect(answer(mainAgain)).toEqual(answer(main));
+    await session.close();
+  });
+
+  test("reports a package manifest's mistakes to the file importing it", async () => {
+    const fixture = formsProject();
+    writeFormsPackage(fixture.packageRoot);
+    writeFileSync(
+      join(fixture.packageRoot, "sweet-macros.json"),
+      JSON.stringify({
+        ...JSON.parse(formsManifest("./forms.sts")),
+        formatVersion: 99,
+      }),
+    );
+    // The manifest is not a source, so what is wrong with it points at no
+    // file; it belongs to the import that read it.
+    const session = createSweetenerSession();
+    const result = await transform(session, fixture.main, fixture.config);
+    expect(result.diagnostics.map(({ code }) => code)).toEqual([5001, 5002]);
+    expect(String(result.diagnostics[0]?.messageText)).toContain(
+      "Invalid macro manifest",
+    );
+    await session.close();
+  });
+
+  test("expands again when a file joins a project whose macros name binding literals", async () => {
+    // TypeScript resolves a binding literal over every source in the project,
+    // so there each file's expansion depends on which files there are.
+    const fixture = project();
+    writeFileSync(
+      fixture.macros,
+      [
+        "export syntax typeof:expr shadows core {",
+        "  literal globalThis.NaN as NaN;",
+        '  rule { typeof NaN } => { "NaN" }',
+        "  fallback rule { typeof $value:expr } => { #core(typeof $value) }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      fixture.main,
+      'import { typeof } from "./macros.sts" for syntax shadows core;\nexport const kind = typeof NaN;\n',
+    );
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+      }),
+    );
+    const counting = countingProvider();
+    const session = createSweetenerSession({ provider: counting.provider });
+    const first = await transform(session, fixture.main, fixture.config);
+    expect(first.code).toContain('"NaN"');
+    expect(await transform(session, fixture.main, fixture.config)).toBe(first);
+    expect(counting.expansions()).toBe(1);
+
+    writeFileSync(
+      join(fixture.directory, "added.sts"),
+      "export const added = 1;\n",
+    );
     const again = await transform(session, fixture.main, fixture.config);
     expect(counting.expansions()).toBe(2);
-    // The new file's mistake is the project's, as a fresh session reports it.
-    expect(String(again.diagnostics[0]?.messageText)).toContain(
-      "Cannot resolve macro module ./missing.sts",
+    expect(answer(again)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
     );
     await session.close();
   });
@@ -686,6 +834,35 @@ function transform(
     configFile,
     mode: "test",
   });
+}
+
+/** A transform result as a fresh session for the same file has to give it. */
+function answer(result: SweetenerTransformResult) {
+  return {
+    code: result.code,
+    map: result.map,
+    diagnostics: result.diagnostics.map(({ code, messageText, start }) => [
+      code,
+      ts.flattenDiagnosticMessageText(messageText, " "),
+      start,
+    ]),
+    warnings: result.warnings.map(({ code, start }) => [code, start]),
+    dependencies: result.dependencies,
+    missingDependencies: result.missingDependencies,
+  };
+}
+
+/** The same transform, from a session that has never seen the project. */
+async function freshly(
+  filename: string,
+  configFile: string,
+): Promise<SweetenerTransformResult> {
+  const session = createSweetenerSession();
+  try {
+    return await transform(session, filename, configFile);
+  } finally {
+    await session.close();
+  }
 }
 
 function formsManifest(source: string): string {
