@@ -47,7 +47,7 @@ function project(macros: string, main: string) {
 }
 
 /** What is said about each missing name, as `check` reports it. */
-function checkedNames(macros: string, main: string) {
+function checkedNames(macros: string, main: string, code = 2304) {
   const { configPath } = project(macros, main);
   const result = runConfiguredProjectCommand({
     command: "check",
@@ -55,7 +55,7 @@ function checkedNames(macros: string, main: string) {
     writeThrough: false,
   });
   return result.diagnostics
-    .filter(({ code }) => code === 2304)
+    .filter((diagnostic) => diagnostic.code === code)
     .map((diagnostic) => ({
       message: String(diagnostic.messageText),
       reported: main.slice(
@@ -78,7 +78,7 @@ function checkedNames(macros: string, main: string) {
 }
 
 /** What is said about each missing name, as an editor is told it. */
-function editorNames(macros: string, main: string) {
+function editorNames(macros: string, main: string, code = 2304) {
   const { directory, configPath } = project(macros, main);
   const provider = createDefaultProjectExpansionProvider();
   const expansion = provider.expandProject(loadSweetProject(configPath));
@@ -116,7 +116,7 @@ function editorNames(macros: string, main: string) {
   );
   return service
     .diagnostics(join(directory, "main.sts"))
-    .filter(({ typescriptCode }) => typescriptCode === 2304)
+    .filter(({ typescriptCode }) => typescriptCode === code)
     .map((diagnostic) => ({
       message: diagnostic.messageText,
       reported: main.slice(
@@ -187,6 +187,28 @@ describe("diagnostics for names a macro introduces", () => {
         related: [],
       },
     ]);
+  });
+
+  // An error about what the author wrote is about that text and nothing
+  // else: it is reported over all of it, and related to nothing.
+  test.each([
+    ["written in the file", "g(1, 2, 3);"],
+    ["copied by a macro", "export const copied = twice(g(1, 2, 3));"],
+  ])("reports an error about text %s over all of it", (_label, line) => {
+    const macros =
+      "export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }\n";
+    const main =
+      `import { twice } from "./macros.sts" for syntax;\n` +
+      `declare function g(): void;\n${line}\n`;
+    const expected = [
+      {
+        message: "Expected 0 arguments, but got 3.",
+        reported: "1, 2, 3",
+        related: [],
+      },
+    ];
+    expect(checkedNames(macros, main, 2554).slice(0, 1)).toEqual(expected);
+    expect(editorNames(macros, main, 2554).slice(0, 1)).toEqual(expected);
   });
 
   test.each([

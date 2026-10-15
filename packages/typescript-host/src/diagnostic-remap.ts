@@ -5,6 +5,7 @@ import type {
 } from "@sweetener/shared";
 import {
   projectGeneratedOffset,
+  type OriginMapEntry,
   type PrintedExpandedFile,
 } from "@sweetener/printer";
 import type { Origin, OriginStore } from "@sweetener/syntax";
@@ -37,6 +38,9 @@ function originLabel(origin: Origin): string {
   }
 }
 
+/** Text that lays out what is printed around it and says nothing itself. */
+const layout = /^\s*$/u;
+
 function intersectingEntries(
   generated: PrintedExpandedFile,
   start: number,
@@ -62,19 +66,31 @@ export interface RemappedGeneratedSpan {
 }
 
 /**
+ * Whether a region prints text the author wrote, where they wrote it or as a
+ * macro copied it.
+ */
+function written(origins: OriginStore, entry: OriginMapEntry): boolean {
+  const kind = origins.get(entry.origin)?.kind;
+  return kind === "source" || kind === "copied";
+}
+
+/**
  * Where a span of generated text is reported in the sources, and what else in
  * them it is about.
  *
  * The first region the span touches decides where it is reported, by the
- * projection the origin index answers offset queries with. A region the author
- * wrote, or one a macro copied, keeps the span's position and its length to the
- * end of that region. A region a macro's template wrote is reported over the
- * whole of the source it stands for: an introduced name, over the invocation
- * that wrote it.
+ * projection the origin index answers offset queries with. A region the
+ * author wrote, or one a macro copied, keeps the span's position, and the
+ * report runs on over the regions after it that print the same file's text in
+ * the order it was written, with nothing but layout between them: an error
+ * about `1, 2, 3` is reported over all of it. A region a macro's template
+ * wrote is reported over the whole of the source it stands for: an introduced
+ * name, over the invocation that wrote it.
  *
- * Every other source the touched regions lead to is related, and named for
- * what it is. For an introduced name that is the rule that wrote it, which is
- * what tells two names from one invocation apart.
+ * What a macro wrote is related to the sources it was written from, named
+ * for what each is. For an introduced name that is the rule that wrote it,
+ * which is what tells two names from one invocation apart. What the author
+ * wrote is about nothing but itself, and is related to nothing.
  *
  * `check` and the language service both report through this, so an editor and
  * the command line say the same thing about the same expansion.
@@ -91,24 +107,54 @@ export function remapGeneratedSpan(options: {
   if (first === undefined)
     return Object.freeze({ primaryOrigin: undefined, relatedOrigins: [] });
   const source = origins.selectPrimarySource(first.origin, "invocation");
-  const primaryStart = projectGeneratedOffset(
-    { kind: first.kind, generatedStart: first.generatedStart, primary: source },
-    Math.max(start, first.generatedStart),
-  );
+  const project = (segment: OriginMapEntry, offset: number) =>
+    projectGeneratedOffset(
+      {
+        kind: segment.kind,
+        generatedStart: segment.generatedStart,
+        primary: origins.selectPrimarySource(segment.origin, "invocation"),
+      },
+      offset,
+    );
+  const primaryStart = project(first, Math.max(start, first.generatedStart));
+  let end = written(origins, first)
+    ? Math.min(source.span.end, primaryStart + length)
+    : source.span.end;
+  if (written(origins, first)) {
+    let previous = first;
+    for (const segment of segments.slice(1)) {
+      const text = generated.text.slice(
+        segment.generatedStart,
+        segment.generatedEnd,
+      );
+      if (layout.test(text)) continue;
+      const next = origins.selectPrimarySource(segment.origin, "invocation");
+      if (
+        !written(origins, segment) ||
+        next.sourceId !== source.sourceId ||
+        next.span.start < end ||
+        !layout.test(
+          generated.text.slice(previous.generatedEnd, segment.generatedStart),
+        )
+      )
+        break;
+      end =
+        project(segment, Math.min(start + length, segment.generatedEnd) - 1) +
+        1;
+      previous = segment;
+    }
+  }
   const primaryOrigin = Object.freeze({
     sourceId: source.sourceId,
     start: primaryStart,
-    end:
-      first.kind === "source" || first.kind === "copied"
-        ? Math.min(source.span.end, primaryStart + length)
-        : source.span.end,
+    end,
     originId: first.origin,
   });
   const relatedOrigins: RelatedDiagnosticOrigin[] = [];
   const seen = new Set<string>();
   for (const segment of segments) {
     const origin = origins.get(segment.origin);
-    if (origin === undefined) continue;
+    if (origin === undefined || written(origins, segment)) continue;
     for (const related of origins.collectSourceOrigins(segment.origin)) {
       const key = `${String(related.sourceId)}:${String(related.span.start)}:${String(related.span.end)}`;
       if (

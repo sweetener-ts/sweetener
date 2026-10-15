@@ -179,6 +179,44 @@ describe("TypeScript diagnostic remapping", () => {
     });
   });
 
+  /**
+   * What the author wrote is about nothing but itself: an error over several
+   * written tokens is reported over all of them, across the layout between
+   * them, and related to nothing.
+   */
+  test("reports written text over all of it and relates it to nothing", () => {
+    const origins = new OriginStore();
+    const one = origins.source(988 as SourceId, { start: 2, end: 3 });
+    const comma = origins.source(988 as SourceId, { start: 3, end: 4 });
+    const two = origins.source(988 as SourceId, { start: 5, end: 6 });
+    const generated = {
+      text: "(1, 2)",
+      originMap: {
+        schemaVersion: 1 as const,
+        entries: [
+          { generatedStart: 1, generatedEnd: 2, origin: one, kind: "source" },
+          { generatedStart: 2, generatedEnd: 3, origin: comma, kind: "source" },
+          {
+            generatedStart: 3,
+            generatedEnd: 4,
+            origin: two,
+            kind: "synthesized",
+          },
+          { generatedStart: 4, generatedEnd: 5, origin: two, kind: "source" },
+        ] as const,
+      },
+      tokenSpans: [],
+      trace: [],
+      serializedTrace: "[]\n",
+    };
+    expect(
+      remapGeneratedSpan({ generated, origins, start: 1, length: 4 }),
+    ).toEqual({
+      primaryOrigin: { sourceId: 988, start: 2, end: 6, originId: one },
+      relatedOrigins: [],
+    });
+  });
+
   test("maps composed regions to one primary source and stable related sources", () => {
     const origins = new OriginStore();
     const left = origins.source(983 as SourceId, { start: 1, end: 3 });
