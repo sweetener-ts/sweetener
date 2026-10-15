@@ -4887,8 +4887,10 @@ export function expandMacroSyntax(
           };
           // A method's type parameters and return type hold commas of their
           // own -- `*run(): Generator<number, void, unknown> {` -- which do not
-          // end the member. Angle brackets are counted only in a method's head:
-          // in a property's value or a spread they compare.
+          // end the member. Angle brackets are counted in a method's head, and
+          // in a property's value or a spread only from a `<` written where an
+          // operand begins: that one opens a generic arrow's type parameters,
+          // `<T, U>(a: T, b: U) => [a, b]`, and any other `<` there compares.
           let methodHead = true;
           let typeArguments = 0;
           for (const child of node.children) {
@@ -4903,8 +4905,22 @@ export function expandMacroSyntax(
               continue;
             }
             const previous = member.at(-1);
+            const opensTypeParameters =
+              child.tag === "token" &&
+              child.raw === "<" &&
+              !endsOperand(member, member.length, true);
             member.push(child);
-            if (!methodHead) continue;
+            if (!methodHead) {
+              if (
+                child.tag === "token" &&
+                (typeArguments > 0 || opensTypeParameters)
+              )
+                typeArguments = Math.max(
+                  0,
+                  typeArguments + angles(child, "<") - angles(child, ">"),
+                );
+              continue;
+            }
             if (child.tag !== "token") {
               if (child.tag === "group" && child.delimiter === "brace") {
                 methodHead = false;
