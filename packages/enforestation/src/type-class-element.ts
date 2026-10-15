@@ -253,9 +253,12 @@ function consumeAngles(
  * type or the parameter list of a function type, and only a parameter list may
  * be followed by `=>`. This follows TypeScript's own reading: an empty list, a
  * rest parameter, or a name followed by `:`, `,`, `?`, or `=` can only be
- * parameters; a lone name is either one, decided by whether `=>` follows.
+ * parameters; a lone name is either one, decided by whether `=>` follows. The
+ * expander asks the same of a parenthesis it walks where a type is written.
  */
-function readParenthesis(group: GroupSyntax): "parameters" | "either" | "type" {
+export function readTypeParenthesis(
+  group: GroupSyntax,
+): "parameters" | "either" | "type" {
   const [first, second] = group.children;
   if (first === undefined) return "parameters";
   if (first.tag === "token" && first.raw === "...") return "parameters";
@@ -320,7 +323,7 @@ class TypeConsumer implements SyntaxConsumer {
             break;
           cursor.consume();
           if (next.delimiter === "parenthesis") {
-            const reading = readParenthesis(next);
+            const reading = readTypeParenthesis(next);
             arrow =
               reading === "parameters"
                 ? "required"

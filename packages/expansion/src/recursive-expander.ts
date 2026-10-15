@@ -55,6 +55,7 @@ import {
   classElementEndsBefore,
   classMemberNameFollows,
   parameterBinder,
+  readTypeParenthesis,
   returnTypeReadsInConsequent,
   callFollowsTypeArguments,
   typeArgumentsFollow,
@@ -5085,6 +5086,21 @@ export function expandMacroSyntax(
         // expression around it is categorized, so a statement macro written in
         // a template's arrow or function body resolves in the statement space.
         const typeGroupFollows = typeFollows();
+        // A parenthesis group with `=>` after it, where a type is written, is
+        // the parameter list of a function type or a constructor type, unless
+        // what it holds can only be a type: then it is a parenthesized return
+        // type, and the `=>` is the arrow function's own. A parameter list
+        // holds binders, not a type: read as a type, a parameter spelled like
+        // a type macro was dispatched, and `(T: number) => void` was emitted
+        // as `(number: number) => void`.
+        const next = input[index + 1];
+        const functionTypeParameters =
+          node.tag === "group" &&
+          node.delimiter === "parenthesis" &&
+          (category === "type" || typeGroupFollows) &&
+          next?.tag === "token" &&
+          next.raw === "=>" &&
+          readTypeParenthesis(node) !== "type";
         const bodyCategory: SyntaxCategory =
           // A group sitting among JSX children holds an expression: a braced
           // container, or a nested element.
@@ -5159,48 +5175,50 @@ export function expandMacroSyntax(
                             node.delimiter === "brace" &&
                             (category === "type" || typeGroupFollows)
                           ? "typeMember"
-                          : node.tag === "group" &&
-                              category !== "type" &&
-                              (node.delimiter === "bracket" ||
-                                node.delimiter === "parenthesis") &&
-                              typeGroupFollows
-                            ? "type"
-                            : // A function's parameter list holds binders: the
-                              // patterns, the names in them, their annotations
-                              // and their defaults. A member's parameter list is
-                              // walked as tokens where the class body is, and
-                              // read as members its patterns were read as member
-                              // lists -- where a `:` opens a type, so the default
-                              // written past one never reached an expression.
-                              // Asked after the type readings, so a parenthesised
-                              // function type inside a return type stays a type.
-                              node.tag === "group" &&
-                                node.delimiter === "parenthesis" &&
-                                parameterList(
-                                  node,
-                                  runAhead(index),
-                                  output.length,
-                                )
-                              ? "binding"
-                              : node.tag === "group" &&
-                                  category !== "expr" &&
-                                  ((node.delimiter === "parenthesis" &&
-                                    (conditionFollows(output) ||
-                                      classHeritageFollows(output))) ||
-                                    initializerFollows(output) ||
-                                    // An argument list, a parenthesised operand, an
-                                    // index: a group reached inside an expression
-                                    // region holds an expression however the
-                                    // statement around it is categorized.
-                                    ((node.delimiter === "parenthesis" ||
-                                      node.delimiter === "bracket") &&
-                                      expressionRegion))
-                                ? "expr"
+                          : functionTypeParameters
+                            ? "binding"
+                            : node.tag === "group" &&
+                                category !== "type" &&
+                                (node.delimiter === "bracket" ||
+                                  node.delimiter === "parenthesis") &&
+                                typeGroupFollows
+                              ? "type"
+                              : // A function's parameter list holds binders: the
+                                // patterns, the names in them, their annotations
+                                // and their defaults. A member's parameter list is
+                                // walked as tokens where the class body is, and
+                                // read as members its patterns were read as member
+                                // lists -- where a `:` opens a type, so the default
+                                // written past one never reached an expression.
+                                // Asked after the type readings, so a parenthesised
+                                // function type inside a return type stays a type.
+                                node.tag === "group" &&
+                                  node.delimiter === "parenthesis" &&
+                                  parameterList(
+                                    node,
+                                    runAhead(index),
+                                    output.length,
+                                  )
+                                ? "binding"
                                 : node.tag === "group" &&
-                                    node.delimiter === "parenthesis" &&
-                                    decoratorArgumentsFollow(output)
+                                    category !== "expr" &&
+                                    ((node.delimiter === "parenthesis" &&
+                                      (conditionFollows(output) ||
+                                        classHeritageFollows(output))) ||
+                                      initializerFollows(output) ||
+                                      // An argument list, a parenthesised operand, an
+                                      // index: a group reached inside an expression
+                                      // region holds an expression however the
+                                      // statement around it is categorized.
+                                      ((node.delimiter === "parenthesis" ||
+                                        node.delimiter === "bracket") &&
+                                        expressionRegion))
                                   ? "expr"
-                                  : category;
+                                  : node.tag === "group" &&
+                                      node.delimiter === "parenthesis" &&
+                                      decoratorArgumentsFollow(output)
+                                    ? "expr"
+                                    : category;
         const innerContexts = contextsWithin(
           node,
           runAhead(index),

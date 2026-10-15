@@ -204,6 +204,45 @@ describe("a name that shadows a macro", () => {
 });
 
 /**
+ * A function type's parameter, which the type binds rather than reads.
+ *
+ * A parenthesis group with `=>` after it, where a type is written, was walked
+ * as the parenthesized type it might otherwise have been, so a parameter
+ * spelled like a type macro was dispatched: `(boxed: number) => void` came
+ * out with the macro's replacement standing as the parameter's name.
+ */
+describe("a function type's parameter", () => {
+  const binders: readonly (readonly [string, string])[] = [
+    ["in a type alias", "export type F = (boxed: number) => void;"],
+    [
+      "in an interface member",
+      "export interface I { f: (boxed: string) => void; }",
+    ],
+    ["written alone", "export type F = (boxed) => void;"],
+    ["of a constructor type", "export type C = new (boxed: number) => object;"],
+    [
+      "of an abstract constructor type",
+      "export type C = abstract new (boxed: number) => object;",
+    ],
+  ];
+  for (const [name, source] of binders) {
+    test(`${name} is not dispatched as a type`, () => {
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toContain("boxed");
+      expect(text).not.toContain("readonly number[]");
+    });
+  }
+
+  test("still reads its annotation, and the return type, as types", () => {
+    const { text, messages } = expand("export type F = (v: boxed) => boxed;");
+    expect(messages).toEqual([]);
+    expect(text.match(/readonly number\[\]/gu)).toHaveLength(2);
+    expect(text).not.toContain("boxed");
+  });
+});
+
+/**
  * A name written inside an import or export specifier list, or as the one a
  * `* as` introduces, is a specifier: it names an export of a module, or the
  * local binding a clause re-exports, and nothing there can be an invocation.
