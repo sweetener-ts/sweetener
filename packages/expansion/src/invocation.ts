@@ -56,6 +56,7 @@ import {
   type SequenceTemplate,
   type TemplateOperationTrace,
 } from "@sweetener/template";
+import type { CaptureSlashMisreads } from "./capture-slash-misreads.js";
 import { EnforestationError } from "./enforestation-error.js";
 import {
   bareMacroNameCode,
@@ -183,6 +184,11 @@ export interface InvokeMacroOptions {
     request: ExpandReplacementRequest,
   ) => ProtectedSyntax;
   readonly diagnosticOrigin: (origin: OriginId) => SourceSpan;
+  /**
+   * Holds what the rules' captures find of slashes read the other way, until
+   * the invocation settles which of them it keeps.
+   */
+  readonly captureSlashMisreads?: CaptureSlashMisreads | undefined;
 }
 
 export interface MacroInvocationSuccess {
@@ -309,8 +315,81 @@ const continuesEnclosingSyntax: ReadonlySet<string> = new Set([
   "?.",
 ]);
 
+/**
+ * Where each rule's captures began to find slashes read the other way, and
+ * which findings the invocation keeps once it settles.
+ */
+interface RuleFindings {
+  /** The position each rule tried began at, in the order they were tried. */
+  readonly starts: number[];
+  /** Each failed rule's failure, with the index of the rule it came from. */
+  readonly failures: {
+    readonly rule: number;
+    readonly failure: MatchFailure;
+  }[];
+  /** Where the rules stopped finding, once one matched or all failed. */
+  through: number | undefined;
+}
+
 export function invokeMacro(
   options: InvokeMacroOptions,
+): MacroInvocationResult {
+  const misreads = options.captureSlashMisreads;
+  if (misreads === undefined) return invokeMacroRules(options, undefined);
+  const start = misreads.open();
+  const findings: RuleFindings = {
+    starts: [],
+    failures: [],
+    through: undefined,
+  };
+  let result: MacroInvocationResult | undefined;
+  try {
+    result = invokeMacroRules(options, findings);
+    return result;
+  } finally {
+    // An invocation a rule read, as written, keeps nothing its rules found
+    // while they were tried; what its expansion found afterwards was settled
+    // by its own invocations, and is kept. One no rule read keeps what the
+    // rules it is reported from found. One that threw keeps nothing.
+    const through =
+      result === undefined
+        ? misreads.position()
+        : (findings.through ?? misreads.position());
+    misreads.close(
+      start,
+      result?.expanded === false ? closestFindings(findings, through) : [],
+      through,
+    );
+  }
+}
+
+/**
+ * The ranges of findings the rules an unread invocation is reported from
+ * found: those whose failures came closest, as `farthestFailure` ranks them.
+ */
+function closestFindings(
+  findings: RuleFindings,
+  through: number,
+): readonly (readonly [number, number])[] {
+  const closest = farthestFailure(
+    findings.failures.map(({ failure }) => failure),
+  );
+  if (closest === undefined) return [];
+  return findings.failures
+    .filter(
+      ({ failure }) =>
+        failure.offset === closest.offset &&
+        failure.specificity === closest.specificity,
+    )
+    .map(
+      ({ rule }) =>
+        [findings.starts[rule]!, findings.starts[rule + 1] ?? through] as const,
+    );
+}
+
+function invokeMacroRules(
+  options: InvokeMacroOptions,
+  findings: RuleFindings | undefined,
 ): MacroInvocationResult {
   validateMacro(options.macro, options.category);
   validateCoreInterception(
@@ -373,6 +452,8 @@ export function invokeMacro(
 
   for (const rule of orderedRules(options.macro.rules)) {
     cancellation.throwIfCancellationRequested();
+    const ruleIndex = findings?.starts.length ?? 0;
+    findings?.starts.push(options.captureSlashMisreads?.position() ?? 0);
     const matched = executeMatcher(rule.matcher, options.cursor, {
       consumeClass: options.consumeClass,
       matchesTokenLiteral: (token, literal) =>
@@ -389,7 +470,10 @@ export function invokeMacro(
         matched.failure === undefined || rule.failureDescription === undefined
           ? matched.failure
           : describeFailureAs(matched.failure, rule.failureDescription);
-      if (failure !== undefined) failures.push(failure);
+      if (failure !== undefined) {
+        failures.push(failure);
+        findings?.failures.push({ rule: ruleIndex, failure });
+      }
       if (readPastHead(failure)) anyRuleReadPastHead = true;
       attempts.push(
         Object.freeze({
@@ -431,6 +515,7 @@ export function invokeMacro(
         origins: Object.freeze([rule.origin]),
       });
       failures.push(failure);
+      findings?.failures.push({ rule: ruleIndex, failure });
       attempts.push(
         Object.freeze({
           rule: rule.rule,
@@ -467,6 +552,7 @@ export function invokeMacro(
         origins: Object.freeze([rule.origin]),
       });
       failures.push(failure);
+      findings?.failures.push({ rule: ruleIndex, failure });
       attempts.push(
         Object.freeze({
           rule: rule.rule,
@@ -496,6 +582,8 @@ export function invokeMacro(
       continue;
     }
 
+    if (findings !== undefined)
+      findings.through = options.captureSlashMisreads?.position();
     const fingerprint = createExpansionFingerprint({
       binding: options.macro.binding.id,
       category: options.category,
@@ -651,6 +739,8 @@ export function invokeMacro(
     });
   }
 
+  if (findings !== undefined)
+    findings.through = options.captureSlashMisreads?.position();
   const failure = farthestFailure(failures);
   // What the closest rule was still waiting for, rather than how many rules
   // were tried. A count says only that something is wrong; this says what

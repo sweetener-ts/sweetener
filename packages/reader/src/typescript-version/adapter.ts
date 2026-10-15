@@ -1,4 +1,9 @@
-import type { LexicalMode, TokenKind, TriviaKind } from "@sweetener/syntax";
+import type {
+  LexicalMode,
+  SlashReadings,
+  TokenKind,
+  TriviaKind,
+} from "@sweetener/syntax";
 import * as ts from "typescript";
 
 export const supportedTypeScriptMajorMinor = "6.0" as const;
@@ -207,12 +212,17 @@ function nextLookaheadToken(
   lookahead: ts.Scanner,
   templates: TemplateSubstitutions,
   regularExpressionAllowed: boolean,
+  slashes: SlashReadings,
 ): ts.SyntaxKind {
   let kind = lookahead.scan();
   if (
-    regularExpressionAllowed &&
     (kind === ts.SyntaxKind.SlashToken ||
-      kind === ts.SyntaxKind.SlashEqualsToken)
+      kind === ts.SyntaxKind.SlashEqualsToken) &&
+    readsRegularExpression(
+      slashes,
+      lookahead.getTokenStart(),
+      regularExpressionAllowed,
+    )
   )
     kind = lookahead.reScanSlashToken();
   if (kind === ts.SyntaxKind.TemplateHead) {
@@ -231,6 +241,19 @@ function nextLookaheadToken(
     }
   }
   return kind;
+}
+
+/**
+ * Whether the slash starting at `start` begins a regular expression: as
+ * `slashes` says where it says, and otherwise as the token before it allows.
+ */
+function readsRegularExpression(
+  slashes: SlashReadings,
+  start: number,
+  allowed: boolean,
+): boolean {
+  const reading = slashes.get(start);
+  return reading === undefined ? allowed : reading === "regular-expression";
 }
 
 /** Whether a token opens a parenthesis, bracket or brace group. */
@@ -268,9 +291,10 @@ function closesGroup(kind: ts.SyntaxKind): boolean {
 function functionTypeFollows(
   lookahead: ts.Scanner,
   templates: TemplateSubstitutions,
+  slashes: SlashReadings,
 ): boolean {
   if (
-    nextLookaheadToken(lookahead, templates, false) !==
+    nextLookaheadToken(lookahead, templates, false, slashes) !==
     ts.SyntaxKind.OpenParenToken
   )
     return false;
@@ -281,6 +305,7 @@ function functionTypeFollows(
       lookahead,
       templates,
       regularExpressionAllowed,
+      slashes,
     );
     if (kind === ts.SyntaxKind.EndOfFileToken) return false;
     if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
@@ -288,7 +313,7 @@ function functionTypeFollows(
     regularExpressionAllowed = !tokenCanEndExpression(kind);
   }
   return (
-    nextLookaheadToken(lookahead, templates, false) ===
+    nextLookaheadToken(lookahead, templates, false, slashes) ===
     ts.SyntaxKind.EqualsGreaterThanToken
   );
 }
@@ -323,6 +348,7 @@ function looksLikeJsxStart(
   lookahead: ts.Scanner,
   source: string,
   start: number,
+  slashes: SlashReadings,
 ): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
   const nameStart = start + 1;
@@ -343,6 +369,7 @@ function looksLikeJsxStart(
       lookahead,
       templates,
       groups > 0 && regularExpressionAllowed,
+      slashes,
     );
     regularExpressionAllowed = !tokenCanEndExpression(kind);
     if (kind === ts.SyntaxKind.EndOfFileToken) return false;
@@ -365,7 +392,7 @@ function looksLikeJsxStart(
         angles -= 1;
         continue;
       }
-      return !functionTypeFollows(lookahead, templates);
+      return !functionTypeFollows(lookahead, templates, slashes);
     }
     if (angles > 0) continue;
     if (
@@ -418,6 +445,7 @@ export function scanWithSupportedTypeScript(
   source: string,
   variant: ScannerLanguageVariant,
   beforeToken: () => void = () => {},
+  slashes: SlashReadings = new Map(),
 ): TypeScriptScanResult {
   assertSupportedTypeScriptVersion(ts.version);
   const errors: TypeScriptScannerError[] = [];
@@ -468,6 +496,8 @@ export function scanWithSupportedTypeScript(
    */
   let typeArgumentDepth = 0;
   let regularExpressionAllowed = true;
+  /** The offsets of `slashes` the scan has read a slash at. */
+  const read = new Set<number>();
   while (true) {
     beforeToken();
     const scanStart = scanner.getTextPos();
@@ -507,11 +537,13 @@ export function scanWithSupportedTypeScript(
         kind = scanner.scanJsxIdentifier();
       } else if (
         (jsxMode === "standard" || jsxMode === "expression") &&
-        regularExpressionAllowed &&
         (kind === ts.SyntaxKind.SlashToken ||
           kind === ts.SyntaxKind.SlashEqualsToken)
       ) {
-        kind = scanner.reScanSlashToken();
+        const start = scanner.getTokenStart();
+        if (slashes.has(start)) read.add(start);
+        if (readsRegularExpression(slashes, start, regularExpressionAllowed))
+          kind = scanner.reScanSlashToken();
       }
     }
 
@@ -547,7 +579,7 @@ export function scanWithSupportedTypeScript(
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
       regularExpressionAllowed &&
-      looksLikeJsxStart(lookahead, source, scanner.getTokenStart())
+      looksLikeJsxStart(lookahead, source, scanner.getTokenStart(), slashes)
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
       jsxMode = "tag";
@@ -662,6 +694,14 @@ export function scanWithSupportedTypeScript(
     );
     if (kind === ts.SyntaxKind.EndOfFileToken) break;
   }
+  // A reading names a slash the parser stood at in an earlier read of the
+  // same text, and everything in front of a slash is scanned alike either
+  // way. One that names no slash was given for some other text.
+  for (const [offset, reading] of slashes)
+    if (!read.has(offset))
+      throw new RangeError(
+        `No slash at offset ${String(offset)} to read as ${reading}`,
+      );
 
   return Object.freeze({
     tokens: Object.freeze(tokens),

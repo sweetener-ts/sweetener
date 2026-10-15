@@ -59,6 +59,7 @@ export function scanTypeScript(
       (options.cancellation ?? neverCancelled).throwIfCancellationRequested();
       tracker.chargeInputTokens();
     },
+    options.slashReadings,
   );
   const tokens: ScannerToken[] = [];
   let leadingTrivia: Trivia[] = [];

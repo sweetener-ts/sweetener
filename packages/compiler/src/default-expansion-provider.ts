@@ -33,8 +33,10 @@ import {
 } from "@sweetener/printer";
 import {
   findSweetenerDirective,
+  nextSlashReadings,
   readerDiagnosticRegistry,
   readSyntax,
+  type ScannerLanguageVariant,
   type SourceDirective,
 } from "@sweetener/reader";
 import {
@@ -52,6 +54,8 @@ import {
   createSyntaxSequence,
   createToken,
   OriginStore,
+  type SlashReading,
+  type SlashReadings,
   type Syntax,
   type SyntaxSequence,
   type TokenSyntax,
@@ -717,7 +721,53 @@ export class DefaultProjectExpansionProvider
     this.#system = options.system;
   }
 
+  /**
+   * Expands every source of the project, reading each slash the way the
+   * enforester reads it.
+   *
+   * The reader judges a slash from the token before it, and where the grammar
+   * says otherwise the enforester says so (see `SlashReadings`). What was read
+   * after a misread slash was read from tokens that are not there, so the
+   * expansion is not kept: the sources are read again with the slashes read as
+   * the grammar asked, and the project is expanded again from them -- nothing
+   * read or expanded from the earlier reading survives into the result. This
+   * happens only where a slash was misread, and each time at least one more
+   * slash is read as the grammar asks, so it ends.
+   */
   expandProject(project: LoadedSweetProject): ProjectExpansionOutput {
+    let readings = new Map<string, SlashReadings>();
+    for (;;) {
+      const expansion = this.#expandProjectReading(project, readings);
+      if (expansion.misread.size === 0) return expansion.output;
+      const next = new Map(readings);
+      for (const [fileName, { text, variant, misread }] of expansion.misread)
+        next.set(
+          fileName,
+          nextSlashReadings(
+            text,
+            variant,
+            readings.get(fileName) ?? new Map(),
+            misread,
+          ),
+        );
+      readings = next;
+    }
+  }
+
+  #expandProjectReading(
+    project: LoadedSweetProject,
+    readings: ReadonlyMap<string, SlashReadings>,
+  ): {
+    readonly output: ProjectExpansionOutput;
+    readonly misread: ReadonlyMap<
+      string,
+      {
+        readonly text: string;
+        readonly variant: ScannerLanguageVariant;
+        readonly misread: SlashReadings;
+      }
+    >;
+  } {
     this.#inspections.clear();
     const origins = new OriginStore();
     const scopes = new ScopeStore();
@@ -733,6 +783,35 @@ export class DefaultProjectExpansionProvider
     // `ProjectExpansionOutput.unresolvedNameExplanations`.
     const unresolvedNameExplanations: Diagnostic[] = [];
     const manifestByEntry = new Map<string, DeclarativeMacroManifest>();
+    /** The slashes the enforester found read the other way, by file. */
+    const misread = new Map<
+      string,
+      {
+        readonly text: string;
+        readonly variant: ScannerLanguageVariant;
+        readonly misread: Map<number, SlashReading>;
+      }
+    >();
+    const slashMisread = (slash: TokenSyntax, reading: SlashReading) => {
+      // Where the slash was read: the file and offset its text stands at,
+      // which for one a macro's template wrote is in the template.
+      const written = origins.selectPrimarySource(slash.origin, "definition");
+      const file = bySource.get(written.sourceId);
+      if (file === undefined)
+        throw new RangeError(
+          `A slash was read from source ${String(written.sourceId)}, which no file of the project holds`,
+        );
+      let found = misread.get(file.fileName);
+      if (found === undefined) {
+        found = {
+          text: file.sourceText,
+          variant: file.kind.variant,
+          misread: new Map(),
+        };
+        misread.set(file.fileName, found);
+      }
+      found.misread.set(written.span.start, reading);
+    };
     const packageManifests = new Map<string, MacroPackageManifest>();
     const loadFile = (
       fileName: string,
@@ -754,6 +833,7 @@ export class DefaultProjectExpansionProvider
         scopes: definitionScopes,
         originStore: origins,
         variant: kind.variant,
+        slashReadings: readings.get(absolute) ?? new Map(),
       });
       const parsed = parseMacroDefinitions(read.root, { sourceId });
       const imports = parseCompileTimeSyntaxImports(read.root, { sourceId });
@@ -1375,6 +1455,7 @@ export class DefaultProjectExpansionProvider
         allocateSyntaxId: syntaxIds.allocate,
         allocateBindingId: bindingIds.allocate,
         allocateInvocationId: invocationIds.allocate,
+        slashMisread,
       });
       const runtime = runtimeSyntax(file, origins);
       const result =
@@ -1611,7 +1692,7 @@ export class DefaultProjectExpansionProvider
       invocations: invocationCount,
     });
     this.#macroDependencies = Object.freeze([...byPath.keys()].sort());
-    return Object.freeze({
+    const output: ProjectExpansionOutput = Object.freeze({
       files: Object.freeze(virtualFiles),
       diagnostics: Object.freeze(
         diagnostics.map((diagnostic) =>
@@ -1631,6 +1712,7 @@ export class DefaultProjectExpansionProvider
         ),
       ),
     });
+    return { output, misread };
   }
 
   macroDependencies(project: LoadedSweetProject): readonly string[] {

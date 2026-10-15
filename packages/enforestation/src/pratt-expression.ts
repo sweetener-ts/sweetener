@@ -2,7 +2,9 @@ import type { BindingId } from "@sweetener/shared";
 import {
   createPrecedence,
   createProtectedSyntax,
+  divisionSlash,
   leadingLineBreak,
+  regularExpression,
   spanEnvelope,
   type ExpressionForm,
   type OriginStore,
@@ -44,6 +46,15 @@ const coreByKey = new Map(
     operator,
   ]),
 );
+
+/**
+ * What a division binds its left operand at. Only an operand that binds at
+ * least as tightly can stand to the left of one: a regular expression read
+ * after `a * b`, `-a` or a call stands where a division does, and one read
+ * after a block-bodied arrow does not, because TypeScript takes no binary
+ * operator after an arrow function.
+ */
+const divisionPrecedence = coreByKey.get("infix|/")!.precedence;
 
 /**
  * What an assignment expression binds at: an assignment's, and an arrow
@@ -436,6 +447,11 @@ function parsePrefix(
   const operandStart = cursor.index;
   const operand = cursor.peek();
   const attempt = context.primary.consume(cursor, context.consumer);
+  // A slash where an operand begins is a regular expression, whatever the
+  // reader made of it from the token before: `if (c) /re/.test(s)`.
+  const slash = cursor.peek();
+  if (!attempt.matched && cursor.index === operandStart && divisionSlash(slash))
+    context.consumer.slashMisread?.(slash, "regular-expression");
   if (!attempt.matched) {
     // The primary consumer read no operand, and a `<` standing where the
     // operand began is the one thing that still can be one. Asked only where
@@ -783,6 +799,17 @@ function parseExpression(
       continue;
     }
     const infix = resolveOperator(cursor, "infix", context);
+    // A slash where an operator stands is a division, whatever the reader
+    // made of it from the token before: `x = of / 2 / 3` divides a name
+    // spelled `of`, and the line break under `x = a` carries `a` on into the
+    // `/ 2 /g` written there rather than ending the statement.
+    const slash = cursor.peek();
+    if (
+      infix === undefined &&
+      regularExpression(slash) &&
+      left.outerPrecedence >= divisionPrecedence
+    )
+      context.consumer.slashMisread?.(slash, "division");
     if (infix === undefined || infix.precedence < minimumPrecedence) break;
     // TypeScript takes no operator but a comma after an assignment
     // expression. One that could have taken the operator already did, inside

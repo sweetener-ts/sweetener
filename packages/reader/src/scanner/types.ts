@@ -4,7 +4,13 @@ import type {
   ResourceBudget,
   SourceId,
 } from "@sweetener/shared";
-import type { LexicalMode, Span, TokenKind, Trivia } from "@sweetener/syntax";
+import type {
+  LexicalMode,
+  SlashReadings,
+  Span,
+  TokenKind,
+  Trivia,
+} from "@sweetener/syntax";
 import type { ScannerLanguageVariant } from "../typescript-version/adapter.js";
 
 export interface ScannerToken {
@@ -24,6 +30,8 @@ export interface ScannerToken {
 export interface ScanOptions {
   readonly sourceId: SourceId;
   readonly variant?: ScannerLanguageVariant;
+  /** How the slashes at given offsets are read; see `SlashReadings`. */
+  readonly slashReadings?: SlashReadings;
   readonly cancellation?: CancellationToken;
   readonly budget?: ResourceBudget;
 }

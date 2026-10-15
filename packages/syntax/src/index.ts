@@ -4,6 +4,7 @@ export * from "./hash.js";
 export * from "./identifier-tokens.js";
 export * from "./kinds.js";
 export * from "./origin.js";
+export * from "./slash.js";
 export * from "./span.js";
 export * from "./syntax.js";
 export * from "./trivia.js";

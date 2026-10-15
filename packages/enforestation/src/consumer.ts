@@ -9,8 +9,10 @@ import {
   SyntaxRange,
   type CursorIdentity,
   type ProtectedSyntax,
+  type SlashReading,
   type SyntaxCategory,
   type SyntaxCursor,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import { StopSet } from "./stop-set.js";
 
@@ -35,6 +37,25 @@ export interface ConsumerAttemptFailure {
 
 export type ConsumerAttempt = ConsumerAttemptSuccess | ConsumerAttemptFailure;
 
+/**
+ * Told of a slash the reader read the other way from the grammar: a `/` read
+ * as a division where an operand begins, or a regular expression read where
+ * an operator stands. `reading` is how the grammar reads it.
+ *
+ * The reader judges a slash from the token before it, and only the parser
+ * knows which it is (see `SlashReadings`). What a consumer reads after such a
+ * slash was read from tokens that are not there, so whoever reads the source
+ * reads it again with the slash read as the grammar says. A consumer reading
+ * speculatively -- a macro rule's capture, tried and perhaps abandoned for
+ * the next rule -- is given a listener that holds what it finds until the
+ * reading is settled, because where it stands an operand may begin only in
+ * a reading that is never taken.
+ */
+export type SlashMisreadListener = (
+  slash: TokenSyntax,
+  reading: SlashReading,
+) => void;
+
 export interface ConsumerContext {
   readonly category: SyntaxCategory;
   readonly phase: Phase;
@@ -49,6 +70,8 @@ export interface ConsumerContext {
    * function and at the top level of a module.
    */
   readonly allowAwait: boolean;
+  /** Told of a slash read the other way from the grammar, where one is. */
+  readonly slashMisread?: SlashMisreadListener | undefined;
 }
 
 export interface ConsumeRequest {
@@ -60,6 +83,7 @@ export interface ConsumeRequest {
   readonly cancellation?: CancellationToken | undefined;
   readonly allowYield: boolean;
   readonly allowAwait: boolean;
+  readonly slashMisread?: SlashMisreadListener | undefined;
 }
 
 export interface ConsumeSuccess extends ConsumerAttemptSuccess {
@@ -218,6 +242,7 @@ export class ConsumerRegistry {
         cancellation,
         allowYield: request.allowYield,
         allowAwait: request.allowAwait,
+        slashMisread: request.slashMisread,
       }),
     );
     cancellation.throwIfCancellationRequested();
