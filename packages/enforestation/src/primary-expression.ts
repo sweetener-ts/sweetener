@@ -871,7 +871,10 @@ function consumePostfix(
     cursor.advance();
     return undefined;
   }
-  if (isPunctuation(next, "!")) {
+  // A non-null assertion is written on its operand's own line: TypeScript
+  // writes `LeftHandSideExpression [no LineTerminator here] !`, and reads `v`
+  // and the `!x;` under it as two statements.
+  if (isPunctuation(next, "!") && !leadingLineBreak(next)) {
     cursor.advance();
     return undefined;
   }

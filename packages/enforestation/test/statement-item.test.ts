@@ -703,6 +703,10 @@ describe("statement and item consumers", () => {
     ["const x = 1\nfoo();", "const x = 1"],
     ["const x = a +\nb;", "const x = a +\nb;"],
     ["let x: A = 1, y: B = 2;", "let x: A = 1, y: B = 2;"],
+    // A non-null assertion is written on its operand's own line, and the `!`
+    // under an initializer begins a statement.
+    ["const x = a\n!b;", "const x = a"],
+    ["const x = a!\n!b;", "const x = a!"],
   ])(
     "reads %j as %j at statement level and at item level",
     (source, extent) => {
