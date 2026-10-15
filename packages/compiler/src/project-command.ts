@@ -527,6 +527,7 @@ export function runConfiguredProjectCommand(options: {
     selectSweetSources({
       fileNames: project.typescript.fileNames,
       macroExtensions: project.sweet.macroExtensions,
+      readSource: (fileName) => ts.sys.readFile(fileName),
     }).flatMap(({ fileName, kind }) =>
       virtualNames.has(kind.virtualFileName)
         ? [[fileName, kind.virtualFileName] as const]

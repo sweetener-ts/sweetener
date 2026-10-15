@@ -308,6 +308,7 @@ export function createSweetenerSession(
       selectSweetSources({
         fileNames: project.typescript.fileNames,
         macroExtensions: project.sweet.macroExtensions,
+        readSource: (fileName) => diskFileSystem.system.readFile(fileName),
       }).map(({ fileName }) => resolve(fileName)),
     );
     // A source the config no longer lists is not served under it, and its

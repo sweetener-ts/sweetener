@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   findSweetenerDirective,
@@ -160,25 +159,23 @@ export interface SelectedSweetSource {
  * Both the expander and the project command need this list and must agree on
  * it: the expander decides which files to produce, and the project command
  * substitutes the produced virtual file for each source in the root names.
+ *
+ * `readSource` answers for the file system the caller reads -- expansion's own,
+ * so a directive is an input to it like any other read -- with `undefined`
+ * for a listed file that cannot be read, which did not opt in: TypeScript
+ * reports the missing file itself.
  */
 export function selectSweetSources(project: {
   readonly fileNames: readonly string[];
   readonly macroExtensions: readonly string[];
+  readonly readSource: (fileName: string) => string | undefined;
 }): readonly SelectedSweetSource[] {
   return Object.freeze(
     project.fileNames.flatMap((fileName) => {
       const kind = classifySource({
         fileName: resolve(fileName),
         macroExtensions: project.macroExtensions,
-        readSource: (candidate) => {
-          try {
-            return readFileSync(candidate, "utf8");
-          } catch {
-            // A listed file that cannot be read did not opt in; TypeScript
-            // reports the missing file itself.
-            return undefined;
-          }
-        },
+        readSource: project.readSource,
       });
       return kind === undefined ? [] : [Object.freeze({ fileName, kind })];
     }),

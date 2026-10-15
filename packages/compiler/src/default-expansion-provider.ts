@@ -846,9 +846,11 @@ export class DefaultProjectExpansionProvider
       if (existing !== undefined) return existing;
       const sourceId = sourceIds.allocate();
       const sourceText = consult(absolute, absolute);
+      // Every caller consulted the file first and found it, and a file is
+      // consulted once an expansion, so it is found here too.
       if (sourceText === undefined)
         throw new Error(
-          `Cannot expand ${absolute}: there is no file there, or it cannot be read`,
+          `${absolute} was found and then had no text: a file is consulted once an expansion, so this cannot happen`,
         );
       const kind =
         sourceKind ??
@@ -897,9 +899,16 @@ export class DefaultProjectExpansionProvider
     const sweetFiles = selectSweetSources({
       fileNames: project.typescript.fileNames,
       macroExtensions: project.sweet.macroExtensions,
+      readSource: (fileName) => consult(fileName, fileName),
     });
-    const projectFiles = sweetFiles.map(({ fileName, kind }) =>
-      loadFile(fileName, kind),
+    // A listed source that cannot be read is TypeScript's to report, as a
+    // root it cannot find, and expands into nothing here. No other file reads
+    // it to expand, so the rest expand as they would without it -- and that
+    // it could not be read is its own input, as any read is.
+    const projectFiles = sweetFiles.flatMap(({ fileName, kind }) =>
+      consult(resolve(fileName), fileName) === undefined
+        ? []
+        : [loadFile(fileName, kind)],
     );
     const aliasBase = project.typescript.options.baseUrl
       ? resolve(project.typescript.options.baseUrl)

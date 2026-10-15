@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,6 +18,7 @@ import {
   createSweetenerSession,
   type DefaultProjectExpansionProvider,
   type ExpansionFileSystem,
+  type LoadedSweetProject,
   type SweetenerSession,
   type SweetenerTransformResult,
 } from "../src/index.js";
@@ -977,6 +979,35 @@ describe("a session after the project changes", () => {
     await session.close();
   });
 
+  test("expands the rest of a project one of whose sources cannot be read", async () => {
+    // TypeScript reports a listed source it cannot read, as it does one that
+    // is not there. Nothing else reads it to expand, so the rest expand as a
+    // fresh session expands them.
+    const fixture = project();
+    const other = join(fixture.directory, "other.sts");
+    writeFileSync(other, "export const other = 2;\n");
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts", "other.sts"],
+      }),
+    );
+    const session = createSweetenerSession();
+    await transform(session, fixture.main, fixture.config);
+    chmodSync(other, 0o000);
+    try {
+      const after = await transform(session, fixture.main, fixture.config);
+      expect(after.code).toContain("[21, 21]");
+      expect(answer(after)).toEqual(
+        answer(await freshly(fixture.main, fixture.config)),
+      );
+    } finally {
+      chmodSync(other, 0o644);
+    }
+    await session.close();
+  });
+
   test("answers from its own expansion after another config's expansion throws", async () => {
     const working = project();
     const other = join(working.directory, "other.sts");
@@ -988,21 +1019,28 @@ describe("a session after the project changes", () => {
         files: ["macros.sts", "main.sts", "other.sts"],
       }),
     );
-    // A file the config lists that is not there is not a configuration
-    // error, so it reaches expansion, which cannot read it and throws.
+    // The provider expands the other project -- which replaces what it holds
+    // about the last one -- and then fails.
     const broken = project();
-    writeFileSync(
-      broken.config,
-      JSON.stringify({
-        compilerOptions: { module: "ESNext", target: "ES2022" },
-        files: ["macros.sts", "main.sts", "gone.sts"],
-      }),
-    );
-    const session = createSweetenerSession();
+    const target = createDefaultProjectExpansionProvider();
+    const provider = new Proxy(target, {
+      get(target, property) {
+        if (property === "expandProject")
+          return (project: LoadedSweetProject) => {
+            const expanded = target.expandProject(project);
+            if (project.configPath === realpathSync(broken.config))
+              throw new Error("Expanding the broken project failed");
+            return expanded;
+          };
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const session = createSweetenerSession({ provider });
     await transform(session, working.main, working.config);
     await expect(
       transform(session, broken.main, broken.config),
-    ).rejects.toThrow(/gone\.sts/u);
+    ).rejects.toThrow(/broken project failed/u);
     const after = await transform(session, other, working.config);
     expect(after.diagnostics).toEqual([]);
     expect(after.code).toContain("[7, 7]");
@@ -1129,6 +1167,57 @@ describe("a session after what TypeScript read for binding literals changes", ()
       join(typeRoot, "shape-alias", "index.d.ts"),
       "import Shape = Shapes.Circle;\n",
     );
+    const after = await transform(session, fixture.main, fixture.config);
+    expect(after.code).toContain('"circle"');
+    expect(answer(after)).toEqual(
+      answer(await freshly(fixture.main, fixture.config)),
+    );
+    await session.close();
+  });
+
+  test("expands again once a `.ts` file opts in with a directive", async () => {
+    // Opting in makes the file a source of the program that resolves the
+    // literal, so its augmentation of `virtual-shapes` starts to count --
+    // with the project's file list and every file expansion read unchanged
+    // but for the directive, which is read like any other source.
+    const fixture = shapesProject('import { Shape } from "virtual-shapes";', {
+      moduleResolution: "bundler",
+    });
+    writeFileSync(
+      fixture.config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          moduleResolution: "bundler",
+        },
+        include: ["*.sts", "aug.ts"],
+      }),
+    );
+    // An ambient module re-exports through a package, never a relative path.
+    const shapes = join(fixture.directory, "node_modules", "local-shapes");
+    mkdirSync(shapes, { recursive: true });
+    writeFileSync(
+      join(shapes, "package.json"),
+      JSON.stringify({ name: "local-shapes", types: "index.d.ts" }),
+    );
+    writeFileSync(
+      join(shapes, "index.d.ts"),
+      "export declare const Circle: number;\n",
+    );
+    writeFileSync(
+      fixture.macros,
+      shapesMacros('import { Circle } from "local-shapes";', "Circle"),
+    );
+    const augmentation =
+      'declare module "virtual-shapes" { export { Circle as Shape } from "local-shapes"; }\n';
+    const aug = join(fixture.directory, "aug.ts");
+    writeFileSync(aug, augmentation);
+    const session = createSweetenerSession();
+    const before = await transform(session, fixture.main, fixture.config);
+    expect(before.code).toContain('"other"');
+
+    writeFileSync(aug, `"use sweetener";\n${augmentation}`);
     const after = await transform(session, fixture.main, fixture.config);
     expect(after.code).toContain('"circle"');
     expect(answer(after)).toEqual(

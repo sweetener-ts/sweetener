@@ -49,6 +49,55 @@ function memorySystem(files: Map<string, string>): ts.System {
   };
 }
 
+/** A project of these files, held in memory and listed by no config. */
+function memoryProject(
+  fileNames: readonly string[],
+  options: ts.CompilerOptions,
+): LoadedSweetProject {
+  return {
+    configPath: `${root}/tsconfig.json`,
+    configurationInputs: [],
+    sweet: {
+      languageVersion: "1",
+      typescriptVersionPolicy: "exact",
+      macroExtensions: [".sts", ".stsx"],
+      allowCoreShadowing: true,
+      sourceDeclarations: false,
+      trace: "off",
+      limits: {},
+    },
+    typescript: { fileNames: [...fileNames], options, errors: [] },
+    problems: [],
+  };
+}
+
+/**
+ * Whether a `.ts` file opted in with `"use sweetener"` is read like every
+ * other source: from the file system expansion was given, as an input.
+ */
+test("reads a directive from the file system expansion reads", () => {
+  const source = `${root}/a.ts`;
+  const files = new Map([[source, '"use sweetener";\nexport const x = 1;\n']]);
+  const provider = createDefaultProjectExpansionProvider({
+    system: memorySystem(files),
+  });
+  const project = memoryProject([source], {
+    allowNonTsExtensions: true,
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2022,
+  });
+  const expanded = provider.expandProject(project);
+  expect(expanded.files.map(({ fileName }) => fileName)).toEqual([source]);
+  expect(expanded.inputs).toContainEqual({
+    kind: "file",
+    path: source,
+    text: files.get(source),
+  });
+
+  files.set(source, "export const x = 1;\n");
+  expect(provider.expandProject(project).files).toEqual([]);
+});
+
 /**
  * What expansion read resolving a binding literal is checked against the file
  * system it read from. Held in memory, that is the only place the files are:
@@ -86,25 +135,10 @@ test("checks a binding literal's inputs against the file system expansion read",
       'import { kind } from "./macros.sts" for syntax;\nimport { Shape } from "./shapes";\nexport const answer = kind(Shape);\n',
     ],
   ]);
-  const project: LoadedSweetProject = {
-    configPath: `${root}/tsconfig.json`,
-    configurationInputs: [],
-    sweet: {
-      languageVersion: "1",
-      typescriptVersionPolicy: "exact",
-      macroExtensions: [".sts", ".stsx"],
-      allowCoreShadowing: true,
-      sourceDeclarations: false,
-      trace: "off",
-      limits: {},
-    },
-    typescript: {
-      fileNames: [`${root}/macros.sts`, `${root}/main.sts`],
-      options,
-      errors: [],
-    },
-    problems: [],
-  };
+  const project = memoryProject(
+    [`${root}/macros.sts`, `${root}/main.sts`],
+    options,
+  );
   const provider = createDefaultProjectExpansionProvider({
     system: memorySystem(files),
   });
