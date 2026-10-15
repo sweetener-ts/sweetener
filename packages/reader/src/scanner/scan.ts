@@ -61,6 +61,14 @@ export function scanTypeScript(
     },
     options.slashReadings,
   );
+  // A reading names a slash the parser stood at in an earlier read of the
+  // same text, and everything in front of a slash is scanned alike either
+  // way. One that names no slash was given for some other text.
+  const [unread] = scanned.unread;
+  if (unread !== undefined)
+    throw new RangeError(
+      `No slash at offset ${String(unread)} to read as ${String(options.slashReadings?.get(unread))}`,
+    );
   const tokens: ScannerToken[] = [];
   let leadingTrivia: Trivia[] = [];
 

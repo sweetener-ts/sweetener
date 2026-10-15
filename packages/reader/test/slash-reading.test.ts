@@ -6,7 +6,6 @@ import {
   printLossless,
   readSyntax,
   regularExpressionEnd,
-  slashReadingIsLocal,
   typescriptSlashReadings,
 } from "../src/index.js";
 
@@ -112,28 +111,27 @@ describe("slash readings", () => {
   });
 
   it.each([
-    ["a regular expression of names", "if (c) /re/.test(s);", 7, true],
-    ["one holding a bracket", "if (c) /[a-z]/.test(s);", 7, false],
-    ["one holding a parenthesis", "if (c) /(a)/.test(s);", 7, false],
-    ["one holding a quote", "if (c) /'/.test(s);\nrun();", 7, false],
-    [
-      "one holding a comment's opening",
-      "if (c) /x\\/*y/.test(s);\nrun();",
-      7,
-      false,
-    ],
+    ["a regular expression of names", "/re/", true],
+    ["one holding a bracket", "/[a-z]/", false],
+    ["one holding a parenthesis", "/(a)/", false],
+    ["one holding a quote", "/'/", false],
+    ["one holding a comment's opening", "/x\\/*y/", false],
   ])(
-    "judges whether reading %s the other way changes only itself",
-    (_, source, offset, local) => {
-      expect(
-        slashReadingIsLocal(
-          source,
-          "standard",
-          new Map(),
-          offset,
-          "regular-expression",
-        ),
-      ).toBe(local);
+    "takes the misreading after %s only where it changed only itself",
+    (_, expression, local) => {
+      const source = `if (a) ${expression}.test(s);\nif (b) /y/.test(s);\n`;
+      const later = source.indexOf("/y/");
+      const next = nextSlashReadings(
+        source,
+        "standard",
+        new Map(),
+        new Map([
+          [7, "regular-expression"],
+          [later, "regular-expression"],
+        ]),
+      );
+      expect(next.has(7)).toBe(true);
+      expect(next.has(later)).toBe(local);
     },
   );
 

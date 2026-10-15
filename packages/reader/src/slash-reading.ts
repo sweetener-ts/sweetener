@@ -34,27 +34,41 @@ function alike(
 }
 
 /**
- * Whether reading the slash at `offset` as `reading`, on top of `readings`,
- * changes how `source` is read only as far as the end of the regular
- * expression the slash begins one way: every token from there on is read
- * alike either way, and neither way opens or closes a group in between.
+ * What to read `source` with next: `readings`, which it was read with, and
+ * the slashes `misread` names, which the enforester found read the other way
+ * from the grammar.
  *
- * A slash read the wrong way usually reads a few names and operators where a
- * regular expression stands -- `/re/` as `/`, `re`, `/` -- and the source is
- * read alike again where the expression ends. Then the syntax after it is the
- * syntax the enforester read, and what it found there still holds once the
- * slash is read the other way. Where the two ways part for good -- a quote, a
- * bracket or a comment's opening inside the expression, read as what it is
- * outside one -- nothing found after the slash can be trusted until the
- * source has been read again.
+ * The misreadings are taken in source order, and the first is always sound:
+ * everything in front of it was read as the grammar reads it. A later one was
+ * found in syntax read after an earlier misreading, and holds only where that
+ * misreading was local: reading the slash the other way changed the read only
+ * as far as the end of the regular expression it begins one way -- `/re/`
+ * read as `/`, `re`, `/` -- without opening or closing a group in between,
+ * and every token from there on is read alike either way. Where the two ways
+ * part for good -- a quote, a bracket or a comment's opening inside the
+ * expression, read as what it is outside one -- nothing found after the slash
+ * can be trusted until the source has been read again. So the misreadings are
+ * taken up to and including the first that was not local, and the rest are
+ * left for the read after this one to find again if they still stand.
+ *
+ * Whether each was local is read off two scans of the whole source, one each
+ * way, however many misreadings there are.
  */
-export function slashReadingIsLocal(
+export function nextSlashReadings(
   source: string,
   variant: ScannerLanguageVariant,
   readings: SlashReadings,
-  offset: number,
-  reading: SlashReading,
-): boolean {
+  misread: SlashReadings,
+): SlashReadings {
+  const candidates = [...misread].sort(([left], [right]) => left - right);
+  for (const [offset, reading] of candidates)
+    // A slash read as the grammar asked is read that way, and is never
+    // found misread again: finding it so means the enforester read the same
+    // slash both ways.
+    if (readings.has(offset))
+      throw new RangeError(
+        `The slash at offset ${String(offset)} was read as ${String(readings.get(offset))} and then found misread as ${reading}`,
+      );
   const before = scanWithSupportedTypeScript(
     source,
     variant,
@@ -65,66 +79,42 @@ export function slashReadingIsLocal(
     source,
     variant,
     undefined,
-    new Map([...readings, [offset, reading]]),
+    new Map([...readings, ...candidates]),
   ).tokens;
-  const expression = (reading === "regular-expression" ? after : before).find(
-    (token) => token.start === offset,
-  );
-  if (expression === undefined)
-    throw new RangeError(`No slash at offset ${String(offset)}`);
-  const end = expression.end;
-  const from = (tokens: readonly TypeScriptScannedToken[]) =>
-    tokens.findIndex((token) => token.start >= end);
-  const resumeBefore = from(before);
-  const resumeAfter = from(after);
-  if (
-    resumeBefore < 0 ||
-    resumeAfter < 0 ||
-    before[resumeBefore]!.start !== end ||
-    after[resumeAfter]!.start !== end ||
-    before.length - resumeBefore !== after.length - resumeAfter
-  )
-    return false;
-  for (let index = 0; resumeBefore + index < before.length; index += 1)
-    if (!alike(before[resumeBefore + index]!, after[resumeAfter + index]!))
-      return false;
-  const between = (tokens: readonly TypeScriptScannedToken[]) =>
-    tokens.filter((token) => token.start >= offset && token.start < end);
-  return ![...between(before), ...between(after)].some(delimits);
-}
-
-/**
- * What to read `source` with next: `readings`, which it was read with, and
- * the slashes `misread` names, which the enforester found read the other way
- * from the grammar.
- *
- * The misreadings are taken in source order, and the first is always sound:
- * everything in front of it was read as the grammar reads it. A later one was
- * found in syntax read after an earlier misreading, which holds only where
- * that misreading was local (see `slashReadingIsLocal`). So they are taken up
- * to and including the first that was not, and the rest are left for the
- * read after this one to find again if they still stand.
- */
-export function nextSlashReadings(
-  source: string,
-  variant: ScannerLanguageVariant,
-  readings: SlashReadings,
-  misread: SlashReadings,
-): SlashReadings {
   const next = new Map(readings);
-  for (const [offset, reading] of [...misread].sort(
-    ([left], [right]) => left - right,
-  )) {
-    // A slash read as the grammar asked is read that way, and is never
-    // found misread again: finding it so means the enforester read the same
-    // slash both ways.
-    if (readings.has(offset))
-      throw new RangeError(
-        `The slash at offset ${String(offset)} was read as ${String(readings.get(offset))} and then found misread as ${reading}`,
-      );
-    const local = slashReadingIsLocal(source, variant, next, offset, reading);
+  let inBefore = 0;
+  let inAfter = 0;
+  for (const [offset, reading] of candidates) {
+    // Read alike up to this slash, or an earlier misreading was not local
+    // after all and this one was found in syntax that is not there.
+    while (
+      before[inBefore] !== undefined &&
+      after[inAfter] !== undefined &&
+      before[inBefore]!.start < offset &&
+      alike(before[inBefore]!, after[inAfter]!)
+    ) {
+      inBefore += 1;
+      inAfter += 1;
+    }
+    if (before[inBefore]?.start !== offset || after[inAfter]?.start !== offset)
+      break;
     next.set(offset, reading);
-    if (!local) break;
+    const expression =
+      reading === "regular-expression" ? after[inAfter]! : before[inBefore]!;
+    const end = expression.end;
+    let delimited = false;
+    for (; before[inBefore] !== undefined; inBefore += 1) {
+      if (before[inBefore]!.start >= end) break;
+      if (delimits(before[inBefore]!)) delimited = true;
+    }
+    for (; after[inAfter] !== undefined; inAfter += 1) {
+      if (after[inAfter]!.start >= end) break;
+      if (delimits(after[inAfter]!)) delimited = true;
+    }
+    const resumes = (tokens: readonly TypeScriptScannedToken[], at: number) =>
+      tokens[at] === undefined || tokens[at]!.start === end;
+    if (delimited || !resumes(before, inBefore) || !resumes(after, inAfter))
+      break;
   }
   return next;
 }
@@ -146,32 +136,31 @@ export function typescriptSlashReadings(
   variant: ScannerLanguageVariant,
 ): SlashReadings {
   const expressions = new Set(parsedRegularExpressions(source, variant));
-  const readings = new Map<number, SlashReading>();
-  // One slash at a time, earliest first: reading one the other way changes
-  // what is read after it, and the next is looked for in that reading.
+  let readings: SlashReadings = new Map();
+  // Read again until the read agrees with the parser, taking the slashes it
+  // disagrees about as the enforester's findings are taken.
   for (;;) {
-    const misread = scanWithSupportedTypeScript(
+    const misread = new Map<number, SlashReading>();
+    for (const token of scanWithSupportedTypeScript(
       source,
       variant,
       undefined,
       readings,
-    ).tokens.find((token) => {
-      const regular = token.projectKind === "regular-expression-literal";
-      const slash =
+    ).tokens) {
+      if (
+        token.projectKind === "regular-expression-literal" &&
+        !expressions.has(token.start)
+      )
+        misread.set(token.start, "division");
+      if (
         token.projectKind === "punctuation" &&
-        (token.raw === "/" || token.raw === "/=");
-      return (
-        (regular && !expressions.has(token.start)) ||
-        (slash && expressions.has(token.start))
-      );
-    });
-    if (misread === undefined) return readings;
-    readings.set(
-      misread.start,
-      misread.projectKind === "regular-expression-literal"
-        ? "division"
-        : "regular-expression",
-    );
+        (token.raw === "/" || token.raw === "/=") &&
+        expressions.has(token.start)
+      )
+        misread.set(token.start, "regular-expression");
+    }
+    if (misread.size === 0) return readings;
+    readings = nextSlashReadings(source, variant, readings, misread);
   }
 }
 

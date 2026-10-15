@@ -34,6 +34,8 @@ export interface TypeScriptScanResult {
   readonly tokens: readonly TypeScriptScannedToken[];
   readonly errors: readonly TypeScriptScannerError[];
   readonly version: string;
+  /** The offsets of the slash readings given that the scan read no slash at. */
+  readonly unread: readonly number[];
 }
 
 export class UnsupportedTypeScriptVersionError extends Error {
@@ -723,18 +725,12 @@ export function scanWithSupportedTypeScript(
     );
     if (kind === ts.SyntaxKind.EndOfFileToken) break;
   }
-  // A reading names a slash the parser stood at in an earlier read of the
-  // same text, and everything in front of a slash is scanned alike either
-  // way. One that names no slash was given for some other text.
-  for (const [offset, reading] of slashes)
-    if (!read.has(offset))
-      throw new RangeError(
-        `No slash at offset ${String(offset)} to read as ${reading}`,
-      );
-
   return Object.freeze({
     tokens: Object.freeze(tokens),
     errors: Object.freeze(errors),
     version: ts.version,
+    unread: Object.freeze(
+      [...slashes.keys()].filter((offset) => !read.has(offset)),
+    ),
   });
 }
