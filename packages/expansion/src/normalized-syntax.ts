@@ -145,6 +145,29 @@ export function normalizeProtectedInput(
   }
 }
 
+/**
+ * `node` branded as it stands, for a reader that builds no protected node
+ * inside one of its own category. Throws where normalizing would change it.
+ *
+ * A JSX child wraps the one node it was handed, and a type member reads its
+ * type as tokens, any object type in it a list of members inside a brace. So
+ * their routes have nothing to normalize, and they answer with this rather
+ * than with a normalization nothing could exercise. A reader that comes to
+ * build such nesting fails its first reading here instead of handing the walk
+ * a shape the other routes never produce.
+ */
+export function alreadyNormal(
+  node: ProtectedSyntax,
+  handed: ReadonlySet<Syntax>,
+  options: NormalizationOptions,
+): NormalizedSyntax {
+  if (normalizeProtectedInput(node, handed, options) !== node)
+    throw new Error(
+      `A ${node.category} reading holds a protected node of its own category that the reader built, so its route has to normalize what it reads`,
+    );
+  return node as NormalizedSyntax;
+}
+
 /** A node whose children are being normalized, and how far that has got. */
 interface Pending {
   readonly node: ProtectedSyntax | GroupSyntax;

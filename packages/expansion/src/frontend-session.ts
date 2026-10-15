@@ -63,11 +63,13 @@ import { invokeMacro, type MacroTraceEvent } from "./invocation.js";
 import {
   expandMacroSyntax,
   operatorWidthAt,
+  type ExpandMacroSyntaxOptions,
   type ExpandMacroSyntaxResult,
 } from "./recursive-expander.js";
 import type { ExpansionGuard } from "./progress.js";
 import { coreFormKind, isCoreForm } from "./core-shadowing.js";
 import {
+  alreadyNormal,
   handedIn,
   normalizeProtectedInput,
   type NormalizedSyntax,
@@ -172,9 +174,28 @@ function diagnosticSyntaxText(syntax: readonly Syntax[]): string {
   return text;
 }
 
+/**
+ * The routes by which the expander asks the reader to read syntax for it.
+ * Each answers with `NormalizedSyntax`, so each normalizes what it reads.
+ */
+export type ReadingRoutes = {
+  readonly [
+    Route in
+      | "enforest"
+      | "enforestExpression"
+      | "enforestStatements"
+      | "enforestItems"
+      | "enforestJsxChildren"
+      | "enforestTypeMembers"
+      | "enforestClassElements"
+  ]-?: NonNullable<ExpandMacroSyntaxOptions[Route]>;
+};
+
 export interface ExpansionFrontendSession {
   readonly consumeClass: SyntaxClassConsumer;
   readonly environment: BindingEnvironment;
+  /** The routes `expand` hands the expander, the same ones it reads through. */
+  readonly routes: ReadingRoutes;
   expand(
     syntax: SyntaxSequence,
     category?: SyntaxCategory,
@@ -1248,17 +1269,18 @@ export function createExpansionFrontendSession(
    * of this loop, which is how they came to differ from `prepareInput` and
    * from the expression route in the first place.
    *
-   * Each normalizes what it reads, as those two routes do, so the walk is
-   * handed one shape whichever route read it. A statement list and a class
-   * body are read here before the walk enters them, and while the infix `=>`
-   * protected an arrow's parameter list as an expression, a reading left that
-   * way had its parameters walked as that expression: one spelled like a
-   * macro was dispatched. The infix `=>` now holds the parameters as written,
-   * and no output is known to change if these routes stop normalizing.
-   * Normalizing `item` here once emitted TypeScript that does not parse --
-   * the React memoization fixture -- because what is read here is often a
-   * replacement, and normalizing took apart what the expansion had built;
-   * that is why `normalizeProtectedInput` keeps what the reader was handed.
+   * Each brands what it reads `NormalizedSyntax`, as those two routes do, so
+   * the walk is handed one shape whichever route read it. A statement list, an
+   * item list and a class body are read by readers that build an expression
+   * inside an expression -- an operator's operands, or a statement in a
+   * method's body -- and normalize what they read. The type member and JSX
+   * child readers build no protected node inside one of its own category, so
+   * `brand` says so for them, loudly, rather than normalizing what never
+   * changes. Normalizing `item` here once emitted TypeScript that does not
+   * parse -- the React memoization fixture -- because what is read here is
+   * often a replacement, and normalizing took apart what the expansion had
+   * built; that is why `normalizeProtectedInput` keeps what the reader was
+   * handed.
    */
   const enforestList = (
     consumer: SyntaxConsumer,
@@ -1268,6 +1290,7 @@ export function createExpansionFrontendSession(
       readonly contexts: ReadonlySet<MacroContext>;
       readonly lexicalModule?: CompileParsedMacrosResult | undefined;
     },
+    brand: typeof normalizeProtectedInput,
   ): readonly NormalizedSyntax[] | undefined => {
     const restore = enforestingModule;
     enforestingModule = request.lexicalModule ?? restore;
@@ -1283,7 +1306,7 @@ export function createExpansionFrontendSession(
         });
         if (!attempted.matched || attempted.cursor.index <= before)
           return undefined;
-        read.push(normalizeProtectedInput(attempted.syntax, handed, options));
+        read.push(brand(attempted.syntax, handed, options));
         cursor = attempted.cursor;
       }
       return createSyntaxSequence(read);
@@ -1292,9 +1315,55 @@ export function createExpansionFrontendSession(
     }
   };
 
+  const routes: ReadingRoutes = Object.freeze({
+    enforest: ({
+      syntax: replacement,
+      category: replacementCategory,
+      lexicalModule,
+      contexts,
+    }) => enforest(replacement, replacementCategory, lexicalModule, contexts),
+    enforestStatements: (request) =>
+      enforestList(statement, "stmt", request, normalizeProtectedInput),
+    enforestItems: (request) =>
+      enforestList(item, "item", request, normalizeProtectedInput),
+    enforestJsxChildren: (request) =>
+      enforestList(jsxChild, "jsxChild", request, alreadyNormal),
+    enforestTypeMembers: (request) =>
+      enforestList(typeMember, "typeMember", request, alreadyNormal),
+    enforestClassElements: (request) =>
+      enforestList(
+        classElement,
+        "classElement",
+        request,
+        normalizeProtectedInput,
+      ),
+    enforestExpression: ({ syntax, contexts, lexicalModule }) => {
+      const restore = enforestingModule;
+      enforestingModule = lexicalModule ?? restore;
+      try {
+        const attempted = expression.consume(createSyntaxCursor(syntax), {
+          ...context("expr", contexts),
+          stopSet: StopSet.empty,
+        });
+        // Normalized, as the items handed over by `prepareInput` are. Both
+        // routes into the expander hand it the same shape, or the two
+        // disagree about what a reading means: while the infix `=>`
+        // protected an arrow's parameter list as an expression, the walk
+        // found no parameter list in front of the `=>` of a reading left
+        // that way, and walked the binders in it as an expression.
+        return attempted.matched && attempted.cursor.atEnd
+          ? normalizeProtectedInput(attempted.syntax, handedIn(syntax), options)
+          : undefined;
+      } finally {
+        enforestingModule = restore;
+      }
+    },
+  });
+
   return Object.freeze({
     consumeClass,
     environment,
+    routes,
     expand: (
       syntax: SyntaxSequence,
       category: SyntaxCategory = "item",
@@ -1316,6 +1385,7 @@ export function createExpansionFrontendSession(
         // A module's items are what is expanded under the item category, and
         // they stand at its top level.
         contexts: category === "item" ? moduleContexts : new Set(),
+        ...routes,
         consumeClass,
         consumeClassForMacro: (macro, contexts) =>
           inContexts(
@@ -1346,40 +1416,6 @@ export function createExpansionFrontendSession(
             )
           );
         },
-        enforestStatements: (request) =>
-          enforestList(statement, "stmt", request),
-        enforestItems: (request) => enforestList(item, "item", request),
-        enforestJsxChildren: (request) =>
-          enforestList(jsxChild, "jsxChild", request),
-        enforestTypeMembers: (request) =>
-          enforestList(typeMember, "typeMember", request),
-        enforestClassElements: (request) =>
-          enforestList(classElement, "classElement", request),
-        enforestExpression: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            const attempted = expression.consume(createSyntaxCursor(syntax), {
-              ...context("expr", contexts),
-              stopSet: StopSet.empty,
-            });
-            // Normalized, as the items handed over by `prepareInput` are. Both
-            // routes into the expander hand it the same shape, or the two
-            // disagree about what a reading means: while the infix `=>`
-            // protected an arrow's parameter list as an expression, the walk
-            // found no parameter list in front of the `=>` of a reading left
-            // that way, and walked the binders in it as an expression.
-            return attempted.matched && attempted.cursor.atEnd
-              ? normalizeProtectedInput(
-                  attempted.syntax,
-                  handedIn(syntax),
-                  options,
-                )
-              : undefined;
-          } finally {
-            enforestingModule = restore;
-          }
-        },
         phase: options.phase,
         environmentEpoch: expansionEnvironment.epoch,
         expansionStore,
@@ -1407,13 +1443,6 @@ export function createExpansionFrontendSession(
             : [];
         },
         matchesBindingLiteral: options.matchesBindingLiteral,
-        enforest: ({
-          syntax: replacement,
-          category: replacementCategory,
-          lexicalModule,
-          contexts,
-        }) =>
-          enforest(replacement, replacementCategory, lexicalModule, contexts),
         allocateSyntaxId: options.allocateSyntaxId,
         allocateBindingId: options.allocateBindingId,
         allocateInvocationId: options.allocateInvocationId,
