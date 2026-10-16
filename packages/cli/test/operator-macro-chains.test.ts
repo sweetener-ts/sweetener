@@ -182,9 +182,7 @@ describe("a chain whose expansion nests", () => {
       `export const s = ${chain(1_025, () => operator)};`,
     );
     expect(messages).toEqual([]);
-    expect(text.match(/\(+/u)?.[0].length).toBe(
-      operator === "<&>" ? 1_024 : 1,
-    );
+    expect(text.match(/\(+/u)?.[0].length).toBe(operator === "<&>" ? 1_024 : 1);
     expect(text.split("(").length - 1).toBe(1_024);
   });
 

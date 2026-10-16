@@ -1335,8 +1335,7 @@ export function printExpandedFile<Trace>(
       const assignment = parent.form === "assignment";
       const rightAssociative = operators[0] === "**" || assignment;
       const logical = (node: ProtectedSyntax | undefined) =>
-        node?.precedence === orPrecedence ||
-        node?.precedence === andPrecedence;
+        node?.precedence === orPrecedence || node?.precedence === andPrecedence;
       operands.forEach((node, at) => {
         const inner = operand(node);
         const before = operators[at - 1];
@@ -1451,8 +1450,7 @@ export function printExpandedFile<Trace>(
       const nullish = (node: Neighbour) =>
         node !== "edge" && node?.tag === "token" && node.raw === "??";
       const logical =
-        item.precedence === orPrecedence ||
-        item.precedence === andPrecedence;
+        item.precedence === orPrecedence || item.precedence === andPrecedence;
       return (
         (holdingPrecedence(item) ?? -Infinity) >= required &&
         !(
@@ -2011,8 +2009,7 @@ export function printExpandedFile<Trace>(
           // A unary operand holds together against `as` without help.
           if (
             assertion.operand.tag === "protected" &&
-            (holdingPrecedence(assertion.operand) ?? 0) >
-              asPrecedence
+            (holdingPrecedence(assertion.operand) ?? 0) > asPrecedence
           )
             boundOperands.add(assertion.operand);
           pushChildren([assertion.operand]);
