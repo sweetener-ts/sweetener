@@ -44,7 +44,7 @@ export syntax members:expr {
   rule { members($v:expr) } => {
     {
       lookup: (key: string): Map<string, number> => new Map([[key, sum($v, 1)]]),
-      made: make<string, number>(sum($v, 2)),
+      made: make<string, listOf(number)>([sum($v, 2)]),
       pair: <A, B>(a: A, b: B): [A, B] => [a, b],
       low: $v < 2,
       high: $v > 0,
@@ -362,7 +362,9 @@ describe("an object literal a template writes", () => {
   test("keeps a member whole across the commas of its angle brackets", () => {
     // Split at those commas, `made: make<string, number>(...)` printed
     // `(make<string), number>(...)`, and the `Map` of the return type was
-    // taken for a binder and renamed.
+    // taken for a binder and renamed. The type macro after the comma is only
+    // reached as a type where the member is read whole: split there, it
+    // stands at the head of an expression and is left as written.
     const { text, messages, exports } = expand(
       `function make<K, V>(value: V): Map<K, V> {
   return new Map<K, V>([["made" as K, value]]);
@@ -374,17 +376,17 @@ export const o = members(1);
     expect(text).toContain(
       "lookup: (key: string): Map<string, number> => new Map([[key, 1 + 1]])",
     );
-    expect(text).toContain("made: make<string, number>(1 + 2)");
+    expect(text).toContain("made: make<string, Array<number>>([1 + 2])");
     expect(text).toContain("pair: <A, B>(a: A, b: B): [A, B] => [a, b]");
     expect(text).toContain("low: 1 < 2, high: 1 > 0");
     const o = exports["o"] as {
       lookup(key: string): Map<string, number>;
-      made: Map<string, number>;
+      made: Map<string, number[]>;
       low: boolean;
       high: boolean;
     };
     expect(o.lookup("k").get("k")).toBe(2);
-    expect(o.made.get("made")).toBe(3);
+    expect(o.made.get("made")).toEqual([3]);
     expect(o).toMatchObject({ low: true, high: true });
   });
 });
