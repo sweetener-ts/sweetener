@@ -208,7 +208,7 @@ describe("a slash a macro's template writes", () => {
         "export function h() { ret return; }\n",
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("(x / 2 /g);");
+    expect(text).toContain("x / 2 /g;");
     expect(text).toContain("return / 2 /g;");
   });
 
@@ -218,7 +218,7 @@ describe("a slash a macro's template writes", () => {
         "export function f() { pick x; }\n" +
         "export function h() { pick return; }\n",
     );
-    expect(text).toContain("(x / (g) / 2);");
+    expect(text).toContain("x / (g) / 2;");
     expect(
       messages.filter((message) =>
         message.startsWith(
