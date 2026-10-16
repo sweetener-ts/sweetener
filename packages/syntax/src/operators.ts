@@ -134,6 +134,16 @@ export const conditionalPrecedence = 30;
  * left-hand-side expression, the only kind an assignment may write to.
  */
 export const primaryPrecedence = 1_000;
+/**
+ * What a left-hand-side expression that is not a member expression holds
+ * together at: a `new` with no arguments of its own, `new F`. It is what an
+ * assignment writes to, what an update updates, what a class extends and
+ * what another `new` constructs, as a name or a call is; but an access, a
+ * call or a tagged template after it would be read into the `new` -- `new
+ * F.x`, `new F()` -- so those still ask for a primary expression. Every
+ * operator binds more loosely.
+ */
+export const leftHandSidePrecedence = 200;
 export const assignmentPrecedence = operatorPrecedence("=", "infix");
 export const commaPrecedence = operatorPrecedence(",", "infix");
 

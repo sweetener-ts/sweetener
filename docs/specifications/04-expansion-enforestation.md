@@ -318,9 +318,10 @@ walk left flat as well:
   expression statement, and a template literal's substitution. An arrow, an
   assignment and `yield` hold together only where an assignment expression
   would.
-- What an access, a call, a tagged template, `!`, `++` or `--` follows, and
-  what an assignment writes to, is a left-hand-side expression. `new F(1)` is
-  one; `new F` is not.
+- What an access, a call, a tagged template or `!` follows is a member
+  expression: `new F(1)` is one; `new F` is not. What an assignment writes
+  to, what `++` or `--` follows, what a class extends and what `new`
+  constructs are left-hand-side expressions, which `new F` is too.
 - `??` beside an unparenthesized `||` or `&&`, and a unary base of `**`, keep
   their parentheses. So does an `as` or `satisfies` expression in front of
   `|`, `&` or a `<`, over which the type it ends with would read on; an

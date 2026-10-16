@@ -9,6 +9,7 @@ import {
   type DelimiterKind,
   isReservedWord,
   operatorPrecedence,
+  leftHandSidePrecedence,
   primaryPrecedence,
   typePostfixPrecedence,
   unaryPrecedence,
@@ -578,16 +579,15 @@ function typeBindingOperator(token: TokenSyntax): boolean {
 function holdingPrecedence(expression: ProtectedSyntax): number | undefined {
   if (expression.form === "arrow") return assignmentPrecedence;
   // `new F(1)` is a member expression, which an access or a call may follow
-  // as it may any other; only `new F`, with no arguments, binds as `new`.
+  // as it may any other. `new F`, with no arguments, is a left-hand-side
+  // expression all the same -- what an assignment writes to, what a class
+  // extends -- though an access or a call after it would be read into it.
   const [head] = expression.children;
   const last = expression.children.at(-1);
-  if (
-    head?.tag === "token" &&
-    head.raw === "new" &&
-    last?.tag === "group" &&
-    last.delimiter === "parenthesis"
-  )
-    return primaryPrecedence;
+  if (head?.tag === "token" && head.raw === "new")
+    return last?.tag === "group" && last.delimiter === "parenthesis"
+      ? primaryPrecedence
+      : leftHandSidePrecedence;
   return expression.precedence;
 }
 
@@ -930,9 +930,11 @@ function heldAfter(surroundings: Surroundings): number | undefined {
       return commaPrecedence + 1;
     case "default":
       return assignmentPrecedence;
-    // What a class extends is a left-hand-side expression, and so is what a
-    // decorator applies; `decoratorReads` says which of those it reads whole.
+    // What a class extends is a left-hand-side expression, `new F` among
+    // them. A decorator applies a member expression, and `decoratorReads`
+    // says which of those it reads whole.
     case "extends":
+      return leftHandSidePrecedence;
     case "@":
       return primaryPrecedence;
   }
@@ -960,10 +962,12 @@ function heldAfter(surroundings: Surroundings): number | undefined {
       : infix.precedence;
   if (prefix === undefined || operand !== false) return undefined;
   switch (spelling) {
-    // What `new` constructs is a member expression; whether it would take
-    // arguments of its own along is `constructsTooMuch`'s to say.
+    // What `new` constructs is a left-hand-side expression: `new new F`
+    // constructs what `new F` makes. Whether it would take arguments of its
+    // own along is `constructsTooMuch`'s to say, and an access or a call
+    // after it asks for more of it.
     case "new":
-      return primaryPrecedence;
+      return leftHandSidePrecedence;
     case "yield":
       return assignmentPrecedence;
     // An update writes to what it updates.
@@ -1017,9 +1021,11 @@ function heldBefore(
     case ".":
     case "?.":
     case "!":
+      return primaryPrecedence;
+    // An update writes to a left-hand-side expression.
     case "++":
     case "--":
-      return primaryPrecedence;
+      return leftHandSidePrecedence;
   }
   if (after.kind === "no-substitution-template") return primaryPrecedence;
   const infix = coreOperator(spelling, "infix");
@@ -1034,7 +1040,10 @@ function heldBefore(
   )
     return 0;
   if (infix === undefined) return undefined;
-  if (infix.precedence === assignmentPrecedence) return primaryPrecedence;
+  // What an assignment writes to is a left-hand-side expression; what an
+  // arrow's `=>` follows is its parameters.
+  if (infix.precedence === assignmentPrecedence)
+    return spelling === "=>" ? primaryPrecedence : leftHandSidePrecedence;
   // An assertion ends with its type, and only an operator a type reads on
   // over can reach into it: TypeScript reads `x as T * y` as a product of
   // `x as T`, however tightly `*` binds.
@@ -1336,7 +1345,7 @@ export function printExpandedFile<Trace>(
           // What an assignment writes to is a left-hand-side expression, which
           // no operator of its own may hold: `(value as T) = 1`.
           if (assignment) {
-            bind(node, primaryPrecedence);
+            bind(node, leftHandSidePrecedence);
             return;
           }
           // The base of `**` is an update expression, so a unary operand

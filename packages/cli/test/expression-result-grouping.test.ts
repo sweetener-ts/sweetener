@@ -58,6 +58,7 @@ export syntax not:expr { rule { not($v:expr) } => { !$v } }
 export syntax thunk:expr { rule { thunk($v:expr) } => { () => $v } }
 export syntax run:stmt { rule { run($v:expr); } => { $v; } }
 export syntax build:expr { rule { build($c:expr) } => { new $c } }
+export syntax derive:expr { rule { derive($base:expr) } => { class extends $base {} } }
 export syntax pick:expr { rule { pick($o:expr, $k:expr) } => { $o[$k] } }
 export syntax nothing:expr { rule { nothing() } => { yield } }
 `;
@@ -74,7 +75,7 @@ function expand(main: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has, cast, not, thunk, run, build, pick, nothing } from "./macros.sts" for syntax;\n${main}`,
+    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has, cast, not, thunk, run, build, derive, pick, nothing } from "./macros.sts" for syntax;\n${main}`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -313,6 +314,32 @@ export const box = new make(factory)();
     expect(messages).toEqual([]);
     expect(text).toContain("new (factory())()");
     expect(exports["box"]).toMatchObject({ value: 1 });
+  });
+
+  /**
+   * A `new` with no arguments of its own is a left-hand-side expression,
+   * though not a member expression: a class extends one, and another `new`
+   * constructs one, as written; an access or a call after it would be read
+   * into it instead.
+   */
+  test("stands bare where a left-hand-side expression is read", () => {
+    const { text, messages, exports } = expand(
+      `class Inner { value = 1; }
+const Make = class { constructor() { return Inner; } } as unknown as new () => typeof Inner;
+export const inner = build(build(Make));
+export const Derived = derive(build(Make));
+export const named = pick(build(Make), "name");
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("export const inner = new new Make;");
+    expect(text).toContain("class extends new Make {}");
+    expect(text).toContain('(new Make)["name"]');
+    expect(exports["inner"]).toMatchObject({ value: 1 });
+    expect(
+      new (exports["Derived"] as new () => { value: number })().value,
+    ).toBe(1);
+    expect(exports["named"]).toBe("Inner");
   });
 
   test("keeps an optional chain a macro produced", () => {
