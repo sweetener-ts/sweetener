@@ -250,7 +250,6 @@ function createOperatorHarness() {
         allocateSyntaxId: syntaxIds.allocate,
         allocateBindingId: bindingIds.allocate,
         allocateInvocationId: invocationIds.allocate,
-        position: 0,
         followingScope: definitionContextScope(scopes),
         admit: () => true,
         diagnosticOrigin: (origin) => {

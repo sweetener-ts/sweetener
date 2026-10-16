@@ -291,7 +291,6 @@ function createHarness() {
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
-      position: 0,
       admit: () => true,
       diagnosticOrigin: (origin) => {
         const selected = origins.selectPrimarySource(origin);
@@ -326,7 +325,6 @@ function createHarness() {
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
-      position: 0,
       followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>
@@ -371,7 +369,6 @@ function createHarness() {
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
-      position: 0,
       followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>

@@ -177,7 +177,6 @@ export interface InvokeMacroOptions {
   readonly parentInvocation?: InvocationId | undefined;
   readonly contexts?: ReadonlySet<MacroContext> | undefined;
   readonly coreInterception?: CoreDispatchTrace | undefined;
-  readonly position: number;
   /** See `ApplyBindingContractOptions.followingScope`. */
   readonly followingScope: ApplyBindingContractsOptions["followingScope"];
   readonly extractBindings?: ApplyBindingContractsOptions["extractBindings"];
@@ -216,6 +215,8 @@ export interface MacroInvocationSuccess {
   readonly followingScopes: ScopeSetId;
   /** What the rule's binding contracts declared. */
   readonly bindings: readonly Binding[];
+  /** The bindings among `bindings` whose region is `following`. */
+  readonly followingBindings: readonly Binding[];
   readonly freshBindings: readonly FreshBinding[];
   readonly trace: MacroTraceEvent;
 }
@@ -666,7 +667,6 @@ function* invokeMacroRules(
         environments: options.environments,
         environment: options.environment,
         phase: options.phase,
-        position: options.position,
         followingScope: options.followingScope,
         extractBindings: options.extractBindings,
       });
@@ -797,6 +797,7 @@ function* invokeMacroRules(
         environment: contracts.environment,
         followingScopes: contracts.followingScopes,
         bindings: contracts.bindings,
+        followingBindings: contracts.followingBindings,
         freshBindings: instantiated.freshBindings,
         trace,
       });

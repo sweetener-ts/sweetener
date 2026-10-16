@@ -268,7 +268,6 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environments,
         environment: environments.createRoot(),
         phase: runtimePhase,
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -319,7 +318,6 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environments,
         environment: environments.createRoot(),
         phase: runtimePhase,
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -355,7 +353,6 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environments,
         environment: branchResult.environment,
         phase: runtimePhase,
-        position: 50,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -396,7 +393,6 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environments,
         environment: following.environment,
         phase: runtimePhase,
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );

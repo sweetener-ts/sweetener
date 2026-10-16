@@ -269,16 +269,16 @@ export interface ApplyBindingContractOptions {
   readonly environments: EnvironmentStore;
   readonly environment: BindingEnvironment;
   readonly phase: Phase;
-  readonly position: number;
   /**
    * The scope of the definition context the invocation stands in -- the
    * block, the function or namespace body, the module -- allocated the first
    * time a contract asks for it. A `following` region is the rest of that
-   * context, and every contract that binds in it adds this one scope: the
-   * binding is visible from where the invocation stands, so the scope need
-   * not tell one contract from another. A scope of its own for each contract
-   * put one more scope on every later token of the context for every
-   * contract written before it.
+   * context, and every contract that binds in it adds this one scope, which
+   * only the syntax after the first of them carries. Within the context the
+   * scope does not tell one contract's binding from another's, as a block's
+   * declarations are each its whole block's. A scope of its own for each
+   * contract put one more scope on every later token of the context for
+   * every contract written before it.
    */
   readonly followingScope: () => ScopeId;
   readonly followingScopes?: ScopeSetId | undefined;
@@ -295,6 +295,8 @@ export interface ApplyBindingContractResult {
   readonly captures: CaptureRecord;
   readonly environment: BindingEnvironment;
   readonly bindings: readonly Binding[];
+  /** The bindings among `bindings` whose region is `following`. */
+  readonly followingBindings: readonly Binding[];
   readonly followingScopes: ScopeSetId;
   readonly introducedScopes: readonly ScopeId[];
   readonly generatedBindings: readonly GeneratedContractBinding[];
@@ -329,6 +331,7 @@ export function applyBindingContract(
       captures: options.captures,
       environment: options.environment,
       bindings: Object.freeze([]),
+      followingBindings: Object.freeze([]),
       followingScopes: options.followingScopes ?? options.scopeStore.empty(),
       introducedScopes: Object.freeze([]),
       generatedBindings: Object.freeze([]),
@@ -484,10 +487,10 @@ export function applyBindingContract(
         space: contract.space,
         declaration: name.origin,
         kind: "lexical",
-        visibility:
-          contract.region.kind === "following"
-            ? { kind: "from", start: options.position }
-            : { kind: "whole-frame" },
+        // A `following` binding is the definition context's, and the
+        // context's scope is what keeps the syntax before the invocation
+        // from resolving to it.
+        visibility: { kind: "whole-frame" },
       });
       environment = declared.environment;
       bindings.push(declared.binding);
@@ -515,6 +518,10 @@ export function applyBindingContract(
     captures: transformed,
     environment,
     bindings: Object.freeze(bindings),
+    followingBindings:
+      contract.region.kind === "following"
+        ? Object.freeze([...bindings])
+        : Object.freeze([]),
     followingScopes,
     introducedScopes: Object.freeze(allocated),
     generatedBindings: Object.freeze(generatedBindings),
@@ -533,6 +540,7 @@ export function applyBindingContracts(
   let environment = options.environment;
   let followingScopes = options.followingScopes ?? options.scopeStore.empty();
   const bindings: Binding[] = [];
+  const followingBindings: Binding[] = [];
   const introducedScopes: ScopeId[] = [];
   const generatedBindings: GeneratedContractBinding[] = [];
 
@@ -547,6 +555,7 @@ export function applyBindingContracts(
     environment = result.environment;
     followingScopes = result.followingScopes;
     bindings.push(...result.bindings);
+    followingBindings.push(...result.followingBindings);
     introducedScopes.push(...result.introducedScopes);
     generatedBindings.push(...result.generatedBindings);
   }
@@ -555,6 +564,7 @@ export function applyBindingContracts(
     captures,
     environment,
     bindings: Object.freeze(bindings),
+    followingBindings: Object.freeze(followingBindings),
     followingScopes,
     introducedScopes: Object.freeze(introducedScopes),
     generatedBindings: Object.freeze(generatedBindings),

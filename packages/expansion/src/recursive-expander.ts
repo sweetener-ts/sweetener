@@ -2843,7 +2843,6 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const contractBindings = (bindings: readonly Binding[]): RegionBindings => {
     const into = collecting();
     for (const binding of bindings) {
-      if (binding.visibility.kind !== "from") continue;
       if (binding.space === "value" || binding.space === "namespace")
         recordValue(into, binding.spelling, binding.scopes, wholeRun);
       if (binding.space === "type" || binding.space === "namespace")
@@ -6655,7 +6654,7 @@ function* walk(
         if (!substatement)
           declareInRun(
             region,
-            contractBindings(result.bindings),
+            contractBindings(result.followingBindings),
             noBindings,
             index,
           );

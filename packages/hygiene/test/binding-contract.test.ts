@@ -134,7 +134,6 @@ describe("binding contracts", () => {
           environments,
           environment,
           phase: createPhase(0),
-          position: 0,
           followingScope: definitionContextScope(scopes),
         },
       );
@@ -196,7 +195,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -220,6 +218,8 @@ describe("binding contracts", () => {
       scopes: binderScopes,
       space: "value",
     });
+    // Its region is a capture, so it binds nothing after the invocation.
+    expect(result.followingBindings).toEqual([]);
   });
 
   test("exports recursive declaration scopes to following syntax", () => {
@@ -249,7 +249,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -260,7 +259,8 @@ describe("binding contracts", () => {
         scopes.subset(binding.scopes, result.followingScopes),
       ),
     ).toBe(true);
-    expect(result.bindings[0]?.visibility).toEqual({ kind: "from", start: 0 });
+    expect(result.bindings[0]?.visibility).toEqual({ kind: "whole-frame" });
+    expect(result.followingBindings).toEqual(result.bindings);
   });
 
   test("threads captures, environments, and following scopes across contracts", () => {
@@ -288,7 +288,6 @@ describe("binding contracts", () => {
       environments,
       environment: environments.createRoot(),
       phase: createPhase(0),
-      position: 12,
       followingScope: definitionContextScope(scopes),
     });
     expect(result.bindings.map((binding) => binding.spelling)).toEqual([
@@ -297,8 +296,7 @@ describe("binding contracts", () => {
     ]);
     expect(
       result.bindings.every(
-        (binding) =>
-          binding.visibility.kind === "from" && binding.visibility.start === 12,
+        (binding) => binding.visibility.kind === "whole-frame",
       ),
     ).toBe(true);
     // Both bind in the rest of one definition context, so both add its one
@@ -365,7 +363,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -422,7 +419,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -469,7 +465,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 4,
         followingScope: definitionContextScope(scopes),
       },
     );
@@ -546,7 +541,6 @@ describe("binding contracts", () => {
         environments,
         environment: environments.createRoot(),
         phase: createPhase(0),
-        position: 0,
         followingScope: definitionContextScope(scopes),
       },
     );

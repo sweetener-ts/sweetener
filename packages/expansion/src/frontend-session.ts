@@ -822,7 +822,6 @@ export function createExpansionFrontendSession(
             allocateBindingId: options.allocateBindingId,
             allocateInvocationId: options.allocateInvocationId,
             captureSlashMisreads: captureMisreads,
-            position: 0,
             // An operator expanded here is expanded while the expression
             // holding it is read, and the reading hands back an expression,
             // not the definition context around it: there is nothing following
@@ -1782,7 +1781,6 @@ export function createExpansionFrontendSession(
         allocateBindingId: options.allocateBindingId,
         allocateInvocationId: options.allocateInvocationId,
         captureSlashMisreads: captureMisreads,
-        position: 0,
         admit: () => true,
         diagnosticOrigin: (origin) => {
           const selected = options.origins.selectPrimarySource(origin);

@@ -194,7 +194,6 @@ function invoke(
     allocateSyntaxId: syntaxIds.allocate,
     allocateBindingId: bindingIds.allocate,
     allocateInvocationId: invocationIds.allocate,
-    position: 0,
     followingScope: definitionContextScope(scopeStore),
     admit: () => true,
     expandReplacement: (request) => {

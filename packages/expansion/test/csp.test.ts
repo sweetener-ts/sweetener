@@ -249,7 +249,6 @@ function createHarness() {
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
-      position: 0,
       admit: () => true,
       diagnosticOrigin: (origin) => {
         const selected = origins.selectPrimarySource(origin);
