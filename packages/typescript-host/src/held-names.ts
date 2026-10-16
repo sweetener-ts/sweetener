@@ -10,6 +10,8 @@
  * same thing about the same name.
  */
 
+import * as ts from "typescript";
+
 /**
  * What TypeScript says when it cannot find a value for a name. A macro written
  * outside the space it was declared for is emitted verbatim, so this is where
@@ -90,4 +92,53 @@ export function nameTypeScriptNamed(
   )
     return undefined;
   return /'([^']+)'/u.exec(messageText)?.[1];
+}
+
+/**
+ * `// @ts-check` or `// @ts-nocheck` written at the head of a file, which says
+ * whether TypeScript checks it whatever its extension and `checkJs` say.
+ * Undefined where neither is written.
+ *
+ * Read here rather than off `ts.SourceFile`, whose `checkJsDirective` the
+ * TypeScript 6.0 public typings do not carry. The rules are TypeScript's, and
+ * agree with it on every case tested: a `//` comment only, `///` allowed,
+ * whitespace after the slashes allowed, anything after the directive allowed,
+ * only among the comments in front of the first token, the last of them wins,
+ * and the name is read without regard to case -- TypeScript lowercases a
+ * pragma's name before it looks it up, so `// @TS-NOCHECK` is a directive.
+ */
+function checkDirective(text: string | undefined): boolean | undefined {
+  if (text === undefined) return undefined;
+  let enabled: boolean | undefined;
+  for (const range of ts.getLeadingCommentRanges(text, 0) ?? []) {
+    if (range.kind !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+    const matched = checkDirectivePattern.exec(
+      text.slice(range.pos, range.end),
+    );
+    if (matched !== null) enabled = matched[1]?.toLowerCase() === "ts-check";
+  }
+  return enabled;
+}
+
+const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/iu;
+
+/**
+ * Whether TypeScript checks `sourceFile` under `options` -- and so whether a
+ * name in it that nothing defines is a name TypeScript will report, and a held
+ * sentence about it is one TypeScript will ask for.
+ *
+ * Under `noCheck` it checks nothing. Otherwise a `// @ts-check` or
+ * `// @ts-nocheck` decides, whatever the extension and `checkJs` say; and
+ * without one, TypeScript is checked and JavaScript only under `checkJs`. A
+ * file it does not check never reports the name, so a sentence held for it is
+ * said by whoever expanded it, or by nobody.
+ */
+export function typescriptChecks(
+  sourceFile: ts.SourceFile,
+  options: ts.CompilerOptions,
+): boolean {
+  if (options.noCheck === true) return false;
+  const directive = checkDirective(sourceFile.text);
+  if (directive !== undefined) return directive;
+  return /\.[cm]?tsx?$/iu.test(sourceFile.fileName) || options.checkJs === true;
 }

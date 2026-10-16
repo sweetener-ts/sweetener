@@ -249,6 +249,30 @@ export const held = twice;
     ).toBe("twice");
   });
 
+  test("warns about a macro's name in a file TypeScript does not check", () => {
+    // Nothing reports the name in an unchecked file, so the sentence is said
+    // as a warning, as the command line says it, rather than waiting for a
+    // question TypeScript will never ask.
+    const source = `// @ts-nocheck
+import { twice } from "./macros.sts" for syntax;
+export const held = twice;
+`;
+    const { service, sourceFileName } = editor(macros, source);
+    const reported = service.diagnostics(sourceFileName);
+    expect(
+      reported.map(({ typescriptCode, category }) => [
+        typescriptCode,
+        category,
+      ]),
+    ).toEqual([[4024, ts.DiagnosticCategory.Warning]]);
+    expect(
+      source.slice(
+        reported[0]?.primaryOrigin?.start ?? 0,
+        reported[0]?.primaryOrigin?.end ?? 0,
+      ),
+    ).toBe("twice");
+  });
+
   test("says nothing about a macro's name where TypeScript finds it", () => {
     const source = `import { twice } from "./macros.sts" for syntax;
 const twice = 1;

@@ -4,7 +4,11 @@ import type { BindingId, SourceId, SourceSpan } from "@sweetener/shared";
 import type { OriginStore } from "@sweetener/syntax";
 import * as ts from "typescript";
 import { remapTypeScriptDiagnostic } from "./diagnostic-remap.js";
-import { heldSentenceAnswers, nameTypeScriptNamed } from "./held-names.js";
+import {
+  heldSentenceAnswers,
+  nameTypeScriptNamed,
+  typescriptChecks,
+} from "./held-names.js";
 import type { RemappedTypeScriptDiagnostic } from "./diagnostic-remap.js";
 import type { VirtualLanguageServiceProject } from "./language-service-host.js";
 
@@ -31,14 +35,20 @@ export interface LanguageServiceExpansion {
   readonly diagnostics: readonly ts.Diagnostic[];
   /**
    * The sentences it holds about names it left standing, each with the name
-   * it is about. One is said where TypeScript reports that name at that
-   * place, in place of what TypeScript said; elsewhere TypeScript found the
-   * name, and nothing is said.
+   * it is about. Where TypeScript checks the source, one is said where
+   * TypeScript reports that name at that place, in place of what TypeScript
+   * said; elsewhere TypeScript found the name, and nothing is said.
    */
   readonly heldNames: readonly {
     readonly name: string;
     readonly diagnostic: ts.Diagnostic;
   }[];
+  /**
+   * The same sentences as warnings, said as they stand where TypeScript does
+   * not check the source -- unchecked JavaScript, `// @ts-nocheck`, `noCheck`
+   * -- since nothing there will ever report the name.
+   */
+  readonly heldWarnings: readonly ts.Diagnostic[];
 }
 
 export interface MappedQuickInfo {
@@ -273,6 +283,20 @@ export class MappedLanguageService {
     if (expansion === undefined) return Object.freeze(remapped);
     const inSource = (diagnostic: ts.Diagnostic) =>
       sourceDiagnostic(mapping, diagnostic);
+    const program = this.#project.languageService.getProgram();
+    const virtual = program?.getSourceFile(mapping.virtualFileName);
+    if (program === undefined || virtual === undefined)
+      throw new Error(
+        `The language service holds no program with ${mapping.virtualFileName}, which it reported diagnostics for`,
+      );
+    // Where TypeScript does not check the file it reports no name, so nothing
+    // would ask for a held sentence: each is said as a warning instead.
+    if (!typescriptChecks(virtual, program.getCompilerOptions()))
+      return Object.freeze([
+        ...remapped,
+        ...expansion.diagnostics.map(inSource),
+        ...expansion.heldWarnings.map(inSource),
+      ]);
     return Object.freeze([
       ...remapped.map((diagnostic) => {
         const name = nameTypeScriptNamed(

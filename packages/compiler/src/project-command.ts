@@ -15,6 +15,7 @@ import {
   composeSourceMap,
   createVirtualProgram,
   remapGeneratedSpan,
+  typescriptChecks,
 } from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
@@ -88,34 +89,6 @@ function configurationDiagnostic(
     messageText: `${problem.code} ${problem.path} ${problem.message}`,
   });
 }
-
-/**
- * `// @ts-check` or `// @ts-nocheck` written at the head of a file, which says
- * whether TypeScript checks it whatever its extension and `checkJs` say.
- * Undefined where neither is written.
- *
- * Read here rather than off `ts.SourceFile`, whose `checkJsDirective` the
- * TypeScript 6.0 public typings do not carry. The rules are TypeScript's, and
- * agree with it on every case tested: a `//` comment only, `///` allowed,
- * whitespace after the slashes allowed, anything after the directive allowed,
- * only among the comments in front of the first token, the last of them wins,
- * and the name is read without regard to case -- TypeScript lowercases a
- * pragma's name before it looks it up, so `// @TS-NOCHECK` is a directive.
- */
-function checkDirective(text: string | undefined): boolean | undefined {
-  if (text === undefined) return undefined;
-  let enabled: boolean | undefined;
-  for (const range of ts.getLeadingCommentRanges(text, 0) ?? []) {
-    if (range.kind !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
-    const matched = checkDirectivePattern.exec(
-      text.slice(range.pos, range.end),
-    );
-    if (matched !== null) enabled = matched[1]?.toLowerCase() === "ts-check";
-  }
-  return enabled;
-}
-
-const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/iu;
 
 function remapGeneratedDiagnostics(options: {
   readonly diagnostics: readonly ts.Diagnostic[];
@@ -658,18 +631,13 @@ export function runConfiguredProjectCommand(options: {
       throw new Error(
         `A sentence about a name was held against ${fileName}, which this command did not hand to TypeScript`,
       );
-    if (project.typescript.options.noCheck === true) return false;
-    // A `// @ts-check` or `// @ts-nocheck` in the file overrides both the
-    // extension and `checkJs`, so it is the first question. Asked of the file
-    // TypeScript itself parsed, and answered the way TypeScript answers it.
-    const directive = checkDirective(
-      created.program.getSourceFile(virtual)?.text,
-    );
-    if (directive !== undefined) return directive;
-    return (
-      /\.[cm]?tsx?$/iu.test(virtual) ||
-      project.typescript.options.checkJs === true
-    );
+    // Asked of the file TypeScript itself parsed.
+    const sourceFile = created.program.getSourceFile(virtual);
+    if (sourceFile === undefined)
+      throw new Error(
+        `${virtual} was handed to TypeScript as ${fileName}, and its program does not hold it`,
+      );
+    return typescriptChecks(sourceFile, project.typescript.options);
   };
   const unanswered = warnAboutHeldNames(
     heldExplanations.filter(

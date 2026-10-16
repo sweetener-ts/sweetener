@@ -207,8 +207,9 @@ export function explainOriginalPosition(options: {
  * held against this source are handed over as held names, for the language
  * service to say where TypeScript reports the name and nowhere else. An
  * inspection also carries them as warnings, for the paths with no checker
- * behind them. An editor has one, so they are not said twice: of the
- * inspection's warnings, only what expansion itself reported is kept.
+ * behind them; those are handed over apart from what expansion itself
+ * reported, for the language service to say where TypeScript does not check
+ * the source and so will never ask.
  */
 export function languageServiceExpansion(options: {
   readonly sourceFileName: string;
@@ -226,13 +227,13 @@ export function languageServiceExpansion(options: {
       ({ diagnostic }) =>
         diagnostic.start === warning.start && diagnostic.code === warning.code,
     );
+  const warnings = options.inspection.warnings ?? [];
   return Object.freeze({
     diagnostics: Object.freeze([
       ...options.inspection.diagnostics,
-      ...(options.inspection.warnings ?? []).filter(
-        (warning) => !held(warning),
-      ),
+      ...warnings.filter((warning) => !held(warning)),
     ]),
     heldNames: Object.freeze(heldNames),
+    heldWarnings: Object.freeze(warnings.filter(held)),
   });
 }
