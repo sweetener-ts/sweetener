@@ -1,5 +1,6 @@
 import {
   createIdAllocator,
+  PersistentStringMap,
   type BindingId,
   type DeclarationGroupId,
   type EnvironmentEpoch,
@@ -16,7 +17,6 @@ import {
   type Phase,
   type SyntaxSpace,
 } from "./binding.js";
-import { PersistentStringMap } from "./persistent-map.js";
 
 function indexKey(spelling: string, phase: Phase, space: SyntaxSpace): string {
   return `${String(spelling.length)}:${spelling}|${String(phase)}|${space}`;

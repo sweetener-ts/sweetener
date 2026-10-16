@@ -1,6 +1,7 @@
 import type { Binding, Phase, SyntaxSpace } from "@sweetener/hygiene";
 import {
   createIdAllocator,
+  PersistentStringMap,
   type BindingId,
   type DefinitionContextId,
   type EnvironmentEpoch,
@@ -125,11 +126,12 @@ class PersistentExpansionEnvironment implements ExpansionEnvironment {
     readonly parent: ExpansionEnvironment | undefined,
     readonly depth: number,
     readonly definitionContext: DefinitionContextId,
-    readonly bindings: ReadonlyMap<string, readonly Binding[]> = new Map(),
-    readonly operators: ReadonlyMap<
-      string,
+    readonly bindings: PersistentStringMap<
+      readonly Binding[]
+    > = PersistentStringMap.empty(),
+    readonly operators: PersistentStringMap<
       readonly OperatorBinding[]
-    > = new Map(),
+    > = PersistentStringMap.empty(),
   ) {
     Object.freeze(this);
   }
@@ -137,8 +139,8 @@ class PersistentExpansionEnvironment implements ExpansionEnvironment {
   [extendEnvironment](
     id: EnvironmentId,
     epoch: EnvironmentEpoch,
-    bindings: ReadonlyMap<string, readonly Binding[]>,
-    operators: ReadonlyMap<string, readonly OperatorBinding[]>,
+    bindings: PersistentStringMap<readonly Binding[]>,
+    operators: PersistentStringMap<readonly OperatorBinding[]>,
   ): PersistentExpansionEnvironment {
     return new PersistentExpansionEnvironment(
       this.owner,
@@ -194,14 +196,12 @@ export class ExpansionEnvironmentStore {
       );
     }
     const key = bindingKey(binding.spelling, binding.phase, binding.space);
-    const bindings = new Map(checked.bindings);
     const local = checked.bindings.get(key) ?? [];
     if (local.some((candidate) => candidate.id === binding.id)) return checked;
-    bindings.set(key, Object.freeze([...local, binding]));
     return checked[extendEnvironment](
       this.#environmentIds.allocate(),
       this.#epochs.allocate(),
-      bindings,
+      checked.bindings.set(key, Object.freeze([...local, binding])),
       checked.operators,
     );
   }
@@ -233,7 +233,6 @@ export class ExpansionEnvironmentStore {
     const checked = this.#require(environment);
     const value = createOperatorBinding(operator);
     const key = operatorKey(value.spelling, value.phase, value.category);
-    const operators = new Map(checked.operators);
     const local = checked.operators.get(key) ?? [];
     if (local.some((candidate) => candidate.binding === value.binding))
       return checked;
@@ -242,12 +241,11 @@ export class ExpansionEnvironmentStore {
         `Duplicate local ${value.fixity} operator ${value.spelling}`,
       );
     }
-    operators.set(key, Object.freeze([...local, value]));
     return checked[extendEnvironment](
       this.#environmentIds.allocate(),
       this.#epochs.allocate(),
       checked.bindings,
-      operators,
+      checked.operators.set(key, Object.freeze([...local, value])),
     );
   }
 

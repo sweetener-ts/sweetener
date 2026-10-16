@@ -241,6 +241,42 @@ describe("expansion environments", () => {
     ).toEqual([1]);
   });
 
+  test("every earlier snapshot keeps answering as it did", () => {
+    const store = new ExpansionEnvironmentStore();
+    const versions = [store.createRoot()];
+    for (let index = 1; index <= 600; index += 1) {
+      const current = versions.at(-1)!;
+      versions.push(
+        index % 3 === 0
+          ? store.extendOperator(
+              current,
+              operator(index, { spelling: `op${String(index)}` }),
+            )
+          : store.extendBinding(current, binding(index, `m${String(index)}`)),
+      );
+    }
+    versions.forEach((version, size) => {
+      for (const index of [1, 2, 3, 299, 300, 301, 598, 599, 600]) {
+        const query = { phase, category: "expr" } as const;
+        const found =
+          index % 3 === 0
+            ? store
+                .lookupOperators(version, {
+                  ...query,
+                  spelling: `op${String(index)}`,
+                })
+                .map(({ binding }) => binding)
+            : store
+                .lookupBindings(version, {
+                  ...query,
+                  spelling: `m${String(index)}`,
+                })
+                .map(({ id }) => id);
+        expect(found).toEqual(index <= size ? [index] : []);
+      }
+    });
+  });
+
   test("rejects cross-store snapshots and runtime bindings", () => {
     const first = new ExpansionEnvironmentStore();
     const second = new ExpansionEnvironmentStore();
