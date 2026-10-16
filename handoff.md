@@ -30,49 +30,6 @@ Two facts worth keeping in mind while reading the rest:
 
 ## Open bugs
 
-### 1. A warning fails the build (highest priority)
-
-`packages/compiler/src/project-command.ts:503` returns `exitCode: 1` on any
-diagnostic, and `packages/compiler/src/session.ts:243` throws on any, neither
-looking at `category`. `packages/cli/src/project-runner.ts:114` _does_ filter on
-`Error`, so the two project paths disagree. `SWR4021` has failed builds this way
-since before the session; `SWR4025` and the held-name warnings now inherit it.
-
-It fires on ordinary TypeScript. Measured against real packages, 12 of 620
-`node_modules` files fail `sweetener check` that passed at `8e06a24`. Three
-shapes, each still reproducible at `2403709` (each prints
-`warning TS4025 … reader expected …` and then `check: failed`; the missing
-semicolons and the line breaks are the point, so this block is not formatted):
-
-```text
-declare const module: any;
-module.exports = 1            // "declaration body"; also `namespace = 1`, `module(1)`
-
-export const g:
-  | number
-  | undefined = 1 as any;     // "variable type" — prettier's default union layout
-
-export function f(a: number): number      // "declaration body"
-export function f(a: any): any { return a; }
-```
-
-Fix the gating, then the three reader gaps behind it:
-
-- `module`/`namespace` as ordinary names: `declarationHead`
-  (`packages/enforestation/src/statement-item.ts:250`) accepts a contextual head
-  word on the sole test `noLineTerminatorAfter`. `global` has a dedicated
-  next-token guard (`globalAugmentation`, `:287`); these two need the same one.
-- leading `|`/`&` in an annotation: `continuationOperators`
-  (`packages/enforestation/src/type-class-element.ts:392`) breaks out when
-  `expectingOperand`, yielding an empty read. `c51ddb3` routes every declarator
-  annotation through this consumer, which is what made it reachable. Allow a
-  leading `|`/`&` when `children.length === 0`.
-- bodiless signatures: `endsAtBlock` (`statement-item.ts:2005`) means "must end
-  at a brace", and an ambient or overload declaration has neither brace nor `;`.
-  The `moduleItem` ASI rule at `:2046` is the right one and is skipped whenever
-  `endsAtBlock`. Same root cause as `declare function f(): void` swallowing the
-  statement after it.
-
 ### 2. Reader gaps that refuse valid TypeScript
 
 - `y?.<A>(b)` — an optional call with explicit type arguments. Refused at both
@@ -95,19 +52,12 @@ Fix the gating, then the three reader gaps behind it:
 - **`remapGeneratedDiagnostics` collapses an expansion onto the invocation's
   start.** Two sentences about different names in one macro's output are both
   reported now (that was fixed), but at the same position and span.
-- **`resolvesNamesIn` ignores `// @ts-check` / `// @ts-nocheck`** —
-  `checkJsDirective` is not in the public TypeScript 6.0 typings. A JS file with
-  `checkJs` off and `@ts-check` gets a warning TypeScript already answered.
 - **A held sentence on an unchecked path can be spurious.** In an unchecked
   `.sjs` file a macro spelled `JSON` is warned about. Deliberate, and pinned by a
   test: the alternative is silently emitting a name that throws.
 - **`SWR4017` is never raised in a type position.**
   `export type Held = nowhere;` above `export syntax nowhere:type {…}` reports
   only TypeScript's `TS2304`.
-- **The editor never shows any of this.**
-  `packages/typescript-host/src/mapped-language-service.ts:151` reports only
-  TypeScript's diagnostics, so an editor shows `Cannot find name` where the CLI
-  explains the macro. The explanation now exists in the form that path needs.
 
 ### 4. Expander and printer
 
@@ -179,30 +129,16 @@ copying rule coming back.
 
 ## Test and tooling debt
 
-- **`eslint.config.mjs` does not ignore `.worktrees/`.** With a worktree present,
-  `pnpm lint` fails with ~1,882 "multiple candidate TSConfigRootDirs" errors.
-  Prettier already ignores it.
 - **The enforestation test harness is weaker than production.** `parse()` in
   `packages/enforestation/test/statement-item.test.ts:29` and `setup()` in
   `binding-parameter.test.ts` build consumers without `consumeType`, so
   `const x = a as string[];` looks refused there while the real pipeline reads it
   fine. This produced a false positive during the session.
-- **`scripts/run-tests.mjs` can report a stale green.** If vitest dies before
-  writing `artifacts/test-results/vitest.raw`, the script parses the _previous_
-  run's raw file and writes a green-looking `unit.json` stamped with the current
-  commit. The process still exits non-zero, so `pnpm test` fails — but
-  `STATUS.md` records a pass.
-- **The reader's cost-per-character test was weakened** (`580bfd0`): the bound is
-  still 3, but it retries up to 24 rounds and exits on the first pass, so a
-  reader genuinely over the bound 80% of the time now passes.
 - **Benchmark baselines:** `benchmarks/baselines/node24.json` is stale (commit
   `fbd8512`, no `loadAverage`, **no `expansion/project-scale` row**, so that
   scenario is unchecked under Node 24); both checked-in baselines were recorded
   with `dirty: true`; and `--baseline auto` silently skips scenarios missing from
   the baseline, so a new scenario is unguarded until someone re-records.
-- **`STATUS.md` no longer marks a check report stale** (`a943ead` removed the
-  marker so the file could stop naming the commit it was generated at). The
-  report's own commit is still recorded.
 
 ## Features not built
 
