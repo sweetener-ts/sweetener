@@ -267,16 +267,26 @@ function definitionRanges(
   origins: OriginStore,
 ) {
   const ranges: { start: number; end: number }[] = [];
+  // Where each top-level node stands, and the first node beginning at each
+  // offset, found once for the module rather than searched for each of its
+  // definitions: a module of many definitions searched its whole length for
+  // every one of them.
+  const indexOf = new Map<Syntax, number>();
+  const firstAt = new Map<number, number>();
+  root.children.forEach((child, index) => {
+    indexOf.set(child, index);
+    if (!firstAt.has(child.span.start)) firstAt.set(child.span.start, index);
+  });
   for (const definition of parsed.definitions) {
     const end = definition.kind === "syntax" ? definition.end : definition.body;
-    const bodyIndex = root.children.indexOf(end);
-    if (bodyIndex < 0) continue;
+    const bodyIndex = indexOf.get(end);
+    if (bodyIndex === undefined) continue;
     const definitionStart = origins.selectPrimarySource(definition.origin)?.span
       .start;
-    let startIndex = root.children.findIndex(
-      ({ span }) => span.start === definitionStart,
-    );
-    if (startIndex < 0 || startIndex > bodyIndex) startIndex = bodyIndex;
+    let startIndex =
+      definitionStart === undefined ? undefined : firstAt.get(definitionStart);
+    if (startIndex === undefined || startIndex > bodyIndex)
+      startIndex = bodyIndex;
     while (startIndex > 0) {
       const previous = root.children[startIndex - 1];
       if (
@@ -321,19 +331,30 @@ function withLeadingTrivia(
 }
 
 function runtimeSyntax(file: ParsedFile, origins: OriginStore) {
-  const ranges = compileTimeRanges(file, origins);
+  // By where each begins, so one pass over the file's nodes, which stand in
+  // the order they were written, reads them alongside: asking every range of
+  // every node cost a module of many definitions the square of its length.
+  const ranges = [...compileTimeRanges(file, origins)].sort(
+    (left, right) => left.start - right.start,
+  );
   const kept: Syntax[] = [];
   // Comments written above a compile-time import describe the module, not the
   // import, and a licence header at the top of a file must not be deleted from
   // the output along with the import it happens to sit on. They move to
   // whatever survives instead. Comments inside the removed construct go with it.
-  let carried: readonly Trivia[] = [];
+  let carried: Trivia[] = [];
+  // The ranges beginning at or before the node being read, and how far the
+  // furthest of them reaches. A node lies inside one of them exactly when it
+  // ends within that reach.
+  let begun = 0;
+  let reach = Number.NEGATIVE_INFINITY;
   for (const syntax of file.root.children) {
     if (syntax.tag === "token" && syntax.kind === "end-of-file") continue;
-    const removed = ranges.some(
-      ({ start, end }) => syntax.span.start >= start && syntax.span.end <= end,
-    );
-    if (removed) {
+    while (begun < ranges.length && ranges[begun]!.start <= syntax.span.start) {
+      reach = Math.max(reach, ranges[begun]!.end);
+      begun += 1;
+    }
+    if (syntax.span.end <= reach) {
       const leading = leadingTriviaOf(syntax);
       // From the first comment to the end, so the line breaks between comments
       // come too. Keeping only the comments themselves ran two line comments
@@ -341,7 +362,7 @@ function runtimeSyntax(file: ParsedFile, origins: OriginStore) {
       const first = leading.findIndex(
         ({ kind }) => kind === "line-comment" || kind === "block-comment",
       );
-      if (first >= 0) carried = [...carried, ...leading.slice(first)];
+      if (first >= 0) carried.push(...leading.slice(first));
       continue;
     }
     kept.push(withLeadingTrivia(syntax, carried));

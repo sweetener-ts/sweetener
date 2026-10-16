@@ -419,6 +419,13 @@ export function compileParsedMacros(
     readonly macro: CompiledMacroBinding;
     readonly operator: OperatorBinding | undefined;
   }[] = [];
+  // The definitions kept so far by the name each defines, in the order they
+  // were written, so a definition is checked against those of its own name
+  // rather than against the whole module.
+  const definitionsBySpelling = new Map<
+    string,
+    (typeof definitions)[number][]
+  >();
   const operators: OperatorBinding[] = [];
   const bindingLiterals: CompiledBindingLiteral[] = [];
 
@@ -591,11 +598,11 @@ export function compileParsedMacros(
     // categories, because a module's export list records one category per name
     // and the second would be silently unreachable through any import.
     const definedName = macro.binding.spelling;
-    const claimed = definitions.find(
+    const sameName = definitionsBySpelling.get(definedName) ?? [];
+    const claimed = sameName.find(
       ({ definition: existing, macro: existingMacro }) =>
-        existingMacro.binding.spelling === definedName &&
-        (existingMacro.category === macro.category ||
-          (existing.exported && definition.exported)),
+        existingMacro.category === macro.category ||
+        (existing.exported && definition.exported),
     );
     if (claimed !== undefined) {
       const span = options.spanForOrigin(definition.origin);
@@ -619,7 +626,10 @@ export function compileParsedMacros(
     }
     macros.push(macro);
     if (operator !== undefined) operators.push(operator);
-    definitions.push(Object.freeze({ definition, macro, operator }));
+    const kept = Object.freeze({ definition, macro, operator });
+    definitions.push(kept);
+    if (sameName.length === 0) definitionsBySpelling.set(definedName, [kept]);
+    else sameName.push(kept);
   }
 
   const frozenMacros = Object.freeze(macros);
