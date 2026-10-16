@@ -16,6 +16,8 @@ import {
 } from "@sweetener/shared";
 import {
   angleWidth,
+  coreExpressionOperators,
+  coreTypeOperators,
   createGroup,
   createMissingToken,
   createProtectedSyntax,
@@ -27,6 +29,8 @@ import {
   isIdentifierToken,
   isPropertyNameToken,
   spanEnvelope,
+  type CoreOperator,
+  type ExpressionForm,
   type GroupSyntax,
   type ProtectedSyntax,
   type Syntax,
@@ -52,8 +56,15 @@ import {
   unprocessedDefinitionCode,
   unreadableSyntaxCode,
   wrongCategoryMacroCode,
+  foldPositionCode,
 } from "./diagnostics.js";
-import { readLetBinding, readParameterization } from "@sweetener/template";
+import {
+  foldCarrier,
+  isFoldAccumulator,
+  readLetBinding,
+  readParameterization,
+  type FoldCarrier,
+} from "@sweetener/template";
 import {
   arrowBodyExtent,
   asyncArrowHead,
@@ -315,6 +326,27 @@ const macroSpaces = Object.freeze([
   "binding",
   "jsxChild",
 ] as const);
+
+/**
+ * Whether an expression or a type spliced as `syntax` still says where it
+ * begins and ends without a node around it: a lone token, or a node that
+ * already bounds itself.
+ *
+ * A lone group does not. The braces of `{ value: 1 }` spliced loose after
+ * `=>` read as a block holding a label, and the function returns nothing.
+ * The same is so of a macro's result and of a capture. Nor does a lone token
+ * the parser read as an expression of a form of its own: `yield` with nothing
+ * to yield is a whole assignment expression, and spliced loose after `??` it
+ * no longer parses.
+ */
+export function boundsItself(
+  syntax: readonly Syntax[],
+  form: ExpressionForm | undefined,
+): boolean {
+  return (
+    form === undefined && syntax.length === 1 && syntax[0]!.tag !== "group"
+  );
+}
 
 function punctuationSpelled(spelling: string): boolean {
   return !/^[\p{ID_Start}_$]/u.test(spelling);
@@ -747,6 +779,45 @@ export function expandMacroSyntax(
     if (previous.raw === "=" && typeArgumentsOpen(preceding)) return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
     return typeAliasInitializerFollows(preceding);
+  };
+
+  /**
+   * Where the type reference `preceding` ends with begins: a name, qualified
+   * or not, with the type arguments and the `[]` or indexed accesses written
+   * after it. Undefined where `preceding` does not end with a name.
+   *
+   * A bracket written after a type reference is part of the type -- an array
+   * type or an indexed access -- wherever the reference itself stood where a
+   * type is read, which only the token in front of the reference says.
+   */
+  const typeReferenceStart = (
+    preceding: readonly Syntax[],
+  ): number | undefined => {
+    let at = preceding.length;
+    const bracket = (node: Syntax | undefined) =>
+      node?.tag === "group" && node.delimiter === "bracket";
+    while (bracket(preceding[at - 1])) at -= 1;
+    let closed = angles(preceding[at - 1], ">");
+    if (closed > 0) {
+      at -= 1;
+      while (closed > 0 && at > 0) {
+        at -= 1;
+        closed += angles(preceding[at], ">") - angles(preceding[at], "<");
+      }
+      if (closed > 0) return undefined;
+    }
+    const name = (node: Syntax | undefined) =>
+      node?.tag === "token" &&
+      (node.kind === "identifier" || node.kind === "keyword");
+    if (!name(preceding[at - 1])) return undefined;
+    at -= 1;
+    while (
+      preceding[at - 1]?.tag === "token" &&
+      (preceding[at - 1] as TokenSyntax).raw === "." &&
+      name(preceding[at - 2])
+    )
+      at -= 2;
+    return at;
   };
 
   /**
@@ -2636,6 +2707,42 @@ export function expandMacroSyntax(
   };
 
   /**
+   * Whether the `<` at `at` among the members of an object literal opens
+   * angle brackets -- type parameters or type arguments, whose commas do not
+   * end the member -- rather than comparing. `member` is what of the member
+   * stands before it.
+   *
+   * Only an expression compares, so in a method's head, which is a signature,
+   * every `<` opens. In a value one opens where an operand begins, which makes
+   * it a generic arrow's type parameters. After an operand it is TypeScript's
+   * question for an instantiation, and the same rule answers it: once the
+   * angles close, a call or a tagged template, or something that cannot go on
+   * as a comparison's operand, says they held type arguments --
+   * `make<A, B>()`, the return type in `(x): Map<K, V> => x`, the type after
+   * `as`. Anything else is a comparison: `{ low: a < b, high: c > d }`.
+   */
+  const anglesOpen = (
+    members: readonly Syntax[],
+    at: number,
+    member: readonly Syntax[],
+    signature: boolean,
+  ): boolean => {
+    if (signature || !endsOperand(member, member.length, true)) return true;
+    let depth = 0;
+    for (let ahead = at; ahead < members.length; ahead += 1) {
+      const node = members[ahead]!;
+      if (node.tag !== "token") continue;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth > 0) continue;
+      const following = members[ahead + 1];
+      return (
+        callFollowsTypeArguments(following) || typeArgumentsFollow(following)
+      );
+    }
+    return false;
+  };
+
+  /**
    * Whether syntax carrying `scopes` stands in `region` as the walk found it
    * there, written in it or copied from what was, rather than written by a
    * template at an invocation made inside it.
@@ -3057,6 +3164,383 @@ export function expandMacroSyntax(
         : undefined;
     }
     return undefined;
+  };
+
+  /**
+   * The accumulators an operand fold built, each already walked. A step
+   * holding one reads it as one operand and does not walk it again: it holds
+   * the accumulator before it, as deep as the fold has gone.
+   */
+  const builtAccumulators = new WeakSet<Syntax>();
+
+  /** Reports an operand fold that cannot be built where it stands. */
+  const reportFold = (marker: TokenSyntax, problem: string) => {
+    const origin = primaryOrigin(marker);
+    if (origin === undefined)
+      throw new TypeError("A #fold has no source to report it at");
+    // A fold handed to another macro reached it as a copy of the one its
+    // template wrote.
+    let record = options.origins.get(marker.origin);
+    while (record?.kind === "copied")
+      record = options.origins.get(record.parent);
+    diagnostics.push(
+      expansionDiagnosticRegistry.create(foldPositionCode, {
+        primaryOrigin: origin,
+        messageArguments: [problem],
+        relatedOrigins:
+          record?.kind === "introduced"
+            ? [
+                {
+                  message: "The #fold is written here",
+                  origin: options.diagnosticOrigin(record.definition),
+                },
+              ]
+            : [],
+      }),
+    );
+  };
+
+  /**
+   * `syntax` again, with ids of its own, for a step that writes `$acc` more
+   * than once: each place it stands holds a node of its own. Every token is
+   * charged as output, as the template's own copies are, so a step that
+   * doubles its accumulator meets the output limit rather than memory's.
+   */
+  const copyAccumulator = (syntax: Syntax): Syntax => {
+    switch (syntax.tag) {
+      case "token":
+        options.tracker.chargeOutputTokens();
+        return createToken({ ...syntax, id: options.allocateSyntaxId() });
+      case "group":
+        return createGroup({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          open: copyAccumulator(syntax.open) as TokenSyntax,
+          children: syntax.children.map(copyAccumulator),
+          close:
+            syntax.close.tag === "token"
+              ? (copyAccumulator(syntax.close) as TokenSyntax)
+              : syntax.close,
+        });
+      case "protected": {
+        const copied = createProtectedSyntax({
+          ...syntax,
+          id: options.allocateSyntaxId(),
+          children: syntax.children.map(copyAccumulator),
+        });
+        if (builtAccumulators.has(syntax)) builtAccumulators.add(copied);
+        return copied;
+      }
+      case "root":
+        throw new TypeError("A fold's accumulator holds no root");
+    }
+  };
+
+  /**
+   * A step's syntax with each `$acc` it wrote filled with `accumulator`, and
+   * how many it filled. A fold written in the step has accumulators of its
+   * own, and only its initial template, which is evaluated where it is
+   * written, can hold one of this fold's.
+   */
+  const fillAccumulators = (
+    nodes: readonly Syntax[],
+    accumulator: ProtectedSyntax,
+  ): { readonly syntax: SyntaxSequence; readonly filled: number } => {
+    let filled = 0;
+    const fill = (children: readonly Syntax[]): readonly Syntax[] => {
+      let changed = false;
+      const result = children.map((node) => {
+        const next = fillNode(node);
+        changed ||= next !== node;
+        return next;
+      });
+      return changed ? result : children;
+    };
+    const fillNode = (node: Syntax): Syntax => {
+      if (isFoldAccumulator(node)) {
+        filled += 1;
+        return filled === 1 ? accumulator : copyAccumulator(accumulator);
+      }
+      if (node.tag === "group") {
+        const children = fill(node.children);
+        return children === node.children
+          ? node
+          : createGroup({
+              ...node,
+              id: options.allocateSyntaxId(),
+              children: createSyntaxSequence(children),
+            });
+      }
+      const inner = foldCarrier(node);
+      if (inner === undefined || node.tag !== "protected") return node;
+      const initial = fillNode(inner.initial);
+      return initial === inner.initial
+        ? node
+        : createProtectedSyntax({
+            ...node,
+            id: options.allocateSyntaxId(),
+            children: [inner.marker, initial, ...inner.steps],
+          });
+    };
+    const syntax = fill(nodes);
+    return { syntax: createSyntaxSequence(syntax), filled };
+  };
+
+  /**
+   * The precedence of `node` when it is a chain of one left-associative core
+   * operator's level -- `a + b`, or `a + b - c` held as one node -- whose
+   * operands are all expressions.
+   */
+  const chainPrecedence = (node: Syntax): number | undefined => {
+    if (
+      node.tag !== "protected" ||
+      node.category !== "expr" ||
+      node.form !== undefined ||
+      node.precedence === undefined ||
+      node.children.length < 3 ||
+      node.children[0]!.tag !== "protected"
+    )
+      return undefined;
+    let spelling = "";
+    for (const child of node.children.slice(1)) {
+      if (child.tag === "token") {
+        spelling += child.raw;
+        continue;
+      }
+      const operator = coreExpressionOperators.find(
+        (candidate) =>
+          candidate.fixity === "infix" && candidate.spelling === spelling,
+      );
+      if (
+        child.tag !== "protected" ||
+        child.category !== "expr" ||
+        operator?.associativity !== "left" ||
+        operator.precedence !== node.precedence
+      )
+        return undefined;
+      spelling = "";
+    }
+    return spelling === "" ? node.precedence : undefined;
+  };
+
+  /**
+   * The operator a type is a union or an intersection of at its top level,
+   * where nothing there binds looser: `|` for `A | B[]`, nothing for a
+   * function type or a conditional one. Angle brackets are tokens, so what
+   * stands between them is skipped.
+   */
+  const typeChainOperator = (node: Syntax): "|" | "&" | undefined => {
+    if (node.tag !== "protected" || node.category !== "type") return undefined;
+    let loosest: CoreOperator | undefined;
+    let angles = 0;
+    for (const child of node.children) {
+      if (child.tag !== "token") continue;
+      const depth = angles;
+      angles = Math.max(
+        0,
+        angles + angleWidth(child.raw, "<") - angleWidth(child.raw, ">"),
+      );
+      if (depth > 0 || angles > 0) continue;
+      const operator = coreTypeOperators.find(
+        (candidate) =>
+          candidate.fixity === "infix" && candidate.spelling === child.raw,
+      );
+      if (
+        operator !== undefined &&
+        (loosest === undefined || operator.precedence < loosest.precedence)
+      )
+        loosest = operator;
+    }
+    return loosest?.spelling === "|" || loosest?.spelling === "&"
+      ? loosest.spelling
+      : undefined;
+  };
+
+  /**
+   * Where `accumulator` joins the chain of operators `built` is, when it
+   * continues it: what of `built` stands before it and after it, once every
+   * node between the two is opened. An expression joins when it is the head
+   * of a left-associative chain of its own level -- `$acc + $item` -- and a
+   * type when it is a member of a union, or of an intersection, it is one of
+   * too -- `$acc | $item`, `$item | $acc`. Read on, the two say the same.
+   */
+  const chainLink = (
+    built: ProtectedSyntax,
+    accumulator: ProtectedSyntax,
+  ):
+    | { readonly before: readonly Syntax[]; readonly after: readonly Syntax[] }
+    | undefined => {
+    if (built.category === "type") {
+      const operator = typeChainOperator(built);
+      if (operator === undefined || typeChainOperator(accumulator) !== operator)
+        return undefined;
+      const at = built.children.indexOf(accumulator);
+      const parts = (node: Syntax | undefined) =>
+        node === undefined || (node.tag === "token" && node.raw === operator);
+      return at >= 0 &&
+        parts(built.children[at - 1]) &&
+        parts(built.children[at + 1])
+        ? {
+            before: built.children.slice(0, at),
+            after: built.children.slice(at + 1),
+          }
+        : undefined;
+    }
+    const precedence = chainPrecedence(built);
+    if (precedence === undefined || chainPrecedence(accumulator) !== precedence)
+      return undefined;
+    const after: (readonly Syntax[])[] = [];
+    let current: Syntax = built;
+    while (current !== accumulator) {
+      if (
+        current.tag !== "protected" ||
+        chainPrecedence(current) !== precedence
+      )
+        return undefined;
+      after.push(current.children.slice(1));
+      current = current.children[0]!;
+    }
+    return { before: [], after: after.reverse().flat() };
+  };
+
+  /** `node` with `target` replaced by `replacement` wherever it stands in it. */
+  const replacing = (
+    node: Syntax,
+    target: Syntax,
+    replacement: Syntax,
+  ): Syntax => {
+    if (node === target) return replacement;
+    if (node.tag !== "group" && node.tag !== "protected") return node;
+    let changed = false;
+    const children = node.children.map((child) => {
+      const next = replacing(child, target, replacement);
+      changed ||= next !== child;
+      return next;
+    });
+    if (!changed) return node;
+    return node.tag === "group"
+      ? createGroup({
+          ...node,
+          id: options.allocateSyntaxId(),
+          children: createSyntaxSequence(children),
+        })
+      : createProtectedSyntax({
+          ...node,
+          id: options.allocateSyntaxId(),
+          children,
+        });
+  };
+
+  /**
+   * The expression or type a fold's accumulators built, with each one that
+   * continued the chain of the step after it opened into that chain: `0 + a +
+   * b` is one node rather than one per item, as deep as the operators the
+   * steps write and no deeper. The chain is gathered once, in the order the
+   * steps built it, so a fold of any length costs what it built.
+   */
+  const joinedChain = (
+    accumulators: readonly ProtectedSyntax[],
+    links: readonly (
+      | {
+          readonly before: readonly Syntax[];
+          readonly after: readonly Syntax[];
+        }
+      | undefined
+    )[],
+  ): ProtectedSyntax => {
+    let joined: ProtectedSyntax = accumulators[0]!;
+    let open:
+      | {
+          top: ProtectedSyntax;
+          readonly base: readonly Syntax[];
+          readonly befores: (readonly Syntax[])[];
+          readonly afters: (readonly Syntax[])[];
+        }
+      | undefined;
+    const close = () => {
+      if (open === undefined) return;
+      const children: Syntax[] = [];
+      for (let at = open.befores.length - 1; at >= 0; at -= 1)
+        children.push(...open.befores[at]!);
+      children.push(...open.base);
+      for (const after of open.afters) children.push(...after);
+      const origins = [...new Set(children.map(({ origin }) => origin))];
+      joined = createProtectedSyntax({
+        ...open.top,
+        id: options.allocateSyntaxId(),
+        span: spanEnvelope(children.map(({ span }) => span)),
+        origin:
+          origins.length === 1
+            ? origins[0]!
+            : options.origins.composed(origins),
+        children,
+      });
+      open = undefined;
+    };
+    for (let at = 1; at < accumulators.length; at += 1) {
+      const built = accumulators[at]!;
+      const link = links[at];
+      if (link === undefined) {
+        close();
+        const previous = accumulators[at - 1]!;
+        joined =
+          joined === previous
+            ? built
+            : (replacing(built, previous, joined) as ProtectedSyntax);
+        continue;
+      }
+      if (open === undefined) {
+        // A union opened into another needs no `|` of its own in front.
+        const [head, ...rest] = joined.children;
+        open = {
+          top: built,
+          base:
+            joined.category === "type" &&
+            head?.tag === "token" &&
+            typeChainOperator(joined) === head.raw
+              ? rest
+              : joined.children,
+          befores: [],
+          afters: [],
+        };
+      }
+      open.top = built;
+      open.befores.push(link.before);
+      open.afters.push(link.after);
+    }
+    close();
+    return joined;
+  };
+
+  /**
+   * `syntax` wearing `trivia` in front of its first token, whatever that token
+   * wore before: an operand fold's result stands where `#fold` was written,
+   * and wears the layout written there.
+   */
+  const wearingLayout = (syntax: Syntax, trivia: readonly Trivia[]): Syntax => {
+    const path: (GroupSyntax | ProtectedSyntax)[] = [];
+    let current = syntax;
+    while (current.tag !== "token") {
+      if (current.tag === "root")
+        throw new TypeError("An expression or a type holds no root");
+      path.push(current);
+      const head: Syntax | undefined =
+        current.tag === "group" ? current.open : current.children[0];
+      if (head === undefined) return syntax;
+      current = head;
+    }
+    let rebuilt: Syntax = createToken({ ...current, leadingTrivia: trivia });
+    for (let at = path.length - 1; at >= 0; at -= 1) {
+      const node = path[at]!;
+      rebuilt =
+        node.tag === "group"
+          ? createGroup({ ...node, open: rebuilt as TokenSyntax })
+          : createProtectedSyntax({
+              ...node,
+              children: [rebuilt, ...node.children.slice(1)],
+            });
+    }
+    return rebuilt;
   };
 
   /**
@@ -3756,6 +4240,37 @@ export function expandMacroSyntax(
      * list and reading what follows it; over loose tokens these are the
      * questions the walk can answer.
      */
+    /**
+     * The `<` tokens walked so far that nothing has closed, as how many each
+     * still holds open, innermost last. No type-argument list spans a
+     * statement boundary, so a `;` or a `}` closes them all.
+     *
+     * They are read forward as the walk goes, each token once, rather than
+     * back from the end every time the question is asked: asked after every
+     * `,` of a long list, reading back cost the square of its length.
+     */
+    const openAngles: number[] = [];
+    let anglesRead = 0;
+    /** How many `<` the innermost one still open holds open. */
+    const unclosedAngles = (): number => {
+      for (; anglesRead < output.length; anglesRead += 1) {
+        const node = output[anglesRead]!;
+        if (node.tag !== "token") continue;
+        if (node.raw === ";" || node.raw === "}") {
+          openAngles.length = 0;
+          continue;
+        }
+        let closes = angles(node, ">");
+        while (closes > 0 && openAngles.length > 0) {
+          const open = openAngles.pop()!;
+          if (open > closes) openAngles.push(open - closes);
+          closes -= Math.min(open, closes);
+        }
+        const opens = angles(node, "<");
+        if (opens > 0) openAngles.push(opens);
+      }
+      return openAngles.at(-1) ?? 0;
+    };
     const typeArgumentsEnclose = (at: number): boolean => {
       const previous = output.at(-1);
       if (
@@ -3763,22 +4278,7 @@ export function expandMacroSyntax(
         (previous.raw !== "," && angles(previous, "<") === 0)
       )
         return false;
-      // How many `<` behind stand open. No type-argument list spans a
-      // statement boundary, which is where the scan back stops.
-      let closed = 0;
-      let depth = 0;
-      for (let back = output.length - 1; back >= 0; back -= 1) {
-        const node = output[back]!;
-        if (node.tag !== "token") continue;
-        if (node.raw === ";" || node.raw === "}") break;
-        closed += angles(node, ">");
-        const opens = angles(node, "<");
-        if (opens > closed) {
-          depth = opens - closed;
-          break;
-        }
-        closed -= opens;
-      }
+      let depth = unclosedAngles();
       if (depth === 0) return false;
       for (let forward = at + 1; forward < input.length; forward += 1) {
         const node = input[forward]!;
@@ -3825,7 +4325,23 @@ export function expandMacroSyntax(
       typeArgumentsEnclose(index) ||
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
-        : typePositionHere());
+        : typePositionHere()) ||
+      typeReferenceContinues();
+    /**
+     * Whether the bracket about to be walked continues a type reference that
+     * stands where a type is read: `Z[K]` and `Z[]` in `let t: Z[K]`, where
+     * the token in front of the bracket is the name rather than the `:`.
+     */
+    const typeReferenceContinues = (): boolean => {
+      const node = input[index];
+      if (node?.tag !== "group" || node.delimiter !== "bracket") return false;
+      const start = typeReferenceStart(output);
+      if (start === undefined || start === output.length) return false;
+      const before = output.slice(0, start);
+      return category === "expr" || expressionRegion
+        ? typeFollowsInExpression(before)
+        : !labelColonEnds(start) && typePositionFollows(before);
+    };
     /**
      * Whether the `:` written just before `end` in the syntax walked so far
      * labels a statement rather than opening a type. The two are spelled
@@ -3874,6 +4390,98 @@ export function expandMacroSyntax(
      */
     const typePositionHere = (): boolean =>
       !labelColonEnds(output.length) && typePositionFollows(output);
+    /**
+     * What the operand fold `carrier` builds as `reads`: its initial template,
+     * then each step with the accumulator before it filled in as one node,
+     * walked and read as one expression or type in turn. A step holds the
+     * accumulator built before it rather than the steps that built it, so a
+     * fold of any length is walked one step deep.
+     *
+     * One that cannot be built is reported once, and stands as what it built
+     * so far, read as one operand, so nothing around it is reported again.
+     */
+    const buildFold = (
+      carrier: ProtectedSyntax,
+      fold: FoldCarrier,
+      reads: "expr" | "type" | undefined,
+    ): Syntax => {
+      const failed = (problem: string, built: readonly Syntax[]): Syntax => {
+        reportFold(fold.marker, problem);
+        return createProtectedSyntax({
+          ...carrier,
+          id: options.allocateSyntaxId(),
+          children: built.length > 0 ? built : [fold.marker],
+        });
+      };
+      if (reads === undefined)
+        return failed(
+          `builds one expression or one type, and stands where ${category} syntax is written`,
+          [],
+        );
+      const named = reads === "type" ? "one type" : "one expression";
+      const accumulators: ProtectedSyntax[] = [];
+      const links: (ReturnType<typeof chainLink> | undefined)[] = [undefined];
+      // How deep the accumulators nest: one level for each step that holds
+      // the one before it without continuing its chain.
+      let depth = 0;
+      for (const part of [fold.initial, ...fold.steps]) {
+        const previous = accumulators.at(-1);
+        const filled =
+          previous === undefined
+            ? { syntax: part.children, filled: 0 }
+            : fillAccumulators(part.children, previous);
+        const walked = visit(
+          filled.syntax,
+          currentEnvironment,
+          reads,
+          parentInvocation,
+          lexicalModule,
+          contexts,
+          false,
+          recursiveBinding,
+        );
+        currentEnvironment = walked.environment;
+        if (walked.syntax.length === 0)
+          return failed(
+            `builds ${named}, and one of its steps built nothing`,
+            [],
+          );
+        let built: ProtectedSyntax;
+        try {
+          built = enforestSequence(
+            walked.syntax,
+            reads,
+            lexicalModule,
+            contexts,
+          );
+        } catch (error) {
+          if (!(error instanceof EnforestationError)) throw error;
+          return failed(
+            `builds ${named}, and one of its steps built \`${error.syntaxText}\``,
+            walked.syntax,
+          );
+        }
+        if (previous !== undefined) {
+          const link =
+            filled.filled === 0 ? undefined : chainLink(built, previous);
+          links.push(link);
+          depth =
+            filled.filled === 0 ? 0 : link === undefined ? depth + 1 : depth;
+          if (depth > options.tracker.budget.maxNestingDepth)
+            throw new ResourceLimitError(
+              "nesting-depth",
+              options.tracker.budget.maxNestingDepth,
+              depth,
+            );
+        }
+        builtAccumulators.add(built);
+        accumulators.push(built);
+      }
+      return wearingLayout(
+        joinedChain(accumulators, links),
+        fold.marker.leadingTrivia,
+      );
+    };
     while (index < input.length) {
       region.at = index;
       const node = input[index]!;
@@ -4125,6 +4733,11 @@ export function expandMacroSyntax(
               .map((module) => module.get(spelling, category))
               .find((macro) => macro !== undefined);
       };
+      if (builtAccumulators.has(node)) {
+        output.push(node);
+        index += 1;
+        continue;
+      }
       const compactLet =
         node.tag === "token" &&
         node.raw === "#let" &&
@@ -4553,8 +5166,18 @@ export function expandMacroSyntax(
        * a name written in front of a parameter list, a `:`, a `?` or a `!`
        * names a member there as surely as it does in a type's member list.
        */
+      /**
+       * Whether this position heads what a decorator applies: the name after
+       * `@`, which is an expression wherever the decorator stands. Before a
+       * member it has the shape of the member -- `@log(1) m() {}` -- and was
+       * read as the member's name, so the macro was never dispatched.
+       */
+      const decorates =
+        output.at(-1)?.tag === "token" &&
+        (output.at(-1) as TokenSyntax).raw === "@";
       const namesClassMember =
         category === "classElement" &&
+        !decorates &&
         classMemberNameFollows(output.slice(memberStart)) &&
         memberNameFollows();
       /**
@@ -4594,6 +5217,29 @@ export function expandMacroSyntax(
        * for it.
        */
       const readsWalkedSpace = category === "type" || !readsType;
+      // An operand fold builds one expression or one type, whichever this
+      // position reads, as a macro standing here would be looked up.
+      const fold = foldCarrier(node);
+      if (fold !== undefined) {
+        index += 1;
+        output.push(
+          buildFold(
+            node as ProtectedSyntax,
+            fold,
+            readsType
+              ? "type"
+              : category === "expr" ||
+                  category === "stmt" ||
+                  category === "item" ||
+                  classHeritageFollows(output) ||
+                  (!typeAliasInitializerFollows(output) &&
+                    (initializerFollows(output) || expressionRegion))
+                ? "expr"
+                : undefined,
+          ),
+        );
+        continue;
+      }
       let resolvedMacro =
         node.tag === "token" && !namesSomethingElse && readsWalkedSpace
           ? resolveSpelling(node.raw, node.span.start, sourceOf(node))
@@ -4644,7 +5290,8 @@ export function expandMacroSyntax(
         // introduces a type, so an expression macro is not looked up after it:
         // without that, `type A = name;` dispatched an expression macro
         // spelled `name`.
-        (classHeritageFollows(output) ||
+        (decorates ||
+          classHeritageFollows(output) ||
           (!typeAliasInitializerFollows(output) &&
             (initializerFollows(output) || expressionRegion)))
       ) {
@@ -5125,7 +5772,7 @@ export function expandMacroSyntax(
           // around the use would re-bind against the replacement's own.
           if (
             (macro.category === "expr" || macro.category === "type") &&
-            replaced.length > 1
+            !boundsItself(replaced, undefined)
           ) {
             const origins = [...new Set(replaced.map(({ origin }) => origin))];
             output.push(
@@ -5390,7 +6037,7 @@ export function expandMacroSyntax(
           const spliceWhole =
             (result.syntax.category === "expr" ||
               result.syntax.category === "type") &&
-            result.syntax.children.length > 1;
+            !boundsItself(result.syntax.children, result.syntax.form);
           output.push(
             ...withLeadingTrivia(
               spliceWhole ? [result.syntax] : result.syntax.children,
@@ -5717,11 +6364,16 @@ export function expandMacroSyntax(
         // written in a block walked as tokens was descended into as an
         // expression all the same -- and there the key of each member stood
         // at the head of an expression and was dispatched as a macro.
+        //
+        // A function's body is a block wherever the function stands, and
+        // its `:` is a label's: read as a literal, `() => { done: f(); }` was
+        // walked as one member named `done`.
         if (
           node.tag === "group" &&
           node.delimiter === "brace" &&
           (category === "expr" || initializerFollows(output)) &&
           !typeFollows() &&
+          braceOpens(walkedRun, output.length) === "other" &&
           node.children.some(
             (child) => child.tag === "token" && child.raw === ":",
           )
@@ -5776,13 +6428,13 @@ export function expandMacroSyntax(
             }
             member = [];
           };
-          // A method's type parameters and return type hold commas of their
-          // own -- `*run(): Generator<number, void, unknown> {` -- which do not
-          // end the member. Angle brackets are counted only in a method's head:
-          // in a property's value or a spread they compare.
+          // Type parameters and type arguments hold commas of their own --
+          // `*run(): Generator<number, void, unknown> {`,
+          // `<T, U>(a: T, b: U) => [a, b]` -- which do not end the member.
           let methodHead = true;
           let typeArguments = 0;
-          for (const child of node.children) {
+          for (let at = 0; at < node.children.length; at += 1) {
+            const child = node.children[at]!;
             if (
               child.tag === "token" &&
               child.raw === "," &&
@@ -5794,7 +6446,17 @@ export function expandMacroSyntax(
               continue;
             }
             const previous = member.at(-1);
+            const opensAngles =
+              typeArguments > 0 ||
+              (child.tag === "token" &&
+                child.raw === "<" &&
+                anglesOpen(node.children, at, member, methodHead));
             member.push(child);
+            if (opensAngles)
+              typeArguments = Math.max(
+                0,
+                typeArguments + angles(child, "<") - angles(child, ">"),
+              );
             if (!methodHead) continue;
             if (child.tag !== "token") {
               if (child.tag === "group" && child.delimiter === "brace") {
@@ -5803,17 +6465,14 @@ export function expandMacroSyntax(
               }
               continue;
             }
-            const nested = angles(child, "<") - angles(child, ">");
-            if (nested !== 0)
-              typeArguments = Math.max(0, typeArguments + nested);
-            else if (
-              (child.raw === "..." && previous === undefined) ||
-              (child.raw === ":" &&
-                typeArguments === 0 &&
-                !(
-                  previous?.tag === "group" &&
-                  previous.delimiter === "parenthesis"
-                ))
+            if (
+              typeArguments === 0 &&
+              ((child.raw === "..." && previous === undefined) ||
+                (child.raw === ":" &&
+                  !(
+                    previous?.tag === "group" &&
+                    previous.delimiter === "parenthesis"
+                  )))
             )
               methodHead = false;
           }

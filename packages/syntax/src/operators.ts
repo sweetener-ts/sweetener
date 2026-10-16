@@ -2,7 +2,8 @@
  * The operators of TypeScript's expression grammar, with the fixity,
  * precedence and associativity the expression parser reads them with. Kept
  * apart from the parser so that readers which only need to know what an
- * operator is -- whether a line can end after one -- need not depend on it.
+ * operator is -- whether a line can end after one, or how tightly an
+ * expression it built holds together when printed -- need not depend on it.
  */
 export type PrattFixity = "prefix" | "infix" | "postfix";
 export type PrattAssociativity = "left" | "right" | "none";
@@ -102,6 +103,40 @@ export const coreExpressionOperators: readonly CoreOperator[] = Object.freeze([
   ...operators([","], "infix", 10, "left"),
 ]);
 
+/**
+ * What the operator spelled `spelling` with `fixity` binds at. Asking for one
+ * the table does not hold is a mistake in the asker, not a question with a
+ * default answer.
+ */
+export function operatorPrecedence(
+  spelling: string,
+  fixity: PrattFixity,
+): number {
+  const found = coreExpressionOperators.find(
+    (operator) => operator.spelling === spelling && operator.fixity === fixity,
+  );
+  if (found === undefined)
+    throw new RangeError(`No ${fixity} operator is spelled ${spelling}`);
+  return found.precedence;
+}
+
+/**
+ * The levels of the grammar that are not a single operator's. A conditional
+ * binds between `??` and assignment; an assignment expression -- what an
+ * argument, an initializer or an arrow's body is -- is the level `=` and `=>`
+ * stand at; the comma operator is the loosest of all; and a primary
+ * expression is tighter than any operator.
+ */
+export const conditionalPrecedence = 30;
+/**
+ * What an operand that no operator joins holds together at: a name, a
+ * literal, a call, a member access, anything in brackets. It is a
+ * left-hand-side expression, the only kind an assignment may write to.
+ */
+export const primaryPrecedence = 1_000;
+export const assignmentPrecedence = operatorPrecedence("=", "infix");
+export const commaPrecedence = operatorPrecedence(",", "infix");
+
 /** The spellings the table holds with `fixity`. */
 function spellingsOf(fixity: PrattFixity): ReadonlySet<string> {
   return new Set(
@@ -156,6 +191,67 @@ export const expressionContinuedBy: ReadonlySet<string> = new Set([
   ...[...spellingsOf("infix")].filter(
     (spelling) => !sameLineInfix.has(spelling),
   ),
+  ".",
+  "?.",
+  "?",
+  ":",
+]);
+
+/**
+ * The operators of TypeScript's type grammar, with what each binds at. A
+ * function or constructor type and a conditional type are the loosest -- each
+ * runs on as far as it can, so neither stands bare in a union -- then a
+ * union, then an intersection, then the prefix operators. Postfix `[]` and an
+ * indexed access bind tighter than any of them: `A | B[]` is a union whose
+ * second member is an array.
+ *
+ * `|` and `&` are prefix as well as infix, since a union or an intersection
+ * may begin with its own operator. No parser reads types by this table; it
+ * says how tightly a type a macro built holds together where it is printed,
+ * and which words beside an operand take it as theirs.
+ */
+export const coreTypeOperators: readonly CoreOperator[] = Object.freeze([
+  ...operators(["=>", "extends"], "infix", 10, "right"),
+  ...operators(["|"], "infix", 20, "left"),
+  ...operators(["|"], "prefix", 20, "right"),
+  ...operators(["&"], "infix", 30, "left"),
+  ...operators(["&"], "prefix", 30, "right"),
+  ...operators(["keyof", "unique", "readonly", "infer"], "prefix", 40, "right"),
+]);
+
+/** What `T[]` and `T[K]` bind their operand at: tighter than any operator. */
+export const typePostfixPrecedence = 50;
+
+/**
+ * Spellings that take what is written directly after them as their operand,
+ * in an expression or in a type: every prefix and infix operator, and the
+ * `.`, `?.`, `?`, `:` and `...` an operand is written after.
+ */
+export const operandTakenAfter: ReadonlySet<string> = new Set([
+  ...spellingsOf("prefix"),
+  ...spellingsOf("infix"),
+  ...coreTypeOperators
+    .filter(({ fixity }) => fixity !== "postfix")
+    .map(({ spelling }) => spelling),
+  ".",
+  "?.",
+  "?",
+  ":",
+  "...",
+]);
+
+/**
+ * Spellings that take what is written directly before them as their operand,
+ * in an expression or in a type: every infix and postfix operator, a non-null
+ * assertion's `!`, and the `.`, `?.`, `?` and `:` written after an operand.
+ */
+export const operandTakenBefore: ReadonlySet<string> = new Set([
+  ...spellingsOf("infix"),
+  ...spellingsOf("postfix"),
+  ...coreTypeOperators
+    .filter(({ fixity }) => fixity === "infix")
+    .map(({ spelling }) => spelling),
+  "!",
   ".",
   "?.",
   "?",

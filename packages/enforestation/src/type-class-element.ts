@@ -8,6 +8,7 @@ import {
   isIdentifierToken,
   isPropertyNameToken,
   leadingLineBreak,
+  operandExpectedAfter,
   spanEnvelope,
   type GroupSyntax,
   type OriginStore,
@@ -22,7 +23,6 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
-import { operandExpectedAfter } from "./core-operators.js";
 import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 
@@ -289,8 +289,6 @@ class TypeConsumer implements SyntaxConsumer {
   consume(cursor: SyntaxCursor, context: ConsumerContext): ConsumerAttempt {
     const start = cursor.index;
     checkWork(context);
-    const macro = this.options.resolveMacro?.("type", cursor, context);
-    if (macro !== undefined) return validateMacro(macro, "type", cursor, start);
     const children: Syntax[] = [];
     let expectingOperand = true;
     let conditionalDepth = 0;
@@ -323,6 +321,23 @@ class TypeConsumer implements SyntaxConsumer {
         !type.continuesAcross(next)
       )
         break;
+      // A type macro stands wherever a type operand does, and is one: the
+      // whole of the type, or a member of a union, what `keyof` reads, the
+      // element of an array type. Asked only of the type's first token, a
+      // macro followed by anything -- `L(number)[]`, `L(number) | null` -- or
+      // written after an operator -- `keyof L(number)` -- was read as a name
+      // with a parenthesis after it, and the capture holding it refused.
+      if (expectingOperand && arrow === "none") {
+        const operandStart = cursor.index;
+        const macro = this.options.resolveMacro?.("type", cursor, context);
+        if (macro !== undefined) {
+          const extent = validateMacro(macro, "type", cursor, operandStart);
+          if (!extent.matched) return extent;
+          children.push(extent.syntax);
+          expectingOperand = false;
+          continue;
+        }
+      }
       if (arrow !== "none") {
         if (token(next, "=>")) {
           children.push(cursor.consume()!);
@@ -512,9 +527,14 @@ class TypeConsumer implements SyntaxConsumer {
         children.length === 0 ? 1 : 40,
       );
     }
+    // A type that is one macro and nothing else is that macro's extent.
+    const [sole] = children;
     return Object.freeze({
       matched: true,
-      syntax: protect("type", this.options, children),
+      syntax:
+        children.length === 1 && sole?.tag === "protected"
+          ? sole
+          : protect("type", this.options, children),
       cursor,
     });
   }

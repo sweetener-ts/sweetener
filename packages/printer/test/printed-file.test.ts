@@ -366,6 +366,32 @@ describe("trivia regions", () => {
       expect(print(expression([power], undefined))).toBe("((-a) ** b)");
     });
 
+    test("groups `import.meta` that `new` constructs", () => {
+      // TypeScript reads `new import.meta()` as a `new` with nothing after it.
+      const meta = expression(
+        [token("import", "keyword"), token(".", "punctuation"), token("meta")],
+        1_000,
+      );
+      const constructed = expression(
+        [
+          token("new", "keyword"),
+          meta,
+          createGroup({
+            id: syntaxIds.allocate(),
+            span: { start: 0, end: 1 },
+            origin,
+            scopes,
+            delimiter: "parenthesis",
+            open: token("(", "punctuation"),
+            close: token(")", "punctuation"),
+            children: [],
+          }),
+        ],
+        1_000,
+      );
+      expect(print(constructed)).toBe("(new (import.meta)())");
+    });
+
     test("groups a conditional or an arrow wherever it is not a whole arrow body", () => {
       const conditional = expression(
         [
@@ -388,7 +414,7 @@ describe("trivia regions", () => {
         [
           token("x"),
           token("=>", "punctuation"),
-          expression([token("x"), token("+", "punctuation"), token("y")]),
+          expression([token("x"), token("+", "punctuation"), token("y")], 130),
         ],
         undefined,
         "arrow",

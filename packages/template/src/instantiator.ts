@@ -31,17 +31,69 @@ import {
   type OriginStore,
   type Span,
   type Syntax,
+  type SyntaxCategory,
   type SyntaxSequence,
   type TokenKind,
   type TokenSyntax,
   type Trivia,
 } from "@sweetener/syntax";
 import type {
+  EvaluatedFold,
   EvaluatedGroup,
   EvaluatedOperation,
   EvaluatedSyntax,
   EvaluatedTemplate,
 } from "./evaluator.js";
+
+/**
+ * The spellings of the two tokens an operand fold is carried to expansion
+ * with: one in front of the fold, and one where each step wrote `$acc`. Their
+ * kind is `unknown`, which no token read from a file has under these
+ * spellings: written in a file, `#fold` is a private name and `$acc` an
+ * identifier.
+ */
+const foldSpelling = "#fold";
+const accumulatorSpelling = "$acc";
+
+/**
+ * An operand fold as expansion receives it: what it starts from and each of
+ * its steps, in braces of their own, with every `$acc` a step wrote marked.
+ * It stands in the replacement as one operand, the way a capture does, so
+ * whatever reads the replacement before the fold is built -- another macro
+ * taking it as an argument, a statement read whole -- reads one operand.
+ */
+export interface FoldCarrier {
+  /** The token in front, which carries the layout written before `#fold`. */
+  readonly marker: TokenSyntax;
+  readonly initial: GroupSyntax;
+  readonly steps: readonly GroupSyntax[];
+}
+
+function unknownToken(node: Syntax | undefined, raw: string): boolean {
+  return node?.tag === "token" && node.kind === "unknown" && node.raw === raw;
+}
+
+/** The operand fold `syntax` carries, when it carries one. */
+export function foldCarrier(syntax: Syntax): FoldCarrier | undefined {
+  if (syntax.tag !== "protected") return undefined;
+  const [marker, initial, ...steps] = syntax.children;
+  if (
+    !unknownToken(marker, foldSpelling) ||
+    initial?.tag !== "group" ||
+    steps.some((step) => step.tag !== "group")
+  )
+    return undefined;
+  return {
+    marker: marker as TokenSyntax,
+    initial,
+    steps: steps as GroupSyntax[],
+  };
+}
+
+/** Whether `syntax` is a `$acc` an operand fold's step wrote. */
+export function isFoldAccumulator(syntax: Syntax): boolean {
+  return unknownToken(syntax, accumulatorSpelling);
+}
 
 export interface FreshBinding {
   readonly binding: BindingId;
@@ -65,6 +117,12 @@ export interface InstantiateTemplateOptions {
   readonly tracker?: ResourceTracker | undefined;
   readonly cancellation?: CancellationToken | undefined;
   readonly generatedBindings?: readonly GeneratedContractBinding[] | undefined;
+  /**
+   * What the template is instantiated as. An operand fold is carried as one
+   * operand of this category -- a type in a type, an expression anywhere
+   * else -- until expansion reads where it stands and builds it as that.
+   */
+  readonly category: SyntaxCategory;
 }
 
 export interface InstantiateTemplateResult {
@@ -139,16 +197,51 @@ class Instantiator {
     });
   }
 
+  /**
+   * The syntax `output` instantiates to. A run fold's accumulator holds the
+   * one before it, as deep as the fold has items, so the runs are spliced
+   * from a stack of their own rather than by recursion.
+   */
   #pieces(output: readonly EvaluatedTemplate[]): Syntax[] {
     const syntax: Syntax[] = [];
-    for (const piece of output) {
+    const runs: { readonly body: readonly EvaluatedTemplate[]; at: number }[] =
+      [{ body: output, at: 0 }];
+    while (runs.length > 0) {
+      const run = runs.at(-1)!;
+      const piece = run.body[run.at];
+      if (piece === undefined) {
+        runs.pop();
+        continue;
+      }
+      run.at += 1;
       this.#cancellation.throwIfCancellationRequested();
-      if (piece.kind === "syntax") {
-        syntax.push(...this.#syntaxPiece(piece, syntax));
-      } else if (piece.kind === "group") {
-        syntax.push(this.#groupPiece(piece));
-      } else {
-        syntax.push(...this.#operationPiece(piece));
+      switch (piece.kind) {
+        case "run":
+          runs.push({ body: piece.body, at: 0 });
+          break;
+        case "syntax":
+          syntax.push(...this.#syntaxPiece(piece, syntax));
+          break;
+        case "group":
+          syntax.push(this.#groupPiece(piece));
+          break;
+        case "fold":
+          syntax.push(this.#foldPiece(piece));
+          break;
+        case "accumulator":
+          syntax.push(
+            this.#generatedToken(
+              "unknown",
+              accumulatorSpelling,
+              undefined,
+              this.#introduced(piece.origin),
+              this.#introducedScopes(this.#options.definitionScopes),
+            ),
+          );
+          break;
+        case "operation":
+          syntax.push(...this.#operationPiece(piece));
+          break;
       }
     }
     return syntax;
@@ -328,6 +421,59 @@ class Instantiator {
       });
       this.#recordOrigin(group.origin);
       return group;
+    });
+  }
+
+  /**
+   * An operand fold, as one operand: a marker, then what it starts from and
+   * each of its steps in braces of their own. The marker carries the layout
+   * written before `#fold`, which what the fold builds will wear.
+   */
+  #foldPiece(piece: EvaluatedFold): Syntax {
+    return this.#nested(() => {
+      const origin = this.#introduced(piece.origin);
+      const scopes = this.#introducedScopes(this.#options.definitionScopes);
+      const brace = (raw: "{" | "}") =>
+        createToken({
+          id: this.#options.allocateSyntaxId(),
+          span: this.#options.anchor,
+          origin,
+          scopes,
+          kind: "punctuation",
+          raw,
+        });
+      const part = (body: readonly EvaluatedTemplate[]) =>
+        createGroup({
+          id: this.#options.allocateSyntaxId(),
+          span: this.#options.anchor,
+          origin,
+          scopes,
+          delimiter: "brace",
+          open: brace("{"),
+          children: this.#pieces(body),
+          close: brace("}"),
+        });
+      this.#step();
+      return createProtectedSyntax({
+        id: this.#options.allocateSyntaxId(),
+        span: this.#options.anchor,
+        origin,
+        scopes,
+        category: this.#options.category === "type" ? "type" : "expr",
+        children: [
+          createToken({
+            id: this.#options.allocateSyntaxId(),
+            span: this.#options.anchor,
+            origin,
+            scopes,
+            kind: "unknown",
+            raw: foldSpelling,
+            leadingTrivia: piece.leadingTrivia,
+          }),
+          part(piece.initial),
+          ...piece.steps.map(part),
+        ],
+      });
     });
   }
 

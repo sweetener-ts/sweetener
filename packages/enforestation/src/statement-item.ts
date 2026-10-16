@@ -4,7 +4,9 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  expressionContinuedBy,
   leadingLineBreak,
+  operandExpectedAfter,
   type GroupSyntax,
   type OriginStore,
   type ProtectedSyntax,
@@ -21,14 +23,10 @@ import {
   type MacroExtentResolver,
 } from "./consumer.js";
 import {
-  expressionContinuedBy,
-  operandExpectedAfter,
-} from "./core-operators.js";
-import { asyncModifies } from "./primary-expression.js";
-import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
 } from "./pratt-expression.js";
+import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 import {
   bindingMacroResolver,
@@ -265,6 +263,20 @@ function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
 function modifierAt(cursor: SyntaxCursor, offset: number): boolean {
   if (declarationModifiers.has(raw(cursor.peek(offset)) ?? ""))
     return declarationHead(cursor, offset);
+  return asyncFunction(cursor, offset);
+}
+
+/**
+ * Whether the word at `offset` is the `async` of an async function
+ * declaration: `async` with `function` after it on the same line.
+ *
+ * TypeScript reads `async function f() {}` as a declaration wherever a
+ * function declaration stands. Read as an expression statement instead, the
+ * body was taken apart by the expression reader rather than read as the
+ * statement list it is, so it stood in the expansion as a different tree from
+ * a plain function's -- and a macro's result in it printed differently.
+ */
+function asyncFunction(cursor: SyntaxCursor, offset: number): boolean {
   return (
     asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
     raw(cursor.peek(offset + 1)) === "function"
@@ -652,7 +664,8 @@ function beginsItem(cursor: SyntaxCursor, offset = 0): boolean {
   return (
     (itemStarts.has(raw(cursor.peek(offset)) ?? "") &&
       declarationHead(cursor, offset)) ||
-    globalAugmentation(cursor, offset)
+    globalAugmentation(cursor, offset) ||
+    asyncFunction(cursor, offset)
   );
 }
 

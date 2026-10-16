@@ -1,8 +1,16 @@
 import type { BindingId } from "@sweetener/shared";
 import {
+  assignmentPrecedence,
+  conditionalPrecedence,
+  coreExpressionOperators,
   createPrecedence,
   createProtectedSyntax,
   createSyntaxSequence,
+  primaryPrecedence,
+  sameLineInfix,
+  unaryPrecedence,
+  type PrattAssociativity,
+  type PrattFixity,
   leadingLineBreak,
   regularExpression,
   spanEnvelope,
@@ -35,14 +43,7 @@ export {
   type CoreOperator,
   type PrattAssociativity,
   type PrattFixity,
-} from "./core-operators.js";
-import {
-  coreExpressionOperators,
-  sameLineInfix,
-  unaryPrecedence,
-  type PrattAssociativity,
-  type PrattFixity,
-} from "./core-operators.js";
+} from "@sweetener/syntax";
 
 const coreByKey = new Map(
   coreExpressionOperators.map((operator) => [
@@ -53,12 +54,6 @@ const coreByKey = new Map(
 
 /** What a division binds at. */
 const divisionPrecedence = coreByKey.get("infix|/")!.precedence;
-
-/**
- * What an assignment expression binds at: an assignment's, and an arrow
- * function's, which TypeScript reads at the same level.
- */
-const assignmentPrecedence = coreByKey.get("infix|=")!.precedence;
 
 export interface MacroOperatorExpansionInput {
   readonly operator: readonly Syntax[];
@@ -375,6 +370,28 @@ function suspendedOperandBegins(node: Syntax | undefined): boolean {
 }
 
 /**
+ * Whether the `yield` at the cursor, in a generator, yields nothing: no
+ * operand of its own follows it on its line. The grammar writes `yield [no
+ * LineTerminator here] AssignmentExpression` with the operand optional, so
+ * `yield` at the end of what is read, before a separator, before what ends
+ * the expression around it, or before a line break is the whole expression.
+ * Read as one more prefix operator, a macro whose result is `yield` was
+ * refused as not one expression.
+ */
+function yieldsNothing(cursor: SyntaxCursor, context: PrattContext): boolean {
+  const after = cursor.fork();
+  after.advance();
+  const next = after.peek();
+  return (
+    next === undefined ||
+    leadingLineBreak(next) ||
+    context.consumer.stopSet.matches(after) ||
+    (next.tag === "token" &&
+      (next.raw === "," || next.raw === ";" || next.raw === ":"))
+  );
+}
+
+/**
  * Whether the `yield` or `await` at the cursor stands alone, with no operand
  * of its own after it, so that the word is read as the ordinary word it also
  * is rather than as the operator.
@@ -400,14 +417,10 @@ function suspendingWordAlone(
   context: PrattContext,
 ): boolean {
   const next = cursor.peek(1);
-  // `yield*` is one operator of two tokens, and the line break the grammar
-  // forbids is the one between `yield` and the whole of what follows it.
-  if (operator.spelling === "yield") {
-    return (
-      leadingLineBreak(next) ||
-      (!context.consumer.allowYield && !suspendedOperandBegins(next))
-    );
-  }
+  // Inside a generator `yield` is never a name: standing alone it is a
+  // `yield` of nothing, which `yieldsNothing` reads.
+  if (operator.spelling === "yield")
+    return !context.consumer.allowYield && !suspendedOperandBegins(next);
   if (operator.spelling === "await")
     return !context.consumer.allowAwait && !suspendedOperandBegins(next);
   return false;
@@ -437,14 +450,36 @@ function parsePrefix(
     if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);
     }
+    if (prefix.spelling === "yield" && yieldsNothing(cursor, context)) {
+      const [word] = consumeOperator(cursor, prefix);
+      return {
+        syntax: protect(
+          context.options,
+          [word!],
+          prefix.precedence,
+          coreForm("prefix", prefix.spelling),
+        ),
+        cursor,
+        outerPrecedence: prefix.precedence,
+        unparenthesizedPrefix: true,
+        mixingFamily: undefined,
+        primary: false,
+      };
+    }
     if (prefix.spelling === "await" && !context.consumer.allowAwait) {
       return fail(cursor, context, ["await inside an async function"], 9);
     }
     const operator = consumeOperator(cursor, prefix);
+    const operand = cursor.peek();
     const right = parseExpression(cursor, prefix.precedence, context);
     if ("matched" in right) return right;
+    // What `new` constructs and the arguments it passes are written as one
+    // run, `new F(1)`, so the parse of what follows it is opened into the
+    // `new`. An operand that arrived whole -- a capture, an expansion -- is
+    // not opened: it is what is constructed, and opened, `new $c` with `$c`
+    // bound to `F(1)` constructed `F` with an argument instead.
     const coreChildren =
-      prefix.spelling === "new"
+      prefix.spelling === "new" && right.syntax !== operand
         ? [...operator, ...right.syntax.children]
         : [...operator, right.syntax];
     const syntax =
@@ -499,10 +534,10 @@ function parsePrefix(
     // written, and binds no tighter than the `=>` it is read with elsewhere.
     outerPrecedence:
       attempt.syntax === operand
-        ? 1_000
+        ? primaryPrecedence
         : attempt.syntax.form === "arrow"
           ? assignmentPrecedence
-          : (attempt.syntax.precedence ?? 1_000),
+          : (attempt.syntax.precedence ?? primaryPrecedence),
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
     primary: true,
@@ -582,20 +617,25 @@ function parseConditional(
   if ("matched" in consequent) return consequent;
   const colon = cursor.peek();
   if (colon?.tag !== "token" || colon.raw !== ":") {
-    return fail(cursor, context, ["':' in conditional expression"], 30);
+    return fail(
+      cursor,
+      context,
+      ["':' in conditional expression"],
+      conditionalPrecedence,
+    );
   }
   cursor.advance();
-  const alternate = parseExpression(cursor, 20, context);
+  const alternate = parseExpression(cursor, assignmentPrecedence, context);
   if ("matched" in alternate) return alternate;
   return {
     syntax: protect(
       context.options,
       [left.syntax, question, consequent.syntax, colon, alternate.syntax],
-      30,
+      conditionalPrecedence,
       "conditional",
     ),
     cursor: alternate.cursor,
-    outerPrecedence: 30,
+    outerPrecedence: conditionalPrecedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
     primary: false,
@@ -668,9 +708,9 @@ function literalRightOperand(
     if (!endsOperand(after, context)) continue;
     const tokens = Array.from({ length: run.length }, () => cursor.consume()!);
     return {
-      syntax: protect(context.options, tokens, 1_000),
+      syntax: protect(context.options, tokens, primaryPrecedence),
       cursor,
-      outerPrecedence: 1_000,
+      outerPrecedence: primaryPrecedence,
       unparenthesizedPrefix: false,
       mixingFamily: undefined,
       primary: false,
@@ -715,7 +755,7 @@ function arrowRightOperand(
   if (block?.tag === "group" && block.delimiter === "brace") {
     body = cursor.consume()!;
   } else {
-    const parsed = parseExpression(cursor, 20, {
+    const parsed = parseExpression(cursor, assignmentPrecedence, {
       ...context,
       allowComma: false,
       consumer: Object.freeze({
@@ -807,7 +847,7 @@ function parseExpression(
   while (!cursor.atEnd && !context.consumer.stopSet.matches(cursor)) {
     checkWork(context);
     const spelling = tokenSpelling(cursor);
-    if (spelling === "?" && 30 >= minimumPrecedence) {
+    if (spelling === "?" && conditionalPrecedence >= minimumPrecedence) {
       const conditional = parseConditional(left, cursor, context);
       if ("matched" in conditional) return conditional;
       left = conditional;

@@ -17,11 +17,11 @@ export function check(): void {
       const actual_1 = inspected;
       const expected_1 = 1;
       if (!globalThis.Object.is(actual_1, expected_1)) {
-        throw (new globalThis.Error(
+        throw new globalThis.Error(
           `assertion failed: ${"inspected"} === ${"1"}` +
             `\n  ${"inspected"} = ${globalThis.JSON.stringify(actual_1)}` +
             `\n  ${"1"} = ${globalThis.JSON.stringify(expected_1)}`,
-        ));
+        );
       }
     }
 }

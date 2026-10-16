@@ -18,7 +18,10 @@ import type {
   SyntaxClassId,
 } from "@sweetener/shared";
 import {
+  angleWidth,
   createToken,
+  operandTakenAfter,
+  operandTakenBefore,
   type GroupSyntax,
   type Span,
   type Syntax,
@@ -35,10 +38,12 @@ import {
   createRepeatTemplate,
   createSequenceTemplate,
   type CaptureTemplate,
+  type FoldAccumulator,
   type SequenceTemplate,
   type TemplateNode,
 } from "./ast.js";
 import {
+  foldAccumulatorCode,
   incompatibleTemplateDriversCode,
   invalidTemplateOperationCode,
   malformedTemplateCode,
@@ -162,6 +167,63 @@ function elementShapeAtDepth(
 
 interface FoldParserContext {
   readonly elementShape: CaptureShape;
+}
+
+/** Whether `node` parts one part of a list a step builds from the next. */
+function separatesParts(node: Syntax | undefined): boolean {
+  return token(node, ",") || token(node, ";");
+}
+
+/**
+ * Whether `nodes`, written as a step or an initial template, build the parts
+ * of a list: a `,` or a `;` stands outside their brackets. A comma between
+ * angle brackets parts type arguments, not the list.
+ */
+function listsParts(nodes: readonly Syntax[]): boolean {
+  let angles = 0;
+  for (const node of nodes) {
+    if (!token(node)) continue;
+    if (node.raw === ";") return true;
+    if (node.raw === "," && angles === 0) return true;
+    angles = Math.max(
+      0,
+      angles + angleWidth(node.raw, "<") - angleWidth(node.raw, ">"),
+    );
+  }
+  return false;
+}
+
+/**
+ * How the `$acc` at `at`, written directly in a step, is used: as an operand,
+ * where an operator beside it takes it as its own, or as a part of the list
+ * the step builds, where nothing but a separator, or the next part, stands
+ * beside it. A call, an index or a tagged template written on it makes it an
+ * operand too, unless the step builds a list, where a bracket after it is the
+ * part that follows: `$acc [$item, $index],`.
+ */
+function accumulatorUseAt(
+  nodes: readonly Syntax[],
+  at: number,
+  list: boolean,
+): FoldAccumulator {
+  const previous = nodes[at - 1];
+  const next = nodes[at + 1];
+  if (
+    token(previous) &&
+    !separatesParts(previous) &&
+    operandTakenAfter.has(previous.raw)
+  )
+    return "operand";
+  if (token(next) && !separatesParts(next) && operandTakenBefore.has(next.raw))
+    return "operand";
+  if (
+    !list &&
+    (group(next, "parenthesis") ||
+      group(next, "bracket") ||
+      group(next, "template"))
+  )
+    return "operand";
+  return "run";
 }
 
 /**
@@ -376,6 +438,7 @@ class TemplateParser {
       }
       if (
         !memberAccess &&
+        token(current) &&
         operationName === "fold" &&
         group(nodes[index + 1], "parenthesis") &&
         group(nodes[index + 2], "brace")
@@ -424,6 +487,11 @@ class TemplateParser {
             createFoldTemplate({
               origin: current.origin,
               driver: resolved.path,
+              accumulator: this.#foldAccumulator(
+                initialGroup as GroupSyntax,
+                bodyGroup as GroupSyntax,
+              ),
+              leadingTrivia: current.leadingTrivia,
               initial: this.#sequence(
                 (initialGroup as GroupSyntax).children,
                 depth,
@@ -1074,8 +1142,87 @@ class TemplateParser {
     return captures;
   }
 
+  /**
+   * What a fold's accumulator is, read from how its step writes `$acc`. Every
+   * `$acc` written in the step must say the same; one written inside brackets
+   * is an operand there, whatever the step builds. A step that writes none
+   * says it by what it builds: a list, or one expression or type.
+   *
+   * A step that writes `$acc` as an operand builds one expression or type, so
+   * neither it nor the initial template, which is the accumulator the first
+   * step reads, may build a list, and the initial template may not be empty.
+   */
+  #foldAccumulator(initial: GroupSyntax, body: GroupSyntax): FoldAccumulator {
+    const list = listsParts(body.children);
+    const uses: {
+      readonly token: TokenSyntax;
+      readonly use: FoldAccumulator;
+    }[] = [];
+    const collect = (nodes: readonly Syntax[], direct: boolean) => {
+      for (let at = 0; at < nodes.length; at += 1) {
+        const node = nodes[at]!;
+        if (group(node)) {
+          collect(node.children, false);
+          continue;
+        }
+        if (!token(node)) continue;
+        // A fold written in the step has an accumulator of its own. Only its
+        // arguments, which hold its initial template, are written where this
+        // one is in scope.
+        if (
+          node.raw === "#fold" &&
+          !token(nodes[at - 1], ".") &&
+          !token(nodes[at - 1], "?.") &&
+          group(nodes[at + 1], "parenthesis") &&
+          group(nodes[at + 2], "brace")
+        ) {
+          collect((nodes[at + 1] as GroupSyntax).children, false);
+          at += 2;
+          continue;
+        }
+        if (node.raw === "$acc")
+          uses.push({
+            token: node,
+            use: direct ? accumulatorUseAt(nodes, at, list) : "operand",
+          });
+      }
+    };
+    collect(body.children, true);
+    const [first] = uses;
+    const disagreeing = uses.find(({ use }) => use !== first?.use);
+    if (disagreeing !== undefined)
+      this.#diagnostic(
+        foldAccumulatorCode,
+        disagreeing.token.origin,
+        "writes $acc both as an operand and as a part of the list its step builds",
+      );
+    const accumulator =
+      first?.use ?? (list || body.children.length === 0 ? "run" : "operand");
+    if (first?.use !== "operand") return accumulator;
+    if (list)
+      this.#diagnostic(
+        foldAccumulatorCode,
+        first.token.origin,
+        "writes $acc as an operand, so each step builds one expression or one type, and this step builds a list: a `,` or `;` stands outside its brackets",
+      );
+    if (initial.children.length === 0)
+      this.#diagnostic(
+        foldAccumulatorCode,
+        initial.origin,
+        "writes $acc as an operand, so its initial template builds one expression or one type, and it is empty",
+      );
+    else if (listsParts(initial.children))
+      this.#diagnostic(
+        foldAccumulatorCode,
+        initial.origin,
+        "writes $acc as an operand, so its initial template builds one expression or one type, and it builds a list: a `,` or `;` stands outside its brackets",
+      );
+    return accumulator;
+  }
+
   #diagnostic(
     code:
+      | typeof foldAccumulatorCode
       | typeof unknownTemplateCaptureCode
       | typeof unknownTemplateFieldCode
       | typeof templateCaptureDepthCode

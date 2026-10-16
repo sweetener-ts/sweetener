@@ -85,10 +85,58 @@ describe("grouping a type expansion", () => {
     expect(expand("export type A = voidFn()[];")).toContain("(() => void)[]");
   });
 
-  test("the left side of a conditional type", () => {
+  test("the left side of a conditional type, which reads a union whole", () => {
     expect(
       expand("export type A = orNull(string) extends null ? 1 : 2;"),
-    ).toContain("(string | null) extends null");
+    ).toContain("export type A = string | null extends null ? 1 : 2;");
+  });
+
+  test("a union inside a union needs nothing", () => {
+    expect(
+      expand("export type A = boolean | orNull(string) | number;"),
+    ).toContain("export type A = boolean | string | null | number;");
+  });
+
+  test("a whole annotation needs nothing", () => {
+    expect(expand("export let held: orNull(string);")).toContain(
+      "export let held: string | null;",
+    );
+  });
+
+  test("a type macro inside another's argument, beside an operator", () => {
+    // Read as a name with a parenthesis after it, `orNull(string)[]` and
+    // `keyof orNull(string)` failed the outer macro's `$t:type`.
+    const text = expand(
+      [
+        "export type A = orNull(orNull(string)[]);",
+        "export type B = orNull(keyof orNull(string));",
+        "export type C = orNull(null | orNull(string));",
+        "export type D = orNull(orNull(string) | number);",
+      ].join("\n"),
+    );
+    expect(text).toContain("export type A = (string | null)[] | null;");
+    expect(text).toContain("export type B = keyof (string | null) | null;");
+    expect(text).toContain("export type C = null | string | null | null;");
+    expect(text).toContain("export type D = string | null | number | null;");
+  });
+
+  test("an annotation in an async function's body", () => {
+    // Read as an expression statement, an async function declaration's body
+    // was taken apart as an expression's, and a type macro in an annotation
+    // there was left as written.
+    expect(
+      expand(
+        "export async function later() { let held: orNull(string) = null; return held; }",
+      ),
+    ).toContain("let held: string | null = null;");
+  });
+
+  test("an indexed access a function body's annotation writes", () => {
+    expect(
+      expand(
+        "type Lookup = { [key: string]: number };\nexport function read(lookup: Lookup) { const value: Lookup[justString()] = lookup.k!; return value; }",
+      ),
+    ).toContain("const value: Lookup[string] =");
   });
 
   test("a plain reference is left ungrouped", () => {
@@ -279,25 +327,25 @@ const captureRows: readonly {
   {
     name: "a function type in a template's union",
     use: "orNothing<() => void>",
-    printed: "((() => void) | null)",
+    printed: "(() => void) | null",
     identity: "(() => void) | null",
   },
   {
     name: "a union in a template's intersection",
     use: "andTagged<{ a: 1 } | { b: 2 }>",
-    printed: '(({ a: 1 } | { b: 2 }) & { tag: "t" })',
+    printed: '({ a: 1 } | { b: 2 }) & { tag: "t" }',
     identity: '({ a: 1 } | { b: 2 }) & { tag: "t" }',
   },
   {
     name: "a union on the left of a template's conditional",
     use: "whenNull<string | null>",
-    printed: '((string | null) extends null ? "yes" : "no")',
+    printed: 'string | null extends null ? "yes" : "no"',
     identity: '"no"',
   },
   {
     name: "a union under a template's keyof",
     use: "keysOf<{ a: 1 } | { b: 2 }>",
-    printed: "(keyof ({ a: 1 } | { b: 2 }))",
+    printed: "keyof ({ a: 1 } | { b: 2 })",
     identity: "never",
   },
   {
@@ -309,13 +357,13 @@ const captureRows: readonly {
   {
     name: "a union as a template's type argument",
     use: "listOf<string | number>",
-    printed: "Array<(string | number)>",
+    printed: "Array<string | number>",
     identity: "Array<string | number>",
   },
   {
     name: "a union as a mapped type's value",
     use: "valueOf<string | number>",
-    printed: '{ [K in "a"]: (string | number) }',
+    printed: '{ [K in "a"]: string | number }',
     identity: "{ a: string | number }",
   },
 ];

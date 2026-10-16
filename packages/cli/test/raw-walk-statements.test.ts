@@ -192,7 +192,7 @@ describe("a block walked as raw tokens", () => {
         "}\n",
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("held: ((value) * 2)");
+    expect(text).toContain("held: (value) * 2");
   });
 
   test("leaves the label a break names alone", () => {

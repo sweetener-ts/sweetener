@@ -637,6 +637,7 @@ function invokeMacroRules(
         generatedBindings: contracts.generatedBindings,
         tracker: options.tracker,
         cancellation,
+        category: options.category,
       });
       let expanded;
       try {

@@ -266,11 +266,48 @@ perform I/O or invoke host functions.
 and emits the result as numeric-literal syntax. It is charged against the
 template-step budget and records the capture and count in expansion traces.
 
-The parameter list is fixed to `($acc, $item, $index)`. `$acc` splices the
-previous evaluated accumulator, `$item` selects the current capture element and
-its declared fields, and `$index` emits the zero-based compile-time index. The
-body becomes the complete next accumulator. Empty input returns the initial
-template unchanged.
+The parameter list is fixed to `($acc, $item, $index)`. `$acc` stands for the
+previous accumulator, `$item` selects the current capture element and its
+declared fields, and `$index` emits the zero-based compile-time index. The body
+becomes the complete next accumulator. Empty input returns the initial template
+unchanged.
+
+What an accumulator is follows from how the step writes `$acc`, as what a
+capture is follows from the class it is declared with:
+
+- Written as an operand -- beside an operator, inside brackets, or with a call,
+  an index or a tagged template written on it -- `$acc` is one expression or
+  one type, and so are the initial template and every step. The fold builds
+  whichever is read where it stands, as a macro written there would be looked
+  up. It builds it a step at a time, expanding each step
+  and reading it with the accumulator before it as one node, so the syntax
+  around `$acc` cannot re-associate it -- `$acc * 2 + $item` multiplies the
+  whole accumulator -- and the result is spliced as one node, as a capture is.
+  Until it is built the fold stands in the replacement as one operand, so a
+  macro written around it reads it as one: `twice($acc)`,
+  `inner(1 + #fold(...) { ... })`. An accumulator that continues the chain of
+  operators of the step after it -- `$acc + $item`, `$acc | $item`,
+  `$item | $acc` -- is opened into that chain, so a fold of any length nests
+  no deeper than one step's operators do. Any other accumulator nests one level
+  deeper per item, up to the nesting-depth limit, which reports `SWR4015`.
+- Written as a part of a list -- between the list's separators, or directly
+  beside the part before or after it -- `$acc` is the run of parts built so
+  far, spliced as those parts: `$acc, $item`, `$acc $item,`,
+  `$acc logged.push($item);`. The fold's result is spliced the same way, as a
+  repetition's is. In a step that builds a list, a bracket written directly
+  after `$acc` is the part that follows it: `$acc [$item, $index],`.
+
+A step builds a list when a `,` or a `;` stands outside its brackets; a comma
+between angle brackets parts type arguments instead. A step that writes no
+`$acc` builds a list when it is one or is empty, and one operand otherwise.
+
+A step that writes `$acc` both ways, a step that writes it as an operand and
+builds a list, and an initial template that is empty or builds a list where
+`$acc` is an operand report `SWR2020` where the template is defined. An
+operand fold standing where neither an expression nor a type is read, or a step
+that does not build exactly one, reports `SWR4029` at the invocation, with the
+`#fold` as the related location. The fold then stands as one operand, so
+nothing around it is reported again.
 
 A parameterization gives a syntax parameter a meaning for the syntax it wraps:
 

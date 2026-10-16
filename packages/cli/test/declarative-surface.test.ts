@@ -86,7 +86,7 @@ describe("optional captures", () => {
        export const some = atLeast(size > 0);`,
     );
     expect(text).toContain("export const none = [true]");
-    expect(text).toContain("export const some = [true && (size > 0)]");
+    expect(text).toContain("export const some = [true && size > 0]");
   });
 
   test("answer #if(present) rather than failing when absent", () => {

@@ -6,8 +6,12 @@ import {
   createSyntaxCursor,
   createSyntaxSequence,
   divisionSlash,
+  expressionContinuedBy,
   isIdentifierToken,
   leadingLineBreak,
+  operandExpectedAfter,
+  primaryPrecedence,
+  sameLineInfix,
   spanEnvelope,
   type OriginStore,
   type Precedence,
@@ -23,11 +27,6 @@ import {
   type SyntaxConsumer,
 } from "./consumer.js";
 import {
-  expressionContinuedBy,
-  operandExpectedAfter,
-  sameLineInfix,
-} from "./core-operators.js";
-import {
   regularExpressionAt,
   type RegularExpressionRead,
 } from "./slash-reading.js";
@@ -36,7 +35,8 @@ import {
   typeOperandFollows,
 } from "./type-class-element.js";
 
-export const primaryExpressionPrecedence: Precedence = createPrecedence(1_000);
+export const primaryExpressionPrecedence: Precedence =
+  createPrecedence(primaryPrecedence);
 
 export interface PrimaryExpressionConsumerOptions {
   readonly allocateSyntaxId: () => SyntaxId;

@@ -112,6 +112,14 @@ export interface HygieneOperationTemplate extends TemplateBase {
 
 export type FoldLocal = "accumulator" | "element" | "index";
 
+/**
+ * What a fold's accumulator is, read from how its step writes `$acc`, the way
+ * what a capture is is read from the class it is declared with: one operand
+ * -- one expression or one type, which the syntax around it cannot
+ * re-associate -- or a run of the parts of a list, spliced as those parts.
+ */
+export type FoldAccumulator = "operand" | "run";
+
 export interface LocalTemplate extends TemplateBase {
   readonly kind: "local";
   readonly local: FoldLocal;
@@ -123,8 +131,11 @@ export interface LocalTemplate extends TemplateBase {
 export interface FoldTemplate extends TemplateBase {
   readonly kind: "fold";
   readonly driver: CapturePath;
+  readonly accumulator: FoldAccumulator;
   readonly initial: SequenceTemplate;
   readonly body: SequenceTemplate;
+  /** The layout written before `#fold`, which what it builds wears. */
+  readonly leadingTrivia: readonly Trivia[];
 }
 
 export type TemplateNode =
@@ -317,13 +328,19 @@ export function createLocalTemplate(options: {
 export function createFoldTemplate(options: {
   readonly origin: OriginId;
   readonly driver: CapturePath;
+  readonly accumulator: FoldAccumulator;
   readonly initial: SequenceTemplate;
   readonly body: SequenceTemplate;
+  readonly leadingTrivia: readonly Trivia[];
 }): FoldTemplate {
   if (!Object.isFrozen(options.driver)) {
     throw new TypeError("Fold driver must be immutable");
   }
   requireFrozen(options.initial, "Fold initial template");
   requireFrozen(options.body, "Fold body template");
-  return Object.freeze({ kind: "fold", ...options });
+  return Object.freeze({
+    kind: "fold",
+    ...options,
+    leadingTrivia: Object.freeze([...options.leadingTrivia]),
+  });
 }

@@ -179,7 +179,7 @@ relay(
   1
 );`,
     );
-    expect(output).toMatch(/\/\/ handed on\n\s*return \(yield 1\);/u);
+    expect(output).toMatch(/\/\/ handed on\n\s*return yield 1;/u);
   });
 
   test("keeps a comment the call site wrote in front of a capture", () => {
@@ -206,7 +206,7 @@ export const doubled = twice(
         `import { sum } from "./macros.sts" for syntax;
 export const total = sum(1 * 2, 3);`,
       ),
-    ).toContain("((1 * 2) + 3)");
+    ).toContain("(1 * 2 + 3)");
   });
 });
 

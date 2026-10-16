@@ -28,6 +28,7 @@ import {
   evaluateTemplate,
   parseTemplate,
   TemplateCardinalityError,
+  type EvaluatedTemplate,
 } from "../src/index.js";
 
 const sourceId = 81 as SourceId;
@@ -95,10 +96,21 @@ function compile(source: string, captures: readonly CaptureShapeBinding[]) {
 
 function raws(output: ReturnType<typeof evaluateTemplate>["output"]): string[] {
   const values: string[] = [];
-  const stack = [...output].reverse();
+  // A string stands for itself: `|` parts an operand fold's initial template
+  // and its steps.
+  const stack: (EvaluatedTemplate | string)[] = [...output].reverse();
   while (stack.length > 0) {
     const item = stack.pop()!;
-    if (item.kind === "group") stack.push(...[...item.body].reverse());
+    if (typeof item === "string") values.push(item);
+    else if (item.kind === "group" || item.kind === "run")
+      stack.push(...[...item.body].reverse());
+    else if (item.kind === "fold")
+      stack.push(
+        ...[item.initial, ...item.steps]
+          .flatMap((part) => ["|", ...part])
+          .reverse(),
+      );
+    else if (item.kind === "accumulator") values.push("$acc");
     else if (item.kind === "syntax")
       values.push(
         ...item.syntax.map((syntax) =>
@@ -386,6 +398,40 @@ describe("template evaluator", () => {
     expect(result.trace.map((event) => event.operation)).toEqual([
       "index",
       "index",
+    ]);
+  });
+
+  test("leaves each step of an operand fold apart, with a hole for $acc", () => {
+    const items = captureId(1);
+    const cardinality = groupId(1);
+    const template = compile(
+      "{ #fold($items, init: { seed }) { ($acc, $item, $index) => { $acc * $item } } }",
+      [binding("items", items, 1, [cardinality])],
+    );
+    const captures = new CaptureRecord([
+      [
+        items,
+        createCaptureSequence({
+          depth: 1,
+          cardinalityGroup: cardinality,
+          elements: [token("a", items), token("b", items)],
+        }),
+      ],
+    ]);
+    const result = evaluateTemplate(template, { captures });
+    // Expansion builds it a step at a time, once it knows whether it is an
+    // expression or a type; each step is evaluated once, whatever came before.
+    expect(raws(result.output)).toEqual([
+      "|",
+      "seed",
+      "|",
+      "$acc",
+      "*",
+      "a",
+      "|",
+      "$acc",
+      "*",
+      "b",
     ]);
   });
 });

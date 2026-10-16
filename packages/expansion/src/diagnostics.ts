@@ -28,6 +28,7 @@ export const unreadItemCode = diagnosticCode("SWR4025");
 export const unreadableTemplateSlashCode = diagnosticCode("SWR4026");
 export const ambiguousSlashCode = diagnosticCode("SWR4027");
 export const unsettledSlashCode = diagnosticCode("SWR4028");
+export const foldPositionCode = diagnosticCode("SWR4029");
 
 /** How a slash reading reads, as a sentence says it. */
 function slashReadingName(reading: unknown): string {
@@ -73,6 +74,16 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
       "Where the enforester finds a slash read the other way from the grammar, and reading it so changes more than the tokens of one expression, the source is read again with the slash read as the grammar reads it and expanded again. That ends once a read agrees with what the enforester finds, which is ordinarily after one read again; the number of reads is bounded rather than trusted, and the expansion of the last read is the one reported, with this at a slash the enforester still found read the other way.",
     format: (arguments_) =>
       `Sweetener read this file ${String(arguments_[1] ?? "several")} times without settling whether this slash begins a regular expression or divides: the last read found it should be ${slashReadingName(arguments_[0])}. Put the regular expression or the division in parentheses, which reads the same either way.`,
+  },
+  {
+    code: foldPositionCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A `#fold` whose step writes `$acc` as an operand builds one expression or one type -- whichever is written where the fold stands -- one step at a time, with the accumulator before each step read as one node. A fold standing where neither is written, or a step that does not build exactly one, is reported at the invocation, with the `#fold` as the related location, and the fold stands as one operand so that nothing around it is reported again.",
+    format: (arguments_) =>
+      `This #fold ${String(arguments_[0] ?? "cannot be built where it stands")}.`,
   },
   {
     code: unparameterizedSyntaxParameterCode,

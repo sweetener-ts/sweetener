@@ -70,6 +70,11 @@ describe("expansion inside nested blocks", () => {
       "generator body",
       "export function* g(v) { const a = duplicate(v); yield a; }",
     ],
+    [
+      "async function declaration body",
+      "export async function f(v) { const a = duplicate(v); return a; }",
+    ],
+    ["member decorator", "export class K { @duplicate(1) m() {} }"],
     ["class method body", "export class K { m(v) { return duplicate(v); } }"],
     [
       "if block",

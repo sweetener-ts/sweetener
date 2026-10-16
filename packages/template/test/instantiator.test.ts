@@ -136,6 +136,7 @@ function setup(templateSource: string) {
       anchor: { start: caller.span.start, end: caller.span.start },
       allocateSyntaxId: () => syntaxIds.allocate(),
       allocateBindingId: () => bindingIds.allocate(),
+      category: "expr",
       ...overrides,
     });
   return {
