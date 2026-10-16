@@ -500,13 +500,20 @@ function computeEndsExpression(kind: ts.SyntaxKind): boolean {
  * What a group was opened after, as far as a slash written after its closing
  * delimiter is concerned.
  */
-type GroupHead = "statement" | "for" | "catch" | "block" | "other";
+/**
+ * What a group was opened after, as far as a slash written after its closing
+ * delimiter is concerned, and what the group holds: a `block` holds
+ * statements, and `members` the members of a class, an interface or an enum.
+ * Both end a statement where they close.
+ */
+type GroupHead = "statement" | "for" | "catch" | "block" | "members" | "other";
 
 /** The words a statement's parenthesized head is written after. */
 const statementHeads = new Map<ts.SyntaxKind, GroupHead>([
   [ts.SyntaxKind.IfKeyword, "statement"],
   [ts.SyntaxKind.WhileKeyword, "statement"],
   [ts.SyntaxKind.WithKeyword, "statement"],
+  [ts.SyntaxKind.SwitchKeyword, "statement"],
   [ts.SyntaxKind.ForKeyword, "for"],
   [ts.SyntaxKind.CatchKeyword, "catch"],
 ]);
@@ -627,21 +634,63 @@ class SlashJudgement {
   #beforePrevious: ts.SyntaxKind | undefined;
   /** What the group the latest token closed was opened after. */
   #closed: GroupHead | undefined;
-  /** Whether the next token begins a statement, as the first one does. */
+  /**
+   * Whether the next token begins a statement, as the first one does. Only
+   * in a list of statements does one: at the top level, or in a block.
+   */
   #nextBeginsStatement = true;
   /**
-   * How many groups stood open at the declaring word of a declaration whose
-   * body has not been read yet: its body is the first brace opened at that
-   * depth where no type is written. Undefined where no such word was read.
+   * Whether the next token stands in a list of statements after one that
+   * ends an expression. A word that cannot carry an expression on -- a
+   * declaring word, a label -- begins a statement there, by a line break or
+   * as an error TypeScript reports. A brace or a parenthesis carries one on:
+   * `function () {}` and `f(x)`.
    */
-  #declaration: number | undefined;
+  #nextAfterExpression = false;
+  /**
+   * A declaration whose body has not been read yet: how many groups stood
+   * open at its declaring word, where its body is the first brace opened at
+   * that depth where no type is written, and whether that body holds members
+   * rather than statements. Undefined where no such word was read.
+   */
+  #declaration:
+    { readonly depth: number; readonly members: boolean } | undefined;
   /**
    * What must follow a contextual declaring word just read for it to declare,
-   * and how many groups stood open at it. Undefined where none was.
+   * on the same line, and the declaration it would begin. Undefined where
+   * none was read.
    */
   #candidate:
-    | { readonly follows: ReadonlySet<ts.SyntaxKind>; readonly depth: number }
+    | {
+        readonly follows: ReadonlySet<ts.SyntaxKind>;
+        readonly depth: number;
+        readonly members: boolean;
+      }
     | undefined;
+  /**
+   * Whether the modifiers read since the statement began include `declare`,
+   * after which a function has no body.
+   */
+  #ambient = false;
+  /**
+   * Whether the decorators read since a token that was no decorator began a
+   * statement, and how many groups stood open there. A class they decorate
+   * begins one where they did: `@d class C {}` declares, and `x = @d class
+   * {}` is an expression.
+   */
+  #decorated:
+    { readonly beginsStatement: boolean; readonly depth: number } | undefined;
+  /**
+   * The `case` or `default` clause whose `:` has not been read yet: how many
+   * groups stood open at it, how many `?`s of a conditional in its expression
+   * still wait for their `:`, and whether it is a `default`, whose `:` comes
+   * next or which is no clause.
+   */
+  #clause:
+    | { readonly depth: number; questions: number; readonly default: boolean }
+    | undefined;
+  /** How many groups stood open at a name that began a statement, just read. */
+  #label: number | undefined;
 
   constructor(allowed: boolean) {
     this.#allowed = allowed;
@@ -658,17 +707,83 @@ class SlashJudgement {
    * follows it -- JSX text -- is taken only for the groups it closes.
    */
   take(kind: ts.SyntaxKind, lineBreakBefore: boolean, judged = true): void {
-    const beginsStatement = this.#nextBeginsStatement;
-    // After a `.` a declaring word names a member, and no statement begins
-    // there.
-    if (this.#candidate?.follows.has(kind) === true)
-      this.#declaration = this.#candidate.depth;
+    // After a `.` a keyword is a member's name: `o.else / 2` divides, and no
+    // statement or declaration begins there. A `(` or a `[` after `?.` is an
+    // optional call or index, and no name.
+    const memberName =
+      (this.#previous === ts.SyntaxKind.DotToken ||
+        this.#previous === ts.SyntaxKind.QuestionDotToken) &&
+      kind >= ts.SyntaxKind.FirstKeyword &&
+      kind <= ts.SyntaxKind.LastKeyword;
+    const beginsStatement = this.#nextBeginsStatement && !memberName;
+    /** Whether a word that cannot carry an expression on begins one here. */
+    const wordBeginsStatement =
+      beginsStatement || (this.#nextAfterExpression && !memberName);
+    const depth = this.#open.length;
+    if (
+      this.#candidate !== undefined &&
+      !lineBreakBefore &&
+      this.#candidate.follows.has(kind)
+    )
+      this.#declaration = {
+        depth: this.#candidate.depth,
+        members: this.#candidate.members,
+      };
     this.#candidate = undefined;
-    if (beginsStatement && declarationKeywords.has(kind))
-      this.#declaration = this.#open.length;
-    const follows = contextualDeclarationKeywords.get(kind);
-    if (beginsStatement && follows !== undefined)
-      this.#candidate = { follows, depth: this.#open.length };
+    let clauseEnds = false;
+    if (this.#clause !== undefined && this.#clause.depth === depth) {
+      if (kind === ts.SyntaxKind.ColonToken && this.#clause.questions === 0) {
+        clauseEnds = true;
+        this.#clause = undefined;
+      } else if (this.#clause.default) this.#clause = undefined;
+      else if (kind === ts.SyntaxKind.QuestionToken)
+        this.#clause.questions += 1;
+      else if (kind === ts.SyntaxKind.ColonToken) this.#clause.questions -= 1;
+    }
+    const labelEnds =
+      this.#label === depth && kind === ts.SyntaxKind.ColonToken;
+    this.#label = undefined;
+    if (!memberName) {
+      const declares =
+        kind === ts.SyntaxKind.ClassKeyword && this.#decorated !== undefined
+          ? this.#decorated.beginsStatement
+          : wordBeginsStatement;
+      if (
+        declares &&
+        declarationKeywords.has(kind) &&
+        !(kind === ts.SyntaxKind.FunctionKeyword && this.#ambient)
+      )
+        this.#declaration = {
+          depth,
+          members: kind !== ts.SyntaxKind.FunctionKeyword,
+        };
+      const follows = contextualDeclarationKeywords.get(kind);
+      if (wordBeginsStatement && follows !== undefined)
+        this.#candidate = {
+          follows,
+          depth,
+          members: kind === ts.SyntaxKind.InterfaceKeyword,
+        };
+      if (
+        wordBeginsStatement &&
+        (kind === ts.SyntaxKind.CaseKeyword ||
+          kind === ts.SyntaxKind.DefaultKeyword)
+      )
+        this.#clause = {
+          depth,
+          questions: 0,
+          default: kind === ts.SyntaxKind.DefaultKeyword,
+        };
+      if (wordBeginsStatement && kind === ts.SyntaxKind.Identifier)
+        this.#label = depth;
+      if (kind === ts.SyntaxKind.AtToken)
+        this.#decorated ??= { beginsStatement: wordBeginsStatement, depth };
+    }
+    if (kind === ts.SyntaxKind.ClassKeyword) this.#decorated = undefined;
+    this.#ambient = declarationModifiers.has(kind)
+      ? this.#ambient ||
+        (kind === ts.SyntaxKind.DeclareKeyword && wordBeginsStatement)
+      : false;
     let closed: GroupHead | undefined;
     const opener = opens.get(kind);
     if (opener !== undefined) {
@@ -682,7 +797,7 @@ class SlashJudgement {
     if (kind === ts.SyntaxKind.OpenParenToken)
       this.#open.push({ opener: kind, head: this.#parenthesisHead() });
     else if (kind === ts.SyntaxKind.OpenBraceToken)
-      this.#open.push({ opener: kind, head: this.#braceHead() });
+      this.#open.push({ opener: kind, head: this.#braceHead(beginsStatement) });
     else if (
       kind === ts.SyntaxKind.OpenBracketToken ||
       kind === ts.SyntaxKind.TemplateHead ||
@@ -697,40 +812,59 @@ class SlashJudgement {
       });
     if (this.#declaration !== undefined) {
       // A `;` at the declaration's depth ends one with no body -- an
-      // overload, or an ambient declaration -- and a closer below it leaves
-      // the scope it was written in.
+      // overload -- and a closer below it leaves the scope it was written in.
       if (
-        this.#open.length < this.#declaration ||
+        this.#open.length < this.#declaration.depth ||
         (kind === ts.SyntaxKind.SemicolonToken &&
-          this.#open.length === this.#declaration)
+          this.#open.length === this.#declaration.depth)
       )
         this.#declaration = undefined;
     }
+    // A member's decorators end at its name; a brace or a `;` where they
+    // were written is past them.
+    if (
+      this.#decorated !== undefined &&
+      (kind === ts.SyntaxKind.OpenBraceToken ||
+        kind === ts.SyntaxKind.SemicolonToken) &&
+      depth === this.#decorated.depth
+    )
+      this.#decorated = undefined;
+    const innermost = this.#open.at(-1)?.head;
+    const statements = innermost === undefined || innermost === "block";
     this.#nextBeginsStatement =
-      kind === ts.SyntaxKind.SemicolonToken ||
-      kind === ts.SyntaxKind.ElseKeyword ||
-      kind === ts.SyntaxKind.DoKeyword ||
-      (kind === ts.SyntaxKind.OpenBraceToken &&
-        this.#open.at(-1)?.head === "block") ||
-      (declarationModifiers.has(kind)
-        ? beginsStatement
-        : // A declaring word cannot carry an expression on, so after one that
-          // ends an expression it begins a statement: by a line break, or as
-          // an error TypeScript reports.
-          judged && tokenCanEndExpression(kind));
+      statements &&
+      (kind === ts.SyntaxKind.SemicolonToken ||
+        clauseEnds ||
+        labelEnds ||
+        (!memberName &&
+          (kind === ts.SyntaxKind.ElseKeyword ||
+            kind === ts.SyntaxKind.DoKeyword)) ||
+        (kind === ts.SyntaxKind.OpenBraceToken &&
+          this.#open.at(-1)?.head === "block") ||
+        (!memberName && declarationModifiers.has(kind) && wordBeginsStatement));
+    this.#nextAfterExpression =
+      statements &&
+      judged &&
+      !(declarationModifiers.has(kind) && !memberName) &&
+      (memberName || tokenCanEndExpression(kind));
     if (judged)
       this.#allowed =
-        closed === "statement" || closed === "for" || closed === "block"
+        closed === "statement" ||
+        closed === "for" ||
+        closed === "block" ||
+        closed === "members"
           ? true
-          : kind === ts.SyntaxKind.ExclamationToken
-            ? // A `!` on its operand's own line is a non-null assertion, and
-              // the operand it ends still ends there: TypeScript writes
-              // `LeftHandSideExpression [no LineTerminator here] !`, so
-              // `a! / 2` divides. Anywhere else it is the prefix operator.
-              lineBreakBefore || this.#allowed
-            : kind === ts.SyntaxKind.OfKeyword
-              ? this.#open.at(-1)?.head === "for"
-              : !tokenCanEndExpression(kind);
+          : memberName
+            ? false
+            : kind === ts.SyntaxKind.ExclamationToken
+              ? // A `!` on its operand's own line is a non-null assertion, and
+                // the operand it ends still ends there: TypeScript writes
+                // `LeftHandSideExpression [no LineTerminator here] !`, so
+                // `a! / 2` divides. Anywhere else it is the prefix operator.
+                lineBreakBefore || this.#allowed
+              : kind === ts.SyntaxKind.OfKeyword
+                ? this.#open.at(-1)?.head === "for"
+                : !tokenCanEndExpression(kind);
     this.#beforePrevious = this.#previous;
     this.#previous = kind;
   }
@@ -758,15 +892,32 @@ class SlashJudgement {
       : "other";
   }
 
-  #braceHead(): GroupHead {
+  /**
+   * What the brace being opened holds, `beginsStatement` saying whether it
+   * begins a statement.
+   */
+  #braceHead(beginsStatement: boolean): GroupHead {
     const previous = this.#previous;
-    if (
-      this.#declaration === this.#open.length &&
-      !(previous !== undefined && typeBraceAfter.has(previous))
-    ) {
+    const typed = previous !== undefined && typeBraceAfter.has(previous);
+    if (this.#declaration?.depth === this.#open.length && !typed) {
+      const { members } = this.#declaration;
       this.#declaration = undefined;
-      return "block";
+      return members ? "members" : "block";
     }
+    // A brace that begins a statement is a block; and among a class's
+    // members one after a parameter list, a return type or `static` is a
+    // method's body or a static block, where one after an operator is an
+    // object written in an initializer.
+    if (beginsStatement) return "block";
+    if (
+      this.#open.at(-1)?.head === "members" &&
+      previous !== undefined &&
+      !typed &&
+      (tokenCanEndExpression(previous) ||
+        previous === ts.SyntaxKind.GreaterThanToken ||
+        previous === ts.SyntaxKind.VoidKeyword)
+    )
+      return "block";
     if (previous === ts.SyntaxKind.CloseParenToken)
       return this.#closed === "statement" ||
         this.#closed === "for" ||

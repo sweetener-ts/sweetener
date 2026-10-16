@@ -140,6 +140,15 @@ describe("a field asserted to a type", () => {
     "class K {\n  x = (a as T)\n  [k]\n  y = 1\n}",
     "class K {\n  x = as\n  [k]\n  y = 1\n}",
     "class K {\n  x = a as T\n  * b\n  y = 1\n}",
+    "class K {\n  x = a as number >\n    limit\n  y = 1\n}",
+    "class K {\n  x = a as number > 0\n  [k]\n  y = 1\n}",
+    "class K {\n  x = a as number >> 1\n  [k]\n  y = 1\n}",
+    "class K {\n  x = a as number >= 1\n  [k]\n  y = 1\n}",
+    "class K {\n  x = a as Array<number>\n  [k] = 1\n}",
+    "class K {\n  x = flag ? a as T extends U ? V : W : b\n  [k] = 1\n}",
+    "class K {\n  x = a as T extends infer U extends V ? U : W\n  [k] = 1\n}",
+    "class K {\n  x = async as => as\n  [k] = 1\n}",
+    "class K {\n  x = a as -1\n  [k] = 1\n}",
   ])("ends the field where TypeScript does: %s", (source) => {
     expect(members(source)).toEqual(typescriptMembers(source));
   });

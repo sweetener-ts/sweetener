@@ -157,6 +157,7 @@ describe("what the reader judges a slash by", () => {
     ["a `for` head's `of`", "for (const x of /a/g.exec(s));", "re:/a/g"],
     ["`await`", "await /a/g.exec(s);", "re:/a/g"],
     ["a prefix `!`", "a\n!/a/.test(s);", "re:/a/"],
+    ["an optional call's `(`", "s?.replace?.(/a/, b);", "re:/a/"],
     ["a function declaration", "function f() {}\n/re/.test(s);", "re:/re/"],
     [
       "a function declaration with an object return type",
@@ -208,6 +209,27 @@ describe("what the reader judges a slash by", () => {
     ["a namespace declaration", "namespace N {}\n/re/.test(s);", "re:/re/"],
     ["a module declaration", 'declare module "m" {}\n/re/.test(s);', "re:/re/"],
     ["a global declaration", "declare global {}\n/re/.test(s);", "re:/re/"],
+    [
+      "a function declared after a label",
+      "l: function f() {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "a function declared in a case",
+      "switch (x) {\n  case a ? b : c:\n    function f() {}\n    /re/.test(s);\n}",
+      "re:/re/",
+    ],
+    [
+      "a function declared after default",
+      "switch (x) {\n  default:\n    function f() {}\n    /re/.test(s);\n}",
+      "re:/re/",
+    ],
+    ["a switch", "switch (x) {}\n/re/.test(s);", "re:/re/"],
+    [
+      "a decorated class declaration",
+      "@d.e(1)\nclass C {}\n/re/.test(s);",
+      "re:/re/",
+    ],
   ])("begins a regular expression after %s", (_, source, token) => {
     expect(tokens(source)).toContain(token);
   });
@@ -224,7 +246,23 @@ describe("what the reader judges a slash by", () => {
     ["an async function expression", "x = async function () {} / 2 / 3;"],
     ["a class expression", "x = class {} / 2 / 3;"],
     ["an object after an overload", "function f(): void;\nx = {} / 2 / 3;"],
-    ["a method named `function`", "x = { function() {} }.a / 2 / 3;"],
+    [
+      "a declared function, which has no body",
+      "declare function f(): void\nx = a + {} / 2 / 3;",
+    ],
+    ["a member named `enum`", "class A { enum = 1\n b = 1 + {} / 2 / 3 }"],
+    [
+      "a member named `function`",
+      "class A { function = 1\n b = 1 + {} / 2 / 3 }",
+    ],
+    [
+      "a name spelled `namespace` on a line of its own",
+      "namespace\nN\nx = a + {} / 2 / 3;",
+    ],
+    ["a decorated class expression", "x = @d class {} / 2 / 3;"],
+    ["a class in a `for` head", "for (const k of class {} / 2 / 3);"],
+    ["a member spelled `else`", "x = o.else / 2 / 3;"],
+    ["a member spelled `do`", "x = o?.do / 2 / 3;"],
     [
       "a function assigned to a name spelled `module`",
       "module.exports = function () {} / 2 / 3;",

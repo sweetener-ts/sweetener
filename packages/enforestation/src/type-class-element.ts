@@ -1021,11 +1021,20 @@ function createMemberTracker(modifiers: MemberModifiers) {
   let initialized = false;
   /**
    * The type an `as` or a `satisfies` in the initializer asserts, while the
-   * walk stands in it, and whether it has read a conditional type's
-   * `extends`, after which a `?` and a `:` are the type's own.
+   * walk stands in it: how many conditional types' `extends` still wait for
+   * their `?`, and how many of those `?`s for their `:` -- a `?` and a `:`
+   * outside them are the expression's -- and the two nodes it took last.
    */
   let asserted:
-    { readonly type: TypeTracker; conditional: boolean } | undefined;
+    | {
+        readonly type: TypeTracker;
+        awaitingQuestion: number;
+        awaitingColon: number;
+        taken: number;
+        previous: Syntax | undefined;
+        beforePrevious: Syntax | undefined;
+      }
+    | undefined;
   /**
    * Where the last parenthesized group read before any initializer stands,
    * and the last of those read in the header outside its type parameters:
@@ -1067,24 +1076,47 @@ function createMemberTracker(modifiers: MemberModifiers) {
     ) {
       asserted = {
         type: createTypeTracker(undefined, false),
-        conditional: false,
+        awaitingQuestion: 0,
+        awaitingColon: 0,
+        taken: 0,
+        previous: undefined,
+        beforePrevious: undefined,
       };
       return;
     }
     if (asserted === undefined) return;
+    // No type begins with these, so the word before them was a name spelled
+    // `as`: the parameter of `async as => as`, or a binding's.
+    if (asserted.taken === 0 && token(node) && namedAs.has(node.raw)) {
+      asserted = undefined;
+      return;
+    }
     // A type still expecting an operand takes what follows as one: the `-`
-    // of `as -1` is a literal's sign.
+    // of `as -1` is a literal's sign. Nested in type arguments, a `>` closes
+    // them and a `,` separates them.
     if (!asserted.type.nested() && !asserted.type.unfinished() && token(node)) {
-      if (node.raw === "extends") asserted.conditional = true;
-      else if (
+      if (node.raw === "extends") {
+        // `infer U extends C` constrains `U`, and opens no conditional.
+        if (!token(asserted.beforePrevious, "infer"))
+          asserted.awaitingQuestion += 1;
+      } else if (node.raw === "?" && asserted.awaitingQuestion > 0) {
+        asserted.awaitingQuestion -= 1;
+        asserted.awaitingColon += 1;
+      } else if (node.raw === ":" && asserted.awaitingColon > 0) {
+        asserted.awaitingColon -= 1;
+      } else if (
         endsAssertedType.has(node.raw) ||
-        (!asserted.conditional && (node.raw === "?" || node.raw === ":"))
+        node.raw === "?" ||
+        node.raw === ":"
       ) {
         asserted = undefined;
         return;
       }
     }
     asserted.type.take(node);
+    asserted.taken += 1;
+    asserted.beforePrevious = asserted.previous;
+    asserted.previous = node;
   };
   return Object.freeze({
     /** The member read so far. */
@@ -1187,11 +1219,20 @@ function createMemberTracker(modifiers: MemberModifiers) {
 type MemberTracker = ReturnType<typeof createMemberTracker>;
 
 /**
+ * What follows a word spelled `as` where it is a name rather than the
+ * operator: an arrow's parameter, `async as => as`, or something assigned.
+ */
+const namedAs: ReadonlySet<string> = new Set(["=>", "=", ","]);
+
+/**
  * The tokens that end a type an `as` or a `satisfies` asserts, written where
- * it stands: the expression's own operators, which no type writes. A `?` and
- * a `:` end it too outside a conditional type.
+ * it stands outside any type arguments: the expression's own operators, which
+ * no type writes there. The reader writes each `>` as a token of its own, so
+ * a `>` that closes no type arguments compares, and `>>` and `>=` begin with
+ * one. A `?` and a `:` end it too outside a conditional type.
  */
 const endsAssertedType: ReadonlySet<string> = new Set([
+  ">",
   ",",
   "=",
   "+",
@@ -1208,10 +1249,7 @@ const endsAssertedType: ReadonlySet<string> = new Set([
   "!=",
   "!==",
   "<=",
-  ">=",
   "<<",
-  ">>",
-  ">>>",
   "^",
   "in",
   "instanceof",
@@ -1225,8 +1263,6 @@ const endsAssertedType: ReadonlySet<string> = new Set([
   "||=",
   "??=",
   "<<=",
-  ">>=",
-  ">>>=",
   "&=",
   "|=",
   "^=",
