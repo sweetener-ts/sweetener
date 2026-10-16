@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { runConfiguredProjectCommand } from "../src/index.js";
 
@@ -148,7 +149,9 @@ function expandWith(definitions: string, main: string): Expansion {
   )?.generated.text;
   return {
     text: (generated ?? "").replaceAll(/\s+/gu, " ").trim(),
-    messages: result.diagnostics.map(({ messageText }) => String(messageText)),
+    messages: result.diagnostics.map(({ messageText }) =>
+      ts.flattenDiagnosticMessageText(messageText, "\n"),
+    ),
   };
 }
 
