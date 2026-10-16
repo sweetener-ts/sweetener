@@ -454,3 +454,53 @@ describe("config-free emit", () => {
     expect(result.outputs.size).toBe(0);
   });
 });
+
+/**
+ * TypeScript says it cannot find a name in more words than one. Where the
+ * name is one it knows a package for -- `test`, `process`, `jQuery` -- or one a
+ * class declares as a member, it adds advice. Every one of them is the same
+ * question, and the held sentence is the answer: unmatched, the advice was
+ * printed instead ("install @types/jest"), and following it made the name
+ * resolve, so the macro was silently compiled as a call to Jest's global.
+ */
+describe("what TypeScript says about a name it cannot find", () => {
+  // With `types` empty TypeScript gives the form of its advice that also says
+  // to add the package to `types`: 2593, 2591 and 2592.
+  test.each([{ name: "test" }, { name: "process" }, { name: "jQuery" }])(
+    "is answered for a macro spelled $name",
+    ({ name }) => {
+      const { config } = project({
+        files: {
+          "src/macros.sts": `export syntax ${name}:expr {\n  rule { ${name}($value:tt) } => { [$value] }\n}\n`,
+          "src/main.sts": `import { ${name} } from "./macros.sts" for syntax;\nexport const held = ${name};\n`,
+        },
+        compilerOptions: { noEmit: true, types: [] },
+        sweet: { macroExtensions: [".sts"] },
+      });
+      const result = runConfiguredProjectCommand({
+        command: "check",
+        configPath: config,
+        writeThrough: false,
+      });
+      expect(result.diagnostics.map(({ code }) => code)).toEqual([4024]);
+      expect(result.exitCode).toBe(1);
+    },
+  );
+
+  test("is answered where a class declares a member of the macro's spelling", () => {
+    const { config } = project({
+      files: {
+        "src/macros.sts": `export syntax pick:expr {\n  rule { pick($value:tt) } => { [$value] }\n}\n`,
+        "src/main.sts": `import { pick } from "./macros.sts" for syntax;\nexport class C { pick = 1; read(): unknown { return pick; } }\n`,
+      },
+      compilerOptions: { noEmit: true },
+      sweet: { macroExtensions: [".sts"] },
+    });
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: config,
+      writeThrough: false,
+    });
+    expect(result.diagnostics.map(({ code }) => code)).toEqual([4024]);
+  });
+});

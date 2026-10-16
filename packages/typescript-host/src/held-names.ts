@@ -18,6 +18,20 @@
 const unresolvedNameCodes: ReadonlySet<number> = new Set([
   2304, // Cannot find name 'X'.
   2552, // Cannot find name 'X'. Did you mean 'Y'?
+  // The same, with advice for a name TypeScript knows a package or a library
+  // for. The advice is wrong when the name is a macro's, and following it
+  // makes the name resolve to that package's global instead.
+  2580, // ... install type definitions for node?
+  2581, // ... install type definitions for jQuery?
+  2582, // ... install type definitions for a test runner?
+  2583, // ... change your target library? ... '{1}' or later.
+  2584, // ... change your target library? ... include 'dom'.
+  2591, // ... for node? ... add 'node' to the types field.
+  2592, // ... for jQuery? ... add 'jquery' to the types field.
+  2593, // ... for a test runner? ... add 'jest' or 'mocha' to the types field.
+  // The same, where a class declares a member of the name.
+  2662, // ... Did you mean the static member 'C.X'?
+  2663, // ... Did you mean the instance member 'this.X'?
   7008, // Member 'X' implicitly has an 'any' type.
   18004, // No value exists in scope for the shorthand property 'X'.
 ]);
