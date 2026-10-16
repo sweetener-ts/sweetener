@@ -258,17 +258,30 @@ export const held = twice;
     expect(service.diagnostics(sourceFileName)).toEqual([]);
   });
 
-  test("reports what is wrong with the macros a file uses", () => {
+  test("reports what is wrong with the macros a file uses, where it is", () => {
+    const macroModule =
+      "export syntax twice:expr { rule { twice($x:tt) } => { #bogus($x) } }";
     const source = `import { twice } from "./macros.sts" for syntax;
 export const a = twice(1);
 `;
-    const { service, sourceFileName } = editor(
-      "export syntax twice:expr { rule { twice($x:tt) } => { #bogus($x) } }",
-      source,
-    );
+    const { service, sourceFileName } = editor(macroModule, source);
+    const reported = service
+      .diagnostics(sourceFileName)
+      .find(({ messageText }) =>
+        messageText.startsWith("Template has no operation #bogus."),
+      );
+    // Raised in the macro module, so not placed in this file at the module's
+    // offset: said against the file as a whole, pointing at the module.
+    expect(reported?.primaryOrigin).toBeUndefined();
+    expect(reported?.messageText).toMatch(/raised in .*macros\.sts:1:\d+\)$/u);
+    const [where] = reported?.typescriptRelatedInformation ?? [];
+    expect(where?.file?.fileName).toMatch(/macros\.sts$/u);
     expect(
-      service.diagnostics(sourceFileName).map(({ messageText }) => messageText),
-    ).toContain("Template has no operation #bogus.");
+      macroModule.slice(
+        where?.start ?? 0,
+        (where?.start ?? 0) + (where?.length ?? 0),
+      ),
+    ).toContain("#bogus");
   });
 
   test("reports what expansion warned about", () => {

@@ -138,23 +138,71 @@ function sourceSpanForTextSpan(
 }
 
 /**
- * A diagnostic expansion reported against a source, in the shape the language
- * service reports TypeScript's in. It is already where it belongs, so it is
- * mapped through nothing.
+ * A diagnostic expansion reported, in the shape the language service reports
+ * TypeScript's in, for the source `mapping` maps. It is already in source
+ * coordinates, so it is mapped through nothing.
+ *
+ * Not every one is about that source: a macro module's errors stop the macros
+ * a file reads from it, so the file reports them too, and they are positioned
+ * in the module. Placed in the file at the module's offset, one pointed at
+ * unrelated text, or past the end. It is reported against the file as a
+ * whole, saying where in the module it was raised, and points there.
  */
 function sourceDiagnostic(
-  sourceId: SourceId,
+  mapping: LanguageServiceSourceMapping,
   diagnostic: ts.Diagnostic,
 ): RemappedTypeScriptDiagnostic {
+  const messageText = ts.flattenDiagnosticMessageText(
+    diagnostic.messageText,
+    "\n",
+  );
+  const related = [...(diagnostic.relatedInformation ?? [])];
+  const elsewhere =
+    diagnostic.file !== undefined &&
+    canonical(diagnostic.file.fileName) !== canonical(mapping.sourceFileName);
+  if (elsewhere) {
+    const file = diagnostic.file!;
+    const at =
+      diagnostic.start === undefined
+        ? ""
+        : (() => {
+            const { line, character } = ts.getLineAndCharacterOfPosition(
+              file,
+              diagnostic.start,
+            );
+            return `:${String(line + 1)}:${String(character + 1)}`;
+          })();
+    return Object.freeze({
+      typescriptCode: diagnostic.code,
+      category: diagnostic.category,
+      messageText: `${messageText} (raised in ${file.fileName}${at})`,
+      primaryOrigin: undefined,
+      relatedOrigins: Object.freeze([]),
+      expansionStack: Object.freeze([]),
+      generatedStart: undefined,
+      generatedLength: undefined,
+      typescriptRelatedInformation: Object.freeze([
+        Object.freeze({
+          category: ts.DiagnosticCategory.Message,
+          code: diagnostic.code,
+          file,
+          start: diagnostic.start,
+          length: diagnostic.length,
+          messageText: "Where it was raised",
+        }),
+        ...related,
+      ]),
+    });
+  }
   return Object.freeze({
     typescriptCode: diagnostic.code,
     category: diagnostic.category,
-    messageText: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    messageText,
     primaryOrigin:
       diagnostic.start === undefined
         ? undefined
         : Object.freeze({
-            sourceId,
+            sourceId: mapping.sourceId,
             start: diagnostic.start,
             end: diagnostic.start + (diagnostic.length ?? 0),
           }),
@@ -162,9 +210,7 @@ function sourceDiagnostic(
     expansionStack: Object.freeze([]),
     generatedStart: undefined,
     generatedLength: undefined,
-    typescriptRelatedInformation: Object.freeze([
-      ...(diagnostic.relatedInformation ?? []),
-    ]),
+    typescriptRelatedInformation: Object.freeze(related),
   });
 }
 
@@ -226,7 +272,7 @@ export class MappedLanguageService {
     const { expansion } = mapping;
     if (expansion === undefined) return Object.freeze(remapped);
     const inSource = (diagnostic: ts.Diagnostic) =>
-      sourceDiagnostic(mapping.sourceId, diagnostic);
+      sourceDiagnostic(mapping, diagnostic);
     return Object.freeze([
       ...remapped.map((diagnostic) => {
         const name = nameTypeScriptNamed(

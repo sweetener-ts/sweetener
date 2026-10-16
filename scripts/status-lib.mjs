@@ -284,19 +284,6 @@ function commitExists(commit) {
 }
 
 /**
- * What to say about each check report that did not come from the tree in front
- * of you.
- *
- * The validation table records the commit each report ran at and nothing reads
- * it, so a green row can sit above a `Health: green` at a commit where the
- * suite never ran. The staleness is worked out here, when the dashboard is
- * *checked*, rather than written into the file: `STATUS.md` is committed
- * alongside the change it describes, so anything in it that named the current
- * commit was one behind the moment it landed -- which is what made the
- * byte-for-byte render comparison fail from 0.1.0-alpha.3 until `a943ead`
- * removed the marker.
- */
-/**
  * What a check report says happened, in the validation table's words.
  *
  * A run fails without failing a test when a test file cannot be loaded or an
@@ -314,6 +301,19 @@ export function checkResult(report) {
   return `${report.passed ?? 0} passed`;
 }
 
+/**
+ * What to say about each check report that did not come from the tree in front
+ * of you.
+ *
+ * The validation table records the commit each report ran at and nothing reads
+ * it, so a green row can sit above a `Health: green` at a commit where the
+ * suite never ran. The staleness is worked out here, when the dashboard is
+ * *checked*, rather than written into the file: `STATUS.md` is committed
+ * alongside the change it describes, so anything in it that named the current
+ * commit was one behind the moment it landed -- which is what made the
+ * byte-for-byte render comparison fail from 0.1.0-alpha.3 until `a943ead`
+ * removed the marker.
+ */
 export function staleReports(reports, head, exists = commitExists) {
   if (head === undefined) return [];
   const stale = [];
