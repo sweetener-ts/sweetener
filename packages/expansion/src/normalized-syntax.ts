@@ -210,7 +210,10 @@ function keep(
     return;
   }
   into.normalized ??= into.node.children.slice(0, into.at);
-  into.normalized.push(...replacement);
+  // One at a time: a chain of operators is one node holding every operand and
+  // operator in it, and spread into `push` a hundred thousand of them are
+  // more arguments than a call can take.
+  for (const node of replacement) into.normalized.push(node);
 }
 
 function rebuilt(

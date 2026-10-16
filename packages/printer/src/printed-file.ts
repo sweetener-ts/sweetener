@@ -732,13 +732,12 @@ function constructsTooMuch(expression: ProtectedSyntax): boolean {
  * is and which alone may stand as the base of `**`.
  */
 function unaryExpression(expression: ProtectedSyntax | undefined): boolean {
-  const head = expression?.children[0];
+  const head =
+    expression === undefined ? undefined : prefixRun(expression)?.operators[0];
   return (
-    expression?.children.length === 2 &&
-    head?.tag === "token" &&
+    head !== undefined &&
     head.raw !== "++" &&
     head.raw !== "--" &&
-    head.raw !== "new" &&
     coreExpressionOperators.some(
       ({ spelling, fixity, precedence }) =>
         spelling === head.raw &&
@@ -746,6 +745,30 @@ function unaryExpression(expression: ProtectedSyntax | undefined): boolean {
         precedence === unaryPrecedence,
     )
   );
+}
+
+/**
+ * The prefix operators `expression` applies to one operand, in the order they
+ * are written, and the operand: `!a`, `yield* v`, and a run of one level's,
+ * `- -a`, which the parser holds in one node. Not `new`, whose operand is
+ * opened into it.
+ */
+function prefixRun(
+  expression: ProtectedSyntax,
+):
+  | { readonly operators: readonly TokenSyntax[]; readonly operand: Syntax }
+  | undefined {
+  const children = expression.children;
+  if (expression.category !== "expr" || children.length < 2) return undefined;
+  const operators: TokenSyntax[] = [];
+  for (const child of children.slice(0, -1)) {
+    if (child.tag !== "token" || child.raw === "new") return undefined;
+    const yieldStar = child.raw === "*" && operators.at(-1)?.raw === "yield";
+    if (!yieldStar && coreOperator(child.raw, "prefix") === undefined)
+      return undefined;
+    operators.push(child);
+  }
+  return { operators, operand: children.at(-1)! };
 }
 
 /** Whether `expression` ends in the type an `as` or a `satisfies` takes. */
@@ -1242,12 +1265,16 @@ export function printExpandedFile<Trace>(
         boundOperands.add(found);
     };
     if (parent.form === "conditional") {
-      // `test ? consequent : alternate`: the test is a short-circuit
-      // expression, the consequent anything short of a comma, and the
-      // alternate an assignment-level one.
-      bind(children[0], operatorPrecedence("??", "infix"));
-      bind(children[2], commaPrecedence + 1);
-      bind(children[4], assignmentPrecedence);
+      // `test ? consequent : alternate`, and the conditionals in alternate
+      // position after it, which the parser holds in the one node: each test
+      // is a short-circuit expression, each consequent anything short of a
+      // comma, and the last alternate an assignment-level one.
+      const alternate = children.length - 1;
+      for (let test = 0; test < alternate; test += 4) {
+        bind(children[test], operatorPrecedence("??", "infix"));
+        bind(children[test + 2], commaPrecedence + 1);
+      }
+      bind(children[alternate], assignmentPrecedence);
       return;
     }
     const first = children[0];
@@ -1279,16 +1306,13 @@ export function printExpandedFile<Trace>(
     }
     operators.push(spelling);
     operands.push(last!);
-    // Each operator must be one of this node's level, and a chain of more
-    // than one must read left to right. A run the walk left flat -- `v = y ??
-    // $e` read as one node -- is neither, and nothing in it is bound.
+    // Each operator must be one of this node's level, which holds operators
+    // of one associativity. A run the walk left flat -- `v = y ?? $e` read as
+    // one node -- is not, and nothing in it is bound.
     const ofThisLevel = operators.every((written) =>
       coreExpressionOperators.some(
-        ({ spelling: candidate, fixity, precedence: level, associativity }) =>
-          candidate === written &&
-          fixity === "infix" &&
-          level === precedence &&
-          (operators.length === 1 || associativity === "left"),
+        ({ spelling: candidate, fixity, precedence: level }) =>
+          candidate === written && fixity === "infix" && level === precedence,
       ),
     );
     if (
@@ -1348,17 +1372,21 @@ export function printExpandedFile<Trace>(
       });
       return;
     }
-    // A prefix operator other than `new`, whose operand's parentheses decide
-    // what is constructed. `yield` takes a whole assignment expression, and a
-    // unary operator another unary expression -- `void -a`, `!typeof a` --
-    // except that a sign before a signed operand would print as an update.
-    if (first?.tag === "token" && first.raw !== "new" && children.length === 2)
+    // Prefix operators other than `new`, whose operand's parentheses decide
+    // what is constructed -- one, or a run of one level's the parser holds in
+    // one node. `yield` takes a whole assignment expression, and a unary
+    // operator another unary expression -- `void -a`, `!typeof a` -- except
+    // that a sign before a signed operand would print as an update.
+    const run = prefixRun(parent);
+    if (run !== undefined) {
+      const innermost = run.operators.at(-1)!.raw;
       bind(
-        last,
-        parent.form === "yield" || (first.raw !== "+" && first.raw !== "-")
+        run.operand,
+        parent.form === "yield" || (innermost !== "+" && innermost !== "-")
           ? precedence
           : precedence + 1,
       );
+    }
   };
   const emit = (text: string, origin: OriginId, kind: GeneratedRegionKind) => {
     if (text.length === 0) return;

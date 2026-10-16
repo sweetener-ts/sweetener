@@ -196,20 +196,107 @@ describe("Pratt expression consumer", () => {
     expect(output(source)).toBe(source);
   });
 
-  test("builds left- and right-associative trees from binding powers", () => {
-    const left = parse("a - b - c").result;
-    if (!left.matched) throw new Error("expected subtraction");
-    expect(operatorAt(left.syntax)).toBe("-");
-    const leftOperand = left.syntax.children[0];
-    expect(leftOperand?.tag).toBe("protected");
-    expect(operatorAt(leftOperand as ProtectedSyntax)).toBe("-");
+  /**
+   * The operators of one level are held as one node, whichever way they
+   * associate: the text says how they group, and a node per operator nested
+   * the tree one level deeper for each operator written. A level that binds
+   * more tightly is still a node of its own inside the chain.
+   */
+  test.each([
+    ["a - b - c", ["-", "-"], undefined],
+    ["a + b * c - d", ["+", "-"], undefined],
+    ["a ** b ** c", ["**", "**"], undefined],
+    ["a = b += c", ["=", "+="], "assignment"],
+    ["a ?? b ?? c", ["??", "??"], undefined],
+  ])("holds the chain %s as one node", (source, operators, form) => {
+    const { result } = parse(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.syntax.form).toBe(form);
+    const children = result.syntax.children;
+    expect(children).toHaveLength(operators.length * 2 + 1);
+    expect(
+      operators.map((_, at) => operatorAt(result.syntax, at * 2 + 1)),
+    ).toEqual(operators);
+    for (let at = 0; at < children.length; at += 2)
+      expect(children[at]?.tag).toBe("protected");
+    expect(printLosslessSequence(children)).toBe(source);
+  });
 
-    const right = parse("a = b = c").result;
-    if (!right.matched) throw new Error("expected assignment");
-    expect(operatorAt(right.syntax)).toBe("=");
-    const rightOperand = right.syntax.children[2];
-    expect(rightOperand?.tag).toBe("protected");
-    expect(operatorAt(rightOperand as ProtectedSyntax)).toBe("=");
+  test("holds a conditional in alternate position in the conditional before it", () => {
+    const { result } = parse("a ? b : c ? d : e");
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.syntax.form).toBe("conditional");
+    expect(
+      result.syntax.children.map((child) =>
+        child.tag === "token" ? child.raw : "operand",
+      ),
+    ).toEqual([
+      "operand",
+      "?",
+      "operand",
+      ":",
+      "operand",
+      "?",
+      "operand",
+      ":",
+      "operand",
+    ]);
+  });
+
+  test("holds a run of prefix operators of one level with their operand", () => {
+    const { result } = parse("!-typeof a");
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(
+      result.syntax.children.map((child) =>
+        child.tag === "token" ? child.raw : "operand",
+      ),
+    ).toEqual(["!", "-", "typeof", "operand"]);
+  });
+
+  /**
+   * Fifty thousand operators of one level, or fifty thousand conditionals or
+   * prefix operators in a row, are read without running out of stack, into a
+   * tree as deep as the levels written rather than as long as the chain.
+   */
+  test.each([
+    ["a sum", (n: number) => Array.from({ length: n }, () => "a").join(" + ")],
+    [
+      "a sum of products",
+      (n: number) =>
+        Array.from({ length: n }, (_, at) => (at % 2 ? "a * b" : "a")).join(
+          " + ",
+        ),
+    ],
+    [
+      "powers",
+      (n: number) => Array.from({ length: n }, () => "a").join(" ** "),
+    ],
+    [
+      "assignments",
+      (n: number) => Array.from({ length: n }, () => "a").join(" = "),
+    ],
+    ["conditionals", (n: number) => `${"a ? b : ".repeat(n)}c`],
+    ["negations", (n: number) => `${"!".repeat(n)}a`],
+    ["signs", (n: number) => `${"- ".repeat(n)}a`],
+  ])("reads fifty thousand terms of %s", (_, write) => {
+    const source = write(50_000);
+    const { result } = parse(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.cursor.atEnd).toBe(true);
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+    let deepest = 0;
+    const pending: [Syntax, number][] = [[result.syntax, 1]];
+    while (pending.length > 0) {
+      const [node, depth] = pending.pop()!;
+      deepest = Math.max(deepest, depth);
+      if (node.tag === "protected" || node.tag === "group")
+        for (const child of node.children) pending.push([child, depth + 1]);
+    }
+    expect(deepest).toBeLessThanOrEqual(4);
   });
 
   test("keeps conditional branches at their required precedence", () => {
@@ -1060,6 +1147,6 @@ describe("a suspending word", () => {
     if (!inside.matched)
       throw new Error(inside.failure.expectations.join(", "));
     expect(inside.syntax.form).toBe("await");
-    expect(shape(inside.syntax)).toBe("await[await [+ [1]]]");
+    expect(shape(inside.syntax)).toBe("await[await + [1]]");
   });
 });

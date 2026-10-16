@@ -303,6 +303,39 @@ function coreForm(
   return assignmentOperators.has(spelling) ? "assignment" : undefined;
 }
 
+/**
+ * What ends an expression for the caller to read on from, where the caller
+ * reads a chain of one level's operators itself and holds it as one node.
+ *
+ * Every operand of a right-associative chain -- `a ** b ** c`, `a = b = c` --
+ * and the alternate of every conditional in `a ? b : c ? d : e` were read by
+ * reading the rest of the chain, one call deeper for each operator, and each
+ * was held as a node holding the rest. Fifty thousand of them exhausted the
+ * call stack, and the tree they would have made was as deep as the chain was
+ * long, which every walk over it then had to be.
+ */
+interface ChainEnd {
+  /** A core right-associative infix operator of this level, other than `=>`. */
+  readonly rightAssociative?: number | undefined;
+  /** A conditional's `?`. */
+  readonly conditional?: boolean | undefined;
+}
+
+/**
+ * Whether `operator` joins a chain of its level's core operators held as one
+ * node: `a + b - c` as `a`, `+`, `b`, `-`, `c`, as a fold builds one. `=>`
+ * reads parameters to its left rather than an operand, and `as` and
+ * `satisfies` a type to their right, so each stands as a node of its own.
+ */
+function chains(operator: PrattOperator): boolean {
+  return (
+    operator.macro === undefined &&
+    operator.spelling !== "=>" &&
+    operator.spelling !== "as" &&
+    operator.spelling !== "satisfies"
+  );
+}
+
 function protect(
   options: PrattExpressionConsumerOptions,
   children: readonly Syntax[],
@@ -426,11 +459,14 @@ function suspendingWordAlone(
   return false;
 }
 
-function parsePrefix(
+/**
+ * The prefix operator at the cursor, if one stands there: not the `new` of
+ * `new.target`, and not a `yield` or `await` read as the word it also is.
+ */
+function prefixAt(
   cursor: SyntaxCursor,
   context: PrattContext,
-): ParsedExpression | ConsumerAttempt {
-  checkWork(context);
+): PrattOperator | undefined {
   const dot = cursor.peek(1);
   const target = cursor.peek(2);
   const newTarget =
@@ -442,10 +478,67 @@ function parsePrefix(
   const resolved = newTarget
     ? undefined
     : resolveOperator(cursor, "prefix", context);
-  const prefix =
-    resolved !== undefined && suspendingWordAlone(cursor, resolved, context)
-      ? undefined
-      : resolved;
+  return resolved !== undefined &&
+    suspendingWordAlone(cursor, resolved, context)
+    ? undefined
+    : resolved;
+}
+
+/**
+ * A run of `first`'s level of core prefix operators and the operand they
+ * apply to, held as one node: `!!a` as `!`, `!`, `a`, and `yield yield v` as
+ * both `yield`s and `v`. Each operator's operand was read by reading the rest
+ * of the run, one call deeper for each and held as a node holding the rest,
+ * so fifty thousand of them exhausted the call stack. A `yield` or an `await`
+ * that the function refuses, or a `yield` of nothing, ends the run and is
+ * read as its operand, where that is decided; so does `new`, whose operand is
+ * opened into it.
+ */
+function parsePrefixRun(
+  first: PrattOperator,
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  const children: Syntax[] = [...consumeOperator(cursor, first)];
+  for (;;) {
+    checkWork(context);
+    const next = prefixAt(cursor, context);
+    if (
+      next === undefined ||
+      next.macro !== undefined ||
+      next.spelling === "new" ||
+      next.precedence !== first.precedence ||
+      (next.spelling === "yield" &&
+        (!context.consumer.allowYield || yieldsNothing(cursor, context))) ||
+      (next.spelling === "await" && !context.consumer.allowAwait)
+    )
+      break;
+    for (const token of consumeOperator(cursor, next)) children.push(token);
+  }
+  const operand = parseExpression(cursor, first.precedence, context);
+  if ("matched" in operand) return operand;
+  children.push(operand.syntax);
+  return {
+    syntax: protect(
+      context.options,
+      children,
+      first.precedence,
+      coreForm("prefix", first.spelling),
+    ),
+    cursor,
+    outerPrecedence: first.precedence,
+    unparenthesizedPrefix: true,
+    mixingFamily: undefined,
+    primary: false,
+  };
+}
+
+function parsePrefix(
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  checkWork(context);
+  const prefix = prefixAt(cursor, context);
   if (prefix !== undefined) {
     if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);
@@ -469,6 +562,8 @@ function parsePrefix(
     if (prefix.spelling === "await" && !context.consumer.allowAwait) {
       return fail(cursor, context, ["await inside an async function"], 9);
     }
+    if (prefix.macro === undefined && prefix.spelling !== "new")
+      return parsePrefixRun(prefix, cursor, context);
     const operator = consumeOperator(cursor, prefix);
     const operand = cursor.peek();
     const right = parseExpression(cursor, prefix.precedence, context);
@@ -597,12 +692,18 @@ function parseTypeAssertion(
   };
 }
 
+/**
+ * The conditional `left` is the test of, and every conditional in alternate
+ * position after it, held as one node: `a ? b : c ? d : e` as its tests,
+ * consequents and the last alternate, in the order they are written. Each
+ * alternate is read up to the `?` of the next, so a chain of any length is
+ * read one level deep.
+ */
 function parseConditional(
   left: ParsedExpression,
   cursor: SyntaxCursor,
   context: PrattContext,
 ): ParsedExpression | ConsumerAttempt {
-  const question = cursor.consume()!;
   const consequentContext: PrattContext = {
     ...context,
     allowComma: true,
@@ -613,28 +714,39 @@ function parseConditional(
       ),
     }),
   };
-  const consequent = parseExpression(cursor, 0, consequentContext);
-  if ("matched" in consequent) return consequent;
-  const colon = cursor.peek();
-  if (colon?.tag !== "token" || colon.raw !== ":") {
-    return fail(
-      cursor,
-      context,
-      ["':' in conditional expression"],
-      conditionalPrecedence,
-    );
-  }
-  cursor.advance();
-  const alternate = parseExpression(cursor, assignmentPrecedence, context);
-  if ("matched" in alternate) return alternate;
+  const children: Syntax[] = [left.syntax];
+  do {
+    const question = cursor.consume()!;
+    const consequent = parseExpression(cursor, 0, consequentContext);
+    if ("matched" in consequent) return consequent;
+    const colon = cursor.peek();
+    if (colon?.tag !== "token" || colon.raw !== ":") {
+      return fail(
+        cursor,
+        context,
+        ["':' in conditional expression"],
+        conditionalPrecedence,
+      );
+    }
+    cursor.advance();
+    const alternate = parseExpression(cursor, assignmentPrecedence, context, {
+      conditional: true,
+    });
+    if ("matched" in alternate) return alternate;
+    children.push(question, consequent.syntax, colon, alternate.syntax);
+  } while (
+    !cursor.atEnd &&
+    !context.consumer.stopSet.matches(cursor) &&
+    tokenSpelling(cursor) === "?"
+  );
   return {
     syntax: protect(
       context.options,
-      [left.syntax, question, consequent.syntax, colon, alternate.syntax],
+      children,
       conditionalPrecedence,
       "conditional",
     ),
-    cursor: alternate.cursor,
+    cursor,
     outerPrecedence: conditionalPrecedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
@@ -836,10 +948,83 @@ function infixArrow(
   };
 }
 
+/**
+ * The chain of `first`'s level of core operators that `left` and `operator`
+ * begin, read in one loop and held as one node: `a + b - c` as `a`, `+`, `b`,
+ * `-`, `c`, and `a = b += c` as `a`, `=`, `b`, `+=`, `c`. Its operands are
+ * read at the level just above it, or for a right-associative level at the
+ * level itself up to its next operator, so reading the chain asks for one
+ * operand at a time however long it is, and the node is as deep as the
+ * levels it is written with rather than as long as it is.
+ */
+function parseChain(
+  left: ParsedExpression,
+  first: PrattOperator,
+  operator: readonly Syntax[],
+  mixingFamily: ParsedExpression["mixingFamily"],
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  const precedence = first.precedence;
+  const rightAssociative = first.associativity === "right";
+  const children: Syntax[] = [left.syntax, ...operator];
+  for (;;) {
+    const operand = rightAssociative
+      ? parseExpression(cursor, precedence, context, {
+          rightAssociative: precedence,
+        })
+      : parseExpression(cursor, precedence + 1, context);
+    if ("matched" in operand) return operand;
+    if (
+      (mixingFamily === "logical" && operand.mixingFamily === "nullish") ||
+      (mixingFamily === "nullish" && operand.mixingFamily === "logical")
+    )
+      return fail(
+        cursor,
+        context,
+        ["parentheses when mixing '??' with '&&' or '||'"],
+        40,
+      );
+    children.push(operand.syntax);
+    if (cursor.atEnd || context.consumer.stopSet.matches(cursor)) break;
+    const next = resolveOperator(cursor, "infix", context);
+    if (
+      next === undefined ||
+      next.precedence !== precedence ||
+      !chains(next) ||
+      (next.spelling === "," && !context.allowComma)
+    )
+      break;
+    if (next.spelling === "**" && operand.unparenthesizedPrefix)
+      return fail(
+        cursor,
+        context,
+        ["parentheses around a unary expression before '**'"],
+        40,
+      );
+    checkWork(context);
+    for (const token of consumeOperator(cursor, next)) children.push(token);
+  }
+  return {
+    syntax: protect(
+      context.options,
+      children,
+      precedence,
+      coreForm("infix", first.spelling),
+    ),
+    cursor,
+    outerPrecedence: precedence,
+    unparenthesizedPrefix: false,
+    mixingFamily,
+    primary: false,
+  };
+}
+
 function parseExpression(
   cursor: SyntaxCursor,
   minimumPrecedence: number,
   context: PrattContext,
+  ends: ChainEnd = {},
 ): ParsedExpression | ConsumerAttempt {
   const prefixed = parsePrefix(cursor, context);
   if ("matched" in prefixed) return prefixed;
@@ -848,6 +1033,7 @@ function parseExpression(
     checkWork(context);
     const spelling = tokenSpelling(cursor);
     if (spelling === "?" && conditionalPrecedence >= minimumPrecedence) {
+      if (ends.conditional === true) break;
       const conditional = parseConditional(left, cursor, context);
       if ("matched" in conditional) return conditional;
       left = conditional;
@@ -926,6 +1112,12 @@ function parseExpression(
       context.consumer.slashMisread?.(slash, "division");
     }
     if (infix === undefined || infix.precedence < minimumPrecedence) break;
+    if (
+      ends.rightAssociative === infix.precedence &&
+      infix.associativity === "right" &&
+      chains(infix)
+    )
+      break;
     // TypeScript takes no operator but a comma after an assignment
     // expression. One that could have taken the operator already did, inside
     // its right operand; one that could not is an arrow function, whose body
@@ -992,6 +1184,19 @@ function parseExpression(
       );
       if ("matched" in arrow) return arrow;
       left = arrow;
+      continue;
+    }
+    if (chains(infix)) {
+      const chain = parseChain(
+        left,
+        infix,
+        operator,
+        mixingFamily,
+        cursor,
+        context,
+      );
+      if ("matched" in chain) return chain;
+      left = chain;
       continue;
     }
     const rightMinimum =
