@@ -14,6 +14,11 @@ export type ExpansionInputHash = string & {
   readonly [expansionInputHashBrand]: "ExpansionInputHash";
 };
 
+interface HasherState {
+  readonly left: number;
+  readonly right: number;
+}
+
 class InputHasher {
   #left = 0x811c9dc5;
   #right = 0x9e3779b9;
@@ -37,6 +42,23 @@ class InputHasher {
     this.#mixCode(0x73);
     this.#mixCode(value.length);
     this.#mix(value);
+  }
+
+  /**
+   * Mixes in what another hasher has mixed, as `state` gave it, a byte at a
+   * time as characters are mixed. Mixed a word at a time, a multiply carries
+   * a word's high bits no lower, and the hash of syntax nested one level
+   * deeper each time settled on one value within twenty levels.
+   */
+  addState(state: HasherState): void {
+    this.#mixCode(0x64);
+    for (const word of [state.left, state.right])
+      for (let shift = 0; shift < 32; shift += 8)
+        this.#mixCode((word >>> shift) & 0xff);
+  }
+
+  state(): HasherState {
+    return { left: this.#left, right: this.#right };
   }
 
   digest(): ExpansionInputHash {
@@ -80,24 +102,40 @@ function addToken(hasher: InputHasher, token: TokenSyntax): void {
   }
 }
 
+/**
+ * What each node that holds others hashed to. Syntax is immutable, so a
+ * node's hash never changes, and a node hashed again costs one lookup rather
+ * than a walk of everything under it: the operand an expansion in a chain of
+ * operators holds is the chain built so far, and each step's input holds it.
+ */
+const nodeStates = new WeakMap<Syntax, HasherState>();
+
 function addSyntax(hasher: InputHasher, syntax: Syntax): void {
-  hasher.add(syntax.tag);
   if (syntax.tag === "token") {
+    hasher.add(syntax.tag);
     addToken(hasher, syntax);
     return;
   }
-  if (syntax.tag === "protected") {
-    hasher.add(syntax.category);
-    hasher.add(syntax.precedence);
-  } else if (syntax.tag === "group") {
-    hasher.add(syntax.delimiter);
-    addToken(hasher, syntax.open);
-    hasher.add(syntax.close.tag);
-    if (syntax.close.tag === "token") addToken(hasher, syntax.close);
-    else hasher.add(syntax.close.expectedRaw);
+  let state = nodeStates.get(syntax);
+  if (state === undefined) {
+    const node = new InputHasher();
+    node.add(syntax.tag);
+    if (syntax.tag === "protected") {
+      node.add(syntax.category);
+      node.add(syntax.precedence);
+    } else if (syntax.tag === "group") {
+      node.add(syntax.delimiter);
+      addToken(node, syntax.open);
+      node.add(syntax.close.tag);
+      if (syntax.close.tag === "token") addToken(node, syntax.close);
+      else node.add(syntax.close.expectedRaw);
+    }
+    node.add(syntax.children.length);
+    for (const child of syntax.children) addSyntax(node, child);
+    state = node.state();
+    nodeStates.set(syntax, state);
   }
-  hasher.add(syntax.children.length);
-  for (const child of syntax.children) addSyntax(hasher, child);
+  hasher.addState(state);
 }
 
 /** Hashes expansion input while intentionally excluding allocation identities. */
@@ -170,6 +208,8 @@ export interface ExpansionGuardOptions {
 export class ExpansionGuard {
   readonly #active = new Map<string, number>();
   readonly #stack: ExpansionFingerprint[] = [];
+  /** The key of each fingerprint in `#stack`, in the same order. */
+  readonly #keys: string[] = [];
   readonly #tracker: ResourceTracker;
   readonly #cancellation: CancellationToken;
 
@@ -195,6 +235,23 @@ export class ExpansionGuard {
   }
 
   run<T>(fingerprint: ExpansionFingerprint, operation: () => T): T {
+    this.enter(fingerprint);
+    try {
+      const result = operation();
+      this.#cancellation.throwIfCancellationRequested();
+      return result;
+    } finally {
+      this.leave(fingerprint);
+    }
+  }
+
+  /**
+   * Makes `fingerprint` the innermost active expansion, as `run` does around
+   * its operation, for an expansion that cannot be one call: one that hands
+   * its replacement out to be walked and is resumed with the walk. Every
+   * `enter` is matched by a `leave` of the same fingerprint, innermost first.
+   */
+  enter(fingerprint: ExpansionFingerprint): void {
     this.#cancellation.throwIfCancellationRequested();
     const key = expansionFingerprintKey(fingerprint);
     const firstSeenDepth = this.#active.get(key);
@@ -205,15 +262,16 @@ export class ExpansionGuard {
     this.#tracker.enterNesting();
     this.#active.set(key, this.#stack.length);
     this.#stack.push(fingerprint);
-    try {
-      const result = operation();
-      this.#cancellation.throwIfCancellationRequested();
-      return result;
-    } finally {
-      this.#stack.pop();
-      this.#active.delete(key);
-      this.#tracker.leaveNesting();
-    }
+    this.#keys.push(key);
+  }
+
+  /** Ends the innermost active expansion, which `enter` began. */
+  leave(fingerprint: ExpansionFingerprint): void {
+    if (this.#stack.at(-1) !== fingerprint)
+      throw new RangeError("An expansion left out of order");
+    this.#stack.pop();
+    this.#active.delete(this.#keys.pop()!);
+    this.#tracker.leaveNesting();
   }
 }
 

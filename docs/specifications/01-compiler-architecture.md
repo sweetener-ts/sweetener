@@ -122,6 +122,12 @@ interface Reader {
 The first milestone MAY implement `update` through a full read. The result MUST
 match a clean read.
 
+A delimiter that opens deeper than the nesting-depth limit is not grouped: it,
+what it holds and what closes it are read as the tokens they are, and `SWR1004`
+is reported where the first of them opens. The file is still read whole, and no
+tree read from it is deeper than the limit, so nothing that reads one recurses
+deeper than that.
+
 ### Pattern compiler and matcher
 
 ```ts

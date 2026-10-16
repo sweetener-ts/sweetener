@@ -73,6 +73,118 @@ export interface MacroOperatorCandidate {
    */
   readonly arrowOperand?: boolean | undefined;
   readonly expand: (input: MacroOperatorExpansionInput) => ProtectedSyntax;
+  /**
+   * Expands a chain of infix operators of this one's level and
+   * associativity, of which this is the first, as one expression. Without
+   * it, each operator of the chain is expanded on its own, in the order
+   * `foldMacroOperatorChain` applies them.
+   */
+  readonly expandChain?:
+    ((chain: MacroOperatorChain) => ProtectedSyntax) | undefined;
+}
+
+/** One infix macro operator of a chain, with the operand to its right. */
+export interface MacroOperatorChainStep {
+  readonly macro: MacroOperatorCandidate;
+  readonly operator: readonly Syntax[];
+  readonly right: ProtectedSyntax;
+  /**
+   * Whether the operand was taken as the operator's literal operand or as
+   * its arrow, which ends where it stands. Any other operand of a
+   * right-associative operator takes in the rest of its level.
+   */
+  readonly literal: boolean;
+}
+
+/**
+ * The infix macro operators of one level and one associativity written one
+ * after another, and the operands between them, read in one loop rather
+ * than one call deeper per operator: `a <+> b <+> c` is `a` and two steps.
+ */
+export interface MacroOperatorChain {
+  readonly left: ProtectedSyntax;
+  readonly steps: readonly MacroOperatorChainStep[];
+  readonly associativity: PrattAssociativity;
+  readonly context: ConsumerContext;
+}
+
+/** One operator of a chain applied to the two operands it takes. */
+export interface MacroOperatorApplication {
+  readonly step: MacroOperatorChainStep;
+  readonly left: ProtectedSyntax;
+  readonly right: ProtectedSyntax;
+  /** Whether the left operand is what an earlier application built. */
+  readonly builtLeft: boolean;
+  /** Whether the right operand is what an earlier application built. */
+  readonly builtRight: boolean;
+}
+
+/**
+ * Applies the operators of `chain` in the order its associativity groups
+ * them, each to what `apply` built for the operands it takes, without
+ * recursion however long the chain is.
+ *
+ * A left-associative chain applies its operators in order. In a
+ * right-associative one an operand takes in the rest of the chain, as it
+ * would read it, except one taken literally or as an arrow, which ends where
+ * it stands: `a |> b |> await |> c` is `a |> ((b |> await) |> c)`. The
+ * applications an operand takes in are made before the one waiting for it.
+ *
+ * An `apply` that builds nothing for an application ends the fold there, and
+ * nothing is built for the chain.
+ */
+export function foldMacroOperatorChain(
+  chain: MacroOperatorChain,
+  apply: (application: MacroOperatorApplication) => ProtectedSyntax,
+): ProtectedSyntax;
+export function foldMacroOperatorChain(
+  chain: MacroOperatorChain,
+  apply: (application: MacroOperatorApplication) => ProtectedSyntax | undefined,
+): ProtectedSyntax | undefined;
+export function foldMacroOperatorChain(
+  chain: MacroOperatorChain,
+  apply: (application: MacroOperatorApplication) => ProtectedSyntax | undefined,
+): ProtectedSyntax | undefined {
+  let built = chain.left;
+  let builtHere = false;
+  // The applications waiting for the operand to their right, innermost
+  // last, each with the operand to its left.
+  const waiting: {
+    readonly step: MacroOperatorChainStep;
+    readonly left: ProtectedSyntax;
+    readonly builtLeft: boolean;
+  }[] = [];
+  for (const step of chain.steps) {
+    if (chain.associativity === "right" && !step.literal) {
+      waiting.push({ step, left: built, builtLeft: builtHere });
+      built = step.right;
+      builtHere = false;
+      continue;
+    }
+    const applied = apply({
+      step,
+      left: built,
+      right: step.right,
+      builtLeft: builtHere,
+      builtRight: false,
+    });
+    if (applied === undefined) return undefined;
+    built = applied;
+    builtHere = true;
+  }
+  for (let next = waiting.pop(); next !== undefined; next = waiting.pop()) {
+    const applied = apply({
+      step: next.step,
+      left: next.left,
+      right: built,
+      builtLeft: next.builtLeft,
+      builtRight: builtHere,
+    });
+    if (applied === undefined) return undefined;
+    built = applied;
+    builtHere = true;
+  }
+  return built;
 }
 
 export type MacroOperatorResolver = (
@@ -738,6 +850,98 @@ function arrowRightOperand(
   };
 }
 
+/**
+ * The chain of infix macro operators of `first`'s level and associativity
+ * that `left` and `operator` begin, read in one loop and expanded as one
+ * chain. Its operands are read at the level just above it, so reading the
+ * chain asks for one operand at a time however long it is. An operand of a
+ * right-associative chain still takes in what else of the chain's level
+ * follows it where the chain ends -- an assignment, a core operator -- as
+ * reading it at that level would.
+ */
+function parseMacroChain(
+  left: ParsedExpression,
+  first: PrattOperator & { readonly macro: MacroOperatorCandidate },
+  operator: readonly Syntax[],
+  mixingFamily: ParsedExpression["mixingFamily"],
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  const { precedence, associativity } = first;
+  const steps: MacroOperatorChainStep[] = [];
+  let macro = first.macro;
+  let written = operator;
+  for (;;) {
+    const literal =
+      literalRightOperand(cursor, macro, context) ??
+      (macro.arrowOperand === true
+        ? arrowRightOperand(cursor, macro, context)
+        : undefined);
+    let right = literal ?? parseExpression(cursor, precedence + 1, context);
+    if ("matched" in right) return right;
+    const next =
+      cursor.atEnd || context.consumer.stopSet.matches(cursor)
+        ? undefined
+        : resolveOperator(cursor, "infix", context);
+    const continues =
+      associativity !== "none" &&
+      next?.macro !== undefined &&
+      next.precedence === precedence &&
+      next.associativity === associativity;
+    if (literal === undefined && associativity === "right" && !continues) {
+      right = parseOperators(right, cursor, precedence, context);
+      if ("matched" in right) return right;
+    }
+    if (
+      (mixingFamily === "logical" && right.mixingFamily === "nullish") ||
+      (mixingFamily === "nullish" && right.mixingFamily === "logical")
+    ) {
+      return fail(
+        cursor,
+        context,
+        ["parentheses when mixing '??' with '&&' or '||'"],
+        40,
+      );
+    }
+    steps.push({
+      macro,
+      operator: written,
+      right: right.syntax,
+      literal: literal !== undefined,
+    });
+    if (!continues) break;
+    checkWork(context);
+    written = consumeOperator(cursor, next);
+    macro = next.macro;
+  }
+  const chain: MacroOperatorChain = {
+    left: left.syntax,
+    steps,
+    associativity,
+    context: context.consumer,
+  };
+  const syntax =
+    first.macro.expandChain?.(chain) ??
+    foldMacroOperatorChain(chain, (application) =>
+      application.step.macro.expand({
+        operator: application.step.operator,
+        left: application.left,
+        right: application.right,
+        context: context.consumer,
+      }),
+    );
+  if (syntax.category !== "expr") {
+    throw new TypeError("Macro infix operator returned non-expression syntax");
+  }
+  return {
+    syntax,
+    cursor,
+    outerPrecedence: precedence,
+    unparenthesizedPrefix: false,
+    mixingFamily,
+  };
+}
+
 function parseExpression(
   cursor: SyntaxCursor,
   minimumPrecedence: number,
@@ -745,7 +949,17 @@ function parseExpression(
 ): ParsedExpression | ConsumerAttempt {
   const prefixed = parsePrefix(cursor, context);
   if ("matched" in prefixed) return prefixed;
-  let left = prefixed;
+  return parseOperators(prefixed, cursor, minimumPrecedence, context);
+}
+
+/** `left` and every operator after it of at least `minimumPrecedence`. */
+function parseOperators(
+  read: ParsedExpression,
+  cursor: SyntaxCursor,
+  minimumPrecedence: number,
+  context: PrattContext,
+): ParsedExpression | ConsumerAttempt {
+  let left = read;
   while (!cursor.atEnd && !context.consumer.stopSet.matches(cursor)) {
     checkWork(context);
     const spelling = tokenSpelling(cursor);
@@ -839,18 +1053,23 @@ function parseExpression(
       );
     }
     const operator = consumeOperator(cursor, infix);
+    if (infix.macro !== undefined) {
+      const chain = parseMacroChain(
+        left,
+        { ...infix, macro: infix.macro },
+        operator,
+        mixingFamily,
+        cursor,
+        context,
+      );
+      if ("matched" in chain) return chain;
+      left = chain;
+      continue;
+    }
     const rightMinimum =
       infix.associativity === "right" ? infix.precedence : infix.precedence + 1;
-    const macroOperand =
-      infix.macro === undefined
-        ? undefined
-        : (literalRightOperand(cursor, infix.macro, context) ??
-          (infix.macro.arrowOperand === true
-            ? arrowRightOperand(cursor, infix.macro, context)
-            : undefined));
     const right =
-      macroOperand ??
-      (infix.spelling === "as" || infix.spelling === "satisfies"
+      infix.spelling === "as" || infix.spelling === "satisfies"
         ? parseAssertedType(cursor, context, infix.precedence)
         : parseExpression(
             cursor,
@@ -862,7 +1081,7 @@ function parseExpression(
             infix.spelling === "=>"
               ? arrowBodyContext(context, false)
               : context,
-          ));
+          );
     if ("matched" in right) return right;
     if (
       (mixingFamily === "logical" && right.mixingFamily === "nullish") ||
@@ -875,24 +1094,12 @@ function parseExpression(
         40,
       );
     }
-    const syntax =
-      infix.macro?.expand({
-        operator,
-        left: left.syntax,
-        right: right.syntax,
-        context: context.consumer,
-      }) ??
-      protect(
-        context.options,
-        [left.syntax, ...operator, right.syntax],
-        infix.precedence,
-        coreForm("infix", infix.spelling),
-      );
-    if (syntax.category !== "expr") {
-      throw new TypeError(
-        "Macro infix operator returned non-expression syntax",
-      );
-    }
+    const syntax = protect(
+      context.options,
+      [left.syntax, ...operator, right.syntax],
+      infix.precedence,
+      coreForm("infix", infix.spelling),
+    );
     left = {
       syntax,
       cursor: right.cursor,

@@ -123,6 +123,18 @@ export interface InstantiateTemplateOptions {
    * else -- until expansion reads where it stands and builds it as that.
    */
   readonly category: SyntaxCategory;
+  /**
+   * Captures spliced where the template first writes them as the very syntax
+   * they are, rather than as copies: the operands that earlier expansions in
+   * a chain of operators built, which this expansion holds as one operand
+   * each. Such an operand already carries the scopes of the expansion that
+   * built it, and no syntax this expansion introduces carries those, so this
+   * expansion's use-site scope would decide no binding in it; copying it
+   * would only copy, for every step of a chain, everything the chain had
+   * built so far. Its layout is as it was built. Where the template writes
+   * one again, the copy is an ordinary one.
+   */
+  readonly held?: ReadonlySet<Syntax> | undefined;
 }
 
 export interface InstantiateTemplateResult {
@@ -166,6 +178,8 @@ class Instantiator {
   readonly #cancellation: CancellationToken;
   readonly #freshBindings: FreshBinding[] = [];
   readonly #outputOrigins: OriginId[] = [];
+  /** The nodes of `held` spliced where the template first wrote them. */
+  readonly #spliced = new Set<Syntax>();
 
   constructor(options: InstantiateTemplateOptions) {
     this.#options = options;
@@ -185,7 +199,7 @@ class Instantiator {
     // change what the code means — a line break after `return` ends the
     // statement — so the invocation's own spacing stands instead.
     const syntax = createSyntaxSequence(
-      pieces[0] === undefined
+      pieces[0] === undefined || this.#options.held?.has(pieces[0]) === true
         ? pieces
         : [this.#clearLeadingTrivia(pieces[0]), ...pieces.slice(1)],
     );
@@ -256,6 +270,17 @@ class Instantiator {
   #syntaxPiece(piece: EvaluatedSyntax, written: Syntax[]): Syntax[] {
     if (piece.source === "capture" && piece.capture === undefined) {
       throw new TypeError("Captured evaluated syntax requires a capture ID");
+    }
+    const [only] = piece.syntax;
+    if (
+      piece.source === "capture" &&
+      piece.syntax.length === 1 &&
+      only !== undefined &&
+      this.#options.held?.has(only) === true &&
+      !this.#spliced.has(only)
+    ) {
+      this.#spliced.add(only);
+      return [only];
     }
     const policy: ClonePolicy =
       piece.source === "template"

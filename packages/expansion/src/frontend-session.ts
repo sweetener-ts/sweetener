@@ -1,6 +1,8 @@
 import { EnforestationError } from "./enforestation-error.js";
 import {
+  expansionCycleCode,
   expansionDiagnosticRegistry,
+  expansionLimitCode,
   unexpandedOperatorCode,
   unparameterizedSyntaxParameterCode,
   unreadableItemCode,
@@ -9,9 +11,12 @@ import {
 import {
   coreExpressionOperators,
   createConsumerSuite,
+  foldMacroOperatorChain,
   StopSet,
   type ConsumerContext,
   type ConsumerFailure,
+  type MacroOperatorApplication,
+  type MacroOperatorChain,
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
 import type {
@@ -24,15 +29,16 @@ import {
   createSyntaxClassConsumer,
   type SyntaxClassConsumer,
 } from "@sweetener/pattern";
-import type {
-  BindingId,
-  EnvironmentEpoch,
-  InvocationId,
-  OriginId,
-  ResourceTracker,
-  SourceId,
-  SyntaxClassId,
-  SyntaxId,
+import {
+  ResourceLimitError,
+  type BindingId,
+  type EnvironmentEpoch,
+  type InvocationId,
+  type OriginId,
+  type ResourceTracker,
+  type SourceId,
+  type SyntaxClassId,
+  type SyntaxId,
 } from "@sweetener/shared";
 import {
   createGroup,
@@ -67,7 +73,8 @@ import {
   operatorWidthAt,
   type ExpandMacroSyntaxResult,
 } from "./recursive-expander.js";
-import type { ExpansionGuard } from "./progress.js";
+import { ExpansionCycleError, type ExpansionGuard } from "./progress.js";
+import { joinedChain, type ChainLink } from "./chain-joining.js";
 import { coreFormKind, isCoreForm } from "./core-shadowing.js";
 import type { CoreDispatchTrace } from "./core-shadowing.js";
 
@@ -178,6 +185,114 @@ export interface ExpansionFrontendSession {
   ): ExpandMacroSyntaxResult;
 }
 
+/** What an expansion of a chain of operators built, and what it holds. */
+interface OperatorChainStep {
+  /**
+   * The expansion it holds as built on the side the chain's associativity
+   * builds on: the one to its left in a left-associative chain, to its right
+   * in a right-associative one.
+   */
+  readonly holds: ProtectedSyntax | undefined;
+  /**
+   * The level of the core operators of the chain's associativity that its
+   * replacement is a chain of, with what it holds at the end the chain
+   * builds on, where it is one.
+   */
+  readonly level: number | undefined;
+  /** Whether it continues the chain the expansion it holds is. */
+  readonly linked: boolean;
+  /** How deep it nests, through every step before it that it holds. */
+  readonly depth: number;
+}
+
+/**
+ * Whether `node` is an operand on its own wherever it stands: an expression
+ * read as one, a parenthesized or bracketed group, a template literal, a name
+ * or a literal. Nothing beside it can bind into it or read it on.
+ */
+function standsWhole(node: Syntax | undefined): boolean {
+  if (node === undefined) return false;
+  if (node.tag === "protected") return node.category === "expr";
+  if (node.tag === "group")
+    return (
+      (node.delimiter === "parenthesis" && node.children.length > 0) ||
+      node.delimiter === "bracket" ||
+      node.delimiter === "template"
+    );
+  return (
+    node.tag === "token" &&
+    (node.kind === "identifier" ||
+      node.kind === "numeric-literal" ||
+      node.kind === "string-literal")
+  );
+}
+
+/**
+ * The level of the core operators of `associativity` that `children` chains
+ * its operands with, where it is one such chain with `end` at the end the
+ * associativity builds on -- its head for a left-associative chain, its tail
+ * for a right-associative one -- or, with no `end`, an operand that stands
+ * whole there, and every other operand stands whole and every operator is
+ * one token. Such a chain reads as written whatever stands around it, which
+ * is what lets a chain of operator expansions be opened into one.
+ */
+function operatorChainLevel(
+  children: readonly Syntax[],
+  end: Syntax | undefined,
+  associativity: "left" | "right",
+): number | undefined {
+  if (children.length < 3 || children.length % 2 === 0) return undefined;
+  const at = associativity === "left" ? 0 : children.length - 1;
+  if (end === undefined ? !standsWhole(children[at]) : children[at] !== end)
+    return undefined;
+  let level: number | undefined;
+  for (let operator = 1; operator < children.length; operator += 2) {
+    const token = children[operator]!;
+    const operand =
+      children[associativity === "left" ? operator + 1 : operator - 1];
+    if (token.tag !== "token" || !standsWhole(operand)) return undefined;
+    const core = coreInfixOperators.get(token.raw);
+    if (core?.associativity !== associativity) return undefined;
+    if (level !== undefined && core.precedence !== level) return undefined;
+    level = core.precedence;
+  }
+  return level;
+}
+
+const coreInfixOperators = new Map(
+  coreExpressionOperators
+    .filter(({ fixity }) => fixity === "infix")
+    .map((operator) => [operator.spelling, operator] as const),
+);
+
+/** The operands and operators of `chain` as they were written. */
+function writtenChain(chain: MacroOperatorChain): readonly Syntax[] {
+  const written: Syntax[] = [chain.left];
+  for (const step of chain.steps) written.push(...step.operator, step.right);
+  return written;
+}
+
+/**
+ * How many groups enclose `operand` in `children`, where it stands in them.
+ * What the operand holds is not looked into, so asking costs what the
+ * replacement holds beside it.
+ */
+function groupsAround(operand: Syntax, children: readonly Syntax[]): number {
+  const pending: { readonly node: Syntax; readonly groups: number }[] =
+    children.map((node) => ({ node, groups: 0 }));
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    const { node, groups } = next;
+    if (node === operand) return groups;
+    if (node.tag !== "group" && node.tag !== "protected") continue;
+    for (const child of node.children)
+      pending.push({
+        node: child,
+        groups: node.tag === "group" ? groups + 1 : groups,
+      });
+  }
+  return 0;
+}
+
 /**
  * Production assembly for the category consumers required by declarative
  * expansion. Acceptance tests and hosts share this path instead of rebuilding
@@ -205,6 +320,14 @@ export function createExpansionFrontendSession(
   }[] = [];
   const operatorDiagnostics: ExpandMacroSyntaxResult["diagnostics"][number][] =
     [];
+  /**
+   * The operators whose expansion reached a limit in the syntax being
+   * expanded. None of them is expanded again there, as a macro whose
+   * invocation reached one is not.
+   */
+  const abortedOperators = new Set<BindingId>();
+  /** What an operator's expansion built, as opposed to what it refused. */
+  const operatorExpansions = new WeakSet<Syntax>();
   /**
    * What an operator invocation can say about a name it left standing, held
    * for the side that resolves names. Separate from the operator list for the
@@ -371,6 +494,177 @@ export function createExpansionFrontendSession(
     });
   };
   let hygieneEnvironment = environment;
+  /** An operator invocation as it was written, which nothing expanded. */
+  const unexpandedOperator = (invocation: readonly Syntax[]): ProtectedSyntax =>
+    createProtectedSyntax({
+      id: options.allocateSyntaxId(),
+      span: spanEnvelope(invocation.map(({ span }) => span)),
+      origin:
+        invocation.length === 1
+          ? invocation[0]!.origin
+          : options.origins.composed(invocation.map(({ origin }) => origin)),
+      scopes: invocation[0]!.scopes,
+      category: "expr",
+      children: createSyntaxSequence(invocation),
+    });
+  /**
+   * Reports an operator whose expansion reached a limit or repeated itself,
+   * where it is written, as an invocation that does is reported, and leaves
+   * it unexpanded in the rest of the syntax being expanded.
+   */
+  const reportOperatorLimit = (
+    error: ResourceLimitError | ExpansionCycleError,
+    binding: BindingId,
+    spelling: string,
+    operator: readonly Syntax[],
+  ): void => {
+    const source = options.origins.selectPrimarySource(operator[0]!.origin);
+    abortedOperators.add(binding);
+    operatorDiagnostics.push(
+      expansionDiagnosticRegistry.create(
+        error instanceof ExpansionCycleError
+          ? expansionCycleCode
+          : expansionLimitCode,
+        {
+          primaryOrigin: {
+            sourceId: source?.sourceId ?? options.sourceId,
+            start: source?.span.start ?? 0,
+            end: source?.span.end ?? 0,
+            originId: operator[0]!.origin,
+          },
+          messageArguments:
+            error instanceof ExpansionCycleError
+              ? [spelling]
+              : [spelling, error.kind],
+        },
+      ),
+    );
+  };
+  /**
+   * A chain of infix operators of one level, expanded as one expression.
+   *
+   * Each operator is expanded with what the one before it built held as the
+   * one operand it is, as it was built: it is neither read again nor copied,
+   * so each step costs what it adds to the chain. A step whose replacement
+   * goes on with the chain of left-associative core operators that the
+   * operand it holds is joins it, as a fold's step joins its accumulator:
+   * `$a + $b` over `a <+> b <+> c` builds `a + b + c` as one node, and a chain
+   * of any length nests no deeper than one step's operators do. Any other
+   * step holds the operand one level deeper, or as many as the groups its
+   * replacement writes around it.
+   *
+   * A chain whose expansion reaches a limit -- nests deeper than the nesting
+   * limit, or reaches one in an operator's own expansion -- is reported at
+   * the operator that reached it, as a fold that cannot be built is, and
+   * stands as what it built before that, or as the operand it begins with
+   * where it built nothing. A chain of an operator that reached a limit
+   * earlier in the syntax being expanded is not expanded, and stands as it
+   * was written.
+   */
+  const expandOperatorChain = (
+    chain: MacroOperatorChain,
+    apply: (
+      application: MacroOperatorApplication,
+      built: ReadonlySet<Syntax>,
+    ) => ProtectedSyntax,
+  ): ProtectedSyntax => {
+    if (chain.steps.some(({ macro }) => abortedOperators.has(macro.binding)))
+      return unexpandedOperator(writtenChain(chain));
+    const steps = new Map<ProtectedSyntax, OperatorChainStep>();
+    const limit = options.tracker.budget.maxNestingDepth;
+    let lastBuilt: ProtectedSyntax | undefined;
+    const folded = foldMacroOperatorChain(chain, (application) => {
+      const built = new Set<ProtectedSyntax>();
+      if (application.builtLeft && steps.has(application.left))
+        built.add(application.left);
+      if (application.builtRight && steps.has(application.right))
+        built.add(application.right);
+      const binding = application.step.macro.binding;
+      const result = apply(application, built);
+      if (abortedOperators.has(binding)) return undefined;
+      // A refused operator holds what was built before it as written, and
+      // nothing holds that as built again.
+      if (!operatorExpansions.has(result))
+        return built.size === 0
+          ? result
+          : createProtectedSyntax({
+              ...result,
+              id: options.allocateSyntaxId(),
+              children: result.children.map((child) =>
+                child.tag === "protected" && steps.has(child)
+                  ? joinedOperatorChain(child, steps, chain.associativity)
+                  : child,
+              ),
+            });
+      const side =
+        chain.associativity === "right" ? application.right : application.left;
+      const holds = built.has(side) ? side : undefined;
+      const level =
+        chain.associativity === "none"
+          ? undefined
+          : operatorChainLevel(result.children, holds, chain.associativity);
+      const linked =
+        level !== undefined &&
+        holds !== undefined &&
+        steps.get(holds)?.level === level;
+      // An expansion is one level deep in itself, and as deep again as what
+      // it holds nests in it.
+      let depth = 1;
+      for (const operand of built)
+        depth = Math.max(
+          depth,
+          steps.get(operand)!.depth +
+            (linked && operand === holds
+              ? 0
+              : Math.max(1, groupsAround(operand, result.children))),
+        );
+      if (depth > limit) {
+        reportOperatorLimit(
+          new ResourceLimitError("nesting-depth", limit, depth),
+          binding,
+          application.step.macro.spelling,
+          application.step.operator,
+        );
+        return undefined;
+      }
+      steps.set(result, { holds, level, linked, depth });
+      lastBuilt = result;
+      return result;
+    });
+    if (folded === undefined)
+      return lastBuilt === undefined
+        ? chain.left
+        : joinedOperatorChain(lastBuilt, steps, chain.associativity);
+    return steps.has(folded)
+      ? joinedOperatorChain(folded, steps, chain.associativity)
+      : folded;
+  };
+  /**
+   * `last` with the expansions of its chain that continue the chain before
+   * them opened into it, as `joinedChain` opens a fold's.
+   */
+  const joinedOperatorChain = (
+    last: ProtectedSyntax,
+    steps: ReadonlyMap<ProtectedSyntax, OperatorChainStep>,
+    associativity: MacroOperatorChain["associativity"],
+  ): ProtectedSyntax => {
+    const built: ProtectedSyntax[] = [];
+    for (
+      let step: ProtectedSyntax | undefined = last;
+      step !== undefined;
+      step = steps.get(step)?.holds
+    )
+      built.push(step);
+    built.reverse();
+    const links: (ChainLink | undefined)[] = built.map((step, at) =>
+      at === 0 || !steps.get(step)!.linked
+        ? undefined
+        : associativity === "right"
+          ? { before: step.children.slice(0, -1), after: [] }
+          : { before: [], after: step.children.slice(1) },
+    );
+    return joinedChain(built, links, options);
+  };
   const operatorResolverFor = (lexicalModule: CompileParsedMacrosResult) => {
     const visibleOperatorBindings = new Set([
       ...lexicalModule.macros.map(({ binding }) => binding.id),
@@ -449,74 +743,95 @@ export function createExpansionFrontendSession(
           }) !== false
         );
       },
-      expand: ({ macro, operator, input }) => {
+      expand: ({ macro, operator, input, built }) => {
         const invocation = operatorInvocationSyntax(
           input,
           operator.fixity,
           true,
+          built,
         );
         for (const token of input.operator)
           offeredOperatorTokens.add(token.origin);
+        if (abortedOperators.has(operator.binding))
+          return unexpandedOperator(invocation);
         const consumeClass = classConsumerByBinding.get(macro.binding.id);
         if (consumeClass === undefined)
           throw new Error("operator syntax-class consumer is not initialized");
-        const result = invokeMacro({
-          macro,
-          cursor: createSyntaxCursor(invocation),
-          category: "expr",
-          phase: options.phase,
-          environmentEpoch: expansionEnvironment.epoch,
-          consumeClass: inContexts(
-            consumeClass,
-            // The operator was read where its operands were; a `yield` or an
-            // `await` among them is refused only where that reading refused
-            // one.
-            contextsOf(input.context),
-          ),
-          scopeStore: options.scopeStore,
-          origins: options.origins,
-          environments: options.environments,
-          environment: hygieneEnvironment,
-          tracker: options.tracker,
-          guard: options.guard,
-          coreInterception: coreInterception(
+        let result;
+        try {
+          result = invokeMacro({
             macro,
-            lexicalModule,
+            cursor: createSyntaxCursor(invocation),
+            category: "expr",
+            phase: options.phase,
+            environmentEpoch: expansionEnvironment.epoch,
+            consumeClass: inContexts(
+              consumeClass,
+              // The operator was read where its operands were; a `yield` or an
+              // `await` among them is refused only where that reading refused
+              // one.
+              contextsOf(input.context),
+            ),
+            scopeStore: options.scopeStore,
+            origins: options.origins,
+            environments: options.environments,
+            environment: hygieneEnvironment,
+            tracker: options.tracker,
+            guard: options.guard,
+            coreInterception: coreInterception(
+              macro,
+              lexicalModule,
+              operator.spelling,
+            ),
+            allocateSyntaxId: options.allocateSyntaxId,
+            allocateBindingId: options.allocateBindingId,
+            allocateInvocationId: options.allocateInvocationId,
+            position: 0,
+            // The parser has already decided what the operands are, so a rule
+            // must account for all of them. Admitting a rule that matched a
+            // prefix dropped the rest: with rules for `$v |> await` and
+            // `$v |> $callee:expr`, `1 |> await g` expanded to `await 1`.
+            admit: ({ cursor }) => cursor.atEnd,
+            held: built,
+            invokedAt: input.operator[0],
+            diagnosticOrigin: (origin) => {
+              const selected = options.origins.selectPrimarySource(origin);
+              return {
+                sourceId: selected?.sourceId ?? options.sourceId,
+                start: selected?.span.start ?? 0,
+                end: selected?.span.end ?? 0,
+                originId: origin,
+              };
+            },
+            expandReplacement: ({ syntax }) =>
+              createProtectedSyntax({
+                id: options.allocateSyntaxId(),
+                span: spanEnvelope(syntax.map(({ span }) => span)),
+                origin:
+                  syntax.length === 1
+                    ? syntax[0]!.origin
+                    : options.origins.composed(
+                        syntax.map(({ origin }) => origin),
+                      ),
+                scopes: syntax[0]!.scopes,
+                category: "expr",
+                children: createSyntaxSequence(syntax),
+              }),
+          });
+        } catch (error) {
+          if (!(
+            error instanceof ResourceLimitError ||
+            error instanceof ExpansionCycleError
+          ))
+            throw error;
+          reportOperatorLimit(
+            error,
+            operator.binding,
             operator.spelling,
-          ),
-          allocateSyntaxId: options.allocateSyntaxId,
-          allocateBindingId: options.allocateBindingId,
-          allocateInvocationId: options.allocateInvocationId,
-          position: 0,
-          // The parser has already decided what the operands are, so a rule
-          // must account for all of them. Admitting a rule that matched a
-          // prefix dropped the rest: with rules for `$v |> await` and
-          // `$v |> $callee:expr`, `1 |> await g` expanded to `await 1`.
-          admit: ({ cursor }) => cursor.atEnd,
-          diagnosticOrigin: (origin) => {
-            const selected = options.origins.selectPrimarySource(origin);
-            return {
-              sourceId: selected?.sourceId ?? options.sourceId,
-              start: selected?.span.start ?? 0,
-              end: selected?.span.end ?? 0,
-              originId: origin,
-            };
-          },
-          expandReplacement: ({ syntax }) =>
-            createProtectedSyntax({
-              id: options.allocateSyntaxId(),
-              span: spanEnvelope(syntax.map(({ span }) => span)),
-              origin:
-                syntax.length === 1
-                  ? syntax[0]!.origin
-                  : options.origins.composed(
-                      syntax.map(({ origin }) => origin),
-                    ),
-              scopes: syntax[0]!.scopes,
-              category: "expr",
-              children: createSyntaxSequence(syntax),
-            }),
-        });
+            input.operator,
+          );
+          return unexpandedOperator(invocation);
+        }
         operatorTraces.push(result.trace);
         if (!result.expanded) {
           (result.explainsUnresolvedName
@@ -537,23 +852,13 @@ export function createExpansionFrontendSession(
               end: Math.max(...written.map(({ span }) => span.end)),
             });
           }
-          return createProtectedSyntax({
-            id: options.allocateSyntaxId(),
-            span: spanEnvelope(invocation.map(({ span }) => span)),
-            origin:
-              invocation.length === 1
-                ? invocation[0]!.origin
-                : options.origins.composed(
-                    invocation.map(({ origin }) => origin),
-                  ),
-            scopes: invocation[0]!.scopes,
-            category: "expr",
-            children: invocation,
-          });
+          return unexpandedOperator(invocation);
         }
         hygieneEnvironment = result.environment;
+        operatorExpansions.add(result.syntax);
         return result.syntax;
       },
+      expandChain: expandOperatorChain,
     });
   };
   const operatorResolvers = new Map(
@@ -1388,6 +1693,7 @@ export function createExpansionFrontendSession(
       offeredOperatorTokens.clear();
       refusedOperatorSpans.length = 0;
       operatorDiagnostics.length = 0;
+      abortedOperators.clear();
       operatorNameExplanations.length = 0;
       recoveryDiagnostics.length = 0;
       recoveredMacroNames.clear();
