@@ -1424,8 +1424,9 @@ export function printExpandedFile<Trace>(
     }
     if (item.category !== "type") return false;
     const required = typeHeldBetween(surroundings);
-    // A union written with a `|` of its own in front reads on from an
-    // operator before it as `Z | | A`, which does not parse.
+    // A union written with a `|` of its own in front reads on from a union's
+    // or an intersection's operator, or a prefix one, before it as `Z | | A`,
+    // which does not parse; after `=>` or `extends` it stands whole.
     const [head] = item.children;
     const leadsWithOperator =
       head?.tag === "token" && (head.raw === "|" || head.raw === "&");
@@ -1433,7 +1434,10 @@ export function printExpandedFile<Trace>(
     const afterOperator =
       before !== "edge" &&
       before?.tag === "token" &&
-      coreTypeOperators.some(({ spelling }) => spelling === before.raw);
+      coreTypeOperators.some(
+        ({ spelling, precedence }) =>
+          spelling === before.raw && precedence > operatorTypePrecedence("=>"),
+      );
     return (
       required !== undefined &&
       typePrecedence(item) >= required &&
