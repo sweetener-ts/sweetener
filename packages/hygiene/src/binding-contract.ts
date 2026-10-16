@@ -252,6 +252,17 @@ function addLeafScope(
   target.set(leaf, scopes);
 }
 
+/**
+ * The scope of one definition context, allocated the first time a contract
+ * that binds in the rest of the context asks for it. It is what
+ * `ApplyBindingContractOptions.followingScope` is given for the context an
+ * invocation stands in.
+ */
+export function definitionContextScope(store: ScopeStore): () => ScopeId {
+  let scope: ScopeId | undefined;
+  return () => (scope ??= store.freshScope("lexical", "definition context"));
+}
+
 export interface ApplyBindingContractOptions {
   readonly captures: CaptureRecord;
   readonly scopeStore: ScopeStore;
@@ -259,6 +270,17 @@ export interface ApplyBindingContractOptions {
   readonly environment: BindingEnvironment;
   readonly phase: Phase;
   readonly position: number;
+  /**
+   * The scope of the definition context the invocation stands in -- the
+   * block, the function or namespace body, the module -- allocated the first
+   * time a contract asks for it. A `following` region is the rest of that
+   * context, and every contract that binds in it adds this one scope: the
+   * binding is visible from where the invocation stands, so the scope need
+   * not tell one contract from another. A scope of its own for each contract
+   * put one more scope on every later token of the context for every
+   * contract written before it.
+   */
+  readonly followingScope: () => ScopeId;
   readonly followingScopes?: ScopeSetId | undefined;
   readonly extractBindings?:
     | ((syntax: SyntaxSequence) => readonly {
@@ -386,10 +408,10 @@ export function applyBindingContract(
       partitions.set(key, values);
     }
     for (const [key, binderGroup] of partitions) {
-      const scope = options.scopeStore.freshScope(
-        "lexical",
-        "binding contract",
-      );
+      const scope =
+        contract.region.kind === "following"
+          ? options.followingScope()
+          : options.scopeStore.freshScope("lexical", "binding contract");
       allocated.push(scope);
       for (const binder of binderGroup) {
         addLeafScope(bindingScopesByLeaf, binder.leaf, scope);
@@ -480,8 +502,11 @@ export function applyBindingContract(
       }
     }
   }
+  // Only a `following` region reaches the syntax after the invocation. A
+  // contract whose region is a capture binds there and nowhere else, however
+  // it orders its binders.
   let followingScopes = options.followingScopes ?? options.scopeStore.empty();
-  if (contract.region.kind === "following" || contract.kind !== "lexical") {
+  if (contract.region.kind === "following") {
     for (const scope of allocated) {
       followingScopes = options.scopeStore.add(followingScopes, scope);
     }

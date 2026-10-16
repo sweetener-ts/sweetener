@@ -12,6 +12,7 @@ import {
 } from "@sweetener/enforestation";
 import {
   createPhase,
+  definitionContextScope,
   EnvironmentStore,
   resolveBinding,
   ScopeStore,
@@ -326,6 +327,7 @@ function createHarness() {
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
       position: 0,
+      followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>
         createProtectedSyntax({
@@ -370,6 +372,7 @@ function createHarness() {
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
       position: 0,
+      followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>
         createProtectedSyntax({

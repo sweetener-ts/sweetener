@@ -20,6 +20,7 @@ import {
   applyBindingContracts,
   createBindingContract,
   createPhase,
+  definitionContextScope,
   EnvironmentStore,
   resolveBinding,
   ScopeStore,
@@ -134,6 +135,7 @@ describe("binding contracts", () => {
           environment,
           phase: createPhase(0),
           position: 0,
+          followingScope: definitionContextScope(scopes),
         },
       );
 
@@ -195,6 +197,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformedStep = result.captures.get(stepCapture);
@@ -247,6 +250,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     expect(result.bindings).toHaveLength(2);
@@ -285,6 +289,7 @@ describe("binding contracts", () => {
       environment: environments.createRoot(),
       phase: createPhase(0),
       position: 12,
+      followingScope: definitionContextScope(scopes),
     });
     expect(result.bindings.map((binding) => binding.spelling)).toEqual([
       "First",
@@ -296,7 +301,14 @@ describe("binding contracts", () => {
           binding.visibility.kind === "from" && binding.visibility.start === 12,
       ),
     ).toBe(true);
-    expect(scopes.size(result.followingScopes)).toBe(2);
+    // Both bind in the rest of one definition context, so both add its one
+    // scope.
+    expect(scopes.size(result.followingScopes)).toBe(1);
+    expect(
+      result.bindings.every((binding) =>
+        scopes.subset(binding.scopes, result.followingScopes),
+      ),
+    ).toBe(true);
   });
 
   test("sequential binders scope only later aligned regions", () => {
@@ -354,6 +366,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformed = result.captures.get(rows);
@@ -364,7 +377,8 @@ describe("binding contracts", () => {
     });
     expect(bodySizes).toEqual([0, 1, 2]);
     expect(result.bindings).toHaveLength(3);
-    expect(scopes.size(result.followingScopes)).toBe(3);
+    // The region is the rows' bodies, and nothing after the invocation.
+    expect(scopes.size(result.followingScopes)).toBe(0);
   });
 
   test("later sequential binders shadow earlier binders with the same name", () => {
@@ -409,6 +423,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformed = result.captures.get(rows);
@@ -455,6 +470,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 4,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformed = result.captures.get(name);
@@ -531,6 +547,7 @@ describe("binding contracts", () => {
         environment: environments.createRoot(),
         phase: createPhase(0),
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformedNames = result.captures.get(names);

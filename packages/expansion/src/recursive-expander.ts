@@ -1,10 +1,15 @@
-import type { Binding, BindingEnvironment } from "@sweetener/hygiene";
+import {
+  definitionContextScope,
+  type Binding,
+  type BindingEnvironment,
+} from "@sweetener/hygiene";
 import type { SyntaxClassConsumer } from "@sweetener/pattern";
 import {
   ResourceLimitError,
   type BindingId,
   type Diagnostic,
   type InvocationId,
+  type ScopeId,
   type ScopeSetId,
   type SourceId,
 } from "@sweetener/shared";
@@ -96,6 +101,7 @@ export interface ExpandMacroSyntaxOptions extends Omit<
   | "environment"
   | "parentInvocation"
   | "expandReplacement"
+  | "followingScope"
 > {
   readonly module: CompileParsedMacrosResult;
   /** Source whose syntax is being expanded and whose imports form the call site. */
@@ -1963,35 +1969,14 @@ export function expandMacroSyntax(
     }
   };
 
-  /**
-   * `bindings` with what `declared` binds added to it, each from `from` to
-   * the end of the run: a declaration an expansion wrote at `from`.
-   */
-  const boundFrom = (
-    bindings: RegionBindings,
-    declared: RegionBindings,
-    from: number,
-  ): RegionBindings => {
-    if (declared === noBindings) return bindings;
-    const into = collecting();
-    addBindings(bindings, into);
-    for (const [spelling, binders] of declared.values)
-      for (const { scopes } of binders)
-        recordValue(into, spelling, scopes, { from, to: wholeRun.to });
-    for (const [spelling, binders] of declared.types)
-      for (const { scopes } of binders)
-        recordType(into, spelling, scopes, { from, to: wholeRun.to });
-    return bindingsOf(into);
-  };
-
+  /** What the run `sequence`, walked as `category`, binds. */
   const regionBindings = (
     sequence: SyntaxSequence,
     category: SyntaxCategory,
-  ): RegionBindings => {
-    if (extractBinders === undefined) return noBindings;
+  ): CollectedBindings => {
     const into = collecting();
-    collectRegion(sequence, into, category);
-    return bindingsOf(into);
+    if (extractBinders !== undefined) collectRegion(sequence, into, category);
+    return into;
   };
 
   /**
@@ -2273,7 +2258,7 @@ export function expandMacroSyntax(
    */
   interface Region {
     /** Grows as the walk expands a declaration into the run. */
-    bindings: RegionBindings;
+    readonly bindings: CollectedBindings;
     at: number;
     /**
      * What expansions in the run have declared in the block it stands in, to
@@ -2282,15 +2267,27 @@ export function expandMacroSyntax(
      * and what it declares is the module's. A block keeps them, but for
      * `hoisted`.
      */
-    declared: RegionBindings;
+    readonly declared: CollectedBindings;
     /** The `var`s among `declared`, which a block does not keep. */
-    hoisted: RegionBindings;
+    readonly hoisted: CollectedBindings;
     /**
      * The scopes binding contracts in the run gave the syntax following
      * them, to be given in turn to what follows in the run around it, as
      * `declared` is declared there.
      */
     following: ScopeSetId;
+    /**
+     * The following scopes every node of the run not yet walked carries
+     * already. The contracts of one definition context share its scope, so
+     * after the first of them the rest of the run is given nothing new.
+     */
+    given: ScopeSetId;
+    /**
+     * The scope of the definition context the run is part of: the block,
+     * the function or namespace body, or the module, whose rest a
+     * `following` binding contract binds in.
+     */
+    readonly context: () => ScopeId;
   }
 
   /**
@@ -2314,22 +2311,11 @@ export function expandMacroSyntax(
     return bindingsOf(into);
   };
 
-  /** `left` and `right` together. */
-  const merged = (
-    left: RegionBindings,
-    right: RegionBindings,
-  ): RegionBindings => {
-    if (right === noBindings) return left;
-    if (left === noBindings) return right;
-    const into = collecting();
-    addBindings(left, into);
-    addBindings(right, into);
-    return bindingsOf(into);
-  };
-
   /**
    * Declares in `region`, from `from` to the end of its run, what an
    * expansion wrote there: `declared`, with `hoisted` the `var`s among it.
+   * The region's own record grows by what is declared, so a run that
+   * declares a name per statement costs its length rather than its square.
    */
   const declareInRun = (
     region: Region,
@@ -2337,9 +2323,18 @@ export function expandMacroSyntax(
     hoisted: RegionBindings,
     from: number,
   ): void => {
-    region.bindings = boundFrom(region.bindings, declared, from);
-    region.declared = merged(region.declared, declared);
-    region.hoisted = merged(region.hoisted, hoisted);
+    const extent: Extent = { from, to: wholeRun.to };
+    for (const [spelling, binders] of declared.values)
+      for (const binder of binders) {
+        recordValue(region.bindings, spelling, binder.scopes, extent);
+        recordIn((region.declared.values ??= new Map()), spelling, binder);
+      }
+    for (const [spelling, binders] of declared.types)
+      for (const binder of binders) {
+        recordType(region.bindings, spelling, binder.scopes, extent);
+        recordIn((region.declared.types ??= new Map()), spelling, binder);
+      }
+    addBindings(hoisted, region.hoisted);
   };
 
   /** Regions enclosing the position being walked, outermost first. */
@@ -2531,15 +2526,16 @@ export function expandMacroSyntax(
     category: SyntaxCategory,
     written: Syntax,
   ): boolean =>
-    regions.some(({ bindings, at }) =>
-      (category === "type" ? bindings.types : bindings.values)
-        .get(spelling)
-        ?.some(
-          (binder) =>
-            binder.from <= at &&
-            at < binder.to &&
-            options.scopeStore.subset(binder.scopes, written.scopes),
-        ),
+    regions.some(
+      (region) =>
+        (category === "type" ? region.bindings.types : region.bindings.values)
+          ?.get(spelling)
+          ?.some(
+            (binder) =>
+              binder.from <= region.at &&
+              region.at < binder.to &&
+              options.scopeStore.subset(binder.scopes, written.scopes),
+          ) === true,
     );
 
   /**
@@ -3397,6 +3393,12 @@ export function expandMacroSyntax(
      * nothing in it carries a label.
      */
     groupInterior = false,
+    /**
+     * The scope of the definition context the run is part of: the list's
+     * where the run is one unit of a list -- a statement, an item -- and
+     * otherwise the run's own.
+     */
+    context = definitionContextScope(options.scopeStore),
   ): {
     readonly syntax: SyntaxSequence;
     readonly environment: BindingEnvironment;
@@ -3452,9 +3454,11 @@ export function expandMacroSyntax(
     const region: Region = {
       bindings: regionBindings(initialInput, category),
       at: 0,
-      declared: noBindings,
-      hoisted: noBindings,
+      declared: collecting(),
+      hoisted: collecting(),
       following: options.scopeStore.empty(),
+      given: options.scopeStore.empty(),
+      context,
     };
     regions.push(region);
     const output: Syntax[] = [];
@@ -3474,6 +3478,20 @@ export function expandMacroSyntax(
       following: input,
       from,
     });
+    /**
+     * Gives `scopes`, which binding contracts gave the syntax following them,
+     * to every node of the run from `from` on, and records them for the run
+     * around this one.
+     */
+    const follow = (from: number, scopes: ScopeSetId): void => {
+      region.following = options.scopeStore.union(region.following, scopes);
+      if (options.scopeStore.subset(scopes, region.given)) return;
+      region.given = options.scopeStore.union(region.given, scopes);
+      input = createSyntaxSequence([
+        ...input.slice(0, from),
+        ...input.slice(from).map((syntax) => addScopes(syntax, scopes)),
+      ]);
+    };
     let currentEnvironment = environment;
     let index = 0;
     let suppressPending = suppressHead;
@@ -5005,6 +5023,7 @@ export function expandMacroSyntax(
             cursor,
             category: resolvedCategory,
             contexts,
+            followingScope: context,
             coreInterception:
               options.coreInterceptionForMacro?.({
                 macro,
@@ -5196,35 +5215,25 @@ export function expandMacroSyntax(
           // Its scopes decide whom it binds: a name the template wrote binds
           // only names the template wrote, and a name taken from the call
           // site binds the call site's.
+          if (
+            result.syntax.category === "stmt" ||
+            result.syntax.category === "item"
+          )
+            declareInRun(
+              region,
+              declaredBy(result.syntax),
+              hoistedFrom(result.syntax),
+              index,
+            );
           declareInRun(
             region,
-            merged(
-              result.syntax.category === "stmt" ||
-                result.syntax.category === "item"
-                ? declaredBy(result.syntax)
-                : noBindings,
-              contractBindings(result.bindings),
-            ),
-            result.syntax.category === "stmt" ||
-              result.syntax.category === "item"
-              ? hoistedFrom(result.syntax)
-              : noBindings,
+            contractBindings(result.bindings),
+            noBindings,
             index,
           );
         }
         currentEnvironment = replacementEnvironment ?? result.environment;
-        region.following = options.scopeStore.union(
-          region.following,
-          result.followingScopes,
-        );
-        if (options.scopeStore.size(result.followingScopes) > 0) {
-          input = createSyntaxSequence([
-            ...input.slice(0, result.cursor.index),
-            ...input
-              .slice(result.cursor.index)
-              .map((syntax) => addScopes(syntax, result.followingScopes)),
-          ]);
-        }
+        follow(result.cursor.index, result.followingScopes);
         index = result.cursor.index;
         // A list of members, items, statements or class elements separates on
         // a token of its own, and a macro that emits whole units terminates
@@ -6021,6 +6030,7 @@ export function expandMacroSyntax(
             node.tag === "group" &&
               (node.delimiter === "parenthesis" ||
                 node.delimiter === "bracket"),
+            declaresAround ? context : undefined,
           );
         } finally {
           if (frame !== undefined) liftFrames.pop();
@@ -6032,18 +6042,7 @@ export function expandMacroSyntax(
         currentEnvironment = nested.environment;
         if (declaresAround) {
           declareInRun(region, nested.declared, nested.hoisted, index);
-          if (options.scopeStore.size(nested.following) > 0) {
-            region.following = options.scopeStore.union(
-              region.following,
-              nested.following,
-            );
-            input = createSyntaxSequence([
-              ...input.slice(0, index + 1),
-              ...input
-                .slice(index + 1)
-                .map((syntax) => addScopes(syntax, nested.following)),
-            ]);
-          }
+          follow(index + 1, nested.following);
         } else if (blockOfStatements)
           declareInRun(region, nested.hoisted, nested.hoisted, index);
         if (node.tag === "protected" && nested.syntax.length === 0) {
@@ -6093,8 +6092,8 @@ export function expandMacroSyntax(
     return Object.freeze({
       syntax: createSyntaxSequence(output),
       environment: currentEnvironment,
-      declared: region.declared,
-      hoisted: region.hoisted,
+      declared: bindingsOf(region.declared),
+      hoisted: bindingsOf(region.hoisted),
       following: region.following,
     });
   };

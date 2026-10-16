@@ -177,6 +177,8 @@ export interface InvokeMacroOptions {
   readonly contexts?: ReadonlySet<MacroContext> | undefined;
   readonly coreInterception?: CoreDispatchTrace | undefined;
   readonly position: number;
+  /** See `ApplyBindingContractOptions.followingScope`. */
+  readonly followingScope: ApplyBindingContractsOptions["followingScope"];
   readonly extractBindings?: ApplyBindingContractsOptions["extractBindings"];
   readonly admit: (request: BoundaryAdmissionRequest) => boolean;
   readonly expandReplacement: (
@@ -523,6 +525,7 @@ export function invokeMacro(
         environment: options.environment,
         phase: options.phase,
         position: options.position,
+        followingScope: options.followingScope,
         extractBindings: options.extractBindings,
       });
       const evaluated = evaluateTemplate(rule.template, {

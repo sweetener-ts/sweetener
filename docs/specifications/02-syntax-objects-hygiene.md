@@ -213,6 +213,16 @@ During matching, the expander allocates a lexical scope `L`, adds `L` to the
 binder and region, registers the binding, then expands the region. Sequential
 forms such as `do` can nest one binding contract per recursive step.
 
+A `following` region is the rest of the definition context the invocation
+stands in: its block, its function or namespace body, or its module. Its `L` is
+that context's scope, allocated once and shared by every `following` contract
+in the context, the way a Racket internal-definition context has one scope. The
+binding's visibility starts at the invocation, so nothing before it resolves to
+it, and the scope need not tell one contract's binding from another's. A scope
+of its own for each contract put one more scope on every later token of the
+context for each contract before it. Only a `following` region reaches syntax
+after the invocation: a contract whose region is a capture binds there alone.
+
 ## 9. Template binding recognition
 
 The expander recognizes bindings created through built-in TypeScript forms in

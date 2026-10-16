@@ -1,4 +1,9 @@
-import { createPhase, EnvironmentStore, ScopeStore } from "@sweetener/hygiene";
+import {
+  createPhase,
+  definitionContextScope,
+  EnvironmentStore,
+  ScopeStore,
+} from "@sweetener/hygiene";
 import { parseMacroDefinitions } from "@sweetener/macro-language";
 import { createSyntaxClassConsumer } from "@sweetener/pattern";
 import { readSyntax } from "@sweetener/reader";
@@ -294,6 +299,7 @@ describe("generated declarative definitions", () => {
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
       position: 0,
+      followingScope: definitionContextScope(scopes),
       admit: () => true,
       diagnosticOrigin,
       expandReplacement: (request) => {

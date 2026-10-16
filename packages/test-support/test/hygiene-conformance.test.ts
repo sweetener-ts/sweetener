@@ -3,6 +3,7 @@ import {
   applyBindingContract,
   createBindingContract,
   createInvocationScopes,
+  definitionContextScope,
   EnvironmentStore,
   resolveBinding,
   runtimePhase,
@@ -267,6 +268,7 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environment: environments.createRoot(),
         phase: runtimePhase,
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformedRows = sequential.captures.get(rows);
@@ -317,6 +319,7 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environment: environments.createRoot(),
         phase: runtimePhase,
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const transformedArms = branchResult.captures.get(arms);
@@ -352,6 +355,7 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environment: branchResult.environment,
         phase: runtimePhase,
         position: 50,
+        followingScope: definitionContextScope(scopes),
       },
     );
     expect(following.bindings).toHaveLength(2);
@@ -392,6 +396,7 @@ describe("Phase 3 hygiene semantic conformance", () => {
         environment: following.environment,
         phase: runtimePhase,
         position: 0,
+        followingScope: definitionContextScope(scopes),
       },
     );
     const bodies = protocol.captures.get(parameterBodies);

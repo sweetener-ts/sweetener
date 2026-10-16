@@ -512,6 +512,15 @@ export function createExpansionFrontendSession(
           allocateBindingId: options.allocateBindingId,
           allocateInvocationId: options.allocateInvocationId,
           position: 0,
+          // An operator expanded here is expanded while the expression
+          // holding it is read, and the reading hands back an expression,
+          // not the definition context around it: there is nothing following
+          // the operator to give a binding's scope to.
+          followingScope: () => {
+            throw new Error(
+              `Operator ${operator.spelling} binds a name in following syntax, but it was expanded while the expression holding it was read, where no syntax following it can be bound.`,
+            );
+          },
           // The parser has already decided what the operands are, so a rule
           // must account for all of them. Admitting a rule that matched a
           // prefix dropped the rest: with rules for `$v |> await` and

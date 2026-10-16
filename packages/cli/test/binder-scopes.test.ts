@@ -442,4 +442,22 @@ describe("a following region", () => {
       "A classElement macro cannot bind in following: a member list is not a lexical scope.",
     );
   });
+
+  test("is refused for an operator expanded while its expression is read", () => {
+    const { messages } = expandWith(
+      `export operator (<~):expr {
+  fixity infix;
+  associativity right;
+  precedence 2;
+  rule { $name:ident <~ $value:expr }
+  bind $name in following as lexical value;
+  => { ($name = $value) }
+}
+`,
+      `import { (<~) } from "./macros.sts" for syntax;\nexport function f(): number { let v = 0; v <~ 1; return v; }\n`,
+    );
+    expect(messages.join("\n")).toContain(
+      "Operator <~ binds a name in following syntax, but it was expanded while the expression holding it was read, where no syntax following it can be bound.",
+    );
+  });
 });

@@ -26,6 +26,7 @@ import {
 import ts from "typescript";
 import { defineReaderBenchmarks } from "./reader.mjs";
 import { defineExpansionBenchmark } from "./expansion.mjs";
+import { defineFollowingContractsBenchmark } from "./following-contracts.mjs";
 import { defineProjectScaleBenchmark } from "./project-scale.mjs";
 import { defineScopeStoreBenchmarks } from "./scope-store.mjs";
 import { defineWideReplacementBenchmark } from "./wide-replacement.mjs";
@@ -48,6 +49,7 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
   const expansionScenario = await defineExpansionBenchmark(repositoryRoot);
   const projectScaleScenario = await defineProjectScaleBenchmark();
   const wideReplacementScenario = defineWideReplacementBenchmark();
+  const followingContractsScenario = defineFollowingContractsBenchmark();
   const readerWorkloads = await defineReaderBenchmarks(repositoryRoot);
   const readerScenarios = readerWorkloads.map((workload) => ({
     id: `reader/${workload.id}`,
@@ -324,6 +326,7 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
     expansionScenario,
     projectScaleScenario,
     wideReplacementScenario,
+    followingContractsScenario,
     ...hygieneScenarios,
   ];
 }
