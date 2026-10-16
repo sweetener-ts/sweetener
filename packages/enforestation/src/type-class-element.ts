@@ -257,6 +257,27 @@ function consumeAngles(
 }
 
 /**
+ * Whether `node` may begin a parameter: a name -- in any script, `π` as
+ * readily as `x` -- or `this`, or the brace or bracket of a destructuring
+ * pattern. A capture spliced in is asked of what it holds: a binding begins
+ * one, and a capture of one node is that node. Nothing else begins a
+ * parameter, so a group opening with anything else is a parenthesized type.
+ */
+function beginsParameter(node: Syntax): boolean {
+  switch (node.tag) {
+    case "token":
+      return isIdentifierToken(node) || node.raw === "this";
+    case "group":
+      return node.delimiter === "brace" || node.delimiter === "bracket";
+    case "protected":
+      if (node.category === "binding") return true;
+      return node.children.length === 1 && beginsParameter(node.children[0]!);
+    case "root":
+      return false;
+  }
+}
+
+/**
  * A parenthesis standing where a type is expected is either a parenthesized
  * type or the parameter list of a function type, and only a parameter list may
  * be followed by `=>`. This follows TypeScript's own reading: an empty list, a
@@ -270,11 +291,7 @@ export function readTypeParenthesis(
   const [first, second] = group.children;
   if (first === undefined) return "parameters";
   if (first.tag === "token" && first.raw === "...") return "parameters";
-  const startsParameter = token(first)
-    ? /^[A-Za-z_$][\w$]*$/u.test(first.raw)
-    : first.tag === "group" &&
-      (first.delimiter === "brace" || first.delimiter === "bracket");
-  if (!startsParameter) return "type";
+  if (!beginsParameter(first)) return "type";
   if (second === undefined) return "either";
   return token(second) && parameterFollowers.has(second.raw)
     ? "parameters"

@@ -24,6 +24,7 @@ import {
   createTypeConsumer,
   createTypeMemberConsumer,
   declaresAsync,
+  readTypeParenthesis,
   StopSet,
   type TypeClassElementMacroResolver,
 } from "../src/index.js";
@@ -576,5 +577,31 @@ describe("type and class-element consumers", () => {
     ["static async\n*[key]()", false],
   ])("reads the head %j as declaring async: %s", (source, expected) => {
     expect(declaresAsync(nodes(source, new OriginStore()))).toBe(expected);
+  });
+});
+
+/**
+ * A parenthesis where a type is expected is a function type's parameter list
+ * or a parenthesized type, and only what it opens with tells them apart: a
+ * parameter begins with a name, `this`, `...` or a destructuring pattern.
+ */
+describe("what a type's parenthesis holds", () => {
+  test.each([
+    ["(π: number)", "parameters"],
+    ["(x: number)", "parameters"],
+    ["(this: Window)", "parameters"],
+    ["(...rest: T[])", "parameters"],
+    ["({ a }: T)", "parameters"],
+    ["()", "parameters"],
+    ["(π)", "either"],
+    ["(string)", "either"],
+    ["(keyof T)", "type"],
+    ["(typeof x)", "type"],
+    ["(A | B)", "type"],
+    ["(1 | 2)", "type"],
+  ])("reads %s as %s", (source, reading) => {
+    const [group] = nodes(source, new OriginStore());
+    if (group?.tag !== "group") throw new Error("expected a group");
+    expect(readTypeParenthesis(group)).toBe(reading);
   });
 });
