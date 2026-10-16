@@ -68,8 +68,8 @@ import {
   asyncArrowHead,
   asyncModifies,
   asyncNamedArrow,
-  classElementEndsBefore,
-  classMemberNameFollows,
+  createClassMemberWalk,
+  type ClassMemberWalk,
   staticClassMember,
   parameterBinder,
   readTypeParenthesis,
@@ -2218,13 +2218,23 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // has no body to say the parenthesis group after its name is its
     // parameter list, and its name is all that says so.
     let memberStart = 0;
+    // The member being read, read a node at a time, and whether its name
+    // could stand at each of its nodes. Asked again of the whole member at
+    // every node, a long initializer cost the square of its length.
+    const members =
+      category === "classElement" ? createClassMemberWalk() : undefined;
+    let nameCouldStand: boolean[] = [];
     for (let at = 0; at < nodes.length; at += 1) {
       const node = nodes[at]!;
-      if (
-        category === "classElement" &&
-        classElementEndsBefore(nodes.slice(memberStart, at), node)
-      )
-        memberStart = at;
+      if (members !== undefined) {
+        if (members.endsBefore(node)) {
+          memberStart = at;
+          members.restart();
+          nameCouldStand = [];
+        }
+        nameCouldStand.push(members.nameFollows());
+        members.take(node);
+      }
       if (node.tag === "protected") {
         if (
           (node.category === "stmt" || node.category === "item") &&
@@ -2298,7 +2308,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           ((typesRun && signatureTypeParametersAt(nodes, open)) ||
             (category === "classElement" &&
               open > memberStart &&
-              classMemberNameFollows(nodes.slice(memberStart, open - 1))))
+              nameCouldStand[open - 1 - memberStart] === true))
         )
           bindTypeParameters(nodes, open, into, {
             from: open,
@@ -2697,12 +2707,12 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    */
   const staticMembers = (nodes: readonly Syntax[]): readonly Extent[] => {
     const statics: Extent[] = [];
-    let member: Syntax[] = [];
+    const member = createClassMemberWalk();
     let start = 0;
     const end = (at: number): void => {
-      if (member.length > 0 && staticClassMember(member))
+      if (member.nodes.length > 0 && staticClassMember(member.nodes))
         statics.push({ from: start, to: at });
-      member = [];
+      member.restart();
       start = at;
     };
     for (let at = 0; at < nodes.length; at += 1) {
@@ -2714,8 +2724,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
         start = at + 1;
         continue;
       }
-      if (classElementEndsBefore(member, node)) end(at);
-      member.push(node);
+      if (member.endsBefore(node)) end(at);
+      member.take(node);
     }
     end(nodes.length);
     return statics;
@@ -3442,12 +3452,12 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * `[key: string]`, and are not a name.
    */
   const computedMemberNameFollows = (
-    member: readonly Syntax[],
+    member: ClassMemberWalk,
     group: Extract<Syntax, { readonly tag: "group" }>,
   ): boolean => {
     const annotated = group.children[1];
     if (annotated?.tag === "token" && annotated.raw === ":") return false;
-    return classMemberNameFollows(member);
+    return member.nameFollows();
   };
 
   /**
@@ -4736,8 +4746,20 @@ function* walk(
     }
     return false;
   };
-  /** Where the class member being walked begins in `output`. */
-  let memberStart = 0;
+  /**
+   * The class member being walked, read from `output` a node at a time as it
+   * is asked about, and how much of `output` it has read.
+   */
+  const members =
+    category === "classElement" ? createClassMemberWalk() : undefined;
+  let memberRead = 0;
+  /** The member walked so far, in a run of class elements. */
+  const memberSoFar = (): ClassMemberWalk => {
+    if (members === undefined)
+      throw new Error("A class member was asked about outside a class body");
+    while (memberRead < output.length) members.take(output[memberRead++]!);
+    return members;
+  };
   /**
    * Whether what comes next is written where a type is, given everything
    * walked so far. `as` and `satisfies` are the only two of those tokens
@@ -4869,8 +4891,9 @@ function* walk(
     // walked as tokens, so a member ends where that reader ends one, and the
     // initializer and the expression it began end with it.
     if (category === "classElement") {
-      if (classElementEndsBefore(output.slice(memberStart), node)) {
-        memberStart = output.length;
+      if (memberSoFar().endsBefore(node)) {
+        memberSoFar().restart();
+        memberRead = output.length;
         enterRegionContexts(enclosingContexts);
         expressionRegion = false;
       } else if (walked?.tag === "token" && walked.raw === "=")
@@ -5218,7 +5241,7 @@ function* walk(
     const namesClassMember =
       category === "classElement" &&
       !decorates &&
-      classMemberNameFollows(output.slice(memberStart)) &&
+      memberSoFar().nameFollows() &&
       memberNameFollows();
     /**
      * Whether this position spells an ordinary name rather than the head of
@@ -7208,7 +7231,7 @@ function* walk(
                   node.tag === "group" &&
                     node.delimiter === "bracket" &&
                     category === "classElement" &&
-                    computedMemberNameFollows(output.slice(memberStart), node)
+                    computedMemberNameFollows(memberSoFar(), node)
                   ? "expr"
                   : node.tag === "group" &&
                       node.delimiter === "parenthesis" &&
