@@ -761,6 +761,45 @@ export function expandMacroSyntax(
   };
 
   /**
+   * Where the type reference `preceding` ends with begins: a name, qualified
+   * or not, with the type arguments and the `[]` or indexed accesses written
+   * after it. Undefined where `preceding` does not end with a name.
+   *
+   * A bracket written after a type reference is part of the type -- an array
+   * type or an indexed access -- wherever the reference itself stood where a
+   * type is read, which only the token in front of the reference says.
+   */
+  const typeReferenceStart = (
+    preceding: readonly Syntax[],
+  ): number | undefined => {
+    let at = preceding.length;
+    const bracket = (node: Syntax | undefined) =>
+      node?.tag === "group" && node.delimiter === "bracket";
+    while (bracket(preceding[at - 1])) at -= 1;
+    let closed = angles(preceding[at - 1], ">");
+    if (closed > 0) {
+      at -= 1;
+      while (closed > 0 && at > 0) {
+        at -= 1;
+        closed += angles(preceding[at], ">") - angles(preceding[at], "<");
+      }
+      if (closed > 0) return undefined;
+    }
+    const name = (node: Syntax | undefined) =>
+      node?.tag === "token" &&
+      (node.kind === "identifier" || node.kind === "keyword");
+    if (!name(preceding[at - 1])) return undefined;
+    at -= 1;
+    while (
+      preceding[at - 1]?.tag === "token" &&
+      (preceding[at - 1] as TokenSyntax).raw === "." &&
+      name(preceding[at - 2])
+    )
+      at -= 2;
+    return at;
+  };
+
+  /**
    * Whether the next node stands where a type is written, when what is being
    * walked is an expression.
    *
@@ -3427,7 +3466,23 @@ export function expandMacroSyntax(
       typeArgumentsEnclose(index) ||
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
-        : typePositionHere());
+        : typePositionHere()) ||
+      typeReferenceContinues();
+    /**
+     * Whether the bracket about to be walked continues a type reference that
+     * stands where a type is read: `Z[K]` and `Z[]` in `let t: Z[K]`, where
+     * the token in front of the bracket is the name rather than the `:`.
+     */
+    const typeReferenceContinues = (): boolean => {
+      const node = input[index];
+      if (node?.tag !== "group" || node.delimiter !== "bracket") return false;
+      const start = typeReferenceStart(output);
+      if (start === undefined || start === output.length) return false;
+      const before = output.slice(0, start);
+      return category === "expr" || expressionRegion
+        ? typeFollowsInExpression(before)
+        : !labelColonEnds(start) && typePositionFollows(before);
+    };
     /** Whether a run of statements is what is being walked. */
     const statementRun =
       !groupInterior && (category === "stmt" || category === "item");

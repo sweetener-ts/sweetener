@@ -114,6 +114,14 @@ describe("grouping a type expansion", () => {
     ).toContain("let held: string | null = null;");
   });
 
+  test("an indexed access a function body's annotation writes", () => {
+    expect(
+      expand(
+        "type Lookup = { [key: string]: number };\nexport function read(lookup: Lookup) { const value: Lookup[justString()] = lookup.k!; return value; }",
+      ),
+    ).toContain("const value: Lookup[string] =");
+  });
+
   test("a plain reference is left ungrouped", () => {
     expect(expand("export type A = justString()[];")).toContain("string[]");
   });
