@@ -2937,6 +2937,34 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   };
 
   /**
+   * Whether syntax carrying `scopes` carries the scope of `region`'s binding
+   * form wherever `binder`, written in the region, does.
+   *
+   * A binder the walk found in the region carries that scope, and so does
+   * everything else written there. A template's text does not: it was
+   * written where its macro was defined. So a name carrying the
+   * introduction scope of an invocation the binder is no part of was written
+   * by a template the binder was not, and does not carry it. Asked instead
+   * by whether the invocation was made since the walk entered the region,
+   * this missed an operator, which is expanded while its expression is read,
+   * before the walk enters the function holding it: a parameter named
+   * `twice` captured the `twice` such an operator's template wrote.
+   *
+   * A binder a template wrote into the region does not carry the region's
+   * scope either, and a name its template wrote beside it carries the same
+   * introduction scope, so that name is answered as present.
+   */
+  const presentWith = (
+    scopes: ScopeSetId,
+    binder: Binder,
+    region: Region,
+  ): boolean =>
+    region.entered === undefined ||
+    (region.scope !== undefined &&
+      options.scopeStore.has(scopes, region.scope)) ||
+    !options.scopeStore.introducedApartFrom(scopes, binder.scopes);
+
+  /**
    * Whether `written`, spelled `spelling`, names an ordinary binding rather
    * than a macro of `category`: a binder of that spelling encloses it, in
    * the namespace the category reads, and it carries every scope the binder
@@ -2956,8 +2984,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
               binder.from <= region.at &&
               region.at < binder.to &&
               options.scopeStore.subset(binder.scopes, written.scopes) &&
-              !(binder.ofClass && inStaticMember(depth)),
-          ) === true && presentIn(written.scopes, region),
+              !(binder.ofClass && inStaticMember(depth)) &&
+              presentWith(written.scopes, binder, region),
+          ) === true,
     );
 
   const liftFrames: LiftFrame[] = [];

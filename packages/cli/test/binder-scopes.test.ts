@@ -459,6 +459,54 @@ describe("a name a template of this file writes", () => {
       expect(text).toContain(expected);
     });
   }
+
+  /**
+   * An operator is expanded while the expression holding it is read, before
+   * the walk enters the function around it, so the invocation is older than
+   * the function's region. Its template is no more written inside the
+   * function for that.
+   */
+  const pipeTwice = `operator (|>):expr {
+  fixity infix;
+  associativity left;
+  precedence 10;
+  rule { $a:expr |> $b:expr } => { twice($a + $b) }
+}
+`;
+  const operatorCases: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly expected: string;
+  }[] = [
+    {
+      name: "a function's parameter",
+      source: "export function f(twice: Fn): number { return 1 |> 2; }",
+      expected: "return (1 + 2 + (1 + 2));",
+    },
+    {
+      name: "an arrow's parameter",
+      source: "export const f = (twice: Fn): number => 1 |> 2;",
+      expected: "=> (1 + 2 + (1 + 2))",
+    },
+    {
+      name: "an outer function's parameter, from a block inside it",
+      source: "export function f(twice: Fn): number { { return 1 |> 2; } }",
+      expected: "return (1 + 2 + (1 + 2));",
+    },
+    {
+      name: "a catch binding",
+      source:
+        "export function f(): number { try { return 0; } catch (twice) { return 1 |> 2; } }",
+      expected: "return (1 + 2 + (1 + 2));",
+    },
+  ];
+  for (const { name, source, expected } of operatorCases) {
+    test(`written by an operator is not captured by ${name}`, () => {
+      const { text, messages } = expand(pipeTwice + source);
+      expect(messages).toEqual([]);
+      expect(text).toContain(expected);
+    });
+  }
 });
 
 /**

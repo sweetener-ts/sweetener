@@ -182,6 +182,24 @@ export class ScopeStore {
   }
 
   /**
+   * Whether the set carries the introduction scope of an invocation, without
+   * that invocation's use-site scope, that `other` does not carry: whether a
+   * template wrote it at an invocation `other` is no part of.
+   */
+  introducedApartFrom(set: ScopeSetId, other: ScopeSetId): boolean {
+    const node = this.#requireSet(set);
+    const otherNode = this.#requireSet(other);
+    return this.#scopesOf(node).some((scope) => {
+      const partner = this.#invocationPartners.get(scope);
+      return (
+        partner !== undefined &&
+        !this.#contains(node, partner) &&
+        !this.#contains(otherNode, scope)
+      );
+    });
+  }
+
+  /**
    * The set with each invocation's introduction and use-site scopes removed
    * where it carries both: the scopes of the call site that `#capture`
    * published an identifier to. A set that carries no such pair is answered
