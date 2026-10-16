@@ -27,6 +27,9 @@ import ts from "typescript";
 import { defineReaderBenchmarks } from "./reader.mjs";
 import { defineExpansionBenchmark } from "./expansion.mjs";
 import { defineFollowingContractsBenchmark } from "./following-contracts.mjs";
+import { defineHygienicRenamesBenchmark } from "./hygienic-renames.mjs";
+import { defineLongRepetitionBenchmark } from "./long-repetition.mjs";
+import { defineMacroEnvironmentBenchmark } from "./macro-environment.mjs";
 import { defineProjectScaleBenchmark } from "./project-scale.mjs";
 import { defineScopeStoreBenchmarks } from "./scope-store.mjs";
 import { defineWideReplacementBenchmark } from "./wide-replacement.mjs";
@@ -50,6 +53,9 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
   const projectScaleScenario = await defineProjectScaleBenchmark();
   const wideReplacementScenario = defineWideReplacementBenchmark();
   const followingContractsScenario = defineFollowingContractsBenchmark();
+  const hygienicRenamesScenario = defineHygienicRenamesBenchmark();
+  const longRepetitionScenario = defineLongRepetitionBenchmark();
+  const macroEnvironmentScenario = defineMacroEnvironmentBenchmark();
   const readerWorkloads = await defineReaderBenchmarks(repositoryRoot);
   const readerScenarios = readerWorkloads.map((workload) => ({
     id: `reader/${workload.id}`,
@@ -327,6 +333,9 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
     projectScaleScenario,
     wideReplacementScenario,
     followingContractsScenario,
+    hygienicRenamesScenario,
+    longRepetitionScenario,
+    macroEnvironmentScenario,
     ...hygieneScenarios,
   ];
 }
