@@ -124,9 +124,16 @@ export function operatorPrecedence(
  * The levels of the grammar that are not a single operator's. A conditional
  * binds between `??` and assignment; an assignment expression -- what an
  * argument, an initializer or an arrow's body is -- is the level `=` and `=>`
- * stand at; and the comma operator is the loosest of all.
+ * stand at; the comma operator is the loosest of all; and a primary
+ * expression is tighter than any operator.
  */
 export const conditionalPrecedence = 30;
+/**
+ * What an operand that no operator joins holds together at: a name, a
+ * literal, a call, a member access, anything in brackets. It is a
+ * left-hand-side expression, the only kind an assignment may write to.
+ */
+export const primaryPrecedence = 1_000;
 export const assignmentPrecedence = operatorPrecedence("=", "infix");
 export const commaPrecedence = operatorPrecedence(",", "infix");
 

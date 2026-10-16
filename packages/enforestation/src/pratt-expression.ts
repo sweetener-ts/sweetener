@@ -5,6 +5,7 @@ import {
   coreExpressionOperators,
   createPrecedence,
   createProtectedSyntax,
+  primaryPrecedence,
   unaryPrecedence,
   type PrattAssociativity,
   type PrattFixity,
@@ -445,7 +446,7 @@ function parsePrefix(
   return {
     syntax: attempt.syntax,
     cursor: attempt.cursor,
-    outerPrecedence: attempt.syntax.precedence ?? 1_000,
+    outerPrecedence: attempt.syntax.precedence ?? primaryPrecedence,
     unparenthesizedPrefix: false,
     mixingFamily: undefined,
   };
@@ -625,9 +626,9 @@ function literalRightOperand(
     if (!endsOperand(after, context)) continue;
     const tokens = Array.from({ length: run.length }, () => cursor.consume()!);
     return {
-      syntax: protect(context.options, tokens, 1_000),
+      syntax: protect(context.options, tokens, primaryPrecedence),
       cursor,
-      outerPrecedence: 1_000,
+      outerPrecedence: primaryPrecedence,
       unparenthesizedPrefix: false,
       mixingFamily: undefined,
     };

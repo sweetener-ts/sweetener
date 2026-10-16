@@ -85,10 +85,22 @@ describe("grouping a type expansion", () => {
     expect(expand("export type A = voidFn()[];")).toContain("(() => void)[]");
   });
 
-  test("the left side of a conditional type", () => {
+  test("the left side of a conditional type, which reads a union whole", () => {
     expect(
       expand("export type A = orNull(string) extends null ? 1 : 2;"),
-    ).toContain("(string | null) extends null");
+    ).toContain("export type A = string | null extends null ? 1 : 2;");
+  });
+
+  test("a union inside a union needs nothing", () => {
+    expect(
+      expand("export type A = boolean | orNull(string) | number;"),
+    ).toContain("export type A = boolean | string | null | number;");
+  });
+
+  test("a whole annotation needs nothing", () => {
+    expect(expand("export let held: orNull(string);")).toContain(
+      "export let held: string | null;",
+    );
   });
 
   test("a plain reference is left ungrouped", () => {
@@ -279,25 +291,25 @@ const captureRows: readonly {
   {
     name: "a function type in a template's union",
     use: "orNothing<() => void>",
-    printed: "((() => void) | null)",
+    printed: "(() => void) | null",
     identity: "(() => void) | null",
   },
   {
     name: "a union in a template's intersection",
     use: "andTagged<{ a: 1 } | { b: 2 }>",
-    printed: '(({ a: 1 } | { b: 2 }) & { tag: "t" })',
+    printed: '({ a: 1 } | { b: 2 }) & { tag: "t" }',
     identity: '({ a: 1 } | { b: 2 }) & { tag: "t" }',
   },
   {
     name: "a union on the left of a template's conditional",
     use: "whenNull<string | null>",
-    printed: '((string | null) extends null ? "yes" : "no")',
+    printed: 'string | null extends null ? "yes" : "no"',
     identity: '"no"',
   },
   {
     name: "a union under a template's keyof",
     use: "keysOf<{ a: 1 } | { b: 2 }>",
-    printed: "(keyof ({ a: 1 } | { b: 2 }))",
+    printed: "keyof ({ a: 1 } | { b: 2 })",
     identity: "never",
   },
   {
@@ -315,7 +327,7 @@ const captureRows: readonly {
   {
     name: "a union as a mapped type's value",
     use: "valueOf<string | number>",
-    printed: '{ [K in "a"]: (string | number) }',
+    printed: '{ [K in "a"]: string | number }',
     identity: "{ a: string | number }",
   },
 ];

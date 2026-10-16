@@ -53,6 +53,13 @@ export syntax members:expr {
 }
 export syntax listOf:type { rule { listOf($t:type) } => { Array<$t> } }
 export syntax has:expr { rule { has($k:expr, $o:expr) } => { $k in $o } }
+export syntax cast:expr { rule { cast($v:expr) } => { $v as any } }
+export syntax not:expr { rule { not($v:expr) } => { !$v } }
+export syntax thunk:expr { rule { thunk($v:expr) } => { () => $v } }
+export syntax run:stmt { rule { run($v:expr); } => { $v; } }
+export syntax build:expr { rule { build($c:expr) } => { new $c } }
+export syntax pick:expr { rule { pick($o:expr, $k:expr) } => { $o[$k] } }
+export syntax nothing:expr { rule { nothing() } => { yield } }
 `;
 
 interface Expansion {
@@ -67,7 +74,7 @@ function expand(main: string): Expansion {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has } from "./macros.sts" for syntax;\n${main}`,
+    `import { obj, fn1, afn, cls, arrow, first, optional, make, either, neg, it, withObject, sum, members, listOf, has, cast, not, thunk, run, build, pick, nothing } from "./macros.sts" for syntax;\n${main}`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -445,3 +452,79 @@ export const joined = obj(3) + "";
     expect(text).toContain('{ value: 3 } + ""');
   });
 });
+
+describe("an operand a macro produces, by what stands around it", () => {
+  test("keeps an assertion apart from a union, an intersection and a target", () => {
+    // A type runs on over `|` and `&`: `x as any | 2` asserts the union. An
+    // assignment writes to a left-hand-side expression, which `x as any` is
+    // not.
+    const { text, messages, exports } = expand(
+      `let target: unknown = 0;
+export function joined() { const value = cast(1) | 2; cast(target) = 3; return value; }
+export const later = async () => cast(4) & 5;
+export const written = () => target;
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const value = (1 as any) | 2;");
+    expect(text).toContain("(target as any) = 3;");
+    expect(text).toContain("async () => (4 as any) & 5");
+    expect((exports["joined"] as () => number)()).toBe(3);
+    expect((exports["written"] as () => unknown)()).toBe(3);
+  });
+
+  test("keeps a prefix `!` apart from what follows it", () => {
+    // `!` after an operand asserts it non-null and binds nothing; before one
+    // it binds like `-`, and `!a.valueOf()` negates the call.
+    const { text, messages, exports } = expand(
+      "const a = 0 as number;\nexport const negated = not(a).valueOf();\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("(!a).valueOf()");
+    expect(exports["negated"]).toBe(true);
+  });
+
+  test("keeps an optional chain apart from a template that tags it", () => {
+    const { text, messages, exports } = expand(
+      `const holder: { f(strings: TemplateStringsArray): string } = { f: (strings) => strings[0]! };
+export const tagged = optional(holder)\`t\`;
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("(holder?.f) `t`");
+    expect(exports["tagged"]).toBe("t");
+  });
+
+  test("keeps what a decorator indexes apart from what it decorates", () => {
+    // A decorator's `[` would begin a computed member name, so `@a[0]` is
+    // not read as the decorator `a[0]`.
+    const { text, messages } = expand(
+      `const decorators = [(_value: unknown, _context: unknown) => {}];
+@pick(decorators, 0) export class Decorated {}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("@(decorators[0]) export class Decorated {}");
+  });
+
+  test("needs nothing where only an arrow stands", () => {
+    const { text, messages, exports } = expand(
+      "export function chosen(flag: boolean) { return flag ? arrow(1) : arrow(2); }\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("return flag ? () => 1 : () => 2;");
+    expect(
+      (exports["chosen"] as (flag: boolean) => () => number)(false)(),
+    ).toBe(2);
+  });
+
+  test("needs nothing as a template literal's substitution", () => {
+    const { text, messages, exports } = expand(
+      "export const spelled = `${sum(1, 2)}`;\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("`${1 + 2}`");
+    expect(exports["spelled"]).toBe("3");
+  });
+});
+

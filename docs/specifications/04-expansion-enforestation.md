@@ -299,26 +299,57 @@ walks. A header that does not read so is kept as written.
 The consumer wraps its result in `ProtectedSyntax` with outer precedence, and
 records its form when it is an unparenthesized conditional, arrow function,
 assignment, `yield`, or `await`. Parentheses make an expression of no form.
-Printing parenthesizes a protected expression that expansion placed where its
-own operators could re-associate: one whose precedence is not already tighter
-than the operator it is an operand of, and any conditional or arrow that is not
-the whole body of an arrow. An arrow holds together only where an assignment
-expression would. An expression that stands whole needs no parentheses: an
-argument, an array element, a property value, what a spread spreads, an
-initializer or default, what `return`, `throw` or `export default` takes, the
-expression of an expression statement, and a type argument. The first clause of
-a `for` header is the exception, where `in` stays inside parentheses. `??` beside an unparenthesized `||` or `&&`, and a unary
-base of `**`, keep their parentheses. So does an optional chain that a call,
-an access or a tagged template continues, and an expression `new` constructs
-that holds a call or an optional chain of its own.
+Printing parenthesizes a protected expression or type that expansion placed
+where its own operators could re-associate. It holds together without them
+where it binds at least as tightly as what is written on either side of it
+needs, which is the rule an operator-precedence grammar parses by, asked of the
+nodes around it rather than only of a parsed parent, so it holds in a run the
+walk left flat as well:
 
-An expression a macro produces keeps its node even when it is a single group,
-and printing also parenthesizes one whose first token the position it begins
-would read as something else: `{`, `function`, `async function` or `class` at
-the start of an expression statement, `{` at the start of an arrow's concise
-body, and `function`, `async function` or `class` after `export default`.
-Where such an expression begins with an operand rather than with the token
-itself, that operand is parenthesized instead: `({ value: 1 }).value;`.
+- Beside a binary operator it binds at that operator's level, or one tighter
+  on the side associativity does not favour. A prefix operator takes another
+  unary expression, except that a sign before a signed operand would print as
+  an update; `yield` takes an assignment expression. The levels are the ones
+  the expression parser reads with, from one shared table.
+- What stands whole needs nothing: an argument, an element, a property value,
+  what a spread spreads, an initializer or default, an arrow's concise body,
+  what `return`, `throw`, `case` or `export default` takes, a conditional's
+  branches, what `for...of` and `for...in` iterate, the expression of an
+  expression statement, and a template literal's substitution. An arrow, an
+  assignment and `yield` hold together only where an assignment expression
+  would.
+- What an access, a call, a tagged template, `!`, `++` or `--` follows, and
+  what an assignment writes to, is a left-hand-side expression. `new F(1)` is
+  one; `new F` is not.
+- `??` beside an unparenthesized `||` or `&&`, and a unary base of `**`, keep
+  their parentheses. So does an `as` or `satisfies` expression in front of
+  `|`, `&` or a `<`, over which the type it ends with would read on; an
+  expression holding `in` anywhere in a counting `for` header's first clause;
+  an optional chain that a call, an access or a tagged template continues; an
+  expression `new` constructs that holds a call, an optional chain, or
+  `import.meta`; and what a decorator applies, unless it is a left-hand-side
+  expression that nothing indexes.
+- `!` is prefix where it begins an expression and binds as one; after an
+  operand it asserts non-null and binds nothing.
+
+A type is held the same way, by TypeScript's type levels: a function,
+constructor or conditional type is the loosest, then a union, an intersection,
+the prefix operators, and postfix `[]` and indexed access. A union or an
+intersection reads its members at its own level, a conditional type's check
+type and an `extends` may be a union, and an annotation, an alias's
+right-hand side, a type argument, a tuple element, an assertion's type and a
+return type stand whole.
+
+An expression or a type a macro produces, or a capture holds, keeps its node
+even when it is a single group, or a single token of a form of its own such as
+a `yield` of nothing; an operand a template writes after `new` is constructed
+whole. Printing also parenthesizes an expression whose first token the
+position it begins would read as something else: `{`, `function`,
+`async function` or `class` at the start of an expression statement, `{` at
+the start of an arrow's concise body, and `function`, `async function` or
+`class` after `export default`. Where such an expression begins with an
+operand rather than with the token itself, that operand is parenthesized
+instead: `({ value: 1 }).value;`.
 
 ## 8. TypeScript built-in parsing boundary
 

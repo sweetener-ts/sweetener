@@ -3,9 +3,15 @@ import {
   angleWidth,
   assignmentPrecedence,
   commaPrecedence,
+  coreExpressionOperators,
+  coreTypeOperators,
+  type CoreOperator,
   type DelimiterKind,
   isReservedWord,
   operatorPrecedence,
+  primaryPrecedence,
+  typePostfixPrecedence,
+  unaryPrecedence,
   type MissingToken,
   type Origin,
   type OriginStore,
@@ -320,18 +326,6 @@ function applies(
 }
 
 /**
- * Tokens after which a whole assignment expression is written, where nothing
- * after it but a separator or the end of its brackets belongs to it.
- */
-const wholeExpressionHeads: ReadonlySet<string> = new Set([
-  "...",
-  "=",
-  "return",
-  "throw",
-  "default",
-]);
-
-/**
  * The keywords whose parenthesized header a statement follows: `if (ready)
  * (value)` is a statement after a header, not a call on it.
  */
@@ -513,9 +507,6 @@ function wordCharacter(value: string | undefined): boolean {
   return value !== undefined && /[\p{ID_Continue}$]/u.test(value);
 }
 
-/** What ends an arrow's body where it stands in a sequence of nodes. */
-const arrowBodyEnds: ReadonlySet<string> = new Set([";", ",", ":"]);
-
 /** Tokens that bind against neighbours, and so need the grouping kept. */
 
 const nonBinding = new Set([".", "?.", "!", ",", ";", ":", "=>", "...", "?"]);
@@ -585,18 +576,30 @@ function typeBindingOperator(token: TokenSyntax): boolean {
  * `$f || q` printed an arrow that returns `1 || q`.
  */
 function holdingPrecedence(expression: ProtectedSyntax): number | undefined {
-  return expression.form === "arrow"
-    ? assignmentPrecedence
-    : expression.precedence;
+  if (expression.form === "arrow") return assignmentPrecedence;
+  // `new F(1)` is a member expression, which an access or a call may follow
+  // as it may any other; only `new F`, with no arguments, binds as `new`.
+  const [head] = expression.children;
+  const last = expression.children.at(-1);
+  if (
+    head?.tag === "token" &&
+    head.raw === "new" &&
+    last?.tag === "group" &&
+    last.delimiter === "parenthesis"
+  )
+    return primaryPrecedence;
+  return expression.precedence;
 }
 
 /**
  * The places where an expression begins something whose grammar keeps certain
  * tokens out of its first place: an expression statement, an arrow's concise
- * body, and what `export default` exports. An expression that begins with one
- * of those tokens there is read as something else.
+ * body, what `export default` exports, and what a decorator applies. An
+ * expression that begins with one of those tokens there, or that a decorator
+ * would read only part of, is read as something else.
  */
-type LeadingPosition = "statement" | "arrow body" | "export default";
+type LeadingPosition =
+  "statement" | "arrow body" | "export default" | "decorator";
 
 /**
  * Whether `expression`, standing first in `position`, begins with a token
@@ -615,6 +618,7 @@ function misreadAt(
   expression: ProtectedSyntax,
   position: LeadingPosition,
 ): boolean {
+  if (position === "decorator") return !decoratorReads(expression);
   const [first, second] = expression.children;
   if (first?.tag === "group")
     return first.delimiter === "brace" && position !== "export default";
@@ -629,10 +633,32 @@ function misreadAt(
 }
 
 /**
- * The expression `expression` is. A node holding nothing but another
- * expression -- a capture of one, a macro's result that is one -- is that
- * expression, and stands wherever it stands: its own precedence is the one
- * the parser gave the wrapper, not the one the expression inside binds at.
+ * Whether a decorator reads `expression` whole: a left-hand-side expression
+ * that nothing indexes. TypeScript reads a decorator's `[` as the computed
+ * name of the member it decorates, so `@$d` with `$d` bound to `a[b]` printed
+ * `@a[b] m() {}`, which does not parse.
+ */
+function decoratorReads(expression: ProtectedSyntax): boolean {
+  let current: Syntax | undefined = unwrapped(expression);
+  if ((holdingPrecedence(current) ?? 0) < primaryPrecedence) return false;
+  while (current?.tag === "protected" && current.category === "expr") {
+    if (
+      current.children.some(
+        (child, at) =>
+          at > 0 && child.tag === "group" && child.delimiter === "bracket",
+      )
+    )
+      return false;
+    current = current.children[0];
+  }
+  return true;
+}
+
+/**
+ * The expression or type `expression` is. A node holding nothing but another
+ * of its category -- a capture of one, a macro's result that is one -- is
+ * that one, and stands wherever it stands: its own precedence is the one the
+ * parser gave the wrapper, not the one the expression inside binds at.
  */
 function unwrapped(expression: ProtectedSyntax): ProtectedSyntax {
   let current = expression;
@@ -641,7 +667,7 @@ function unwrapped(expression: ProtectedSyntax): ProtectedSyntax {
     if (
       current.children.length !== 1 ||
       sole?.tag !== "protected" ||
-      sole.category !== "expr"
+      sole.category !== current.category
     )
       return current;
     current = sole;
@@ -677,6 +703,17 @@ function constructsTooMuch(expression: ProtectedSyntax): boolean {
     (head.raw === "function" || head.raw === "class")
   )
     return false;
+  // `import.meta` and `import(...)` are not member expressions, and
+  // TypeScript reads `new import.meta` as a `new` with nothing after it.
+  if (head?.tag === "token" && head.raw === "import") return true;
+  // A `new` with arguments of its own takes them along: `new new F(1)()`
+  // constructs what `new F(1)` returns.
+  if (
+    head?.tag === "token" &&
+    head.raw === "new" &&
+    holdingPrecedence(expression) === primaryPrecedence
+  )
+    return false;
   return (
     optionalChain(expression) ||
     expression.children.some(
@@ -687,6 +724,382 @@ function constructsTooMuch(expression: ProtectedSyntax): boolean {
       head.category === "expr" &&
       constructsTooMuch(head))
   );
+}
+
+/**
+ * Whether `expression` is a unary operator applied to an operand -- `-a`,
+ * `!a`, `typeof a`, `await a` -- rather than an update expression, which `++a`
+ * is and which alone may stand as the base of `**`.
+ */
+function unaryExpression(expression: ProtectedSyntax | undefined): boolean {
+  const head = expression?.children[0];
+  return (
+    expression?.children.length === 2 &&
+    head?.tag === "token" &&
+    head.raw !== "++" &&
+    head.raw !== "--" &&
+    head.raw !== "new" &&
+    coreExpressionOperators.some(
+      ({ spelling, fixity, precedence }) =>
+        spelling === head.raw &&
+        fixity === "prefix" &&
+        precedence === unaryPrecedence,
+    )
+  );
+}
+
+/** Whether `expression` ends in the type an `as` or a `satisfies` takes. */
+function endsInType(expression: ProtectedSyntax | undefined): boolean {
+  const operator = expression?.children.at(-2);
+  return (
+    expression?.children.at(-1)?.tag === "protected" &&
+    operator?.tag === "token" &&
+    (operator.raw === "as" || operator.raw === "satisfies")
+  );
+}
+
+/**
+ * Whether a type read up to an operator spelled `spelling` would read on over
+ * it: a union's `|`, an intersection's `&`, and a `<` that opens type
+ * arguments -- TypeScript re-reads a `<<` as one.
+ */
+function typeContinuedBy(spelling: string): boolean {
+  return spelling === "|" || spelling === "&" || spelling.startsWith("<");
+}
+
+/**
+ * What stands on one side of an operand in the run it is printed in: a node
+ * of the run, the edge of the brackets or the statement that holds the run,
+ * or nothing this printer can read.
+ */
+type Neighbour = Syntax | "edge" | undefined;
+
+/**
+ * What stands on either side of a node, and the node before the one in front
+ * of it: whether a `-` in front is a sign or a subtraction depends on what
+ * stands before the `-`.
+ */
+interface Surroundings {
+  readonly before: Neighbour;
+  readonly beforeThat: Neighbour;
+  readonly after: Neighbour;
+}
+
+const edges: Surroundings = Object.freeze({
+  before: "edge",
+  beforeThat: "edge",
+  after: "edge",
+});
+
+/** Kinds of token that are an operand by themselves. */
+const operandTokenKinds: ReadonlySet<TokenSyntax["kind"]> = new Set([
+  "identifier",
+  "private-identifier",
+  "numeric-literal",
+  "bigint-literal",
+  "string-literal",
+  "regular-expression-literal",
+  "no-substitution-template",
+]);
+
+/** Keywords that are an operand by themselves. */
+const operandKeywords: ReadonlySet<string> = new Set([
+  "this",
+  "super",
+  "null",
+  "true",
+  "false",
+]);
+
+/**
+ * Whether `node` ends an operand, so that an operator after it is infix
+ * rather than prefix: true, false, or undefined where it cannot be told. A
+ * brace may be an object literal or a block, and `++` may end `a++` or begin
+ * `++a`.
+ */
+function endsOperand(node: Neighbour): boolean | undefined {
+  if (node === "edge") return false;
+  if (node === undefined) return undefined;
+  switch (node.tag) {
+    // A binder, and the type an annotation or an assertion ends with, end
+    // what is written before an operator: `x = ...`, `let x: T = ...`.
+    case "protected":
+      return node.category === "expr" ||
+        node.category === "binding" ||
+        node.category === "type"
+        ? true
+        : undefined;
+    case "group":
+      return node.delimiter === "brace" ? undefined : true;
+    case "token":
+      if (node.raw === "++" || node.raw === "--") return undefined;
+      return (
+        operandTokenKinds.has(node.kind) ||
+        (node.kind === "keyword" && operandKeywords.has(node.raw))
+      );
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether `node` is a piece of a template literal between substitutions, each
+ * of which is a whole expression -- or, in a template literal type, a whole
+ * type.
+ */
+function templateSeam(node: Neighbour): boolean {
+  return (
+    node !== "edge" &&
+    node?.tag === "token" &&
+    (node.kind === "template-head" ||
+      node.kind === "template-middle" ||
+      node.kind === "template-tail")
+  );
+}
+
+/** The core operator spelled `spelling` with `fixity`, if there is one. */
+function coreOperator(spelling: string, fixity: CoreOperator["fixity"]) {
+  return coreExpressionOperators.find(
+    (candidate) =>
+      candidate.spelling === spelling && candidate.fixity === fixity,
+  );
+}
+
+/**
+ * The least an expression must bind at to hold together against what stands
+ * in front of it, or undefined where that cannot be read. `forInOf` says the
+ * run is a `for` header whose `in` or `of` heads what it iterates.
+ */
+function heldAfter(
+  surroundings: Surroundings,
+  forInOf: boolean,
+): number | undefined {
+  const { before, beforeThat } = surroundings;
+  if (before === "edge" || templateSeam(before)) return 0;
+  if (before?.tag !== "token") return undefined;
+  const spelling = before.raw;
+  switch (spelling) {
+    case ";":
+      return 0;
+    case ",":
+    case "...":
+    case "=>":
+    case "?":
+    case ":":
+      return assignmentPrecedence;
+    case "return":
+    case "throw":
+    case "case":
+      return commaPrecedence + 1;
+    case "default":
+      return assignmentPrecedence;
+    // What a class extends is a left-hand-side expression.
+    case "extends":
+      return primaryPrecedence;
+  }
+  if (forInOf && (spelling === "in" || spelling === "of"))
+    return spelling === "in" ? commaPrecedence + 1 : assignmentPrecedence;
+  // `yield*` is one operator written as two tokens.
+  if (
+    spelling === "*" &&
+    beforeThat !== "edge" &&
+    beforeThat?.tag === "token" &&
+    beforeThat.raw === "yield"
+  )
+    return assignmentPrecedence;
+  // A spelling that is only infix, or only prefix, says which it is; `+`
+  // and `-` are both, and only what stands before them tells.
+  const infix = coreOperator(spelling, "infix");
+  const prefix = coreOperator(spelling, "prefix");
+  const operand =
+    infix !== undefined && prefix !== undefined
+      ? endsOperand(beforeThat)
+      : infix !== undefined;
+  if (infix !== undefined && operand === true)
+    return infix.associativity === "left"
+      ? infix.precedence + 1
+      : infix.precedence;
+  if (prefix === undefined || operand !== false) return undefined;
+  switch (spelling) {
+    // What `new` constructs is a member expression; whether it would take
+    // arguments of its own along is `constructsTooMuch`'s to say.
+    case "new":
+      return primaryPrecedence;
+    case "yield":
+      return assignmentPrecedence;
+    // An update writes to what it updates.
+    case "++":
+    case "--":
+      return primaryPrecedence;
+    // A sign before a signed operand would print as an update: `- -a` is not
+    // `--a`.
+    case "+":
+    case "-":
+      return prefix.precedence + 1;
+    default:
+      return prefix.precedence;
+  }
+}
+
+/**
+ * The least `expression` must bind at to hold together against what stands
+ * after it, or undefined where that cannot be read or where it never holds.
+ */
+function heldBefore(
+  surroundings: Surroundings,
+  expression: ProtectedSyntax,
+): number | undefined {
+  const { after } = surroundings;
+  if (after === "edge" || templateSeam(after)) return 0;
+  if (after === undefined) return undefined;
+  // Nothing continues an expression with a brace: one after it begins a body
+  // -- a class's after its heritage -- or a statement of its own.
+  if (after.tag === "group")
+    return after.delimiter === "brace" ? 0 : primaryPrecedence;
+  if (after.tag !== "token") return undefined;
+  const spelling = after.raw;
+  switch (spelling) {
+    case ";":
+      return 0;
+    case ",":
+      return assignmentPrecedence;
+    case ":":
+      return commaPrecedence + 1;
+    case "?":
+      return endsInType(expression) ? 0 : operatorPrecedence("??", "infix");
+    case ".":
+    case "?.":
+    case "!":
+    case "++":
+    case "--":
+      return primaryPrecedence;
+  }
+  if (after.kind === "no-substitution-template") return primaryPrecedence;
+  const infix = coreOperator(spelling, "infix");
+  if (infix === undefined) return undefined;
+  if (infix.precedence === assignmentPrecedence) return primaryPrecedence;
+  // An assertion ends with its type, and only an operator a type reads on
+  // over can reach into it: TypeScript reads `x as T * y` as a product of
+  // `x as T`, however tightly `*` binds.
+  if (endsInType(expression)) return typeContinuedBy(spelling) ? undefined : 0;
+  if (spelling === "**")
+    return unaryExpression(expression) ? undefined : infix.precedence + 1;
+  return infix.associativity === "left"
+    ? infix.precedence
+    : infix.precedence + 1;
+}
+
+/** What a type without an operator of its own holds together at. */
+const primaryTypePrecedence = typePostfixPrecedence + 10;
+
+/**
+ * What `type` holds together at: the loosest operator written at its top
+ * level, outside the angles of any type arguments. A function type, a
+ * constructor type and a conditional type are the loosest; a type a prefix
+ * operator begins binds at that operator; and one with nothing but postfix
+ * `[]` or an indexed access binds tighter than any operator.
+ */
+function typePrecedence(type: ProtectedSyntax): number {
+  let level = primaryTypePrecedence;
+  const [head] = type.children;
+  if (head?.tag === "token") {
+    const prefix = coreTypeOperators.find(
+      ({ spelling, fixity }) => spelling === head.raw && fixity === "prefix",
+    );
+    if (prefix !== undefined) level = prefix.precedence;
+    // `new () => T` and `asserts x is T` stand only where a whole type does.
+    if (head.raw === "new" || head.raw === "asserts") level = 0;
+  }
+  const last = type.children.at(-1);
+  if (last?.tag === "group" && last.delimiter === "bracket")
+    level = Math.min(level, typePostfixPrecedence);
+  let angles = 0;
+  for (const child of type.children) {
+    if (child.tag !== "token") continue;
+    const depth = angles;
+    angles = Math.max(
+      0,
+      angles + angleWidth(child.raw, "<") - angleWidth(child.raw, ">"),
+    );
+    if (depth > 0 || angles > 0) continue;
+    if (child.raw === "?" || child.raw === ":" || child.raw === "is") return 0;
+    const infix = coreTypeOperators.find(
+      ({ spelling, fixity }) => spelling === child.raw && fixity === "infix",
+    );
+    if (infix !== undefined) level = Math.min(level, infix.precedence);
+  }
+  return level;
+}
+
+/**
+ * The least a type must bind at to hold together between what stands before
+ * it and what stands after it, or undefined where either cannot be read.
+ */
+function typeHeldBetween(surroundings: Surroundings): number | undefined {
+  const { before, after } = surroundings;
+  const operator = (node: Neighbour) =>
+    node !== "edge" && node?.tag === "token"
+      ? coreTypeOperators.find(({ spelling }) => spelling === node.raw)
+      : undefined;
+  let held: number;
+  if (before === "edge" || templateSeam(before)) held = 0;
+  else if (before?.tag !== "token") return undefined;
+  else if (
+    [":", "=", ",", "<", "as", "satisfies", "=>", "?", "is", "..."].includes(
+      before.raw,
+    )
+  )
+    held = 0;
+  else {
+    const prefix = operator(before);
+    if (prefix === undefined) return undefined;
+    // A union and an intersection read their members at their own level; a
+    // constraint, and what a conditional type tests against, may be a union.
+    // A union and an intersection read their members at their own level. A
+    // constraint, and what a conditional type tests against, may be anything
+    // but another conditional type.
+    held =
+      prefix.spelling === "extends"
+        ? operatorTypePrecedence("=>")
+        : prefix.precedence;
+  }
+  if (after === "edge" || templateSeam(after)) return held;
+  if (after?.tag === "group")
+    return after.delimiter === "bracket"
+      ? Math.max(held, typePostfixPrecedence)
+      : after.delimiter === "brace"
+        ? held
+        : undefined;
+  if (after?.tag !== "token") return undefined;
+  if ([",", ";", ">", "=", ":", ")"].includes(after.raw)) return held;
+  // A `?` after a type ends a conditional type's test, or marks a tuple
+  // element optional, where it binds to the nearest operand: `[A | B?]`.
+  if (after.raw === "?")
+    return before !== "edge" &&
+      before?.tag === "token" &&
+      before.raw === "extends"
+      ? held
+      : Math.max(held, typePostfixPrecedence);
+  // A function's return type, with its arrow after it.
+  if (after.raw === "=>") return Math.max(held, operatorTypePrecedence("=>"));
+  const infix = operator(after);
+  if (infix === undefined || infix.fixity !== "infix") return undefined;
+  return Math.max(
+    held,
+    infix.spelling === "extends" || infix.spelling === "=>"
+      ? operatorTypePrecedence("|")
+      : infix.precedence,
+  );
+}
+
+/** What the type operator `spelling` binds at. */
+function operatorTypePrecedence(spelling: string): number {
+  const found = coreTypeOperators.find(
+    (candidate) => candidate.spelling === spelling,
+  );
+  if (found === undefined)
+    throw new RangeError(`No type operator is spelled ${spelling}`);
+  return found.precedence;
 }
 
 export function printExpandedFile<Trace>(
@@ -727,18 +1140,14 @@ export function printExpandedFile<Trace>(
     if (blank.length < tail.length) lineStarted = true;
   };
   /**
-   * The nodes that are the whole body of an arrow. An arrow's body is parsed
-   * as an expression, so it arrives here as one protected node; wrapping that
-   * in parentheses would print `(value: number) => (value + 1)`, which is the
-   * same function spelled worse. Nothing to either side of a body can re-associate
-   * into it -- it runs to the end of the arrow -- so nothing has to hold it
-   * together.
-   *
-   * Only a node that ends where the body does. Exempting whatever is printed
-   * first after `=>` would also exempt the callee of a call that is the body:
-   * `(x) => $f(x)` with `$f` an arrow would print `(x) => (n) => n * 2(x)`.
+   * What stands around each node pushed from a run, for the rules that bind
+   * an operand by what is written on either side of it.
    */
-  const wholeArrowBodies = new Set<Syntax>();
+  const surroundingsOf = new Map<Syntax, Surroundings>();
+  /** The parenthesis groups that are a `for` header iterating with `in` or `of`. */
+  const forInOfHeaders = new Set<Syntax>();
+  /** Nodes written in the first clause of a counting `for` header. */
+  const withoutIn = new Set<Syntax>();
   /**
    * The first tokens of statements and items that follow something else in
    * the same list. Where an expansion puts one after what came before, it
@@ -781,16 +1190,6 @@ export function printExpandedFile<Trace>(
    * `value * 2 + 1`.
    */
   const boundOperands = new Set<Syntax>();
-  /**
-   * Marks an expression that stands as a whole assignment expression or more,
-   * which nothing around it can re-associate. Only a comma expression, or one
-   * whose precedence is unknown, could run on into what follows.
-   */
-  const markWhole = (expression: ProtectedSyntax) => {
-    const inner = unwrapped(expression);
-    if (inner.form !== undefined || (inner.precedence ?? 0) > commaPrecedence)
-      boundOperands.add(inner);
-  };
   const markBoundOperands = (parent: ProtectedSyntax) => {
     const precedence = parent.precedence;
     if (parent.category !== "expr" || precedence === undefined) return;
@@ -817,39 +1216,113 @@ export function printExpandedFile<Trace>(
     }
     const first = children[0];
     const last = children.at(-1);
-    const operator = children
-      .slice(1, -1)
-      .map((child) => (child.tag === "token" ? child.raw : undefined));
     const operandAt = (node: Syntax | undefined) =>
       node !== undefined &&
       (node.tag !== "token" || node.kind !== "punctuation");
+    // The operands of a binary expression and the operators between them. A
+    // chain of one level's left-associative operators may hold several --
+    // `0 + a + b`, as a fold builds it -- and its middle operands are
+    // expression nodes; the operators between them are tokens.
+    const operands: Syntax[] = [first!];
+    const operators: string[] = [];
+    let spelling = "";
+    for (const child of children.slice(1, -1)) {
+      if (child.tag === "token") {
+        spelling += child.raw;
+        continue;
+      }
+      if (
+        child.tag !== "protected" ||
+        child.category !== "expr" ||
+        spelling === ""
+      )
+        return;
+      operators.push(spelling);
+      operands.push(child);
+      spelling = "";
+    }
+    operators.push(spelling);
+    operands.push(last!);
+    // Each operator must be one of this node's level, and a chain of more
+    // than one must read left to right. A run the walk left flat -- `v = y ??
+    // $e` read as one node -- is neither, and nothing in it is bound.
+    const ofThisLevel = operators.every((written) =>
+      coreExpressionOperators.some(
+        ({ spelling: candidate, fixity, precedence: level, associativity }) =>
+          candidate === written &&
+          fixity === "infix" &&
+          level === precedence &&
+          (operators.length === 1 || associativity === "left"),
+      ),
+    );
     if (
       children.length >= 3 &&
       operandAt(first) &&
       operandAt(last) &&
-      operator.every((raw) => raw !== undefined)
+      ofThisLevel
     ) {
-      const spelling = operator.join("");
-      const rightAssociative =
-        spelling === "**" || parent.form === "assignment";
-      const left = operand(first);
-      const right = operand(last);
+      const assignment = parent.form === "assignment";
+      const rightAssociative = operators[0] === "**" || assignment;
       const logical = (node: ProtectedSyntax | undefined) =>
         node?.precedence === operatorPrecedence("||", "infix") ||
         node?.precedence === operatorPrecedence("&&", "infix");
-      // `??` cannot sit beside `||` or `&&` unparenthesized, and a unary
-      // operand of `**` must keep its parentheses.
-      const unaryBase = spelling === "**" && left?.children[0]?.tag === "token";
-      if (!(spelling === "??" && logical(left)) && !unaryBase)
-        bind(first, rightAssociative ? precedence + 1 : precedence);
-      if (!(spelling === "??" && logical(right)))
-        bind(last, rightAssociative ? precedence : precedence + 1);
+      operands.forEach((node, at) => {
+        const inner = operand(node);
+        const before = operators[at - 1];
+        const after = operators[at];
+        // `??` cannot sit beside `||` or `&&` unparenthesized.
+        if ((before === "??" || after === "??") && logical(inner)) return;
+        if (after !== undefined) {
+          // What an assignment writes to is a left-hand-side expression, which
+          // no operator of its own may hold: `(value as T) = 1`.
+          if (assignment) {
+            bind(node, primaryPrecedence);
+            return;
+          }
+          // The base of `**` is an update expression, so a unary operand
+          // keeps its parentheses: `(-2) ** 2`.
+          if (after === "**" && unaryExpression(inner)) return;
+          // A type runs on over `|`, `&` and a `<` written after it, so `x as
+          // T | y` asserts the union: an assertion keeps its parentheses in
+          // front of any of them. In front of anything else it holds,
+          // however tightly that binds.
+          if (endsInType(inner)) {
+            if (!typeContinuedBy(after) && before === undefined)
+              boundOperands.add(inner!);
+            return;
+          }
+        }
+        // An operand is the right one of the operator before it and the left
+        // one of the operator after it, and holds together at what each asks.
+        bind(
+          node,
+          Math.max(
+            before === undefined
+              ? 0
+              : rightAssociative
+                ? precedence
+                : precedence + 1,
+            after === undefined
+              ? 0
+              : rightAssociative
+                ? precedence + 1
+                : precedence,
+          ),
+        );
+      });
       return;
     }
     // A prefix operator other than `new`, whose operand's parentheses decide
-    // what is constructed. `yield` takes a whole assignment expression.
+    // what is constructed. `yield` takes a whole assignment expression, and a
+    // unary operator another unary expression -- `void -a`, `!typeof a` --
+    // except that a sign before a signed operand would print as an update.
     if (first?.tag === "token" && first.raw !== "new" && children.length === 2)
-      bind(last, parent.form === "yield" ? precedence : precedence + 1);
+      bind(
+        last,
+        parent.form === "yield" || (first.raw !== "+" && first.raw !== "-")
+          ? precedence
+          : precedence + 1,
+      );
   };
   const emit = (text: string, origin: OriginId, kind: GeneratedRegionKind) => {
     if (text.length === 0) return;
@@ -883,39 +1356,103 @@ export function printExpandedFile<Trace>(
   const writtenByTemplate = (syntax: Syntax): boolean =>
     kindFor(syntax.origin) === "introduced";
   const pending: PrintItem[] = [...options.syntax].reverse();
-  const pushChildren = (children: readonly Syntax[], group?: DelimiterKind) => {
-    const list = group === "parenthesis" || group === "bracket";
+  /**
+   * Pushes a run of children to be printed, last first. `group` is the
+   * brackets that hold the run, whose edges hold what stands at them whole;
+   * where the run is a node's instead, `around` is what stands around that
+   * node, or nothing where it is not known.
+   */
+  const pushChildren = (
+    children: readonly Syntax[],
+    group?: DelimiterKind,
+    around?: Surroundings,
+    forInOf = false,
+    keepsInOut = false,
+  ) => {
     // A parenthesis group holding `;` is a `for` header, and the clause before
     // its first `;` is the one place an expression may not hold `in` outside
-    // parentheses: `for (("a" in o); ;)` is not `for ("a" in o; ;)`.
+    // parentheses: `for (("a" in o); ;)` is not `for ("a" in o; ;)`. Nor may
+    // anything written in that clause outside brackets of its own:
+    // `for (let present = ("a" in o); ;)`.
     const firstSemicolon =
       group === "parenthesis"
         ? children.findIndex(
             (child) => child.tag === "token" && child.raw === ";",
           )
-        : -1;
+        : keepsInOut
+          ? children.length
+          : -1;
+    const outside = group === undefined ? around : edges;
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index]!;
       const previous = children[index - 1];
       const before = children[index - 2];
       const next = children[index + 1];
-      if (
-        previous?.tag === "token" &&
-        previous.raw === "=>" &&
-        (next === undefined ||
-          (next.tag === "token" && arrowBodyEnds.has(next.raw)))
-      )
-        wholeArrowBodies.add(
-          child.tag === "protected" && child.category === "expr"
-            ? unwrapped(child)
-            : child,
-        );
+      const surroundings: Surroundings = {
+        before: index > 0 ? previous : outside?.before,
+        beforeThat:
+          index > 1
+            ? before
+            : index === 1
+              ? outside?.before
+              : outside?.beforeThat,
+        after: next ?? outside?.after,
+      };
+      if (child.tag === "protected") {
+        surroundingsOf.set(child, surroundings);
+        if (index < firstSemicolon) withoutIn.add(child);
+        // An operand holds together where it binds at least as tightly as
+        // what is written on either side of it needs -- the one rule an
+        // operator-precedence grammar parses by. It is asked here of the
+        // nodes around it, so it holds as well in a run the walk left flat
+        // as among a parsed node's own operands.
+        const inner = unwrapped(child);
+        if (inner.category === "expr") {
+          const required = Math.max(
+            heldAfter(surroundings, forInOf) ?? Infinity,
+            heldBefore(surroundings, inner) ?? Infinity,
+          );
+          // `??` cannot sit beside `||` or `&&` unparenthesized.
+          const nullish = (node: Neighbour) =>
+            node !== "edge" && node?.tag === "token" && node.raw === "??";
+          const logical =
+            inner.precedence === operatorPrecedence("||", "infix") ||
+            inner.precedence === operatorPrecedence("&&", "infix");
+          if (
+            (holdingPrecedence(inner) ?? -Infinity) >= required &&
+            !(
+              logical &&
+              (nullish(surroundings.before) || nullish(surroundings.after))
+            )
+          )
+            boundOperands.add(inner);
+        } else if (inner.category === "type") {
+          const required = typeHeldBetween(surroundings);
+          // A union written with a `|` of its own in front reads on from an
+          // operator before it as `Z | | A`, which does not parse.
+          const [head] = inner.children;
+          const leadsWithOperator =
+            head?.tag === "token" && (head.raw === "|" || head.raw === "&");
+          const { before } = surroundings;
+          const afterOperator =
+            before !== "edge" &&
+            before?.tag === "token" &&
+            coreTypeOperators.some(({ spelling }) => spelling === before.raw);
+          if (
+            required !== undefined &&
+            typePrecedence(inner) >= required &&
+            !(leadsWithOperator && afterOperator)
+          )
+            boundOperands.add(inner);
+        }
+      }
       if (child.tag === "protected" && child.category === "expr") {
         // Asked of the nodes on either side rather than of a parent: a call
         // or an access need not be a node of its own, and in an arrow's body
         // it is often only a run of siblings.
         const continued =
-          (next?.tag === "token" && next.raw === ".") ||
+          (next?.tag === "token" &&
+            (next.raw === "." || next.kind === "no-substitution-template")) ||
           (next?.tag === "group" &&
             (next.delimiter === "parenthesis" ||
               next.delimiter === "bracket" ||
@@ -928,6 +1465,8 @@ export function printExpandedFile<Trace>(
           continuedHeads.add(unwrapped(child));
         if (previous?.tag === "token" && previous.raw === "=>")
           leadingPositions.set(child, "arrow body");
+        if (previous?.tag === "token" && previous.raw === "@")
+          leadingPositions.set(child, "decorator");
         if (
           previous?.tag === "token" &&
           previous.raw === "default" &&
@@ -936,34 +1475,6 @@ export function printExpandedFile<Trace>(
         )
           leadingPositions.set(child, "export default");
       }
-      // An argument or an array element is a whole assignment expression, so
-      // an arrow, a conditional or an operator expression written as one
-      // needs no parentheses of its own: `map(values, (n) => n * 10)`. Only a
-      // comma expression, or an expression whose precedence is unknown,
-      // could run into the next element.
-      //
-      // A `for` header's test and update stand the same way, parted by `;`
-      // instead -- the only place a semicolon separates expressions inside
-      // brackets -- so `for (let at = 0; at < 2; at += 1)` needs no
-      // parentheses either.
-      //
-      // So does what a spread spreads, an initializer or a default after
-      // `=`, what `return`, `throw` or `export default` is followed by, and
-      // what follows a `:` written directly in braces: an object literal's
-      // property value, or the statement after a label or a `case`. Each is
-      // a whole assignment expression or more. None of them can be the clause
-      // of a `for` header that keeps `in` out except an initializer, which is
-      // asked about that clause like any other; a parenthesis group's `:`
-      // could be one.
-      const separates = (node: Syntax | undefined) =>
-        node?.tag === "token" && (node.raw === "," || node.raw === ";");
-      const opensWhole = (node: Syntax | undefined) =>
-        node === undefined
-          ? list
-          : separates(node) ||
-            (node.tag === "token" &&
-              (wholeExpressionHeads.has(node.raw) ||
-                (group === "brace" && node.raw === ":")));
       if (
         child.tag === "group" &&
         child.delimiter === "parenthesis" &&
@@ -973,8 +1484,18 @@ export function printExpandedFile<Trace>(
           (previous.raw === "await" &&
             before?.tag === "token" &&
             before.raw === "for"))
-      )
+      ) {
         closerEnds.set(child.close, false);
+        // `for (const x of xs)` reads what it iterates as a whole expression;
+        // a header with `;` in it is a counting loop instead.
+        if (
+          (previous.raw === "for" || previous.raw === "await") &&
+          !child.children.some(
+            (part) => part.tag === "token" && part.raw === ";",
+          )
+        )
+          forInOfHeaders.add(child);
+      }
       // A control statement's body follows its header on the same line.
       const heads =
         previous === undefined ||
@@ -989,27 +1510,6 @@ export function printExpandedFile<Trace>(
         const first = firstToken(child);
         if (first !== undefined) statementStarts.add(first);
       }
-      if (
-        child.tag === "protected" &&
-        child.category === "expr" &&
-        !(firstSemicolon >= 0 && index < firstSemicolon) &&
-        opensWhole(previous) &&
-        (next === undefined ? group !== undefined : separates(next))
-      )
-        markWhole(child);
-      // A type argument is a whole type, as an argument is a whole
-      // expression: `useRef<HTMLInputElement | null>` needs nothing around
-      // the union. The angles are tokens rather than a group, so it is asked
-      // of them.
-      const listsTypes = (node: Syntax | undefined, closer: string) =>
-        node?.tag === "token" && (node.raw === "," || node.raw === closer);
-      if (
-        child.tag === "protected" &&
-        child.category === "type" &&
-        listsTypes(previous, "<") &&
-        listsTypes(next, ">")
-      )
-        boundOperands.add(child);
       pending.push(child);
     }
   };
@@ -1389,7 +1889,12 @@ export function printExpandedFile<Trace>(
           if (region !== undefined) pending.push({ jsx: "leave" });
           pending.push(item.close);
         }
-        pushChildren(item.children, item.delimiter);
+        pushChildren(
+          item.children,
+          item.delimiter,
+          undefined,
+          forInOfHeaders.has(item),
+        );
         if (region === "code") pending.push({ jsx: region }, item.open);
         else {
           pending.push(item.open);
@@ -1398,7 +1903,7 @@ export function printExpandedFile<Trace>(
         break;
       }
       case "root":
-        pushChildren(item.children);
+        pushChildren(item.children, undefined, edges);
         break;
       case "protected": {
         const assertion = prefixTypeAssertion(item);
@@ -1441,18 +1946,27 @@ export function printExpandedFile<Trace>(
         // `$v * 2` with `$v` bound to `c ? 1 : 2` printed `c ? 1 : 2 * 2`, and
         // `$f(1)` with an arrow printed a call on the arrow's body. The form
         // the parser recorded says it has an operator of its own.
+        //
+        // `!` is the one operator spelled alike before an operand and after
+        // one. After, it asserts non-null and binds nothing; before, it is
+        // the prefix `!`, which binds like `-`: `$v.p` with `$v` bound to
+        // `!a` printed `!a.p`, which negates `a.p`.
         const atomic =
           item.form === undefined &&
           ((item.children.length === 1 && item.children[0]!.tag === "token") ||
             !item.children.some(
-              (child) => child.tag === "token" && binds(child),
+              (child, at) =>
+                child.tag === "token" &&
+                (binds(child) || (at === 0 && child.raw === "!")),
             ));
         const leading = leadingPositions.get(item);
         const group =
           (item.category === "expr" || item.category === "type") &&
-          ((!atomic &&
-            !wholeArrowBodies.has(item) &&
-            !boundOperands.has(item)) ||
+          ((!atomic && !boundOperands.has(item)) ||
+            (withoutIn.has(item) &&
+              item.children.some(
+                (child) => child.tag === "token" && child.raw === "in",
+              )) ||
             continuedHeads.has(item) ||
             (leading !== undefined && misreadAt(item, leading))) &&
           (options.groupProtectedExpression?.(item) ?? true);
@@ -1460,17 +1974,10 @@ export function printExpandedFile<Trace>(
           pending.push({ text: ")", origin: item.origin, grouping: true });
         const head = item.children[0];
         if (head?.tag === "protected" && head.category === "expr") {
-          // An expression statement is a statement that begins with one, and
-          // holds it whole.
-          if (item.category === "stmt" || item.category === "item") {
+          // An expression statement is a statement that begins with one.
+          if (item.category === "stmt" || item.category === "item")
             leadingPositions.set(head, "statement");
-            const after = item.children[1];
-            if (
-              after === undefined ||
-              (after.tag === "token" && after.raw === ";")
-            )
-              markWhole(head);
-          } else if (leading !== undefined && !group)
+          else if (leading !== undefined && !group)
             leadingPositions.set(head, leading);
         }
         markBoundOperands(item);
@@ -1487,7 +1994,18 @@ export function printExpandedFile<Trace>(
           )
             commaBeforeClose.add(typeParameters.close);
         }
-        pushChildren(item.children);
+        // A statement holds what it is made of whole, and so do the
+        // parentheses printed around an operand; anything else is held by
+        // what stands around it.
+        pushChildren(
+          item.children,
+          undefined,
+          group || item.category === "stmt" || item.category === "item"
+            ? edges
+            : surroundingsOf.get(item),
+          false,
+          withoutIn.has(item),
+        );
         if (group)
           pending.push({ text: "(", origin: item.origin, grouping: true });
         break;

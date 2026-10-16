@@ -206,7 +206,7 @@ export const doubled = twice(
         `import { sum } from "./macros.sts" for syntax;
 export const total = sum(1 * 2, 3);`,
       ),
-    ).toContain("((1 * 2) + 3)");
+    ).toContain("(1 * 2 + 3)");
   });
 });
 

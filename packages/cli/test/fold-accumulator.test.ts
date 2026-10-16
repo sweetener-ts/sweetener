@@ -239,7 +239,7 @@ describe("a fold whose step writes $acc as an operand", () => {
   test("is built inside a template literal's substitution", () => {
     const { text, messages } = expand("export const t = spelled(1, 2);\n");
     expect(messages).toEqual([]);
-    expect(text).toContain("export const t = `v=${(0 - 1 - 2)}`;");
+    expect(text).toContain("export const t = `v=${0 - 1 - 2}`;");
     expect(run(text)["t"]).toBe("v=-3");
   });
 
@@ -350,7 +350,7 @@ describe("a fold over many items", () => {
     );
     expect(messages).toEqual([]);
     expect(text).toContain("export const sum = 0 + 0 + 1 + 2 + 3 +");
-    expect(text).toContain('never | "t0" | "t1" |');
+    expect(text).toContain(': never | "t0" | "t1" |');
     const exported = run(text);
     expect(exported["sum"]).toBe((count * (count - 1)) / 2);
     expect(exported["elements"]).toHaveLength(count);

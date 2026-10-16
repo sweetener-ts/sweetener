@@ -9,6 +9,7 @@ import {
   isIdentifierToken,
   leadingLineBreak,
   operandExpectedAfter,
+  primaryPrecedence,
   spanEnvelope,
   type OriginStore,
   type Precedence,
@@ -28,7 +29,8 @@ import {
   typeOperandFollows,
 } from "./type-class-element.js";
 
-export const primaryExpressionPrecedence: Precedence = createPrecedence(1_000);
+export const primaryExpressionPrecedence: Precedence =
+  createPrecedence(primaryPrecedence);
 
 export interface PrimaryExpressionConsumerOptions {
   readonly allocateSyntaxId: () => SyntaxId;
