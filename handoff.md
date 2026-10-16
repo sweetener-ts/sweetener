@@ -46,29 +46,18 @@ Two facts worth keeping in mind while reading the rest:
 
 ### 3. Diagnostics
 
-- **`SWR4024` over-claims.** "nothing defines X in the emitted code" is a claim
-  about the program. On the unchecked paths it is now said without a checker
-  behind it — the same over-reach the held-name redesign removed elsewhere.
 - **`remapGeneratedDiagnostics` collapses an expansion onto the invocation's
   start.** Two sentences about different names in one macro's output are both
   reported now (that was fixed), but at the same position and span.
 - **A held sentence on an unchecked path can be spurious.** In an unchecked
   `.sjs` file a macro spelled `JSON` is warned about. Deliberate, and pinned by a
   test: the alternative is silently emitting a name that throws.
-- **`SWR4017` is never raised in a type position.**
-  `export type Held = nowhere;` above `export syntax nowhere:type {…}` reports
-  only TypeScript's `TS2304`.
 
 ### 4. Expander and printer
 
 - **A decimal integer spliced before `.` prints an invalid literal.** A macro
   `=> { $v.toFixed(2) }` applied to `1` prints `1.toFixed(2)`. Verified the only
   such pair in the whole seam table (164×164×4 contexts).
-- **`normalizeProtectedInput` is applied to `enforestExpression` and
-  `prepareInput`, but not to `enforestStatements`, `enforestClassElements` or
-  `enforestTypeMembers`** (`packages/expansion/src/frontend-session.ts:1440`).
-  That asymmetry produced the object-literal arrow bug fixed in `2403709`; no
-  repro through the other three yet.
 - **`arrowWidth` defers a block-bodied arrow to the infix `=>`**
   (`primary-expression.ts:215`), which makes a correct reading depend on a later
   normalization pass rather than on the reading itself.
@@ -86,9 +75,6 @@ Two facts worth keeping in mind while reading the rest:
   `angles()` is already defined at `:853` in the same file.
 - **`leadingLineBreak` descends into a `group` but not a `protected` node**
   (`packages/syntax/src/syntax.ts:263`), driving ~18 ASI decisions. Pre-existing.
-- **`reportUnreadItems`** (`frontend-session.ts:1078`) checks a `reportedAlready`
-  snapshot taken before its loop and never re-checks what it pushes inside it, so
-  nested recoveries would report twice. No input found that produces them.
 
 ## Performance
 
@@ -110,22 +96,9 @@ re-recording now would bury those two regressions in the reference.
 
 Cheap wins identified and not taken:
 
-- `closureEndAt` (`recursive-expander.ts:2251`) allocates two closures and a run
-  object per call, and `suspends()` calls it once per index: +48.7ms per 300
-  threading runs. Hoisting the helpers is mechanical.
-- The `elsewhere` scan calls `sourceOf(node)` seven times where once would do,
-  and re-derives `lookupModule`/`moduleWrittenIn` per candidate.
-- `resolveCompiledMacro` (`compile-macros.ts`) has the same linear `macros.find`
-  shape that `a34e6f6` indexed, plus a `flatMap` allocating per visible binding.
 - `requireFrozenSyntax` is 2.6% of `project-scale`; `tokenSpans.push(Object
 .freeze(...))` is 31% of `pushToken` self time. Both are the design (this
   codebase freezes pervasively), so they are costs to know rather than bugs.
-
-**No benchmark covers the shape the shared rules are quadratic in.** Every
-expansion scenario is small files of already-parsed statements, so the longest
-run these rules see is ~10 nodes. The quadratic needs one long _unenforested_ run
-— a macro whose replacement is a few thousand tokens. Nothing would catch a
-copying rule coming back.
 
 ## Test and tooling debt
 
