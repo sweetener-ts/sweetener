@@ -280,13 +280,21 @@ export function readSyntax(
     if (token.lexicalMode === "jsx-tag" && token.raw === "<") {
       const enclosing = stack.at(-1);
       // Inside a tag that has already been named, a `<` opens that tag's type
-      // arguments rather than a nested element.
+      // arguments rather than a nested element -- but for one written as an
+      // attribute's value, straight after its `=`, which opens an element:
+      // `<a b=<c />>`. The scanner reads it so, and the groups agree.
+      const previous = enclosing?.children.at(-1);
       if (
         enclosing !== undefined &&
         isJsx(enclosing.delimiter) &&
         !enclosing.jsxOpeningComplete &&
         !enclosing.jsxClosing &&
-        enclosing.children.length > 0
+        enclosing.children.length > 0 &&
+        !(
+          enclosing.jsxTypeArguments === 0 &&
+          previous?.tag === "token" &&
+          previous.raw === "="
+        )
       ) {
         enclosing.jsxTypeArguments += 1;
         enclosing.children.push(token);
@@ -337,6 +345,12 @@ export function readSyntax(
       }
     }
 
+    // JSX text is text, however it is spelled: an element's text written as a
+    // `(` alone opens nothing, as one that holds more than the `(` does not.
+    if (token.kind === "jsx-text") {
+      append(token);
+      continue;
+    }
     const opener = ordinaryOpen.get(token.raw);
     if (opener !== undefined) {
       pushFrame({

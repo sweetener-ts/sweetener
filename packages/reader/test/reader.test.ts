@@ -87,6 +87,18 @@ describe("generic JSX elements", () => {
       "type F = { a: string, <T>(v: T): T };\n",
     ],
     [
+      "a call signature after a member with no semicolon, ending in `>`",
+      "interface I {\n  a: Array<string>\n  <T>(v: T): T\n}\n",
+    ],
+    [
+      "a call signature after a method returning `void` with no semicolon",
+      "interface I {\n  f(): void\n  <T>(v: T): T\n}\n",
+    ],
+    [
+      "a call signature after a function type in an object type",
+      "type F = {\n  a: () => void\n  <T>(v: T): T\n};\n",
+    ],
+    [
       "a signature whose parameter is an object type",
       "interface I { <T>(v: { a: T; b: string[] }): T; }\n",
     ],
@@ -109,6 +121,10 @@ describe("generic JSX elements", () => {
     [
       "in an attribute's braces",
       "const e = <div title={<b>(note): see</b>} />;\n",
+    ],
+    [
+      "as an object's value under its key",
+      "const o = {\n  a:\n  <b>(note): see</b>,\n};\n",
     ],
     [
       "after a semicolon in a block",
@@ -308,6 +324,14 @@ describe("generic JSX elements", () => {
       "an element given directly as the value",
       "const e = <Tooltip title=<b>Hi</b>>x</Tooltip>;\n",
     ],
+    [
+      "a fragment given directly as the value",
+      "const e = <Tooltip title=<>Hi</>>x</Tooltip>;\n",
+    ],
+    [
+      "a self-closing element given directly as the value",
+      "const e = <Tooltip title=<i /> a>x</Tooltip>;\n",
+    ],
   ])(
     "reads the text of an element whose attribute holds %s as text",
     (_, source) => {
@@ -316,8 +340,30 @@ describe("generic JSX elements", () => {
       expect(printLossless(result.root)).toBe(source);
       const text = tokensOf(result.root).find((token) => token.raw === "x");
       expect(text?.lexicalMode).toBe("jsx-text");
+      // The outer element is one group, from its `<` to its closing tag's
+      // `>`, with what its attribute holds nested inside it.
+      const element = result.root.children.find(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      );
+      expect(element === undefined ? "" : printLossless(element).trim()).toBe(
+        source.slice(source.indexOf("<"), source.lastIndexOf(">") + 1),
+      );
     },
   );
+
+  /**
+   * JSX text is text, whatever it is spelled: a `(` or a `)` written as the
+   * whole of it opens and closes nothing.
+   */
+  it.each([
+    ["an opening parenthesis", "const e = <b>(</b>;\n"],
+    ["a closing parenthesis", "const e = <b>)</b>;\n"],
+    ["an opening bracket", "const e = <b>[</b>;\n"],
+  ])("reads an element whose text is %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+  });
 
   /**
    * `extends` says type parameters only straight after the name, and then

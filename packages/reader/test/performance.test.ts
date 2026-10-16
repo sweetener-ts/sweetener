@@ -179,6 +179,11 @@ describe("reading scales with the size of the file", () => {
     const small = openParentheses(125);
     const large = openParentheses(1_000);
     expect(large.length / small.length).toBeGreaterThan(7);
+    // Timed only over what reads as the elements it is: a `(` that is an
+    // element's text opens nothing.
+    expect(
+      readSyntax(small, { sourceId, scopes, variant: "jsx" }).diagnostics,
+    ).toEqual([]);
     const { ratio, message } = costRatio(small, large);
     expect(ratio, message).toBeLessThan(allowedRatio);
   });

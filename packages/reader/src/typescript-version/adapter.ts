@@ -419,21 +419,34 @@ function looksLikeJsxStart(
  * Whether a `<` written after a token of kind `previous`, inside a group
  * opened by `innermost`, stands where a member of an interface or an object
  * type begins: after the `{` that opens the body, after a `;` or `,` that ends
- * the member before it inside those braces, or after the `new` of a construct
- * signature. A `,` inside brackets or parentheses separates elements and
- * arguments, and the braces of a JSX expression hold an expression; either
- * may well be an element.
+ * the member before it inside those braces, after a line break that ends it --
+ * members are written without semicolons as often as with -- or after the
+ * `new` of a construct signature. A `,` inside brackets or parentheses
+ * separates elements and arguments, and the braces of a JSX expression hold an
+ * expression; either may well be an element.
+ *
+ * A line break comes into it only where the `<` is judged at all, which is
+ * where an expression could begin after `previous`. Of the tokens a member's
+ * type ends in, only a `>` and a `void` stand there -- both take an operand in
+ * an expression: `a: Array<string>` and the `<T>(v: T): T` under it -- and a
+ * line break after any other, a `:` or an `=` among them, carries an
+ * expression on. Where an expression is written after a `>` or a `void`
+ * instead, the enforester reads the element (see `AngleReading`).
  */
 function beginsMember(
   previous: ts.SyntaxKind | undefined,
   innermost: ts.SyntaxKind | undefined,
+  lineBreakBefore: boolean,
 ): boolean {
   if (previous === ts.SyntaxKind.NewKeyword) return true;
   return (
+    innermost === ts.SyntaxKind.OpenBraceToken &&
     (previous === ts.SyntaxKind.OpenBraceToken ||
       previous === ts.SyntaxKind.SemicolonToken ||
-      previous === ts.SyntaxKind.CommaToken) &&
-    innermost === ts.SyntaxKind.OpenBraceToken
+      previous === ts.SyntaxKind.CommaToken ||
+      (lineBreakBefore &&
+        (previous === ts.SyntaxKind.GreaterThanToken ||
+          previous === ts.SyntaxKind.VoidKeyword)))
   );
 }
 
@@ -887,7 +900,7 @@ export function scanWithSupportedTypeScript(
       source,
       start,
       readings,
-      beginsMember(previousSignificantKind, openGroups.at(-1)),
+      beginsMember(previousSignificantKind, openGroups.at(-1), lineBreakBefore),
     );
   };
   while (true) {
