@@ -1968,6 +1968,28 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     (spelling(nodes[at - 1]) === "await" && spelling(nodes[at - 2]) === "for");
 
   /**
+   * Whether the statement at `at` in `nodes` is the body of a statement that
+   * heads it -- written after an `if`, `while`, `for` or `with` header, an
+   * `else` or a `do` -- rather than one of the statements of the block or
+   * module around it. Such a body is a scope of its own: nothing after it
+   * sees what it declares, but for its `var`s.
+   */
+  const substatementAt = (nodes: readonly Syntax[], at: number): boolean => {
+    const previous = nodes[at - 1];
+    if (previous?.tag === "token")
+      return previous.raw === "else" || previous.raw === "do";
+    if (previous?.tag !== "group" || previous.delimiter !== "parenthesis")
+      return false;
+    const keyword = spelling(nodes[at - 2]);
+    return (
+      keyword === "if" ||
+      keyword === "while" ||
+      keyword === "with" ||
+      loopHeaderAt(nodes, at - 1)
+    );
+  };
+
+  /**
    * Where the loop whose header stands at `header` in `nodes` ends: past its
    * body, which is one node where it is a block or was read as a statement,
    * and runs to its `;` where it is tokens.
@@ -2134,7 +2156,10 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           (child.category === "stmt" || child.category === "item") &&
           (!braceBody(child) || statementBlockAt(nodes, run, at))
         )
-          addBindings(declaredBy(child), into);
+          addBindings(
+            substatementAt(nodes, at) ? hoistedFrom(child) : declaredBy(child),
+            into,
+          );
         continue;
       }
       if (child.tag === "group") {
@@ -2172,9 +2197,12 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // `# let (name = value) { body }` names the variable of a `#let`, which
     // the expansion declares itself where the body needs one.
     if (valueDeclarationKeywords.has(node.raw) && !afterHash(nodes, at)) {
-      bindDeclarationList(nodes, at + 1, into, wholeRun);
+      // A body a statement heads declares only its `var`s around it.
+      if (node.raw === "var" || !substatementAt(nodes, at))
+        bindDeclarationList(nodes, at + 1, into, wholeRun);
       return undefined;
     }
+    if (substatementAt(nodes, at)) return undefined;
     const named = namedDeclarations.get(node.raw);
     const name = nodes[declaredNameAt(nodes, at)];
     if (
@@ -2293,7 +2321,10 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           (node.category === "stmt" || node.category === "item") &&
           (!braceBody(node) || statementBlockAt(nodes, run, at))
         )
-          addBindings(declaredBy(node), into);
+          addBindings(
+            substatementAt(nodes, at) ? hoistedFrom(node) : declaredBy(node),
+            into,
+          );
         continue;
       }
       if (node.tag === "group") {
@@ -4219,6 +4250,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     noBindings,
     otherBrace,
     staticMembers,
+    substatementAt,
     addScopes,
     afterDirectives,
     angles,
@@ -4491,6 +4523,7 @@ function* walk(
     noBindings,
     otherBrace,
     staticMembers,
+    substatementAt,
     addScopes,
     angles,
     anglesOpen,
@@ -5891,6 +5924,7 @@ function* walk(
         category === "item"
           ? enforestSequence(spaced, category, lexicalModule, contexts)
           : undefined;
+      const coreSubstatement = substatementAt(output, output.length);
       const completed = createProtectedSyntax({
         id: options.allocateSyntaxId(),
         span: spanEnvelope(spaced.map(({ span }) => span)),
@@ -5911,7 +5945,7 @@ function* walk(
       if (category === "stmt" || category === "item")
         declareInRun(
           region,
-          declaredBy(completed),
+          coreSubstatement ? hoistedFrom(completed) : declaredBy(completed),
           hoistedFrom(completed),
           index,
         );
@@ -6574,6 +6608,10 @@ function* walk(
       // The invocation's own leading trivia positioned it on the page, and
       // it is consumed along with the invocation. Handing it to the
       // replacement keeps the expansion where the call stood.
+      // A body a statement heads is a scope of its own, which nothing after
+      // it is in: `if (c) letBound twice;` binds nothing the `return` under it
+      // writes, and the `else` after it is no more inside it.
+      const substatement = substatementAt(output, output.length);
       if (!eraseReplacement) {
         const head = input[resolvedHeadIndex] ?? node;
         const trivia = head.tag === "token" ? head.leadingTrivia : [];
@@ -6608,19 +6646,22 @@ function* walk(
         )
           declareInRun(
             region,
-            declaredBy(result.syntax),
+            substatement
+              ? hoistedFrom(result.syntax)
+              : declaredBy(result.syntax),
             hoistedFrom(result.syntax),
             index,
           );
-        declareInRun(
-          region,
-          contractBindings(result.bindings),
-          noBindings,
-          index,
-        );
+        if (!substatement)
+          declareInRun(
+            region,
+            contractBindings(result.bindings),
+            noBindings,
+            index,
+          );
       }
       currentEnvironment = replacementEnvironment ?? result.environment;
-      follow(result.cursor.index, result.followingScopes);
+      if (!substatement) follow(result.cursor.index, result.followingScopes);
       index = result.cursor.index;
       // A list of members, items, statements or class elements separates on
       // a token of its own, and a macro that emits whole units terminates
@@ -7431,11 +7472,18 @@ function* walk(
       // `var`s. A function's body, a class's and a namespace's keep
       // everything. A class or interface member declares nothing a later
       // member can see.
+      // A body a statement heads is a scope of its own, and passes up only
+      // its `var`s, as a block does.
+      const bodyOfStatement =
+        node.tag === "protected" &&
+        (node.category === "stmt" || node.category === "item") &&
+        substatementAt(output, output.length);
       const declaresAround =
         node.tag === "protected" &&
         (node.category === "stmt" || node.category === "item") &&
         (!braceBody(node) ||
-          braceHeader(walkedRun, output.length) === otherBrace);
+          braceHeader(walkedRun, output.length) === otherBrace) &&
+        !bodyOfStatement;
       const blockOfStatements =
         node.tag === "group" &&
         node.delimiter === "brace" &&
@@ -7479,7 +7527,7 @@ function* walk(
       if (declaresAround) {
         declareInRun(region, nested.declared, nested.hoisted, index);
         follow(index + 1, nested.following);
-      } else if (blockOfStatements)
+      } else if (blockOfStatements || bodyOfStatement)
         declareInRun(region, nested.hoisted, nested.hoisted, index);
       if (node.tag === "protected" && nested.syntax.length === 0) {
         index += 1;

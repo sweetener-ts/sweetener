@@ -715,6 +715,35 @@ describe("a declaration an expansion writes", () => {
 });
 
 /**
+ * A statement a macro writes as the body of an `if`, a loop or an `else` is
+ * a scope of its own, as one written there is: what it declares is no
+ * binding of the block around it, but for its `var`s. TypeScript reports
+ * the `const` such a body declares, so these check only what is bound.
+ */
+describe("a declaration an expansion writes as a statement's body", () => {
+  test("binds nothing after the statement", () => {
+    const { text } = expand(
+      "export function f(c: boolean): number { if (c) letBound twice; return twice(2); }",
+    );
+    expect(text).toContain("return (2 + 2);");
+  });
+
+  test("binds nothing in the `else` after it", () => {
+    const { text } = expand(
+      "export function f(c: boolean): number { if (c) letBound twice; else void twice(3); return 0; }",
+    );
+    expect(text).toContain("else void (3 + 3);");
+  });
+
+  test("binds its `var`s in the function", () => {
+    const { text } = expand(
+      "export function f(c: boolean): number { if (c) varCaptured twice; return twice(2); }",
+    );
+    expect(text).toContain("return twice(2);");
+  });
+});
+
+/**
  * What a `following` region is: the rest of the block or module the
  * invocation stands in, and nothing a member list or a reading of one
  * expression holds.
