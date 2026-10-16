@@ -30,51 +30,22 @@ Two facts worth keeping in mind while reading the rest:
 
 ## Open bugs
 
-### 2. Reader gaps that refuse valid TypeScript
-
-- `y?.<A>(b)` — an optional call with explicit type arguments. Refused at both
-  levels. It is currently the fixture for the `SWR4025` test in
-  `packages/expansion/test/frontend-session.test.ts:179`, so closing it needs a
-  new genuinely-unreadable sample.
-- `let a: asserts` — `asserts` is unconditionally in `typeOperandHeads`
-  (`type-class-element.ts:492`), so a line can never end after it.
-- Arbitrary lookahead bounds refuse valid programs:
-  `packages/enforestation/src/primary-expression.ts:160`, `:172`, `:190`
-  (32/33 nodes) and `:417` (`offset + 64`). A 33-member union in an arrow's
-  return type, a 16-member union in a function expression's, or a 17-segment
-  `extends a.b.c…` are all refused.
-
-### 3. Diagnostics
-
-- **`remapGeneratedDiagnostics` collapses an expansion onto the invocation's
-  start.** Two sentences about different names in one macro's output are both
-  reported now (that was fixed), but at the same position and span.
-- **A held sentence on an unchecked path can be spurious.** In an unchecked
-  `.sjs` file a macro spelled `JSON` is warned about. Deliberate, and pinned by a
-  test: the alternative is silently emitting a name that throws.
-
-### 4. Expander and printer
-
-- **A decimal integer spliced before `.` prints an invalid literal.** A macro
-  `=> { $v.toFixed(2) }` applied to `1` prints `1.toFixed(2)`. Verified the only
-  such pair in the whole seam table (164×164×4 contexts).
-- **`arrowWidth` defers a block-bodied arrow to the infix `=>`**
-  (`primary-expression.ts:215`), which makes a correct reading depend on a later
-  normalization pass rather than on the reading itself.
-- **`typeArgumentsEnclose` shares TypeScript's real ambiguity in one shape:**
-  `f(a < b, { x: 1 }, c > d)` reads the brace as an object type. TypeScript
-  resolves it by parsing the candidate list and looking at what follows; the walk
-  has only loose tokens.
-- **`beginsStatement` does not ask what `beginsItem` asks**
-  (`statement-item.ts:593` vs `:608`): `statementStarts` holds `async` with no
-  guard, so `class C extends\nasync.Base {}` is refused on the statement path and
-  read correctly on the item path.
-- **`decoratorWidth` is the last hand-written angle counter**
-  (`type-class-element.ts:565`). The reader does emit `<<` as one token and
-  `angleWidth` returns 2 for it, so a `<<` reaching that loop never balances.
-  `angles()` is already defined at `:853` in the same file.
-- **`leadingLineBreak` descends into a `group` but not a `protected` node**
-  (`packages/syntax/src/syntax.ts:263`), driving ~18 ASI decisions. Pre-existing.
+- **A chain of slashes the reader misjudges is expanded once per slash.** A
+  regular expression holding a bracket, written where the reader judged a
+  division -- at the start of a statement after a function declaration, say --
+  hides the next such one from the enforester until it is read as one. A source
+  of N of them is read and expanded N times: 150 take about four seconds. It
+  settles however many there are (`slashReadLimit` counts only reads that settle
+  nothing new); only the cost grows. Judging the `}` of a function or class
+  declaration as a statement's end in the reader would remove the commonest
+  case.
+- **The token-level class member walk joins `x = a as T` and a `[k]` under
+  it.** `createClassMemberWalk` takes a bracket on the next line as indexing
+  the initializer, where TypeScript ends the field at the asserted type. The
+  class element reader reads the initializer with the expression reader and
+  ends it correctly; only a walk over a class body that reader could not take
+  whole asks the token-level question. Answering it needs to know where the
+  asserted type ends, which a token walk can only guess.
 
 ## Performance
 
@@ -102,11 +73,6 @@ Cheap wins identified and not taken:
 
 ## Test and tooling debt
 
-- **The enforestation test harness is weaker than production.** `parse()` in
-  `packages/enforestation/test/statement-item.test.ts:29` and `setup()` in
-  `binding-parameter.test.ts` build consumers without `consumeType`, so
-  `const x = a as string[];` looks refused there while the real pipeline reads it
-  fine. This produced a false positive during the session.
 - **Benchmark baselines:** `benchmarks/baselines/node24.json` is stale (commit
   `fbd8512`, no `loadAverage`, **no `expansion/project-scale` row**, so that
   scenario is unchecked under Node 24); both checked-in baselines were recorded
@@ -125,6 +91,9 @@ Cheap wins identified and not taken:
 
 ## Decided, not bugs
 
+- **A held sentence on an unchecked path can be spurious.** In an unchecked
+  `.sjs` file a macro spelled `JSON` is warned about. Deliberate, and pinned by a
+  test: the alternative is silently emitting a name that throws.
 - **Definition order stays as documented** — a macro is visible to the items
   after it, unlike Racket, which partially expands a module body first.
 - **A member macro is invoked as a bare name, never in method-signature shape** —
