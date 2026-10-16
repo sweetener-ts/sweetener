@@ -7,6 +7,7 @@ import {
   expressionContinuedBy,
   leadingLineBreak,
   operandExpectedAfter,
+  sameLineContinuedBy,
   type GroupSyntax,
   type OriginStore,
   type ProtectedSyntax,
@@ -717,72 +718,6 @@ function coreFormWidth(cursor: SyntaxCursor): number | undefined {
 }
 
 /**
- * Tokens that go on with the expression in front of them wherever they are
- * written, a line break before them included.
- */
-const continuingOperators: ReadonlySet<string> = new Set([
-  ".",
-  "?.",
-  ",",
-  "=",
-  "+=",
-  "-=",
-  "*=",
-  "/=",
-  "%=",
-  "**=",
-  "<<=",
-  ">>=",
-  ">>>=",
-  "&=",
-  "|=",
-  "^=",
-  "&&=",
-  "||=",
-  "??=",
-  "?",
-  ":",
-  "+",
-  "-",
-  "*",
-  "/",
-  "%",
-  "**",
-  "<",
-  ">",
-  "<=",
-  ">=",
-  "<<",
-  ">>",
-  ">>>",
-  "==",
-  "!=",
-  "===",
-  "!==",
-  "&",
-  "|",
-  "^",
-  "&&",
-  "||",
-  "??",
-  "instanceof",
-  "in",
-]);
-
-/**
- * Tokens that go on with the expression in front of them only on its line:
- * a line break before a postfix operator, `as` or `satisfies` ends the
- * statement there.
- */
-const sameLineOperators: ReadonlySet<string> = new Set([
-  "!",
-  "++",
-  "--",
-  "as",
-  "satisfies",
-]);
-
-/**
  * Whether `next` carries on the expression written in front of it, a line
  * break between the two or not: a member access, a call, an index, a
  * template, an operator. Where it does not, a statement whose expression is
@@ -797,8 +732,8 @@ export function continuesExpression(next: Syntax | undefined): boolean {
   if (next.tag !== "token") return false;
   if (next.kind === "no-substitution-template" || next.kind === "template-head")
     return true;
-  if (continuingOperators.has(next.raw)) return true;
-  return sameLineOperators.has(next.raw) && !leadingLineBreak(next);
+  if (expressionContinuedBy.has(next.raw)) return true;
+  return sameLineContinuedBy.has(next.raw) && !leadingLineBreak(next);
 }
 
 /** The `#core(…)` at the cursor, read as one unit of `category`. */

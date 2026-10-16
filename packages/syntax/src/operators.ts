@@ -208,6 +208,19 @@ export const expressionContinuedBy: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Spellings that carry an expression on only from its own line: `as` and
+ * `satisfies`, and the postfix operators -- `++`, `--` and a non-null
+ * assertion's `!`. TypeScript writes each with `[no LineTerminator here]` in
+ * front of it, so a line break before one ends the statement there, and `a`
+ * and the `++b` under it are two statements.
+ */
+export const sameLineContinuedBy: ReadonlySet<string> = new Set([
+  ...sameLineInfix,
+  ...spellingsOf("postfix"),
+  "!",
+]);
+
+/**
  * The operators of TypeScript's type grammar, with what each binds at. A
  * function or constructor type and a conditional type are the loosest -- each
  * runs on as far as it can, so neither stands bare in a union -- then a
