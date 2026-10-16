@@ -330,6 +330,28 @@ function suspendedOperandBegins(node: Syntax | undefined): boolean {
 }
 
 /**
+ * Whether the `yield` at the cursor, in a generator, yields nothing: no
+ * operand of its own follows it on its line. The grammar writes `yield [no
+ * LineTerminator here] AssignmentExpression` with the operand optional, so
+ * `yield` at the end of what is read, before a separator, before what ends
+ * the expression around it, or before a line break is the whole expression.
+ * Read as one more prefix operator, a macro whose result is `yield` was
+ * refused as not one expression.
+ */
+function yieldsNothing(cursor: SyntaxCursor, context: PrattContext): boolean {
+  const after = cursor.fork();
+  after.advance();
+  const next = after.peek();
+  return (
+    next === undefined ||
+    leadingLineBreak(next) ||
+    context.consumer.stopSet.matches(after) ||
+    (next.tag === "token" &&
+      (next.raw === "," || next.raw === ";" || next.raw === ":"))
+  );
+}
+
+/**
  * Whether the `yield` or `await` at the cursor stands alone, with no operand
  * of its own after it, so that the word is read as the ordinary word it also
  * is rather than as the operator.
@@ -355,14 +377,10 @@ function suspendingWordAlone(
   context: PrattContext,
 ): boolean {
   const next = cursor.peek(1);
-  // `yield*` is one operator of two tokens, and the line break the grammar
-  // forbids is the one between `yield` and the whole of what follows it.
-  if (operator.spelling === "yield") {
-    return (
-      leadingLineBreak(next) ||
-      (!context.consumer.allowYield && !suspendedOperandBegins(next))
-    );
-  }
+  // Inside a generator `yield` is never a name: standing alone it is a
+  // `yield` of nothing, which `yieldsNothing` reads.
+  if (operator.spelling === "yield")
+    return !context.consumer.allowYield && !suspendedOperandBegins(next);
   if (operator.spelling === "await")
     return !context.consumer.allowAwait && !suspendedOperandBegins(next);
   return false;
@@ -391,6 +409,21 @@ function parsePrefix(
   if (prefix !== undefined) {
     if (prefix.spelling === "yield" && !context.consumer.allowYield) {
       return fail(cursor, context, ["yield inside a generator"], 9);
+    }
+    if (prefix.spelling === "yield" && yieldsNothing(cursor, context)) {
+      const [word] = consumeOperator(cursor, prefix);
+      return {
+        syntax: protect(
+          context.options,
+          [word!],
+          prefix.precedence,
+          coreForm("prefix", prefix.spelling),
+        ),
+        cursor,
+        outerPrecedence: prefix.precedence,
+        unparenthesizedPrefix: true,
+        mixingFamily: undefined,
+      };
     }
     if (prefix.spelling === "await" && !context.consumer.allowAwait) {
       return fail(cursor, context, ["await inside an async function"], 9);

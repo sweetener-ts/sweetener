@@ -530,6 +530,21 @@ export const tagged = optional(holder)\`t\`;
     ).toBe(2);
   });
 
+  test("is a whole `yield` of nothing", () => {
+    // Read as one more prefix operator, `yield` with no operand was refused
+    // as not one expression; spliced as a loose token, it read on into `??`.
+    const { text, messages } = expand(
+      `export function* yielded(flag: boolean | undefined): Generator<undefined, unknown, unknown> {
+  const sent = flag ?? nothing();
+  return flag ? nothing() : sent;
+}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const sent = flag ?? (yield);");
+    expect(text).toContain("return flag ? yield : sent;");
+  });
+
   test("needs nothing as a template literal's substitution", () => {
     const { text, messages, exports } = expand(
       "export const spelled = `${sum(1, 2)}`;\n",
