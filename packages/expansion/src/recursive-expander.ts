@@ -5984,17 +5984,15 @@ export function expandMacroSyntax(
             ? { names: [] }
             : undefined;
         if (frame !== undefined) liftFrames.push(frame);
-        // One unit of a list -- a statement, an item, a member -- is not a
-        // block, so what expansions inside it declared is declared in the run
-        // it stands in, and what follows it there follows them; a block
-        // keeps all but its `var`s. A function's body, a class's and a
-        // namespace's keep everything.
+        // One unit of a list of statements or items is not a block, so what
+        // expansions inside it declared is declared in the run it stands in,
+        // and what follows it there follows them; a block keeps all but its
+        // `var`s. A function's body, a class's and a namespace's keep
+        // everything. A class or interface member declares nothing a later
+        // member can see.
         const declaresAround =
           node.tag === "protected" &&
-          (node.category === "stmt" ||
-            node.category === "item" ||
-            node.category === "classElement" ||
-            node.category === "typeMember") &&
+          (node.category === "stmt" || node.category === "item") &&
           (!braceBody(node) ||
             braceHeader(walkedRun, output.length) === otherBrace);
         const blockOfStatements =

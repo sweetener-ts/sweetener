@@ -84,12 +84,17 @@ interface Expansion {
 }
 
 function expand(source: string): Expansion {
-  const directory = mkdtempSync(join(tmpdir(), "sweet-binder-scope-"));
-  writeFileSync(join(directory, "macros.sts"), macros);
-  writeFileSync(
-    join(directory, "main.sts"),
+  return expandWith(
+    macros,
     `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
   );
+}
+
+/** `main` expanded against the macro module `definitions`. */
+function expandWith(definitions: string, main: string): Expansion {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-binder-scope-"));
+  writeFileSync(join(directory, "macros.sts"), definitions);
+  writeFileSync(join(directory, "main.sts"), main);
   writeFileSync(
     join(directory, "tsconfig.json"),
     JSON.stringify({
@@ -112,9 +117,8 @@ function expand(source: string): Expansion {
   const generated = result.virtualFiles.find(({ fileName }) =>
     fileName.endsWith("main.ts"),
   )?.generated.text;
-  if (generated === undefined) throw new Error("main.sts was not expanded");
   return {
-    text: generated.replaceAll(/\s+/gu, " ").trim(),
+    text: (generated ?? "").replaceAll(/\s+/gu, " ").trim(),
     messages: result.diagnostics.map(({ messageText }) => String(messageText)),
   };
 }
@@ -416,4 +420,26 @@ describe("a declaration an expansion writes", () => {
       if (outside.length === 0) expect(expanded.text).not.toContain(" + ");
     });
   }
+});
+
+/**
+ * What a `following` region is: the rest of the block or module the
+ * invocation stands in, and nothing a member list or a reading of one
+ * expression holds.
+ */
+describe("a following region", () => {
+  test("is refused for a class member macro", () => {
+    const { messages } = expandWith(
+      `export syntax memberBound:classElement {
+  rule { memberBound $name:binding; }
+  bind $name in following as lexical value;
+  => { $name = (v: number) => v; }
+}
+`,
+      `import { memberBound } from "./macros.sts" for syntax;\nexport class C { memberBound twice; }\n`,
+    );
+    expect(messages.join("\n")).toContain(
+      "A classElement macro cannot bind in following: a member list is not a lexical scope.",
+    );
+  });
 });

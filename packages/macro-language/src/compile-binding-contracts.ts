@@ -3,6 +3,7 @@ import {
   hygieneDiagnosticRegistry,
   incompatibleBindingAlignmentCode,
   incompatibleBindingSpaceCode,
+  followingOutsideLexicalScopeCode,
   invalidBindingPathCode,
   malformedBindingContractCode,
   type BindingContract,
@@ -161,7 +162,8 @@ export function compileParsedBindingContracts(
       | typeof malformedBindingContractCode
       | typeof invalidBindingPathCode
       | typeof incompatibleBindingAlignmentCode
-      | typeof incompatibleBindingSpaceCode,
+      | typeof incompatibleBindingSpaceCode
+      | typeof followingOutsideLexicalScopeCode,
     origin: OriginId,
     argument?: string,
   ): void => {
@@ -342,6 +344,20 @@ export function compileParsedBindingContracts(
         }
         if (!categoryAllowsSpace(definitionCategory(definition), space)) {
           diagnostic(incompatibleBindingSpaceCode, origin, space);
+          index = next + 3;
+          continue;
+        }
+        // What follows a class or interface member is more members, and a
+        // member list is not a lexical scope: a field named `twice` does not
+        // bind the `twice` a later method calls. Accepted, the contract hid
+        // the macro of that spelling from every later member, and the name it
+        // was left calling did not exist.
+        const category = definitionCategory(definition);
+        if (
+          region.kind === "following" &&
+          (category === "classElement" || category === "typeMember")
+        ) {
+          diagnostic(followingOutsideLexicalScopeCode, origin, category);
           index = next + 3;
           continue;
         }

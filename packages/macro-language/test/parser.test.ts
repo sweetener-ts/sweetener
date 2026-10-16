@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { hygieneDiagnosticRegistry } from "@sweetener/hygiene";
 import { readSyntax } from "@sweetener/reader";
 import {
   compileMatcherProgram,
@@ -580,6 +581,61 @@ describe("macro-definition parser", () => {
       "SWR3005",
       "SWR3002",
     ]);
+  });
+
+  it("refuses a following region for a macro that stands in a member list", () => {
+    const source = `
+      syntax field:classElement {
+        rule { field $name:binding; }
+        bind $name in following as lexical value
+        => { $name = 1; }
+      }
+      syntax member:typeMember {
+        rule { member $name:binding; }
+        bind $name in following as lexical type
+        => { $name: number; }
+      }
+      syntax body:classElement {
+        rule { body $name:binding { $($rest:tt)* } }
+        bind $name in $rest as lexical value
+        => { m() { const $name = 1; $($rest)* } }
+      }
+      syntax declare:stmt {
+        rule { declare $name:binding; }
+        bind $name in following as lexical value
+        => { const $name = 1; }
+      }
+    `;
+    const read = readSyntax(source, { sourceId, scopes });
+    const parsed = parseMacroDefinitions(read.root, { sourceId });
+    const spanForOrigin = (
+      origin: Parameters<typeof read.origins.selectPrimarySource>[0],
+    ) => read.origins.selectPrimarySource(origin)?.span ?? { start: 0, end: 0 };
+    const classes = compileParsedSyntaxClasses(parsed, {
+      sourceId,
+      spanForOrigin,
+    });
+    const compiled = compileParsedBindingContracts(parsed, {
+      sourceId,
+      spanForOrigin,
+      syntaxClasses: classes.registry,
+    });
+    expect(
+      compiled.diagnostics.map((diagnostic) => [
+        diagnostic.code,
+        hygieneDiagnosticRegistry.format(diagnostic),
+      ]),
+    ).toEqual([
+      [
+        "SWR3006",
+        "A classElement macro cannot bind in following: a member list is not a lexical scope.",
+      ],
+      [
+        "SWR3006",
+        "A typeMember macro cannot bind in following: a member list is not a lexical scope.",
+      ],
+    ]);
+    expect(compiled.rules).toHaveLength(2);
   });
 
   it("expands a syntax-class binder into its declared binding fields", () => {

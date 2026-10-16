@@ -203,6 +203,10 @@ The compiler validates:
 - the region capture exists at a compatible repetition depth;
 - the contract does not place one binding into unrelated repetition elements;
 - the named space fits the macro expansion category;
+- a `following` region is the rest of a block or a module, so a class element
+  or type member macro, which stands in a member list, cannot bind in one
+  (`SWR3006`): what follows a member is more members, and no name is bound in
+  a member list;
 - alternatives return the fields referenced by the contract.
 
 During matching, the expander allocates a lexical scope `L`, adds `L` to the
