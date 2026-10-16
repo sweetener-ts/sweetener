@@ -2,6 +2,7 @@ import {
   definitionContextScope,
   type Binding,
   type BindingEnvironment,
+  type ScopeMark,
 } from "@sweetener/hygiene";
 import type { SyntaxClassConsumer } from "@sweetener/pattern";
 import {
@@ -2333,6 +2334,18 @@ export function expandMacroSyntax(
      */
     readonly context: () => ScopeId;
     /**
+     * Where the walk entered the region, in the order scopes are allocated,
+     * for telling what stood in it then from what a template wrote into it
+     * since. Undefined for the module the walk began with.
+     */
+    readonly entered: ScopeMark | undefined;
+    /**
+     * The region's own scope, once a macro has been generated in it: that
+     * macro was defined here, so its template carries the scope, as
+     * everything written here does where the walk reads it.
+     */
+    scope: ScopeId | undefined;
+    /**
      * Where the run is a class body, the stretches of it its static members
      * take, which the class's type parameters do not reach. Undefined for
      * any other run.
@@ -2613,10 +2626,56 @@ export function expandMacroSyntax(
   };
 
   /**
+   * Whether syntax carrying `scopes` stands in `region` as the walk found it
+   * there, written in it or copied from what was, rather than written by a
+   * template at an invocation made inside it.
+   *
+   * This is the region's own scope, read where it would be. Hygiene gives
+   * each binding form a scope of its own, on its binders and on everything
+   * in its body, and a template does not get it: the template was written
+   * where its macro was defined, at the top of a module, never inside the
+   * function or the block. Without it a binder written in a function body
+   * carried only its module's scope, as a template its module defines does
+   * too, so a parameter named `twice` captured the `twice` such a template
+   * wrote. A macro imported from another module was spared only because its
+   * template carries that module's scope instead. The one macro defined
+   * inside a region is one a `#syntax` generates there, and its template is
+   * given the region's scope itself (`definedWithin`).
+   *
+   * The module the walk began with is where every macro it can reach was
+   * defined, and its scope is the one every token written in it already
+   * carries, so a name a template of this module writes does see what the
+   * module declares.
+   */
+  const presentIn = (scopes: ScopeSetId, region: Region): boolean =>
+    region.entered === undefined ||
+    (region.scope !== undefined &&
+      options.scopeStore.has(scopes, region.scope)) ||
+    !options.scopeStore.introducedSince(scopes, region.entered);
+
+  /**
+   * The scopes of the regions `marker`, a `#syntax` the walk has reached,
+   * stands in as the walk found them, which the definitions it generates are
+   * given. A macro generated inside a block from syntax the block holds is
+   * defined in the block, and its template sees what the block binds, as
+   * anything else written there does.
+   */
+  const definedWithin = (marker: Syntax): ScopeSetId => {
+    let scopes = options.scopeStore.empty();
+    for (const region of regions)
+      if (region.entered !== undefined && presentIn(marker.scopes, region))
+        scopes = options.scopeStore.add(
+          scopes,
+          (region.scope ??= options.scopeStore.freshScope("lexical", "region")),
+        );
+    return scopes;
+  };
+
+  /**
    * Whether `written`, spelled `spelling`, names an ordinary binding rather
    * than a macro of `category`: a binder of that spelling encloses it, in
    * the namespace the category reads, and it carries every scope the binder
-   * does.
+   * does, the scope of the region the binder is written in included.
    */
   const shadowsMacro = (
     spelling: string,
@@ -2633,7 +2692,7 @@ export function expandMacroSyntax(
               region.at < binder.to &&
               options.scopeStore.subset(binder.scopes, written.scopes) &&
               !(binder.ofClass && inStaticMember(depth)),
-          ) === true,
+          ) === true && presentIn(written.scopes, region),
     );
 
   /**
@@ -3562,6 +3621,8 @@ export function expandMacroSyntax(
       following: options.scopeStore.empty(),
       given: options.scopeStore.empty(),
       context,
+      entered: regions.length === 0 ? undefined : options.scopeStore.mark(),
+      scope: undefined,
       statics: classBody ? staticMembers(initialInput) : undefined,
     };
     regions.push(region);
@@ -5162,11 +5223,18 @@ export function expandMacroSyntax(
                   remaining.push(marker);
                   continue;
                 }
+                const within = definedWithin(marker);
                 const generated = processGeneratedDefinitions({
-                  syntax: createSyntaxSequence([marker, body]),
+                  syntax: createSyntaxSequence([
+                    addScopes(marker, within),
+                    addScopes(body, within),
+                  ]),
                   sourceId: options.generatedDefinitions.sourceId,
                   phase: options.phase,
-                  definitionScopes: marker.scopes,
+                  definitionScopes: options.scopeStore.union(
+                    marker.scopes,
+                    within,
+                  ),
                   origins: options.origins,
                   store: options.expansionStore,
                   environment: activeExpansionEnvironment,

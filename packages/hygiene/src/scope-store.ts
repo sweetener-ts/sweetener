@@ -17,6 +17,14 @@ export interface ScopeStoreStats {
   readonly internHits: number;
 }
 
+declare const scopeMarkBrand: unique symbol;
+
+/**
+ * A point in the order scopes are allocated in. Every scope allocated after
+ * the mark was taken is later than it.
+ */
+export type ScopeMark = number & { readonly [scopeMarkBrand]: "ScopeMark" };
+
 export interface SerializedScope {
   readonly id: ScopeId;
   readonly kind: ScopeKind;
@@ -143,6 +151,25 @@ export class ScopeStore {
       const partner = this.#invocationPartners.get(scope);
       return partner !== undefined && !this.#contains(scopes, partner);
     });
+  }
+
+  /**
+   * Whether the set carries the introduction scope of an invocation made
+   * since `mark` without that invocation's use-site scope: whether a
+   * template wrote it, at an invocation made after the mark was taken.
+   */
+  introducedSince(set: ScopeSetId, mark: ScopeMark): boolean {
+    const scopes = this.#requireSet(set);
+    return scopes.some((scope) => {
+      if (scope < mark) return false;
+      const partner = this.#invocationPartners.get(scope);
+      return partner !== undefined && !this.#contains(scopes, partner);
+    });
+  }
+
+  /** The point in allocation order the next scope will be allocated at. */
+  mark(): ScopeMark {
+    return this.#scopeIds.nextValue as ScopeMark;
   }
 
   has(set: ScopeSetId, scope: ScopeId): boolean {

@@ -75,6 +75,9 @@ export syntax letTwice:stmt {
 export syntax member:classElement {
   rule { member $name:binding; } => { $name = (v: number) => v; }
 }
+export syntax run:stmt {
+  rule { run { $($statements:tt)* } } => { $($statements)* }
+}
 `;
 
 interface Expansion {
@@ -86,7 +89,7 @@ interface Expansion {
 function expand(source: string): Expansion {
   return expandWith(
     macros,
-    `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
+    `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member, run } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
   );
 }
 
@@ -362,6 +365,74 @@ describe("a binder and a name written by different hands", () => {
     expect(messages).toEqual([]);
     expect(text).toContain("=> twice(1)");
   });
+});
+
+/**
+ * A name a template writes, where the macro is defined in the file that uses
+ * it. The template was written at the top of the module, so it sees what the
+ * module declares there, and nothing a function or a block declares: those
+ * are scopes its text was never inside. Its tokens carry the module's scope,
+ * as the call site's do, so the scope of the binding form is what tells them
+ * apart.
+ */
+describe("a name a template of this file writes", () => {
+  const localTwice = `syntax localTwice:expr {
+  rule { localTwice($value:expr) } => { twice($value) }
+}
+`;
+  const cases: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly expected: string;
+  }[] = [
+    {
+      name: "is not captured by a function's parameter",
+      source: "export function f(twice: Fn): number { return localTwice(3); }",
+      expected: "return (3 + 3);",
+    },
+    {
+      name: "is not captured by an arrow's parameter",
+      source: "export const f = (twice: Fn): number => localTwice(3);",
+      expected: "=> (3 + 3)",
+    },
+    {
+      name: "is not captured by a block's const",
+      source:
+        "export function f(): number { { const twice = (v: number) => v; return localTwice(3) + twice(0); } }",
+      expected: "return (3 + 3) + twice(0);",
+    },
+    {
+      name: "is not captured by a catch binding",
+      source:
+        "export function f(): number { try { return 0; } catch (twice) { return localTwice(3); } }",
+      expected: "return (3 + 3);",
+    },
+    {
+      name: "is not captured by a parameter handed back as tokens",
+      source:
+        "emit { export function f(twice: Fn): number { return localTwice(3); } }",
+      expected: "return (3 + 3);",
+    },
+    {
+      name: "sees what a block binds, where the macro is generated in the block",
+      source:
+        "export function f(): number { const twice = (v: number) => v; run { #syntax { syntax useLocal:expr { rule { useLocal() } => { twice(1) } } } } return useLocal(); }",
+      expected: "return twice(1);",
+    },
+    {
+      name: "sees a declaration at the top of the module",
+      source:
+        "export const twice = (v: number): number => v;\nexport const r = localTwice(3);",
+      expected: "r = twice(3);",
+    },
+  ];
+  for (const { name, source, expected } of cases) {
+    test(name, () => {
+      const { text, messages } = expand(localTwice + source);
+      expect(messages).toEqual([]);
+      expect(text).toContain(expected);
+    });
+  }
 });
 
 /**
