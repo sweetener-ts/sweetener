@@ -143,7 +143,7 @@ not use it.
 The compiler's layers ship inside `@sweetener/compiler` rather than as packages
 of their own: opaque IDs and diagnostics, immutable syntax and origins, the
 reader, the pattern IR and matcher, the definition parser, hygiene, templates,
-enforestation, expansion, the printer, and the TypeScript host. Four stay
+enforestation, expansion, the printer, and the TypeScript host. Five stay
 reachable, because a published package reaches them:
 
 | Entry point                           | Contract                                                     |
@@ -152,6 +152,7 @@ reachable, because a published package reaches them:
 | `@sweetener/compiler/reader`          | TS/TSX scanning, trees, incremental reads, lossless printing |
 | `@sweetener/compiler/syntax`          | immutable syntax, cursors, spans, origins                    |
 | `@sweetener/compiler/shared`          | opaque IDs, cancellation, diagnostics, results, limits       |
+| `@sweetener/compiler/macro-language`  | the definition and compile-time import parsers               |
 
 The layering itself is normative and enforced by the boundary gate, which reads
 the workspace rather than the registry: a layer may import only the layers
