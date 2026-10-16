@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import type { PrintedExpandedFile } from "@sweetener/printer";
@@ -907,9 +907,16 @@ describe("project commands", () => {
     const expansionProvider = createDefaultProjectExpansionProvider();
     const project = loadSweetProject(config);
     expansionProvider.expandProject(project);
-    expect(expansionProvider.macroDependencies(project)).toContain(
-      join(packageRoot, "forms.sts"),
-    );
+    expect(
+      expansionProvider.expansionInputs(project).map(({ path }) => path),
+    ).toContain(join(packageRoot, "forms.sts"));
+    // What it asked is of this project, not of another it is asked about.
+    expect(
+      expansionProvider.expansionInputs({
+        ...project,
+        configPath: join(dirname(config), "other.json"),
+      }),
+    ).toEqual([]);
 
     writeFileSync(
       join(packageRoot, "sweet-macros.json"),
@@ -960,6 +967,63 @@ describe("project commands", () => {
     });
     expect(escaped.exitCode).toBe(1);
     expect(escaped.diagnostics.map(({ code }) => code)).toContain(5001);
+  });
+
+  test("reports a directory imported for syntax as a module it cannot resolve", () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-directory-import-"));
+    mkdirSync(join(directory, "lib"));
+    const packageRoot = join(directory, "node_modules/@acme/forms");
+    mkdirSync(join(packageRoot, "macros.sts"), { recursive: true });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@acme/forms",
+        version: "1.0.0",
+        sweetMacros: "./sweet-macros.json",
+      }),
+    );
+    writeFileSync(
+      join(packageRoot, "sweet-macros.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        name: "@acme/forms",
+        languageVersion: "1",
+        compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+        entry: "./macros.sts",
+        exports: {
+          packaged: { source: "./macros.sts", category: "expr", phase: 1 },
+        },
+        dependencies: [],
+      }),
+    );
+    const config = join(directory, "tsconfig.json");
+    writeFileSync(
+      join(directory, "main.sts"),
+      `import { dup } from "./lib" for syntax;
+       import { packaged } from "@acme/forms" for syntax;
+       export const result = dup(1);`,
+    );
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { strict: true },
+        sweet: { macroExtensions: [".sts"] },
+        files: ["main.sts"],
+      }),
+    );
+
+    const expanded = createDefaultProjectExpansionProvider().expandProject(
+      loadSweetProject(config),
+    );
+
+    expect(
+      expanded.diagnostics.map(({ messageText }) => String(messageText)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Cannot resolve macro module ./lib from"),
+        expect.stringContaining("entry or export source does not exist"),
+      ]),
+    );
   });
 
   test("builds a declarative macro project through the default frontend", () => {

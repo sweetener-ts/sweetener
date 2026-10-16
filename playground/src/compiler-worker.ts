@@ -53,13 +53,27 @@ function diagnosticText(diagnostic: ts.Diagnostic): string {
   return `${diagnostic.file.fileName.replace(`${root}/`, "")}:${location.line + 1}:${location.character + 1} SWR${diagnostic.code}: ${message}`;
 }
 
+const compilerOptions: ts.CompilerOptions = {
+  allowNonTsExtensions: true,
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  strict: true,
+  target: ts.ScriptTarget.ES2022,
+  // So a .stsx example can be about JSX rather than about configuring it.
+  jsx: ts.JsxEmit.React,
+  jsxFactory: "h",
+  jsxFragmentFactory: "Fragment",
+};
+
 function compile(request: CompileRequest) {
   const fileMap = new Map<string, string>();
   for (const file of request.files)
     fileMap.set(`${root}/${file.fileName}`, file.source);
   fileMap.set(`${root}/tsconfig.json`, "{}");
+  // Beside where `system` says TypeScript is, under the name TypeScript looks
+  // for, as its libraries are on disk.
   fileMap.set(
-    `${root}/lib.d.ts`,
+    `${root}/${ts.getDefaultLibFileName(compilerOptions)}`,
     "declare var NaN: number; declare var Infinity: number; interface Object {} interface Function {} interface CallableFunction extends Function {} interface NewableFunction extends Function {} interface IArguments {} interface String {} interface Number {} interface Boolean {} interface RegExp {} interface Array<T> { readonly length: number; [index: number]: T; } interface ReadonlyArray<T> { readonly length: number; [index: number]: T; }",
   );
   virtualFileNames = new Set(fileMap.keys());
@@ -67,6 +81,7 @@ function compile(request: CompileRequest) {
 
   const project: LoadedSweetProject = {
     configPath: `${root}/tsconfig.json`,
+    configurationInputs: [],
     sweet: {
       languageVersion: "1",
       typescriptVersionPolicy: "exact",
@@ -80,17 +95,7 @@ function compile(request: CompileRequest) {
     },
     typescript: {
       fileNames: request.files.map((file) => `${root}/${file.fileName}`),
-      options: {
-        allowNonTsExtensions: true,
-        module: ts.ModuleKind.ESNext,
-        moduleResolution: ts.ModuleResolutionKind.Bundler,
-        strict: true,
-        target: ts.ScriptTarget.ES2022,
-        // So a .stsx example can be about JSX rather than about configuring it.
-        jsx: ts.JsxEmit.React,
-        jsxFactory: "h",
-        jsxFragmentFactory: "Fragment",
-      },
+      options: compilerOptions,
       errors: [],
     },
     problems: [],

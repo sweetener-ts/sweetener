@@ -176,6 +176,42 @@ describe("macro module resolution", () => {
     });
   });
 
+  test("takes a host's answer for each module in place of aliases and packages", () => {
+    // Two modules import "forms" and the host found it in different places
+    // for each; aliases naming both targets would have made it ambiguous.
+    const found = new Map([
+      ["/app/main.sts", new Map([["forms", "/x.sts"]])],
+      ["/app/b.sts", new Map([["forms", "/y.sts"]])],
+    ]);
+    const result = resolveMacroProject({
+      entry: "/app/main.sts",
+      languageVersion: "1",
+      compilerVersion: "1.5.0",
+      modules: [
+        module("/app/main.sts", [
+          { kind: "macro", specifier: "forms", exports: [] },
+          { kind: "macro", specifier: "./b.sts", exports: [] },
+        ]),
+        module("/app/b.sts", [
+          { kind: "macro", specifier: "forms", exports: [] },
+        ]),
+        module("/x.sts"),
+        module("/y.sts"),
+      ],
+      aliases: [{ pattern: "forms", targets: ["/x.sts", "/y.sts"] }],
+      resolve: (from, specifier) =>
+        specifier === "./b.sts"
+          ? "/app/b.sts"
+          : found.get(from)?.get(specifier),
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.macroGraph.edges).toEqual([
+      { from: "/app/b.sts", to: "/y.sts" },
+      { from: "/app/main.sts", to: "/app/b.sts" },
+      { from: "/app/main.sts", to: "/x.sts" },
+    ]);
+  });
+
   test("prefers the longest matching path alias and checks compiler ranges", () => {
     const main = module("/app/main.sts", [
       { kind: "macro", specifier: "@forms/specific/value.sts", exports: [] },

@@ -11,6 +11,17 @@ export function existsSync(fileName: string): boolean {
   return files.has(normalize(fileName));
 }
 
+/**
+ * A disk's stat, which only a check of what expansion read from the disk asks
+ * for. The playground hands expansion its own `ts.System`, which expansion
+ * reads through instead and which keeps no stats, so nothing here can ask.
+ */
+export function statSync(fileName: string): never {
+  throw new Error(
+    `The playground has no disk to stat ${fileName} on: expansion reads it through the system the worker hands it.`,
+  );
+}
+
 export function realpathSync(fileName: string): string {
   const normalized = normalize(fileName);
   if (!files.has(normalized)) throw new Error(`ENOENT: ${fileName}`);

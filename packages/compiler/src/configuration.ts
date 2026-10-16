@@ -1,6 +1,7 @@
 import { dirname, resolve } from "node:path";
 import type { ResourceBudget } from "@sweetener/shared";
 import { isJavaScriptFileName } from "@sweetener/typescript-host";
+import { InputRecorder, type ExpansionInput } from "./expansion-inputs.js";
 import * as ts from "typescript";
 import {
   isSupportedMacroExtension,
@@ -33,6 +34,17 @@ export interface SweetConfigurationProblem {
 
 export interface LoadedSweetProject {
   readonly configPath: string;
+  /**
+   * What resolving this project's config asked of the disk: the text of
+   * `configPath` and of each config it `extends` however far, and every
+   * lookup made finding those -- the places an `extends` was looked for and
+   * not found, the `node_modules` directories looked in, where a link to one
+   * led. TypeScript is handed exactly the text recorded, so what it parsed is
+   * what these say. The walk of `include` is not among them: which files a
+   * config lists is the file list, not the config. Empty for a project with
+   * no config.
+   */
+  readonly configurationInputs: readonly ExpansionInput[];
   readonly sweet: SweetCompilerOptions;
   readonly typescript: ts.ParsedCommandLine;
   readonly problems: readonly SweetConfigurationProblem[];
@@ -264,6 +276,7 @@ export function loadStandaloneProject(
   });
   return Object.freeze({
     configPath: resolve(absolute[0] ?? ".", "..", "tsconfig.json"),
+    configurationInputs: Object.freeze([]),
     sweet,
     typescript: Object.freeze({
       options: Object.freeze({
@@ -284,7 +297,10 @@ export function loadStandaloneProject(
 
 export function loadSweetProject(configPath: string): LoadedSweetProject {
   const absolute = resolve(configPath);
-  const read = ts.readConfigFile(absolute, ts.sys.readFile);
+  const recorder = new InputRecorder(ts.sys);
+  const readConfigFile = (fileName: string): string | undefined =>
+    recorder.file(fileName).text;
+  const read = ts.readConfigFile(absolute, readConfigFile);
   const raw = read.config as Record<string, unknown> | undefined;
   const parsedSweet = parseSweetCompilerOptions(raw?.["sweet"]);
   // Deferred, which is what makes a wildcard pick these up at all: TypeScript
@@ -317,7 +333,14 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
       : raw;
   const parsedTypeScript = ts.parseJsonConfigFileContent(
     rawWithJavaScript ?? {},
-    ts.sys,
+    {
+      ...ts.sys,
+      readFile: readConfigFile,
+      fileExists: (fileName) => readConfigFile(fileName) !== undefined,
+      directoryExists: (directoryName) =>
+        recorder.directory(directoryName).exists,
+      realpath: (fileName) => recorder.realpath(fileName).target,
+    },
     dirname(absolute),
     undefined,
     absolute,
@@ -338,6 +361,7 @@ export function loadSweetProject(configPath: string): LoadedSweetProject {
   });
   return Object.freeze({
     configPath: absolute,
+    configurationInputs: recorder.inputs,
     sweet: parsedSweet.options,
     typescript,
     problems: parsedSweet.problems,

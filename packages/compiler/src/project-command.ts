@@ -5,7 +5,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -21,6 +21,7 @@ import {
   type SweetConfigurationProblem,
 } from "./configuration.js";
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
+import type { ExpansionInput } from "./expansion-inputs.js";
 import type { ExpansionInspectionProvider } from "./expansion-tools.js";
 import { selectSweetSources } from "./source-kind.js";
 import {
@@ -36,7 +37,12 @@ export interface ProjectExpansionProvider {
   expandProject(
     project: LoadedSweetProject,
   ): ProjectExpansionOutput | readonly VirtualTypeScriptFile[];
-  macroDependencies?(project: LoadedSweetProject): readonly string[];
+  /**
+   * What the last expansion of `project` asked of the file system, for a
+   * watcher to watch: a different answer to any of them can change what it
+   * produced.
+   */
+  expansionInputs?(project: LoadedSweetProject): readonly ExpansionInput[];
   debugState?(): unknown;
 }
 
@@ -521,6 +527,7 @@ export function runConfiguredProjectCommand(options: {
     selectSweetSources({
       fileNames: project.typescript.fileNames,
       macroExtensions: project.sweet.macroExtensions,
+      readSource: (fileName) => ts.sys.readFile(fileName),
     }).flatMap(({ fileName, kind }) =>
       virtualNames.has(kind.virtualFileName)
         ? [[fileName, kind.virtualFileName] as const]
@@ -673,6 +680,63 @@ const rebuildDelayMilliseconds = 50;
 /** Extensions a change to which can change what the project builds. */
 const watchedExtensions = [".ts", ".tsx", ".sts", ".stsx", ".json"];
 
+/**
+ * How often TypeScript polls a watched file once it is deleted, until it
+ * appears again or the next build stops watching it. TypeScript polls a
+ * missing file only at an interval its caller gives, and given none it
+ * fails -- `fs.watchFile` rejects an undefined interval -- which ended the
+ * whole watch when a file it followed was deleted. Its own watch polls
+ * source files this often.
+ */
+const deletedFilePollMilliseconds = 250;
+
+/** Why a directory is watched, and so which of its changes rebuild. */
+interface DirectoryInterest {
+  /**
+   * Paths whose appearance or disappearance matters, at or below a direct
+   * entry of the directory: one that is not there yet is watched from the
+   * nearest directory that is, and appears through a chain of entries.
+   */
+  readonly entries: Set<string>;
+  /** Whether what the directory holds was listed, so any change counts. */
+  listing: boolean;
+  /** Whether a source appearing here could join the project. */
+  sources: boolean;
+}
+
+function wants(interest: DirectoryInterest, changed: string): boolean {
+  const path = resolve(changed);
+  if (interest.listing) return true;
+  for (const entry of interest.entries)
+    if (entry === path || entry.startsWith(path + sep)) return true;
+  return (
+    interest.sources &&
+    !path.includes("node_modules") &&
+    watchedExtensions.some((extension) => path.endsWith(extension))
+  );
+}
+
+/**
+ * The links on the way to a path, each of which can be pointed elsewhere
+ * and change where the path leads. A part of the path is a link when where
+ * it leads is not where its directory leads, joined with its name.
+ */
+function linksOn(system: ts.System, path: string): readonly string[] {
+  const realpath = system.realpath;
+  if (realpath === undefined) return [];
+  const parts: string[] = [];
+  for (let part = path; dirname(part) !== part; part = dirname(part))
+    parts.unshift(part);
+  const links: string[] = [];
+  let parentTarget = dirname(parts[0] ?? path);
+  for (const part of parts) {
+    const target = realpath(part);
+    if (target !== join(parentTarget, basename(part))) links.push(part);
+    parentTarget = target;
+  }
+  return links;
+}
+
 export function watchConfiguredProject(options: {
   readonly configPath: string;
   readonly expansionProvider?: ProjectExpansionProvider | undefined;
@@ -704,6 +768,9 @@ export function watchConfiguredProject(options: {
 
   const fileWatchers = new Map<string, ts.FileWatcher>();
   const directoryWatchers = new Map<string, ts.FileWatcher>();
+  // What each watched directory is watched for, replaced after every build;
+  // a directory's watcher outlives a build that still wants it.
+  let interests = new Map<string, DirectoryInterest>();
   let pending: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
@@ -712,44 +779,95 @@ export function watchConfiguredProject(options: {
    * file added to the project, or a macro module a file newly imports, has to
    * be watched too, or editing it would rebuild nothing. The set is taken
    * again after every build.
+   *
+   * Each question a build asked of the file system is watched for a change
+   * in its answer. A file that is there is watched for its text; whether a
+   * path is there at all is watched from the nearest directory that is, since
+   * nothing can watch a path that does not exist; a directory listed for what
+   * it holds is watched for what it holds; and a link on the way to a path
+   * is watched where it lives, for being pointed elsewhere.
    */
   const follow = (): void => {
     if (closed) return;
     const project = loadSweetProject(options.configPath);
-    const wanted = new Set([
-      project.configPath,
-      ...project.typescript.fileNames,
-      ...(expansionProvider.macroDependencies?.(project) ?? []),
-    ]);
+    const contents = new Set<string>();
+    const entries = new Set<string>();
+    const listings = new Set<string>();
+    const file = (fileName: string): void => {
+      const path = resolve(fileName);
+      entries.add(path);
+      if (system.fileExists(path)) contents.add(path);
+    };
+    for (const fileName of project.typescript.fileNames) file(fileName);
+    for (const input of [
+      ...project.configurationInputs,
+      ...(expansionProvider.expansionInputs?.(project) ?? []),
+    ])
+      switch (input.kind) {
+        case "file":
+          file(input.path);
+          break;
+        case "directory":
+          entries.add(input.path);
+          break;
+        case "subdirectories":
+          entries.add(input.path);
+          if (system.directoryExists(input.path)) listings.add(input.path);
+          break;
+        case "realpath":
+          entries.add(input.path);
+          for (const link of linksOn(system, input.path)) entries.add(link);
+          break;
+      }
+
     for (const [fileName, watcher] of fileWatchers)
-      if (!wanted.has(fileName)) {
+      if (!contents.has(fileName)) {
         watcher.close();
         fileWatchers.delete(fileName);
       }
-    for (const fileName of wanted)
+    for (const fileName of contents)
       if (!fileWatchers.has(fileName))
-        fileWatchers.set(fileName, system.watchFile!(fileName, schedule));
-    // A file the project has yet to see has no watcher to fire, so the
-    // directories it could appear in are watched as well.
+        fileWatchers.set(
+          fileName,
+          system.watchFile!(fileName, schedule, deletedFilePollMilliseconds),
+        );
+
     if (system.watchDirectory === undefined) return;
-    const directories = new Set(
-      [...wanted].map((fileName) => dirname(fileName)),
-    );
+    const next = new Map<string, DirectoryInterest>();
+    const interest = (directory: string): DirectoryInterest => {
+      let existing = next.get(directory);
+      if (existing === undefined) {
+        existing = { entries: new Set(), listing: false, sources: false };
+        next.set(directory, existing);
+      }
+      return existing;
+    };
+    for (const path of entries) {
+      let directory = dirname(path);
+      while (
+        !system.directoryExists(directory) &&
+        dirname(directory) !== directory
+      )
+        directory = dirname(directory);
+      interest(directory).entries.add(path);
+    }
+    for (const directory of listings) interest(directory).listing = true;
+    // A file the project has yet to see has no watcher to fire, so the
+    // directories of the files it has are watched for sources appearing.
+    for (const fileName of contents) interest(dirname(fileName)).sources = true;
+    interests = next;
     for (const [directory, watcher] of directoryWatchers)
-      if (!directories.has(directory)) {
+      if (!interests.has(directory)) {
         watcher.close();
         directoryWatchers.delete(directory);
       }
-    for (const directory of directories)
+    for (const directory of interests.keys())
       if (!directoryWatchers.has(directory))
         directoryWatchers.set(
           directory,
           system.watchDirectory(directory, (changed) => {
-            if (
-              !changed.includes("node_modules") &&
-              watchedExtensions.some((extension) => changed.endsWith(extension))
-            )
-              schedule();
+            const wanted = interests.get(directory);
+            if (wanted !== undefined && wants(wanted, changed)) schedule();
           }),
         );
   };

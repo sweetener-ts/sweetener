@@ -8,6 +8,9 @@ function normalizeParts(parts: string[]): string[] {
   return output;
 }
 
+/** The playground's paths are POSIX paths, whatever the host's are. */
+export const sep = "/";
+
 export function resolve(...parts: string[]): string {
   const joined = parts.filter(Boolean).join("/");
   return `/${normalizeParts(joined.split("/")).join("/")}`;
@@ -25,6 +28,14 @@ export function dirname(fileName: string): string {
   const value = resolve(fileName);
   const index = value.lastIndexOf("/");
   return index <= 0 ? "/" : value.slice(0, index);
+}
+
+export function basename(fileName: string, suffix?: string): string {
+  const value = resolve(fileName);
+  const base = value.slice(value.lastIndexOf("/") + 1);
+  return suffix !== undefined && suffix !== base && base.endsWith(suffix)
+    ? base.slice(0, -suffix.length)
+    : base;
 }
 
 export function isAbsolute(fileName: string): boolean {
@@ -64,10 +75,12 @@ export function parse(fileName: string): {
 }
 
 export const posix = {
+  sep,
   resolve,
   normalize,
   join,
   dirname,
+  basename,
   isAbsolute,
   relative,
   parse,
