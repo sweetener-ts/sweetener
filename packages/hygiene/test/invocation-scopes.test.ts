@@ -172,6 +172,21 @@ describe("template privacy", () => {
     expect(store.introducedSince(callSite, mark)).toBe(false);
   });
 
+  it("answers the call site a published identifier binds at", () => {
+    const store = new ScopeStore();
+    const definition = store.singleton(store.freshScope("module", "macro"));
+    const callSite = store.singleton(store.freshScope("lexical", "caller"));
+    const invocation = createInvocationScopes(store);
+    const captured = capturedInvocationScopes(store, callSite, invocation);
+    const published = store.add(captured, invocation.introduction);
+    const introduced = introducedTemplateScopes(store, definition, invocation);
+    expect(store.publishedTo(published)).toBe(callSite);
+    // Neither a copied capture nor template syntax was published: each keeps
+    // the invocation scope that keeps it from binding the call site's names.
+    expect(store.publishedTo(captured)).toBe(captured);
+    expect(store.publishedTo(introduced)).toBe(introduced);
+  });
+
   it("rejects a pairing that is not an introduction and use-site pair", () => {
     const store = new ScopeStore();
     const invocation = createInvocationScopes(store);

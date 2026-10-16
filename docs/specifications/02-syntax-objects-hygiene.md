@@ -251,10 +251,16 @@ produced by syntax consumers. It MUST NOT resolve scope through printed text.
 
 - `#fresh` creates a new identifier with a fresh binding identity and template
   origin.
-- `#callsite` gives an identifier the invocation's lexical scopes.
+- `#callsite` gives an identifier the invocation's lexical scopes. It keeps
+  the invocation's use-site scope, as a copied capture does, so a binder
+  written with it binds no name the call site writes after the invocation.
 - `#definition` uses the macro definition's lexical scopes.
 - `#capture` removes the introduction barrier required to bind or reference
-  call-site syntax. The compiler emits a trace event and optional warning.
+  call-site syntax. Its identifier carries the call site's scopes and both of
+  the invocation's scopes, and a binder written with it is bound with the call
+  site's scopes alone: `export const #capture($name) = …` binds the call
+  site's later uses of the name, as the declaration written there would. The
+  compiler emits a trace event and optional warning.
 - `#text` returns stable raw token text for an accepted token or group. It does
   not expose scope IDs or generated printer names.
 - `#join` constructs one identifier from an identifier capture plus optional

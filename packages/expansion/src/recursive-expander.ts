@@ -1211,13 +1211,23 @@ export function expandMacroSyntax(
     if (binders === undefined) names.set(spelling, [binder]);
     else binders.push(binder);
   };
-  /** The binder written with `scopes`, within `extent`. */
+  /**
+   * The binder written with `scopes`, within `extent`.
+   *
+   * A binder `#capture` published to its call site carries the invocation's
+   * introduction scope and its use-site scope together, and nothing the call
+   * site writes carries either. It binds what the call site writes, so it is
+   * recorded with the call site's scopes. A binder copied from the call site
+   * carries the use-site scope alone, and one the template wrote the
+   * introduction scope alone; neither is changed, and neither binds a name
+   * the call site writes after the invocation.
+   */
   const binderWith = (
     scopes: ScopeSetId,
     extent: Extent,
     ofClass: boolean,
   ): Binder => ({
-    scopes,
+    scopes: options.scopeStore.publishedTo(scopes),
     from: extent.from,
     to: extent.to,
     ofClass,
@@ -5392,8 +5402,9 @@ export function expandMacroSyntax(
           // where the invocation stood, and binds for the rest of the run.
           // The region was read before the run was walked, so it is told now.
           // Its scopes decide whom it binds: a name the template wrote binds
-          // only names the template wrote, and a name taken from the call
-          // site binds the call site's.
+          // only names the template wrote, a name copied from the call site
+          // keeps a use-site scope no later name carries, and a name
+          // `#capture` published binds the call site's.
           if (
             result.syntax.category === "stmt" ||
             result.syntax.category === "item"

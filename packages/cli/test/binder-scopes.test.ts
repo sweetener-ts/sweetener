@@ -75,8 +75,34 @@ export syntax letTwice:stmt {
 export syntax member:classElement {
   rule { member $name:binding; } => { $name = (v: number) => v; }
 }
+export syntax defineCaptured:item {
+  rule { defineCaptured $name:ident; }
+  => { export const #capture($name) = (v: number) => v; }
+}
+export syntax defineCallsite:item {
+  rule { defineCallsite $name:ident; }
+  => { export const #callsite($name) = (v: number) => v; }
+}
+export syntax letCaptured:stmt {
+  rule { letCaptured $name:ident; } => { const #capture($name) = (v: number) => v; }
+}
+export syntax varCaptured:stmt {
+  rule { varCaptured $name:ident; } => { var #capture($name) = (v: number) => v; }
+}
+export syntax coreCaptured:item {
+  rule { coreCaptured $name:ident { $($rest:tt)* } }
+  => { #core(export const #capture($name) = (v: number) => v;) $($rest)* }
+}
 export syntax run:stmt {
   rule { run { $($statements:tt)* } } => { $($statements)* }
+}
+export operator (<-):stmt {
+  fixity infix;
+  associativity none;
+  precedence 20;
+  rule { $name:binding <- $source:expr; }
+  bind $name in following as lexical value;
+  => { const $name = $source; }
 }
 `;
 
@@ -89,7 +115,7 @@ interface Expansion {
 function expand(source: string): Expansion {
   return expandWith(
     macros,
-    `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member, run } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
+    `import { twice, boxed, emit, withParameter, callTwice, same, defineBound, defineUnbound, defineTwice, defineThroughBound, defineThrough, letBound, letUnbound, letTwice, member, defineCaptured, defineCallsite, letCaptured, varCaptured, coreCaptured, run, (<-) } from "./macros.sts" for syntax;\ntype Fn = (v: number) => number;\n${source}\n`,
   );
 }
 
@@ -527,6 +553,44 @@ describe("a declaration an expansion writes", () => {
       inside: ["after = twice(2)"],
       outside: [],
     },
+    {
+      name: "an item declaring a name `#capture` publishes",
+      source: "defineCaptured twice;\nexport const after = twice(2);",
+      inside: ["after = twice(2)"],
+      outside: [],
+    },
+    {
+      name: "an item declaring a name `#capture` publishes, before it",
+      source: "export const before = twice(1);\ndefineCaptured twice;",
+      inside: [],
+      outside: ["before = (1 + 1)"],
+    },
+    {
+      name: "an item declaring a name `#callsite` gives the call site's scopes",
+      source: "defineCallsite twice;\nexport const after = twice(2);",
+      inside: [],
+      outside: ["after = (2 + 2)"],
+    },
+    {
+      name: "a statement declaring a name `#capture` publishes",
+      source:
+        "export function f(): number { letCaptured twice; return twice(2); }\nexport const after = twice(3);",
+      inside: ["return twice(2);"],
+      outside: ["after = (3 + 3)"],
+    },
+    {
+      name: "a var `#capture` publishes inside a block",
+      source:
+        "export function f(): number { { varCaptured twice; } return twice(2); }\nexport const after = twice(3);",
+      inside: ["return twice(2);"],
+      outside: ["after = (3 + 3)"],
+    },
+    {
+      name: "a `#core` form declaring a name `#capture` publishes",
+      source: "coreCaptured twice { export const after = twice(2); }",
+      inside: ["after = twice(2)"],
+      outside: [],
+    },
   ];
   for (const { name, source, inside, outside } of declarations) {
     test(`${name} binds where hygiene says it does`, () => {
@@ -546,6 +610,15 @@ describe("a declaration an expansion writes", () => {
  * expression holds.
  */
 describe("a following region", () => {
+  test("is read as statements where a statement operator leaves its block as tokens", () => {
+    const { text, messages } = expand(
+      "export function f(): number { const one = 1; got <- one; { var twice = (v: number) => v; } return twice(got); }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const got = one;");
+    expect(text).toContain("return twice(got);");
+  });
+
   test("is refused for a class member macro", () => {
     const { messages } = expandWith(
       `export syntax memberBound:classElement {

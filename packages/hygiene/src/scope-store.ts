@@ -44,6 +44,7 @@ export class ScopeStore {
   readonly #setByKey = new Map<string, ScopeSetId>();
   readonly #keyBySet = new Map<ScopeSetId, string>();
   readonly #invocationPartners = new Map<ScopeId, ScopeId>();
+  readonly #publishedTo = new Map<ScopeSetId, ScopeSetId>();
   readonly #empty = 0 as ScopeSetId;
   #internHits = 0;
 
@@ -165,6 +166,32 @@ export class ScopeStore {
       const partner = this.#invocationPartners.get(scope);
       return partner !== undefined && !this.#contains(scopes, partner);
     });
+  }
+
+  /**
+   * The set with each invocation's introduction and use-site scopes removed
+   * where it carries both: the scopes of the call site that `#capture`
+   * published an identifier to. A set that carries no such pair is answered
+   * as itself.
+   */
+  publishedTo(set: ScopeSetId): ScopeSetId {
+    const known = this.#publishedTo.get(set);
+    if (known !== undefined) return known;
+    const scopes = this.#requireSet(set);
+    const removed = new Set<ScopeId>();
+    for (const scope of scopes) {
+      const partner = this.#invocationPartners.get(scope);
+      if (partner !== undefined && this.#contains(scopes, partner)) {
+        removed.add(scope);
+        removed.add(partner);
+      }
+    }
+    const published =
+      removed.size === 0
+        ? set
+        : this.#intern(scopes.filter((scope) => !removed.has(scope)));
+    this.#publishedTo.set(set, published);
+    return published;
   }
 
   /** The point in allocation order the next scope will be allocated at. */
