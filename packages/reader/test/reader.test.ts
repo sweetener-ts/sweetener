@@ -115,6 +115,10 @@ describe("generic JSX elements", () => {
    */
   it.each([
     ["after `=`", "const e = <b>(note): see below</b>;\n"],
+    [
+      "at the start of a block, going on with words",
+      "function g() {\n  <p>(optional) note</p>;\n}\n",
+    ],
     ["after a comma in an array", "const e = [a, <b>(note): see</b>];\n"],
     ["after a comma in a call", "render(a, <b>(note): see</b>);\n"],
     ["in an element's braces", "const e = <div>{<b>(note): see</b>}</div>;\n"],
@@ -546,6 +550,7 @@ describe("delimiter reader", () => {
     ["a generic constructor", "const ids = new Map<string, number>();"],
     ["a generic type annotation", "let box: Container<string>;"],
     ["a comparison", "const smaller = a <b && c> d;"],
+    ["an optional call's type arguments", "const value = f?.<string>();"],
   ];
 
   for (const [description, source] of typeArgumentPositions)

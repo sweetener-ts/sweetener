@@ -23,17 +23,46 @@ export syntax x:expr { rule { x } => { 99 } }
 export syntax gen:expr { rule { gen } => { <T>(v: T) => v } }
 `;
 
+/**
+ * Macros whose templates write elements, defined where JSX is read. Each
+ * template is read where it is written, so a `<` its reader judged the other
+ * way is one only reading that module again corrects.
+ */
+const elementMacros = `
+export syntax x:expr { rule { x } => { 99 } }
+
+export syntax el:expr { rule { el } => { <p>(optional) note</p> } }
+
+export syntax mk:item {
+  rule { mk } => { export function h() { <p>(optional) x</p>; } }
+}
+
+export syntax mk2:item {
+  rule { mk2 } => { export function k() { <b>(note): x</b>; } }
+}
+
+export syntax spaced:expr { rule { spaced } => { <p>(a)   b, c</p> } }
+`;
+
 interface Expansion {
   readonly text: string;
   readonly codes: readonly number[];
 }
 
-function expand(source: string, extension = ".stsx"): Expansion {
+function expand(
+  source: string,
+  extension = ".stsx",
+  module: { readonly name: string; readonly text: string } = {
+    name: "macros.sts",
+    text: macros,
+  },
+): Expansion {
   const directory = mkdtempSync(join(tmpdir(), "sweet-jsx-reading-"));
-  writeFileSync(join(directory, "macros.sts"), macros);
+  writeFileSync(join(directory, module.name), module.text);
+  const imported = module.text === macros ? "x, gen" : "x, el, mk, mk2, spaced";
   writeFileSync(
     join(directory, `main${extension}`),
-    `import { x, gen } from "./macros.sts" for syntax;\n${source}\n`,
+    `import { ${imported} } from "./${module.name}" for syntax;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -47,7 +76,7 @@ function expand(source: string, extension = ".stsx"): Expansion {
         jsx: "preserve",
       },
       sweet: { macroExtensions: [".sts", ".stsx"] },
-      files: ["macros.sts", `main${extension}`],
+      files: [module.name, `main${extension}`],
     }),
   );
   const result = runConfiguredProjectCommand({
@@ -86,15 +115,21 @@ describe("a `<` read the other way from the grammar", () => {
   });
 
   /**
-   * JSX text holds no `>`, so an element whose text reads like a function
-   * type is not TSX: TypeScript reports the arrow's `>`. Read as the element
-   * it is, the `>` is reported where it is written, and the text around it is
-   * still not code.
+   * JSX text holds no `>`, so an element whose text reads like a generic
+   * arrow is not TSX. A bare `<T>` heading an arrow is the arrow's, and
+   * TypeScript reports the `>` its own parser finds there.
    */
-  test("reports the `>` of an element whose text holds an arrow", () => {
-    const { text, codes } = expand("export const e = <b>(v) => x</b>;");
-    expect(codes).toEqual([1001]);
-    expect(text).toContain("export const e = <b>(v) => x</b>;");
+  test("leaves an arrow written like an element to TypeScript", () => {
+    const { codes } = expand("export const e = <b>(v) => x</b>;");
+    expect(codes).toEqual([1382]);
+  });
+
+  test("opens an element a template in the same file writes", () => {
+    const { text, codes } = expand(
+      "syntax note:item {\n  rule { note } => { export function k() { <b>(note): x</b>; } }\n}\nnote",
+    );
+    expect(codes).toEqual([]);
+    expect(text).toContain("export function k() { <b>(note): x</b>; }");
   });
 
   test("still reads a generic function type", () => {
@@ -129,5 +164,32 @@ describe("a `<` read the other way from the grammar", () => {
     const { text, codes } = expand("export const id = gen;");
     expect(codes).toEqual([]);
     expect(text).toContain("export const id = <T,>(v: T) => v;");
+  });
+});
+
+/**
+ * An element a macro's template writes is read as one, so what is written in
+ * its text is text, wherever the macro is used.
+ */
+describe("an element a template writes", () => {
+  const module = { name: "macros.stsx", text: elementMacros };
+
+  test.each([
+    ["as an expression", "export const e = el;", "<p>(optional) note</p>"],
+    ["as a statement", "mk", "export function h() { <p>(optional) x</p>; }"],
+    [
+      "as a statement whose text reads like a signature",
+      "mk2",
+      "export function k() { <b>(note): x</b>; }",
+    ],
+    [
+      "with spaces in its text",
+      "export const s = spaced;",
+      "<p>(a)   b, c</p>",
+    ],
+  ])("is read as an element %s", (_, source, written) => {
+    const { text, codes } = expand(source, ".stsx", module);
+    expect(codes).toEqual([]);
+    expect(text).toContain(written);
   });
 });

@@ -314,6 +314,22 @@ function standsInSignatureParameters(
 }
 
 /**
+ * Whether a signature's parameter list ends where `kind` follows it: at its
+ * return type's `:`, or at the end of the member -- a `;`, a `,`, the body's
+ * `}`, a line break. An element's text goes on with words.
+ */
+function endsSignature(kind: ts.SyntaxKind, lineBreakBefore: boolean): boolean {
+  return (
+    lineBreakBefore ||
+    kind === ts.SyntaxKind.ColonToken ||
+    kind === ts.SyntaxKind.SemicolonToken ||
+    kind === ts.SyntaxKind.CommaToken ||
+    kind === ts.SyntaxKind.CloseBraceToken ||
+    kind === ts.SyntaxKind.EndOfFileToken
+  );
+}
+
+/**
  * Whether the `<T>` the lookahead has just read is the type parameter list of
  * a function type, `<T>(v: T) => T`, or of a call or construct signature,
  * `<T>(v: T): T`, rather than a JSX opening tag. An element with children can
@@ -322,12 +338,15 @@ function standsInSignatureParameters(
  * an element (see `AngleReading`).
  *
  * Where a member of an interface or an object type begins (`memberStart`,
- * from `beginsMember`) a signature is judged wherever the parentheses read as
- * a type's, whatever follows them -- `<T>(v: T);` returns what it is not
- * told. An element is not written there but as a statement of its own,
- * which the enforester reads as one. Elsewhere only a function type is
- * judged, by the arrow after the parentheses, since an element's text says
- * `(note): see below` as readily as a signature says `(v: T): T`.
+ * from `beginsMember`) a signature is judged where the parentheses read as a
+ * type's and the member's return type or end follows them (`endsSignature`):
+ * `<T>(v: T): T`, and `<T>(v: T);`, which returns what it is not told. An
+ * element written there is a statement of its own, whose text may well go on
+ * with words -- `<p>(optional) note</p>` -- and where it reads like a
+ * signature instead, `<b>(note): x</b>;`, the enforester reads the element.
+ * Elsewhere only a function type is judged, by the arrow after the
+ * parentheses, since an element's text says `(note): see below` as readily
+ * as a signature says `(v: T): T`.
  *
  * Parameters of a type hold no expression -- no initializer, so no regular
  * expression and no element -- so the walk reads them as types and stops at
@@ -353,11 +372,9 @@ function signatureFollows(
     if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
     else if (kind === ts.SyntaxKind.CloseParenToken) depth -= 1;
   }
-  return (
-    memberStart ||
-    nextLookaheadToken(lookahead, templates, false, readings) ===
-      ts.SyntaxKind.EqualsGreaterThanToken
-  );
+  const after = nextLookaheadToken(lookahead, templates, false, readings);
+  if (after === ts.SyntaxKind.EqualsGreaterThanToken) return true;
+  return memberStart && endsSignature(after, lookahead.hasPrecedingLineBreak());
 }
 
 /**
@@ -1155,6 +1172,9 @@ export function scanWithSupportedTypeScript(
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
       judgement.regularExpressionAllowed &&
+      // `f?.<string>()` passes type arguments to an optional call: a `<`
+      // straight after `?.` opens nothing else.
+      previousSignificantKind !== ts.SyntaxKind.QuestionDotToken &&
       opensElement(scanner.getTokenStart())
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });

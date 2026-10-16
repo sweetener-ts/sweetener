@@ -1514,6 +1514,11 @@ export class DefaultProjectExpansionProvider
      * one is not printed, and the readings to read the file with next are
      * answered instead: nothing from it is kept.
      */
+    /**
+     * The `<`s templates wrote that the enforester found read the other way,
+     * by the module each was written in and its offset there.
+     */
+    const templateAngles = new Map<ParsedFile, Map<number, TokenReading>>();
     const expandFile = (
       file: ParsedFile,
       final: boolean,
@@ -1526,10 +1531,21 @@ export class DefaultProjectExpansionProvider
        */
       const found = new Map<number, TokenReading>();
       /** Those found read the other way both ways, where they were copied. */
-      const ambiguous = new Map<
-        number,
-        { readonly token: TokenSyntax; readonly reading: TokenReading }
-      >();
+      const ambiguous = new Map<number, TokenSyntax>();
+      /**
+       * Takes a finding about the token at `offset` of the file's own text.
+       * One found read both ways is ambiguous, and settles neither way.
+       */
+      const record = (
+        offset: number,
+        token: TokenSyntax,
+        reading: TokenReading,
+      ): void => {
+        const before = found.get(offset);
+        if (before !== undefined && before !== reading)
+          ambiguous.set(offset, token);
+        else found.set(offset, reading);
+      };
       /** The template slashes reported, by where each use writes one. */
       const templateSlashes = new Set<string>();
       const resolvedGraph = resolveMacroProject({
@@ -1731,17 +1747,34 @@ export class DefaultProjectExpansionProvider
         misread: (token, reading) => {
           const written = writtenSource(origins, token.origin);
           if (angleReading(reading)) {
-            // A `<` read where JSX is not has no element to open. One a
-            // template wrote was read where the template is written, and the
-            // printer spells what it is for the file it is printed into --
-            // `<T,>` for a generic arrow -- so there is no source to read
-            // again with it, and nothing to report.
+            // Where the `<` was written: in the file's own text, or in a
+            // template, which was read where it is written and is read again
+            // there -- in the module that defines the macro, with the whole
+            // project. One the expander wrote stands in no source, and a `<`
+            // read where JSX is not has no element to open.
+            const at =
+              written ??
+              origins.selectPrimarySource(token.origin, "definition");
+            const module = bySource.get(at.sourceId);
             if (
-              written?.sourceId !== file.sourceId ||
-              file.kind.variant !== "jsx"
+              module === undefined ||
+              module.kind.variant !== "jsx" ||
+              !module.sourceText.startsWith("<", at.span.start)
             )
               return;
-          } else if (written?.sourceId !== file.sourceId) {
+            if (module !== file) {
+              let found = templateAngles.get(module);
+              if (found === undefined) {
+                found = new Map();
+                templateAngles.set(module, found);
+              }
+              found.set(at.span.start, reading);
+              return;
+            }
+            record(at.span.start, token, reading);
+            return;
+          }
+          if (written?.sourceId !== file.sourceId) {
             // A replacement may be read more than once before the expansion
             // settles on a reading of it, and each finds the slash again.
             const key = `${String(token.origin)}|${reading}`;
@@ -1751,11 +1784,7 @@ export class DefaultProjectExpansionProvider
             }
             return;
           }
-          const offset = written.span.start;
-          const before = found.get(offset);
-          if (before !== undefined && before !== reading)
-            ambiguous.set(offset, { token, reading });
-          else found.set(offset, reading);
+          record(written.span.start, token, reading);
         },
       });
       const runtime = runtimeSyntax(file, origins);
@@ -1773,11 +1802,12 @@ export class DefaultProjectExpansionProvider
       const reread = nextReadings(file.readings, found);
       if (reread !== undefined && !final)
         return { kind: "reread", readings: reread } as const;
-      for (const { token, reading } of ambiguous.values())
+      // Only a slash is read two ways: a `<` is only ever found to open an
+      // element.
+      for (const token of ambiguous.values())
         held.push(
           expansionDiagnosticRegistry.create(ambiguousSlashCode, {
             primaryOrigin: slashOrigin(token, "invocation"),
-            messageArguments: [reading],
           }),
         );
       if (reread !== undefined) {
@@ -2106,6 +2136,31 @@ export class DefaultProjectExpansionProvider
             : expandFile(file, final, projectReads);
         },
       );
+    }
+    // A module whose templates wrote a `<` read the other way is read again
+    // with it read as found, with the whole project, since it defines macros.
+    // On the project's last read it says so where the template wrote it.
+    for (const [module, found] of templateAngles) {
+      const current = passReadings.get(module.fileName) ?? module.readings;
+      const next = nextReadings(current, found);
+      if (next === undefined) continue;
+      if (!final) {
+        passReadings.set(module.fileName, next);
+        rereadProject = true;
+        continue;
+      }
+      for (const [offset, reading] of found)
+        if (current.get(offset) !== reading)
+          diagnostics.push(
+            expansionDiagnosticRegistry.create(unsettledSlashCode, {
+              primaryOrigin: {
+                sourceId: module.sourceId,
+                start: offset,
+                end: offset + 1,
+              },
+              messageArguments: [reading, projectReads],
+            }),
+          );
     }
     if (rereadProject) return { kind: "reread", readings: passReadings };
     this.#debug = Object.freeze({

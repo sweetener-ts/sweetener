@@ -980,11 +980,19 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
     // A bare `<T>` the reader left standing as tokens where an operand
     // begins opens an element where JSX is read: TypeScript reads type
     // parameters there only after `<T,`, `<T =` or `<T extends U`. The reader
-    // took it for a function type's from what follows it -- `<b>(v) => x</b>`
-    // reads like `<T>(v: T) => T` -- and read the element's text as code, so
+    // took it for a signature's from what follows it -- `<b>(note): x</b>;`
+    // reads like `<T>(v: T): T` -- and read the element's text as code, so
     // the source is read again with the `<` opening the element.
+    //
+    // One that heads an arrow function is the arrow's, as it was meant: a
+    // template's is printed `<T,>` for the file it lands in, and the author's
+    // own is TypeScript's to report, which it does.
     const angle = bareTypeParameters(cursor);
-    if (angle !== undefined) context.misread?.(angle, "element");
+    if (
+      angle !== undefined &&
+      parenthesizedArrowBodyStart(cursor, context) === undefined
+    )
+      context.misread?.(angle, "element");
     const protectedExpression = cursor.peek();
     if (
       protectedExpression?.tag === "protected" &&

@@ -413,18 +413,20 @@ element from the tokens straight after the name: `<T,`, `<T =` and
 element. The reader decides the same way. Where a type is written there is no
 element, and the reader cannot see which is written, so a bare `<T>` it judges
 from what follows: at the start of a member -- after a `{`, or a `;` or `,`
-inside braces other than a JSX expression's, or after `new` -- a parameter list
-of types makes a signature's type parameters; elsewhere a parameter list and an
-`=>` make a function type's; and otherwise it opens an element.
+inside braces other than a JSX expression's, after a line break that ends a
+member's type in `>` or `void`, or after `new` -- a parameter list of types
+followed by a `:` or the member's end makes a signature's type parameters;
+elsewhere a parameter list and an `=>` make a function type's; and otherwise it
+opens an element.
 
-A bare `<T>` judged type parameters where an operand begins is an element, and
-the enforester says so: `function g() { <b>(note): x</b>; }` is read again
-with the `<` opening an element, so its text is text and `x` is not expanded
-there. Reading again is the slash's (§8.1): bounded, and reported by `SWR4027`
-and `SWR4028` as a slash is. Only a `<` the file's own text writes is read
-again. One a template writes was read where the template is written, and the
-printer spells it for the file it is printed into -- `<T,>` for a generic
-arrow.
+A bare `<T>` judged type parameters where an operand begins, and heading no
+arrow function, is an element, and the enforester says so:
+`function g() { <b>(note): x</b>; }` is read again with the `<` opening an
+element, so its text is text and `x` is not expanded there. One a template
+wrote is read again where the template is written, with the project. Reading
+again is the slash's (§8.1): bounded, and reported by `SWR4028` as a slash is.
+A bare `<T>` that heads an arrow is the arrow's: one a template writes is
+printed `<T,>` for the file it lands in.
 
 ## 9. Statement and item consumers
 

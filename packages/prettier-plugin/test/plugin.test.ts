@@ -59,6 +59,9 @@ if (!($condition)) $body
   test("reads a bare `<T>` as TypeScript does", () => {
     const element = "function g() {\n  <b>(note):   x</b>;\n}\n";
     expect(formatSweetener(element, { filepath: "view.stsx" })).toBe(element);
+    const template =
+      "export syntax el:expr {\n  rule { el } => { <p>(optional)   note</p> }\n}\n";
+    expect(formatSweetener(template, { filepath: "view.stsx" })).toBe(template);
     expect(
       formatSweetener("interface I {\n  <T>(v:   T);\n}\n", {
         filepath: "view.stsx",
