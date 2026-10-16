@@ -757,12 +757,15 @@ export function expandMacroSyntax(
    * looked up only after one of these, so a name that also happens to be a
    * value is not mistaken for one.
    */
-  const typePositionFollows = (preceding: readonly Syntax[]): boolean => {
-    const previous = preceding.at(-1);
+  const typePositionFollows = (
+    preceding: readonly Syntax[],
+    end = preceding.length,
+  ): boolean => {
+    const previous = preceding[end - 1];
     if (previous?.tag !== "token") return false;
     // What a class extends is an expression, however much the `extends` of an
     // interface or a conditional type introduces a type.
-    if (previous.raw === "extends" && classHeritageFollows(preceding))
+    if (previous.raw === "extends" && classHeritageFollows(preceding, end))
       return false;
     // The tokens after which a type is written, including words that exist
     // only in a type. Without those a type macro after one of them would not
@@ -776,9 +779,37 @@ export function expandMacroSyntax(
       return true;
     // A type parameter's default is a type, unlike every other `=` written in
     // an expression: `<T extends object = sized>`.
-    if (previous.raw === "=" && typeArgumentsOpen(preceding)) return true;
+    if (previous.raw === "=" && typeArgumentsOpen(preceding, end)) return true;
     // The `=` of a type alias introduces a type, unlike every other `=`.
-    return typeAliasInitializerFollows(preceding);
+    return typeAliasInitializerFollows(preceding, end);
+  };
+
+  /**
+   * Where the run of brackets ending at each length of a run walked so far
+   * begins, by run: the length itself where no bracket ends there. Each is
+   * read from the one before it, once, as the run grows, so a reference with
+   * a bracket after a bracket -- `o[0][0]`, as long as it is written -- does
+   * not read back over every bracket before each one.
+   *
+   * Asked only of runs that grow at their end and never change behind it,
+   * which are the runs the walk writes its output to.
+   */
+  const bracketRunStarts = new WeakMap<readonly Syntax[], number[]>();
+  const bracketRunStart = (nodes: readonly Syntax[], end: number): number => {
+    let starts = bracketRunStarts.get(nodes);
+    if (starts === undefined) {
+      starts = [0];
+      bracketRunStarts.set(nodes, starts);
+    }
+    for (let at = starts.length; at <= end; at += 1) {
+      const node = nodes[at - 1]!;
+      starts.push(
+        node.tag === "group" && node.delimiter === "bracket"
+          ? starts[at - 1]!
+          : at,
+      );
+    }
+    return starts[end]!;
   };
 
   /**
@@ -793,10 +824,7 @@ export function expandMacroSyntax(
   const typeReferenceStart = (
     preceding: readonly Syntax[],
   ): number | undefined => {
-    let at = preceding.length;
-    const bracket = (node: Syntax | undefined) =>
-      node?.tag === "group" && node.delimiter === "bracket";
-    while (bracket(preceding[at - 1])) at -= 1;
+    let at = bracketRunStart(preceding, preceding.length);
     let closed = angles(preceding[at - 1], ">");
     if (closed > 0) {
       at -= 1;
@@ -829,8 +857,11 @@ export function expandMacroSyntax(
    * `(v) => (x)` -- so reading a group after one of them as a type looked the
    * macros in it up among type macros, found none, and emitted them verbatim.
    */
-  const typeFollowsInExpression = (preceding: readonly Syntax[]): boolean => {
-    const previous = preceding.at(-1);
+  const typeFollowsInExpression = (
+    preceding: readonly Syntax[],
+    end = preceding.length,
+  ): boolean => {
+    const previous = preceding[end - 1];
     return (
       previous?.tag === "token" &&
       (previous.raw === "as" || previous.raw === "satisfies")
@@ -844,20 +875,37 @@ export function expandMacroSyntax(
    */
   const typeAliasInitializerFollows = (
     preceding: readonly Syntax[],
+    end = preceding.length,
   ): boolean => {
-    const previous = preceding.at(-1);
+    const previous = preceding[end - 1];
     if (previous?.tag !== "token" || previous.raw !== "=") return false;
-    // An alias names itself, so `type` is never the token directly in front of
-    // its `=`. Reading back from there instead took the `type` of a class
-    // field or a variable spelled that way -- `type = () => { ... }` -- for an
-    // alias, and read the arrow's body as the type it would then declare.
-    for (let at = preceding.length - 3; at >= 0; at -= 1) {
-      const node = preceding[at]!;
-      if (node.tag !== "token") return false;
-      if (node.raw === ";" || node.raw === "}") return false;
-      if (node.raw === "type") return true;
+    // An alias is written `type`, its name, and the type parameters it takes,
+    // so that is all that is read back over. An alias names itself, so `type`
+    // is never the token directly in front of its `=`: reading back from there
+    // took the `type` of a class field or a variable spelled that way -- `type
+    // = () => { ... }` -- for an alias, and read the arrow's body as the type
+    // it would then declare. Reading back further, to wherever a `type` was
+    // written in the statement, read the statement once for every `=` in it.
+    let at = end - 2;
+    if (angles(preceding[at], ">") > 0) {
+      let open = 0;
+      for (; at >= 0; at -= 1) {
+        const node = preceding[at]!;
+        if (node.tag !== "token") return false;
+        open += angles(node, ">") - angles(node, "<");
+        if (open <= 0) break;
+      }
+      if (open !== 0) return false;
+      at -= 1;
     }
-    return false;
+    const name = preceding[at];
+    const keyword = preceding[at - 1];
+    return (
+      name?.tag === "token" &&
+      (name.kind === "identifier" || name.kind === "keyword") &&
+      keyword?.tag === "token" &&
+      keyword.raw === "type"
+    );
   };
 
   /**
@@ -926,19 +974,36 @@ export function expandMacroSyntax(
    * default. A statement boundary ends the scan for the same reason it ends
    * the one `typeAliasInitializerFollows` makes: no type argument list spans
    * one.
+   *
+   * Read back from every `=` of a long statement, that was the statement once
+   * for each `=` in it. So how many `<` are left open at each length of a
+   * run is counted forwards once, as the run grows, each `>` closing the
+   * nearest one open: that leaves a `<` open exactly where reading back finds
+   * one with no `>` to spend on it.
    */
-  const typeArgumentsOpen = (nodes: readonly Syntax[]): boolean => {
-    let closed = 0;
-    for (let at = nodes.length - 1; at >= 0; at -= 1) {
-      const node = nodes[at]!;
-      if (node.tag !== "token") continue;
-      if (node.raw === ";" || node.raw === "}") return false;
-      closed += angleWidth(node.raw, ">");
-      const opens = angleWidth(node.raw, "<");
-      if (opens > closed) return true;
-      closed -= opens;
+  const openAngles = new WeakMap<readonly Syntax[], number[]>();
+  const typeArgumentsOpen = (
+    nodes: readonly Syntax[],
+    end = nodes.length,
+  ): boolean => {
+    let open = openAngles.get(nodes);
+    if (open === undefined) {
+      open = [0];
+      openAngles.set(nodes, open);
     }
-    return false;
+    for (let at = open.length; at <= end; at += 1) {
+      const node = nodes[at - 1]!;
+      const before = open[at - 1]!;
+      open.push(
+        node.tag !== "token"
+          ? before
+          : node.raw === ";" || node.raw === "}"
+            ? 0
+            : Math.max(0, before - angleWidth(node.raw, ">")) +
+              angleWidth(node.raw, "<"),
+      );
+    }
+    return open[end]! > 0;
   };
 
   /**
@@ -949,8 +1014,11 @@ export function expandMacroSyntax(
    * over the expression to the keyword, stopping at the `<` that would make
    * this a constraint.
    */
-  const classHeritageFollows = (preceding: readonly Syntax[]): boolean => {
-    let at = preceding.length - 1;
+  const classHeritageFollows = (
+    preceding: readonly Syntax[],
+    end = preceding.length,
+  ): boolean => {
+    let at = end - 1;
     let typeArguments = 0;
     for (; at >= 0; at -= 1) {
       const node = preceding[at]!;
@@ -1059,6 +1127,69 @@ export function expandMacroSyntax(
    * comparison against a negation, so enforesting first would commit to the
    * ordinary reading and the operator would never be offered the statement.
    */
+  /**
+   * Where in `input` one of `operators` is spelled, in order, and where the
+   * segment each position of `input` begins ends: at the next group,
+   * protected node, `;` or `,`. Read once for a run and the spellings asked
+   * about, rather than from every position in the run up to the end of its
+   * segment: a statement of fifty thousand operators read forwards from each
+   * of them, though no operator macro was spelled anywhere in it.
+   */
+  const infixSpellingsByRun = new WeakMap<
+    readonly Syntax[],
+    {
+      readonly spellings: string;
+      readonly positions: readonly number[];
+      readonly segmentEnds: readonly number[];
+    }
+  >();
+  const infixSpellings = (
+    input: readonly Syntax[],
+    operators: CompileParsedMacrosResult["operators"],
+  ) => {
+    const spellings = operators.map(({ spelling }) => spelling).join(" ");
+    const known = infixSpellingsByRun.get(input);
+    if (known?.spellings === spellings) return known;
+    const positions: number[] = [];
+    if (operators.length > 0)
+      input.forEach((node, at) => {
+        if (
+          node.tag === "token" &&
+          operators.some(
+            (operator) =>
+              operatorWidthAt(input, at, operator.spelling) !== undefined,
+          )
+        )
+          positions.push(at);
+      });
+    const segmentEnds = new Array<number>(input.length + 1);
+    segmentEnds[input.length] = input.length;
+    for (let at = input.length - 1; at >= 0; at -= 1) {
+      const node = input[at]!;
+      segmentEnds[at] =
+        node.tag === "group" ||
+        node.tag === "protected" ||
+        (node.tag === "token" && (node.raw === ";" || node.raw === ","))
+          ? at
+          : segmentEnds[at + 1]!;
+    }
+    const spelled = { spellings, positions, segmentEnds };
+    infixSpellingsByRun.set(input, spelled);
+    return spelled;
+  };
+
+  /** Where the first of `positions`, which ascend, after `index` stands. */
+  const firstAfter = (positions: readonly number[], index: number): number => {
+    let low = 0;
+    let high = positions.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (positions[middle]! <= index) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+
   const holdsStatementOperator = (children: readonly Syntax[]): boolean => {
     const infix = activeModules
       .flatMap(({ operators }) => operators)
@@ -2850,6 +2981,14 @@ export function expandMacroSyntax(
   const staticBlockFollows = (previous: Syntax | undefined): boolean =>
     previous?.tag === "token" && previous.raw === "static";
 
+  /**
+   * What reading a brace's header back finds: the kind of body a keyword says
+   * the brace opens, or else the function parameter list it was read up to.
+   */
+  type HeaderRead =
+    | { readonly found: BraceHeader }
+    | { readonly parameters: number | undefined };
+
   interface BraceHeader {
     readonly opens: "function" | "class" | "interface" | "enum" | "other";
     /** Where a function's parameter list stands in what precedes the brace. */
@@ -2967,32 +3106,23 @@ export function expandMacroSyntax(
   };
 
   /**
-   * What a brace group opens, read from what stands before it: the body of a
-   * function, arrow or method, and whether that function is a generator and
-   * whether it is async; the body of a class; or anything else -- a block, an
-   * object literal, a `switch`, a class static block. The brace stands at
-   * `end` in `run`, and only the syntax written before it is consulted, as
-   * `functionBodyFollows` does.
+   * What reading a brace's header back from `from` finds, `end` being where
+   * the brace stands: the kind of body its keyword opens, or else the
+   * function parameter list it is read up to, if any. The header is read back
+   * to where the statement or member began. A class body is recognized by its
+   * keyword, which also covers `class A extends mixin(B) {` with a parameter
+   * list in front of its body.
    */
-  const braceHeader = (run: SyntaxRun, end: number): BraceHeader => {
-    const previous = nodeAt(run, end - 1);
-    // An arrow is never a generator. Whether it is async is decided where the
-    // arrow begins, which is behind its parameters rather than behind its
-    // `=>`, so the body inherits what was decided on the way in.
-    if (lastTokenOf(previous)?.raw === "=>")
-      return { opens: "function", yields: false, awaits: undefined };
-    // A static block is evaluated as a function of its own, where neither
-    // `yield` nor `await` is an expression.
-    if (staticBlockFollows(previous))
-      return { opens: "other", yields: false, awaits: false };
-    // The header is read back to where the statement or member began. A
-    // class body is recognized by its keyword, which also covers
-    // `class A extends mixin(B) {` with a parameter list in front of its body.
+  const readHeaderBack = (
+    run: SyntaxRun,
+    from: number,
+    end: number,
+  ): HeaderRead | { readonly behind: number } => {
     let parameters: number | undefined;
     // Type arguments in a return type hold commas of their own:
     // `Generator<number, number, number>`.
     let typeArguments = 0;
-    for (let at = end - 1; at >= 0; at -= 1) {
+    for (let at = from; at >= 0; at -= 1) {
       const node = nodeAt(run, at)!;
       if (node.tag === "token") {
         typeArguments += angles(node, ">");
@@ -3004,24 +3134,24 @@ export function expandMacroSyntax(
           // heads the type reference and says nothing about the brace, so
           // reading on reached the `class` of `class C extends
           // make<{ a: 1 }>() {}` and took the object type for a class body.
-          if (opens > typeArguments) return interfaceBrace;
+          if (opens > typeArguments) return { found: interfaceBrace };
           typeArguments -= opens;
           continue;
         }
         if (typeArguments > 0) continue;
-        if (node.raw === "class") return classBrace;
+        if (node.raw === "class") return { found: classBrace };
         if (node.raw === "namespace" || node.raw === "module")
-          return namespaceBrace;
+          return { found: namespaceBrace };
         // An interface body is a member list, and so is an object type
         // written in what the interface extends: `interface I extends
         // Pick<{ a: 1 }, "a">`. Only a module-level interface is read by the
         // item consumer, so this is how a body nested any deeper -- inside a
         // namespace, a `declare global`, a function body, an item recovery
         // swallowed -- is recognized as the member list it is.
-        if (node.raw === "interface") return interfaceBrace;
+        if (node.raw === "interface") return { found: interfaceBrace };
         // An enum body is a member list too, and `const enum` and `declare
         // enum` are read past on the way back to the keyword that says so.
-        if (node.raw === "enum") return enumBrace;
+        if (node.raw === "enum") return { found: enumBrace };
         if (
           statementBoundaries.has(node.raw) ||
           node.raw === "=" ||
@@ -3044,13 +3174,81 @@ export function expandMacroSyntax(
       }
       // A brace where a return type is written is an object type, and the
       // header reads on past it.
+      if (node.tag !== "group" || node.delimiter !== "brace") continue;
+      if (!typeOperandFollows(nodeAt(run, at - 1))) break;
+      // Read on from there with nothing read yet, the header is what it is
+      // read back from behind that brace, which is read once for all the
+      // braces that reach it.
       if (
-        node.tag === "group" &&
-        node.delimiter === "brace" &&
-        !typeOperandFollows(nodeAt(run, at - 1))
+        parameters === undefined &&
+        typeArguments === 0 &&
+        at <= run.walked.length
       )
-        break;
+        return { behind: at };
     }
+    return { parameters };
+  };
+
+  /**
+   * What reading a header back from behind each brace already read so finds,
+   * by the walked run it stands in. Only what the run has walked is read back
+   * over, and what a run has walked never changes.
+   */
+  const headerReads = new WeakMap<readonly Syntax[], Map<number, HeaderRead>>();
+
+  /**
+   * What reading a header back finds from behind `brace`, an object type the
+   * header reads on past, with nothing read yet. Every brace of a type that
+   * chains them -- `{ a: 1 } | { b: 2 } | ...` -- reads on past the one before
+   * it to the same header, so reading back from each in turn read the whole
+   * chain behind each one. Each is read once here, and the chain is followed
+   * in one loop rather than one call deeper per brace.
+   */
+  const readHeaderBehind = (run: SyntaxRun, brace: number): HeaderRead => {
+    let reads = headerReads.get(run.walked);
+    if (reads === undefined) {
+      reads = new Map();
+      headerReads.set(run.walked, reads);
+    }
+    const waiting: number[] = [];
+    let at = brace;
+    let read = reads.get(at);
+    while (read === undefined) {
+      waiting.push(at);
+      const step = readHeaderBack(run, at - 1, Number.POSITIVE_INFINITY);
+      if ("behind" in step) {
+        at = step.behind;
+        read = reads.get(at);
+      } else read = step;
+    }
+    for (const waited of waiting) reads.set(waited, read);
+    return read;
+  };
+
+  /**
+   * What a brace group opens, read from what stands before it: the body of a
+   * function, arrow or method, and whether that function is a generator and
+   * whether it is async; the body of a class; or anything else -- a block, an
+   * object literal, a `switch`, a class static block. The brace stands at
+   * `end` in `run`, and only the syntax written before it is consulted, as
+   * `functionBodyFollows` does.
+   */
+  const braceHeader = (run: SyntaxRun, end: number): BraceHeader => {
+    const previous = nodeAt(run, end - 1);
+    // An arrow is never a generator. Whether it is async is decided where the
+    // arrow begins, which is behind its parameters rather than behind its
+    // `=>`, so the body inherits what was decided on the way in.
+    if (lastTokenOf(previous)?.raw === "=>")
+      return { opens: "function", yields: false, awaits: undefined };
+    // A static block is evaluated as a function of its own, where neither
+    // `yield` nor `await` is an expression.
+    if (staticBlockFollows(previous))
+      return { opens: "other", yields: false, awaits: false };
+    const first = readHeaderBack(run, end - 1, end);
+    const read =
+      "behind" in first ? readHeaderBehind(run, first.behind) : first;
+    if ("found" in read) return read.found;
+    let parameters = read.parameters;
     if (previous?.tag === "group" && previous.delimiter === "parenthesis")
       parameters = end - 1;
     if (parameters === undefined) return otherBrace;
@@ -4337,10 +4535,9 @@ export function expandMacroSyntax(
       if (node?.tag !== "group" || node.delimiter !== "bracket") return false;
       const start = typeReferenceStart(output);
       if (start === undefined || start === output.length) return false;
-      const before = output.slice(0, start);
       return category === "expr" || expressionRegion
-        ? typeFollowsInExpression(before)
-        : !labelColonEnds(start) && typePositionFollows(before);
+        ? typeFollowsInExpression(output, start)
+        : !labelColonEnds(start) && typePositionFollows(output, start);
     };
     /**
      * Whether the `:` written just before `end` in the syntax walked so far
@@ -5618,22 +5815,22 @@ export function expandMacroSyntax(
         // expression, item, or statement rather than from the operator token.
         // Search only the current top-level comma/semicolon-delimited segment;
         // groups delimit nested operands and are recursively visited later.
+        const infix = activeModules
+          .flatMap(({ operators }) => operators)
+          .filter(
+            ({ category: operatorCategory, fixity }) =>
+              operatorCategory === category && fixity === "infix",
+          );
+        const spelled = infixSpellings(input, infix);
+        const segmentEnd = spelled.segmentEnds[index + 1] ?? input.length;
         for (
-          let candidateIndex = index + 1;
-          candidateIndex < input.length;
-          candidateIndex += 1
+          let at = firstAfter(spelled.positions, index);
+          at < spelled.positions.length && spelled.positions[at]! < segmentEnd;
+          at += 1
         ) {
-          const candidate = input[candidateIndex];
-          if (candidate?.tag === "group" || candidate?.tag === "protected")
-            break;
-          if (candidate?.tag !== "token") continue;
-          if (candidate.raw === ";" || candidate.raw === ",") break;
-          const matches = activeModules
-            .flatMap(({ operators }) => operators)
-            .filter(
-              ({ category: operatorCategory, fixity }) =>
-                operatorCategory === category && fixity === "infix",
-            )
+          const candidateIndex = spelled.positions[at]!;
+          const candidate = input[candidateIndex] as TokenSyntax;
+          const matches = infix
             .flatMap((operator) => {
               const width = operatorWidthAt(
                 input,
