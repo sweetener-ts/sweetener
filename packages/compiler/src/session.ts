@@ -180,14 +180,18 @@ interface FileExpansion {
  * A path by where it leads. Of a path that is not there -- a file just
  * deleted, or one looked for and not found -- the part that is there is
  * resolved and the rest kept, so a host naming a deleted file through a link
- * names the same place the session recorded while the file was there.
+ * names the same place the session recorded while the file was there. A
+ * path under a root that is not there -- a drive letter nothing is mounted
+ * at -- has nothing to resolve and is kept whole.
  */
 function canonical(fileName: string): string {
   let existing = resolve(fileName);
   const missing: string[] = [];
   while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return resolve(fileName).replaceAll("\\", "/");
     missing.unshift(basename(existing));
-    existing = dirname(existing);
+    existing = parent;
   }
   return join(realpathSync(existing), ...missing).replaceAll("\\", "/");
 }
@@ -302,12 +306,15 @@ export function createSweetenerSession(
     }
     const signature = signatureOf(project);
     const previous = configs.get(configFile);
+    // Which sources opt in is read from the file system expansion reads, so
+    // the session and the expansion agree on it; each is kept by where it
+    // leads, which is how a request names it.
     const expanded = new Set(
       selectSweetSources({
         fileNames: project.typescript.fileNames,
         macroExtensions: project.sweet.macroExtensions,
-        readSource: (fileName) => diskFileSystem.system.readFile(fileName),
-      }).map(({ fileName }) => resolve(fileName)),
+        readSource: (fileName) => provider.fileSystem.system.readFile(fileName),
+      }).map(({ fileName }) => canonical(fileName)),
     );
     // A source the config no longer lists is not served under it, and its
     // expansion would hold the origins of a whole project's expansion for as
@@ -344,15 +351,17 @@ export function createSweetenerSession(
    * still there, plus the one being loaded.
    */
   const sweep = (loaded: string): void => {
-    const { system } = diskFileSystem;
     for (const [configFile, state] of configs) {
       if (configFile === loaded) continue;
-      if (!system.fileExists(configFile)) {
+      // A config is read from the disk, and a source from the file system
+      // expansion reads.
+      if (!diskFileSystem.system.fileExists(configFile)) {
         configs.delete(configFile);
         continue;
       }
       for (const fileName of state.files.keys())
-        if (!system.fileExists(fileName)) state.files.delete(fileName);
+        if (!provider.fileSystem.system.fileExists(fileName))
+          state.files.delete(fileName);
     }
   };
 
@@ -393,7 +402,7 @@ export function createSweetenerSession(
       : undefined;
     const made = new Map<string, FileExpansion>();
     for (const { name, inspection } of inspections) {
-      const key = resolve(name);
+      const key = canonicalOf(name);
       const consulted = [...configuration, ...inspection.inputs];
       const pathsOf = (found: (input: ExpansionInput) => boolean) =>
         Object.freeze(

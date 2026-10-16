@@ -170,6 +170,46 @@ describe("public compiler session", () => {
     await session.close();
   });
 
+  test("expands a source its config reaches through a linked directory", async () => {
+    const directory = realpathSync(
+      mkdtempSync(join(tmpdir(), "sweet-linked-")),
+    );
+    const elsewhere = join(directory, "elsewhere");
+    mkdirSync(elsewhere);
+    mkdirSync(join(directory, "project", "src"), { recursive: true });
+    writeFileSync(
+      join(elsewhere, "macros.sts"),
+      `export syntax duplicate:expr { rule { duplicate($value:tt) } => { [$value, $value] } }\n`,
+    );
+    const source = `import { duplicate } from "./macros.sts" for syntax;\nexport const answer = duplicate(21);\n`;
+    writeFileSync(join(elsewhere, "main.sts"), source);
+    symlinkSync(elsewhere, join(directory, "project", "src", "linked"));
+    const config = join(directory, "project", "tsconfig.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["src"],
+      }),
+    );
+    const session = createSweetenerSession();
+    // A host may name the source by the link, as the config lists it, or by
+    // where the link leads, as a bundler that resolves links does.
+    for (const filename of [
+      join(directory, "project", "src", "linked", "main.sts"),
+      join(elsewhere, "main.sts"),
+    ]) {
+      const result = await session.transform({
+        code: source,
+        filename,
+        configFile: config,
+      });
+      expect(result.diagnostics).toEqual([]);
+      expect(result.code).toContain("[21, 21]");
+    }
+    await session.close();
+  });
+
   test("caches stable transforms and invalidates macro dependents", async () => {
     const fixture = project();
     const source = readFile(fixture.main);
