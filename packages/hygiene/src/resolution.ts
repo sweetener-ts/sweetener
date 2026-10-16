@@ -10,7 +10,11 @@ import {
   type Phase,
   type SyntaxSpace,
 } from "./binding.js";
-import type { BindingEnvironment, EnvironmentStore } from "./environment.js";
+import {
+  bindingIndexKey,
+  type BindingEnvironment,
+  type EnvironmentStore,
+} from "./environment.js";
 import {
   ambiguousBindingCode,
   hygieneDiagnosticRegistry,
@@ -101,10 +105,17 @@ function resolveAmong(
   });
 }
 
-/** One spelling's bindings, filed under the largest scope each carries. */
-interface BindingsByLargestScope {
-  readonly unscoped: readonly Binding[];
-  readonly byScope: ReadonlyMap<ScopeId, readonly Binding[]>;
+/**
+ * One spelling's bindings, filed in a trie over their sorted scopes: a node
+ * holds the bindings whose scopes are exactly the scopes on the path to it.
+ */
+interface ScopeTrieNode {
+  readonly bindings: Binding[];
+  readonly children: Map<ScopeId, ScopeTrieNode>;
+}
+
+function createTrieNode(): ScopeTrieNode {
+  return { bindings: [], children: new Map() };
 }
 
 /**
@@ -113,16 +124,19 @@ interface BindingsByLargestScope {
  *
  * `resolveBinding` tests every binding of a reference's spelling, so resolving
  * n references to n bindings of one spelling costs n²: a file in which n
- * expansions each introduce a binder `v`. A binding applies only to a
- * reference that carries every one of its scopes, its largest among them, so
- * this files each spelling's bindings under their largest scope once and
- * tests only those filed under the reference's own scopes.
+ * expansions each introduce a binder `v`. A binding applies to a reference
+ * that carries every one of its scopes, so this files each spelling's bindings
+ * once in a trie over their sorted scopes and walks, for a reference, only
+ * the paths made of scopes the reference carries. Each node it reaches holds
+ * bindings that apply or leads to some, and from each it steps only to
+ * children the reference's scopes name, so a reference costs what it carries
+ * and what applies to it rather than every binding of its spelling.
  */
 export class BindingResolver {
   readonly #environments: EnvironmentStore;
   readonly #environment: BindingEnvironment;
   readonly #scopes: ScopeStore;
-  readonly #bySpelling = new Map<string, BindingsByLargestScope>();
+  readonly #bySpelling = new Map<string, ScopeTrieNode>();
 
   constructor(
     environments: EnvironmentStore,
@@ -135,45 +149,87 @@ export class BindingResolver {
   }
 
   resolve(identifier: IdentifierReference): BindingResolution {
-    const filed = this.#filed(identifier);
+    const carried = this.#scopes.scopesOf(identifier.scopes);
     const applicable: Binding[] = [];
-    const consider = (bindings: readonly Binding[] | undefined): void => {
-      for (const binding of bindings ?? []) {
-        if (
-          bindingVisibleAt(binding, identifier.position) &&
-          this.#scopes.subset(binding.scopes, identifier.scopes)
-        )
+    // Each entry is a node whose path the reference carries, and the index in
+    // `carried` past that path's greatest scope.
+    const pending: [ScopeTrieNode, number][] = [[this.#filed(identifier), 0]];
+    for (
+      let entry = pending.pop();
+      entry !== undefined;
+      entry = pending.pop()
+    ) {
+      const [node, next] = entry;
+      for (const binding of node.bindings) {
+        if (bindingVisibleAt(binding, identifier.position))
           applicable.push(binding);
       }
-    };
-    consider(filed.unscoped);
-    for (const scope of this.#scopes.scopesOf(identifier.scopes))
-      consider(filed.byScope.get(scope));
+      if (node.children.size <= carried.length - next) {
+        for (const [scope, child] of node.children) {
+          const index = sortedIndexOf(carried, scope, next);
+          if (index !== -1) pending.push([child, index + 1]);
+        }
+      } else {
+        for (let index = next; index < carried.length; index += 1) {
+          const child = node.children.get(carried[index]!);
+          if (child !== undefined) pending.push([child, index + 1]);
+        }
+      }
+    }
     return resolveAmong(this.#scopes, applicable);
   }
 
-  #filed(identifier: IdentifierReference): BindingsByLargestScope {
-    const key = `${String(identifier.spelling.length)}:${identifier.spelling}|${String(identifier.phase)}|${identifier.space}`;
+  #filed(identifier: IdentifierReference): ScopeTrieNode {
+    const key = bindingIndexKey(
+      identifier.spelling,
+      identifier.phase,
+      identifier.space,
+    );
     const known = this.#bySpelling.get(key);
     if (known !== undefined) return known;
-    const unscoped: Binding[] = [];
-    const byScope = new Map<ScopeId, Binding[]>();
+    const root = createTrieNode();
+    const nodeBySet = new Map<ScopeSetId, ScopeTrieNode>();
     for (const binding of this.#environments.declared(
       this.#environment,
       identifier,
     )) {
-      const largest = this.#scopes.scopesOf(binding.scopes).at(-1);
-      if (largest === undefined) unscoped.push(binding);
-      else {
-        const filed = byScope.get(largest);
-        if (filed === undefined) byScope.set(largest, [binding]);
-        else filed.push(binding);
+      let filed = nodeBySet.get(binding.scopes);
+      if (filed === undefined) {
+        let node = root;
+        for (const scope of this.#scopes.scopesOf(binding.scopes)) {
+          let child = node.children.get(scope);
+          if (child === undefined) {
+            child = createTrieNode();
+            node.children.set(scope, child);
+          }
+          node = child;
+        }
+        nodeBySet.set(binding.scopes, node);
+        filed = node;
       }
+      filed.bindings.push(binding);
     }
-    const filed = { unscoped, byScope };
-    this.#bySpelling.set(key, filed);
-    return filed;
+    this.#bySpelling.set(key, root);
+    return root;
   }
+}
+
+/** Where `value` stands in the sorted `values` at or after `from`, or -1. */
+function sortedIndexOf(
+  values: readonly ScopeId[],
+  value: ScopeId,
+  from: number,
+): number {
+  let low = from;
+  let high = values.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = values[middle]!;
+    if (candidate === value) return middle;
+    if (candidate < value) low = middle + 1;
+    else high = middle - 1;
+  }
+  return -1;
 }
 
 export interface AmbiguityDiagnosticOrigins {
