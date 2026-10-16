@@ -151,6 +151,27 @@ function expressionMarkerWidth(cursor: SyntaxCursor): number | undefined {
     : undefined;
 }
 
+/**
+ * How many nodes a `#core` marker written apart, as `#` and `core`, takes at
+ * the head of an expression: the two words, where the parenthesis that holds
+ * the core form follows them. Written as one token, `#core` is a primary of
+ * its own and its parenthesis a call after it; written apart, the `#` began
+ * no operand, so `# core (twice).length` was refused where `#core(twice)
+ * .length` was read. The parenthesis and what follows it are read after the
+ * marker as they are after the one token.
+ */
+function splitCoreMarkerWidth(cursor: SyntaxCursor): number | undefined {
+  const [marker, word, form] = [cursor.peek(), cursor.peek(1), cursor.peek(2)];
+  return marker?.tag === "token" &&
+    marker.raw === "#" &&
+    word?.tag === "token" &&
+    word.raw === "core" &&
+    form?.tag === "group" &&
+    form.delimiter === "parenthesis"
+    ? 2
+    : undefined;
+}
+
 function functionExpressionWidth(
   cursor: SyntaxCursor,
   context: ConsumerContext,
@@ -990,7 +1011,8 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       context,
     );
     const functionWidth = functionExpressionWidth(cursor, context);
-    const markerWidth = expressionMarkerWidth(cursor);
+    const markerWidth =
+      expressionMarkerWidth(cursor) ?? splitCoreMarkerWidth(cursor);
     const classWidth = classExpressionWidth(cursor, context);
     const arrow = arrowWidth(cursor, context);
     // A macro may be named by punctuation that begins no ordinary operand --

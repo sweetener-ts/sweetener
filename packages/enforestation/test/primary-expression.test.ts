@@ -350,3 +350,27 @@ describe("asyncArrowHead", () => {
     expect(asyncArrowHead(infixArrow(source))).toBe(expected);
   });
 });
+
+/**
+ * `#core` heads an expression as one token or written apart as `#` and
+ * `core`, and the core form's parenthesis and what follows it are read after
+ * either spelling alike.
+ */
+describe("a `#core` marker at the head of an expression", () => {
+  test.each([
+    "#core(twice).length",
+    "# core (twice).length",
+    "# core (twice)(5)",
+    "#core(twice)(5)",
+  ])("reads %s whole", (source) => {
+    const { result } = consume(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.cursor.atEnd).toBe(true);
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
+  test("reads `# core` with no parenthesis after it as no marker", () => {
+    expect(consume("# core").result.matched).toBe(false);
+  });
+});
