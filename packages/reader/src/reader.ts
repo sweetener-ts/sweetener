@@ -116,7 +116,7 @@ export function readSyntax(
   const pushFrame = (frame: GroupFrame): void => {
     cancellation.throwIfCancellationRequested();
     try {
-    nesting.enterNesting();
+      nesting.enterNesting();
     } catch (error) {
       if (!(error instanceof ResourceLimitError)) throw error;
       const enclosing = stack.at(-1);
