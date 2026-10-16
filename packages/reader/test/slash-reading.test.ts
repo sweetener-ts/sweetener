@@ -226,6 +226,19 @@ describe("TypeScript's reading of a source's slashes", () => {
     ).toEqual([]);
   });
 
+  /**
+   * TypeScript nests a chain of binary operators one node per operator, and
+   * reading its tree by recursion ran out of stack on a chain this long.
+   */
+  it("reads the slashes of fifty thousand divisions", () => {
+    const source = `x = ${Array.from({ length: 50_000 }, () => "a").join(" / ")};\nlet y: T\n/(/.test(s);`;
+    const { readings, unparsed } = typescriptSlashes(source, "standard");
+    expect(unparsed).toEqual([]);
+    expect([...readings]).toEqual([
+      [source.indexOf("/(/"), "regular-expression"],
+    ]);
+  });
+
   it("answers nothing where the parser could not read the source", () => {
     // TypeScript reads a call and a division where a macro's own syntax is
     // written, and reports the error where it gave up: at `b`, in what it

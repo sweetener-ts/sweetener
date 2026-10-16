@@ -209,6 +209,21 @@ describe("slashes the reader judges from what stands before them", () => {
     expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(formatted);
   });
 
+  /**
+   * Fifty thousand divisions are a hundred thousand spaces to lay out, and
+   * TypeScript's tree of them a chain fifty thousand deep: laid out one
+   * change at a time over the whole text, and read by recursion, they took
+   * seconds and ran out of stack.
+   */
+  test("lays out fifty thousand divisions", () => {
+    const terms = Array.from({ length: 50_000 }, () => "a");
+    expect(
+      formatSweetener(`x = ${terms.join("  /  ")};\n`, {
+        filepath: "regex.sts",
+      }),
+    ).toBe(`x = ${terms.join(" / ")};\n`);
+  });
+
   test("formats a source whose regular expression holds a delimiter", async () => {
     const source = "if (c) /(/.test(s);\nrun(  1 );\n";
     expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(

@@ -82,7 +82,12 @@ export function typescriptSlashes(
     const lines = file.getLineStarts();
     return createSpan(lines[line]!, lines[line + 1] ?? source.length);
   });
-  const visit = (node: ts.Node): void => {
+  // Walked with a stack of its own rather than by recursion: TypeScript nests
+  // a chain of binary operators one node per operator, and a chain fifty
+  // thousand long exhausted the call stack.
+  const pending: ts.Node[] = [file];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
     if (node.kind === ts.SyntaxKind.RegularExpressionLiteral)
       parsed.set(node.getStart(file), "regular-expression");
     if (
@@ -91,14 +96,15 @@ export function typescriptSlashes(
         node.operatorToken.kind === ts.SyntaxKind.SlashEqualsToken)
     )
       parsed.set(node.operatorToken.getStart(file), "division");
-    ts.forEachChild(node, visit);
     if (
       (ts.isStatement(node) || ts.isClassElement(node)) &&
       errors.some((at) => at >= node.getStart(file) && at < node.end)
     )
       unparsed.push(createSpan(node.getStart(file), node.end));
-  };
-  visit(file);
+    ts.forEachChild(node, (child) => {
+      pending.push(child);
+    });
+  }
   const certain = (offset: number) =>
     !unparsed.some(({ start, end }) => offset >= start && offset < end);
   // Read again until the read agrees with the parser where it parsed. Each

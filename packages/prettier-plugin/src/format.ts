@@ -372,16 +372,29 @@ function applyReplacements(
   source: string,
   replacements: readonly Replacement[],
 ): string {
-  let result = source;
-  for (const replacement of [...replacements].sort(
-    (left, right) => right.start - left.start,
-  )) {
-    result =
-      result.slice(0, replacement.start) +
-      replacement.text +
-      result.slice(replacement.end);
+  // Read once, in the order they stand, rather than splicing each into the
+  // whole text: a chain of fifty thousand operators is a hundred thousand
+  // replacements, and the text was copied for every one of them. Of two
+  // written at one place, the later one stands first.
+  const ordered = replacements
+    .map((replacement, written) => ({ replacement, written }))
+    .sort(
+      (left, right) =>
+        left.replacement.start - right.replacement.start ||
+        right.written - left.written,
+    );
+  const chunks: string[] = [];
+  let at = 0;
+  for (const { replacement } of ordered) {
+    if (replacement.start < at)
+      throw new RangeError(
+        `Formatting replacements overlap at ${String(replacement.start)}`,
+      );
+    chunks.push(source.slice(at, replacement.start), replacement.text);
+    at = replacement.end;
   }
-  return result;
+  chunks.push(source.slice(at));
+  return chunks.join("");
 }
 
 /**
