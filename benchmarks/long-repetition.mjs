@@ -21,16 +21,22 @@ import {
 const DECLARATIONS = 2_000;
 
 /**
- * One macro whose rule captures its whole body in a single `$(…)*`.
+ * One macro whose rules each capture its whole body in a single `$(…)*`.
  *
  * Every other scenario's repetitions run a handful of iterations. One that
  * copied what the earlier iterations captured, or built the capture sequence
  * again for every way out of the loop it offered, would cost the square of the
  * iterations and be invisible at a handful: 5,000 declarations took 33 s that
  * way, and 10,000 ran out of memory.
+ *
+ * The first rule never matches: after its repetition takes every token, it
+ * tries each way out, from the last, against a word the body does not hold.
+ * Building an exit's sequences when it was tried, before the word failed it,
+ * cost the square of the iterations too: 4,000 declarations took 36 s.
  */
 export function defineLongRepetitionBenchmark() {
   const definitionText = `export syntax emit:item {
+  rule { emit { $($items:tt)* NEVER } } => {}
   rule { emit { $($items:tt)* } } => { $($items)* }
 }
 `;
@@ -41,7 +47,7 @@ export function defineLongRepetitionBenchmark() {
   const sourceText = `emit {\n${declarations.join("\n")}\n}`;
   return {
     id: "expansion/long-repetition",
-    description: `Capture ${String(DECLARATIONS)} declarations in one repetition and replay them`,
+    description: `Capture ${String(DECLARATIONS)} declarations in one repetition, failing every exit of another first, and replay them`,
     run() {
       const origins = new OriginStore();
       const scopes = new ScopeStore();

@@ -124,18 +124,43 @@ interface GroupFrame {
  * iteration keeps the values it had.
  */
 interface Accumulated {
-  readonly value: CaptureValue;
+  readonly value: SlotValue;
   readonly previous: Accumulated | undefined;
   readonly length: number;
 }
 
-function accumulatedValues(
-  accumulated: Accumulated | undefined,
-): CaptureValue[] {
-  const values = new Array<CaptureValue>(accumulated?.length ?? 0);
-  for (let entry = accumulated; entry !== undefined; entry = entry.previous)
-    values[entry.length - 1] = entry.value;
-  return values;
+/**
+ * The sequence a slot captured in a repetition the match has left, built only
+ * if the match accepts. A repetition offers a way out after every iteration,
+ * and a greedy one takes at most one of them: building each exit's sequences
+ * as the exit was offered, or as it was first tried, cost the square of the
+ * repetition when the exits failed one after another.
+ */
+interface PendingSequence {
+  readonly kind: "pending-sequence";
+  readonly depth: number;
+  readonly cardinalityGroup: CardinalityGroupId;
+  readonly accumulated: Accumulated | undefined;
+}
+
+/** What a slot holds while the match runs. */
+type SlotValue = CaptureValue | PendingSequence;
+
+/** The capture value a slot holds, with every sequence in it built. */
+function builtValue(value: SlotValue): CaptureValue {
+  if (value.kind !== "pending-sequence") return value;
+  const elements = new Array<CaptureValue>(value.accumulated?.length ?? 0);
+  for (
+    let entry = value.accumulated;
+    entry !== undefined;
+    entry = entry.previous
+  )
+    elements[entry.length - 1] = builtValue(entry.value);
+  return createCaptureSequence({
+    depth: value.depth,
+    cardinalityGroup: value.cardinalityGroup,
+    elements,
+  });
 }
 
 interface RepeatFrame {
@@ -143,7 +168,7 @@ interface RepeatFrame {
   readonly cardinalityGroup: CardinalityGroupId;
   readonly captures: readonly CaptureSlotId[];
   readonly depthBySlot: ReadonlyMap<CaptureSlotId, number>;
-  readonly baseline: ReadonlyMap<CaptureSlotId, CaptureValue>;
+  readonly baseline: ReadonlyMap<CaptureSlotId, SlotValue>;
   readonly accumulated: ReadonlyMap<CaptureSlotId, Accumulated>;
   readonly count: number;
   readonly minimum: number;
@@ -155,17 +180,10 @@ interface RepeatFrame {
 interface ExecutionState {
   pc: ProgramCounter;
   cursor: SyntaxCursor;
-  captures: Map<CaptureSlotId, CaptureValue>;
+  captures: Map<CaptureSlotId, SlotValue>;
   groups: GroupFrame[];
   /** Never changed in place: an iteration replaces its frame. */
   repeats: RepeatFrame[];
-  /**
-   * A repetition this state has just left, whose capture sequences are built
-   * only when the state runs. A repetition offers a way out after every
-   * iteration, and a greedy one takes almost none of them, so building each
-   * exit's sequences as it was offered cost the square of the repetition.
-   */
-  leaving: RepeatFrame | undefined;
 }
 
 function cloneState(state: ExecutionState): ExecutionState {
@@ -175,7 +193,6 @@ function cloneState(state: ExecutionState): ExecutionState {
     captures: new Map(state.captures),
     groups: [...state.groups],
     repeats: [...state.repeats],
-    leaving: state.leaving,
   };
 }
 
@@ -219,30 +236,35 @@ function lookaheadMatches(
 
 function captureRecord(
   slots: readonly CaptureSlot[],
-  values: ReadonlyMap<CaptureSlotId, CaptureValue>,
+  values: ReadonlyMap<CaptureSlotId, SlotValue>,
 ): CaptureRecord {
   return new CaptureRecord(
     slots.flatMap((slot) => {
       const value = values.get(slot.slot);
-      return value === undefined ? [] : [[slot.capture, value] as const];
+      return value === undefined
+        ? []
+        : [[slot.capture, builtValue(value)] as const];
     }),
   );
 }
 
-function materializeRepeat(
+/**
+ * The captures after leaving the repetition: what it captured, as sequences
+ * built only if the match accepts, over what was captured before it. Costs
+ * the same however many iterations the repetition ran.
+ */
+function leaveRepeat(
   frame: RepeatFrame,
-  captures: ReadonlyMap<CaptureSlotId, CaptureValue>,
-): Map<CaptureSlotId, CaptureValue> {
+  captures: ReadonlyMap<CaptureSlotId, SlotValue>,
+): Map<CaptureSlotId, SlotValue> {
   const result = new Map(frame.baseline);
   for (const slot of frame.captures) {
-    result.set(
-      slot,
-      createCaptureSequence({
-        depth: frame.depthBySlot.get(slot)!,
-        cardinalityGroup: frame.cardinalityGroup,
-        elements: accumulatedValues(frame.accumulated.get(slot)),
-      }),
-    );
+    result.set(slot, {
+      kind: "pending-sequence",
+      depth: frame.depthBySlot.get(slot)!,
+      cardinalityGroup: frame.cardinalityGroup,
+      accumulated: frame.accumulated.get(slot),
+    });
   }
   for (const [slot, value] of captures) {
     if (!frame.captures.includes(slot)) result.set(slot, value);
@@ -313,7 +335,6 @@ export function executeMatcher(
       captures: new Map(),
       groups: [],
       repeats: [],
-      leaving: undefined,
     },
   ];
   const failedMemo = new Set<string>();
@@ -377,10 +398,6 @@ export function executeMatcher(
   while (pending.length > 0) {
     const state = pending.pop();
     if (state === undefined) break;
-    if (state.leaving !== undefined) {
-      state.captures = materializeRepeat(state.leaving, state.captures);
-      state.leaving = undefined;
-    }
     let running = true;
     while (running) {
       cancellation.throwIfCancellationRequested();
@@ -571,13 +588,13 @@ export function executeMatcher(
             exit: instruction.exit,
           };
           if (maximum === 0) {
-            state.captures = materializeRepeat(frame, state.captures);
+            state.captures = leaveRepeat(frame, state.captures);
             state.pc = instruction.exit;
             break;
           }
           if (instruction.minimum === 0) {
             const exitState = cloneState(state);
-            exitState.captures = materializeRepeat(frame, exitState.captures);
+            exitState.captures = leaveRepeat(frame, exitState.captures);
             exitState.pc = instruction.exit;
             pending.push(exitState);
           }
@@ -620,13 +637,13 @@ export function executeMatcher(
           if (canExit && canLoop) {
             const exitState = cloneState(state);
             exitState.repeats.pop();
-            exitState.leaving = updated;
+            exitState.captures = leaveRepeat(updated, exitState.captures);
             exitState.pc = frame.exit;
             pending.push(exitState);
           }
           if (!canLoop) {
             state.repeats.pop();
-            state.captures = materializeRepeat(updated, state.captures);
+            state.captures = leaveRepeat(updated, state.captures);
             state.pc = frame.exit;
             break;
           }
