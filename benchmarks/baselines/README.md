@@ -29,11 +29,13 @@ used to inherit the heap its predecessors left behind.
 - Protocol: one process per scenario (the runner's default isolation), all
   twenty-one scenarios.
 - Checked against itself straight afterwards, at a load near 6, the same
-  commit varied by up to 17 percent (`matcher/dense-choice` +17.2,
-  `printer/generated-origin-map` +13.6, `hygiene/union-older-into-newer`
-  -15.2) and failed the 15 percent tolerance. On this machine a failure of that
-  size from a loaded run says more about the machine than the change: re-run
-  idle before reading it as a regression.
+  commit failed on two rows, each past both the 15 percent and the 2 ms
+  tolerance: `expansion/macro-environment` p95 +23 percent (19.6 to 24.1 ms)
+  and `matcher/dense-choice` p50 +17 percent (51.7 to 60.6 ms). Other rows
+  moved by as much without failing, under the 2 ms floor
+  (`hygiene/union-older-into-newer` p50 -15 percent). On this machine a
+  failure of that size from a loaded run says more about the machine than the
+  change: re-run idle before reading it as a regression.
 
 ## `node24.json`
 
