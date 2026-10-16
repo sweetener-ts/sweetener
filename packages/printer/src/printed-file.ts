@@ -783,12 +783,18 @@ interface Surroundings {
   readonly before: Neighbour;
   readonly beforeThat: Neighbour;
   readonly after: Neighbour;
+  /**
+   * Whether `before` stands in a `for` header that iterates, where an `in`
+   * or an `of` heads what is iterated rather than comparing.
+   */
+  readonly iterates: boolean;
 }
 
 const edges: Surroundings = Object.freeze({
   before: "edge",
   beforeThat: "edge",
   after: "edge",
+  iterates: false,
 });
 
 /** Kinds of token that are an operand by themselves. */
@@ -857,24 +863,32 @@ function templateSeam(node: Neighbour): boolean {
   );
 }
 
+/** The core operators by fixity and spelling, read once from the table. */
+const coreOperatorsByFixity: ReadonlyMap<
+  CoreOperator["fixity"],
+  ReadonlyMap<string, CoreOperator>
+> = new Map(
+  (["prefix", "infix", "postfix"] as const).map((fixity) => [
+    fixity,
+    new Map(
+      coreExpressionOperators
+        .filter((operator) => operator.fixity === fixity)
+        .map((operator) => [operator.spelling, operator]),
+    ),
+  ]),
+);
+
 /** The core operator spelled `spelling` with `fixity`, if there is one. */
 function coreOperator(spelling: string, fixity: CoreOperator["fixity"]) {
-  return coreExpressionOperators.find(
-    (candidate) =>
-      candidate.spelling === spelling && candidate.fixity === fixity,
-  );
+  return coreOperatorsByFixity.get(fixity)!.get(spelling);
 }
 
 /**
  * The least an expression must bind at to hold together against what stands
- * in front of it, or undefined where that cannot be read. `forInOf` says the
- * run is a `for` header whose `in` or `of` heads what it iterates.
+ * in front of it, or undefined where that cannot be read.
  */
-function heldAfter(
-  surroundings: Surroundings,
-  forInOf: boolean,
-): number | undefined {
-  const { before, beforeThat } = surroundings;
+function heldAfter(surroundings: Surroundings): number | undefined {
+  const { before, beforeThat, iterates } = surroundings;
   if (before === "edge" || templateSeam(before)) return 0;
   if (before?.tag !== "token") return undefined;
   const spelling = before.raw;
@@ -897,7 +911,7 @@ function heldAfter(
     case "extends":
       return primaryPrecedence;
   }
-  if (forInOf && (spelling === "in" || spelling === "of"))
+  if (iterates && (spelling === "in" || spelling === "of"))
     return spelling === "in" ? commaPrecedence + 1 : assignmentPrecedence;
   // `yield*` is one operator written as two tokens.
   if (
@@ -1357,6 +1371,54 @@ export function printExpandedFile<Trace>(
     kindFor(syntax.origin) === "introduced";
   const pending: PrintItem[] = [...options.syntax].reverse();
   /**
+   * Whether `item` holds together where it stands without parentheses: it
+   * binds at least as tightly as what is written on either side of it needs
+   * -- the one rule an operator-precedence grammar parses by. It is asked of
+   * the nodes around it, so it holds as well in a run the walk left flat as
+   * among a parsed node's own operands, and only of a node that would
+   * otherwise be grouped.
+   */
+  const holdsWhereItStands = (item: ProtectedSyntax): boolean => {
+    const surroundings = surroundingsOf.get(item);
+    if (surroundings === undefined) return false;
+    if (item.category === "expr") {
+      const required = Math.max(
+        heldAfter(surroundings) ?? Infinity,
+        heldBefore(surroundings, item) ?? Infinity,
+      );
+      // `??` cannot sit beside `||` or `&&` unparenthesized.
+      const nullish = (node: Neighbour) =>
+        node !== "edge" && node?.tag === "token" && node.raw === "??";
+      const logical =
+        item.precedence === operatorPrecedence("||", "infix") ||
+        item.precedence === operatorPrecedence("&&", "infix");
+      return (
+        (holdingPrecedence(item) ?? -Infinity) >= required &&
+        !(
+          logical &&
+          (nullish(surroundings.before) || nullish(surroundings.after))
+        )
+      );
+    }
+    if (item.category !== "type") return false;
+    const required = typeHeldBetween(surroundings);
+    // A union written with a `|` of its own in front reads on from an
+    // operator before it as `Z | | A`, which does not parse.
+    const [head] = item.children;
+    const leadsWithOperator =
+      head?.tag === "token" && (head.raw === "|" || head.raw === "&");
+    const { before } = surroundings;
+    const afterOperator =
+      before !== "edge" &&
+      before?.tag === "token" &&
+      coreTypeOperators.some(({ spelling }) => spelling === before.raw);
+    return (
+      required !== undefined &&
+      typePrecedence(item) >= required &&
+      !(leadsWithOperator && afterOperator)
+    );
+  };
+  /**
    * Pushes a run of children to be printed, last first. `group` is the
    * brackets that hold the run, whose edges hold what stands at them whole;
    * where the run is a node's instead, `around` is what stands around that
@@ -1388,63 +1450,19 @@ export function printExpandedFile<Trace>(
       const previous = children[index - 1];
       const before = children[index - 2];
       const next = children[index + 1];
-      const surroundings: Surroundings = {
-        before: index > 0 ? previous : outside?.before,
-        beforeThat:
-          index > 1
-            ? before
-            : index === 1
-              ? outside?.before
-              : outside?.beforeThat,
-        after: next ?? outside?.after,
-      };
       if (child.tag === "protected") {
-        surroundingsOf.set(child, surroundings);
+        surroundingsOf.set(child, {
+          before: index > 0 ? previous : outside?.before,
+          beforeThat:
+            index > 1
+              ? before
+              : index === 1
+                ? outside?.before
+                : outside?.beforeThat,
+          after: next ?? outside?.after,
+          iterates: index > 0 ? forInOf : (outside?.iterates ?? false),
+        });
         if (index < firstSemicolon) withoutIn.add(child);
-        // An operand holds together where it binds at least as tightly as
-        // what is written on either side of it needs -- the one rule an
-        // operator-precedence grammar parses by. It is asked here of the
-        // nodes around it, so it holds as well in a run the walk left flat
-        // as among a parsed node's own operands.
-        const inner = unwrapped(child);
-        if (inner.category === "expr") {
-          const required = Math.max(
-            heldAfter(surroundings, forInOf) ?? Infinity,
-            heldBefore(surroundings, inner) ?? Infinity,
-          );
-          // `??` cannot sit beside `||` or `&&` unparenthesized.
-          const nullish = (node: Neighbour) =>
-            node !== "edge" && node?.tag === "token" && node.raw === "??";
-          const logical =
-            inner.precedence === operatorPrecedence("||", "infix") ||
-            inner.precedence === operatorPrecedence("&&", "infix");
-          if (
-            (holdingPrecedence(inner) ?? -Infinity) >= required &&
-            !(
-              logical &&
-              (nullish(surroundings.before) || nullish(surroundings.after))
-            )
-          )
-            boundOperands.add(inner);
-        } else if (inner.category === "type") {
-          const required = typeHeldBetween(surroundings);
-          // A union written with a `|` of its own in front reads on from an
-          // operator before it as `Z | | A`, which does not parse.
-          const [head] = inner.children;
-          const leadsWithOperator =
-            head?.tag === "token" && (head.raw === "|" || head.raw === "&");
-          const { before } = surroundings;
-          const afterOperator =
-            before !== "edge" &&
-            before?.tag === "token" &&
-            coreTypeOperators.some(({ spelling }) => spelling === before.raw);
-          if (
-            required !== undefined &&
-            typePrecedence(inner) >= required &&
-            !(leadsWithOperator && afterOperator)
-          )
-            boundOperands.add(inner);
-        }
       }
       if (child.tag === "protected" && child.category === "expr") {
         // Asked of the nodes on either side rather than of a parent: a call
@@ -1967,7 +1985,7 @@ export function printExpandedFile<Trace>(
         const leading = leadingPositions.get(item);
         const group =
           (item.category === "expr" || item.category === "type") &&
-          ((!atomic && !boundOperands.has(item)) ||
+          ((!atomic && !boundOperands.has(item) && !holdsWhereItStands(item)) ||
             (withoutIn.has(item) &&
               item.children.some(
                 (child) => child.tag === "token" && child.raw === "in",
