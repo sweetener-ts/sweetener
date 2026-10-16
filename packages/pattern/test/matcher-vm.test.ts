@@ -185,6 +185,72 @@ describe("matcher virtual machine", () => {
     });
   });
 
+  it("takes an exit a greedy repetition passed with the values it had then", () => {
+    const end = createLiteralPattern(
+      origin,
+      createTokenLiteralKey("identifier", "end"),
+    );
+    const pattern = createSequencePattern(origin, [
+      createRepeatPattern({
+        origin,
+        repetition: 12 as RepetitionId,
+        body: capture(),
+        minimum: 0,
+        depth: 1,
+        cardinalityGroup: 13 as CardinalityGroupId,
+      }),
+      end,
+      end,
+    ]);
+    // The repetition reads all four names, and the match backs out of the
+    // last two iterations to let the literals have them.
+    const result = match(pattern, [
+      identifier("a"),
+      identifier("b"),
+      identifier("end"),
+      identifier("end"),
+    ]);
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected match");
+    expect(result.cursor.atEnd).toBe(true);
+    expect(result.captures.get(captureId)).toMatchObject({
+      kind: "sequence",
+      elements: [
+        { kind: "leaf", syntax: [{ raw: "a" }] },
+        { kind: "leaf", syntax: [{ raw: "b" }] },
+      ],
+    });
+  });
+
+  // Each iteration used to copy every value captured before it, and build the
+  // whole sequence again for the exit it offered, so a repetition this long
+  // held hundreds of millions of copied values.
+  it("captures a long repetition in order", () => {
+    const names = Array.from({ length: 20_000 }, (_, index) =>
+      identifier(`name${String(index)}`),
+    );
+    const result = match(
+      createRepeatPattern({
+        origin,
+        repetition: 14 as RepetitionId,
+        body: capture(),
+        minimum: 0,
+        depth: 1,
+        cardinalityGroup: 15 as CardinalityGroupId,
+      }),
+      names,
+    );
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected match");
+    const captured = result.captures.get(captureId);
+    if (captured?.kind !== "sequence") throw new Error("expected a sequence");
+    expect(
+      captured.elements.map(
+        (element) => element.kind === "leaf" && element.syntax[0],
+      ),
+    ).toEqual(names);
+  });
+
   it("materializes empty and nested capture dimensions", () => {
     const inner = createRepeatPattern({
       origin,
