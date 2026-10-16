@@ -98,8 +98,9 @@ function configurationDiagnostic(
  * TypeScript 6.0 public typings do not carry. The rules are TypeScript's, and
  * agree with it on every case tested: a `//` comment only, `///` allowed,
  * whitespace after the slashes allowed, anything after the directive allowed,
- * only among the comments in front of the first token, and the last of them
- * wins.
+ * only among the comments in front of the first token, the last of them wins,
+ * and the name is read without regard to case -- TypeScript lowercases a
+ * pragma's name before it looks it up, so `// @TS-NOCHECK` is a directive.
  */
 function checkDirective(text: string | undefined): boolean | undefined {
   if (text === undefined) return undefined;
@@ -109,12 +110,12 @@ function checkDirective(text: string | undefined): boolean | undefined {
     const matched = checkDirectivePattern.exec(
       text.slice(range.pos, range.end),
     );
-    if (matched !== null) enabled = matched[1] === "ts-check";
+    if (matched !== null) enabled = matched[1]?.toLowerCase() === "ts-check";
   }
   return enabled;
 }
 
-const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/u;
+const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/iu;
 
 function remapGeneratedDiagnostics(options: {
   readonly diagnostics: readonly ts.Diagnostic[];
@@ -640,14 +641,24 @@ export function runConfiguredProjectCommand(options: {
    * against such a file waited for an answer that never came and was dropped:
    * `check` reported success over `export const held = duplicate;`, a name the
    * emitted code does not define, because the compile-time import is erased.
+   * Under `noCheck` TypeScript checks nothing at all, so nothing answers in any
+   * file.
    */
   const resolvesNamesIn = (fileName: string | undefined): boolean => {
-    if (fileName === undefined) return true;
+    // A sentence is held against the name it is about, which a file holds;
+    // one with no file, or naming a file this command never handed to
+    // TypeScript, is a fault in whatever held it, and staying quiet about it
+    // dropped the sentence without a trace.
+    if (fileName === undefined)
+      throw new Error(
+        "A sentence about a name was held against no file, so nothing can say whether TypeScript answered it",
+      );
     const virtual = virtualBySource.get(fileName);
-    // A source this command never handed to TypeScript is not a source this
-    // command can say anything about. Silence rather than a sentence nothing
-    // asked for.
-    if (virtual === undefined) return true;
+    if (virtual === undefined)
+      throw new Error(
+        `A sentence about a name was held against ${fileName}, which this command did not hand to TypeScript`,
+      );
+    if (project.typescript.options.noCheck === true) return false;
     // A `// @ts-check` or `// @ts-nocheck` in the file overrides both the
     // extension and `checkJs`, so it is the first question. Asked of the file
     // TypeScript itself parsed, and answered the way TypeScript answers it.

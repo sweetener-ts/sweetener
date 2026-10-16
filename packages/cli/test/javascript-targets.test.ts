@@ -229,13 +229,35 @@ describe("JavaScript macro extensions", () => {
       expected: [[4024, ts.DiagnosticCategory.Warning]],
       exitCode: 0,
     },
-  ])("$what", ({ extension, macros, main, expected, exitCode }) => {
+    {
+      // TypeScript lowercases a pragma's name before looking it up.
+      what: "a directive is read whatever its case",
+      extension: "sts",
+      macros: heldName.macros,
+      main: `// @TS-NOCHECK\nimport { duplicate } from "./macros.sts" for syntax;\nexport const held = duplicate;\n`,
+      expected: [[4024, ts.DiagnosticCategory.Warning]],
+      exitCode: 0,
+    },
+    {
+      what: "a project TypeScript does not check at all warns rather than falling silent",
+      extension: "sts",
+      macros: heldName.macros,
+      main: `import { duplicate } from "./macros.sts" for syntax;\nexport const held = duplicate;\n`,
+      compilerOptions: { noCheck: true },
+      expected: [[4024, ts.DiagnosticCategory.Warning]],
+      exitCode: 0,
+    },
+  ])("$what", ({ extension, macros, main, expected, exitCode, ...rest }) => {
     const { config } = project({
       files: {
         [`src/macros.${extension}`]: macros,
         [`src/main.${extension}`]: main,
       },
-      compilerOptions: { checkJs: false, noEmit: true },
+      compilerOptions: {
+        checkJs: false,
+        noEmit: true,
+        ...("compilerOptions" in rest ? rest.compilerOptions : {}),
+      },
       sweet: { macroExtensions: [`.${extension}`] },
     });
     const result = runConfiguredProjectCommand({
