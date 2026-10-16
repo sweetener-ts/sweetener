@@ -37,5 +37,26 @@ export function defineScopeStoreBenchmarks() {
           throw new Error("scope set lost entries");
       },
     },
+    {
+      id: "union-older-into-newer",
+      description:
+        "Union a set of older scopes into a set of newer ones, sharing no prefix",
+      operations: 2_000,
+      execute(store, operations) {
+        // Adding each older scope to the newer set one at a time steps over
+        // the whole newer set and interns every set on the way: d·(d + 1)
+        // sets, 4 million at this size.
+        let older = store.empty();
+        for (let index = 0; index < operations; index += 1) {
+          older = store.add(older, store.freshScope("generated"));
+        }
+        let newer = store.empty();
+        for (let index = 0; index <= operations; index += 1) {
+          newer = store.add(newer, store.freshScope("generated"));
+        }
+        if (store.size(store.union(older, newer)) !== 2 * operations + 1)
+          throw new Error("scope set union lost entries");
+      },
+    },
   ];
 }

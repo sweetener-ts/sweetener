@@ -49,6 +49,8 @@ interface ScopeSetNode {
   added: Map<ScopeId, ScopeSetNode> | undefined;
   /** What removing each scope from this set gave. */
   removed: Map<ScopeId, ScopeSetNode> | undefined;
+  /** What the union of this set and each smaller set gave. */
+  unioned: Map<ScopeSetId, ScopeSetNode> | undefined;
 }
 
 export class ScopeStore {
@@ -66,6 +68,7 @@ export class ScopeStore {
     scopes: Object.freeze([]),
     added: undefined,
     removed: undefined,
+    unioned: undefined,
   };
   #internHits = 0;
 
@@ -121,10 +124,43 @@ export class ScopeStore {
       leftNode.size <= rightNode.size
         ? [leftNode, rightNode]
         : [rightNode, leftNode];
-    let union = larger;
-    for (const scope of this.#scopesOf(smaller)) {
-      union = this.#add(union, scope);
+    if (smaller.size === 0) return larger.id;
+    if (smaller.size === 1) return this.#add(larger, smaller.last!).id;
+    const known = larger.unioned?.get(smaller.id);
+    if (known !== undefined) {
+      this.#internHits += 1;
+      return known.id;
     }
+    // The union holds the larger set's scopes below the smaller set's least
+    // as they stand, so it steps back only over the larger set's scopes above
+    // that one and adds them and the smaller set's in order, each the greatest
+    // so far. Adding to a set what it was once extended by finds the set that
+    // gave, so the only sets this interns are those the union starts with
+    // that the store did not hold.
+    const added = descendingScopes(smaller).reverse();
+    const least = added[0]!;
+    const passed: ScopeId[] = [];
+    let union = larger;
+    while (union.last !== undefined && union.last > least) {
+      passed.push(union.last);
+      union = union.parent!;
+    }
+    let addedIndex = union.last === least ? 1 : 0;
+    let passedIndex = passed.length - 1;
+    while (addedIndex < added.length || passedIndex >= 0) {
+      const fromAdded =
+        addedIndex < added.length ? added[addedIndex] : undefined;
+      const fromPassed = passedIndex >= 0 ? passed[passedIndex] : undefined;
+      const next =
+        fromPassed === undefined ||
+        (fromAdded !== undefined && fromAdded <= fromPassed)
+          ? fromAdded!
+          : fromPassed;
+      if (fromAdded === next) addedIndex += 1;
+      if (fromPassed === next) passedIndex -= 1;
+      union = this.#add(union, next);
+    }
+    (larger.unioned ??= new Map()).set(smaller.id, union);
     return union.id;
   }
 
@@ -209,13 +245,21 @@ export class ScopeStore {
     const known = this.#publishedTo.get(set);
     if (known !== undefined) return known;
     const node = this.#requireSet(set);
-    let published = node;
-    for (const scope of this.#scopesOf(node)) {
+    const scopes = this.#scopesOf(node);
+    const withdrawn = new Set<ScopeId>();
+    for (const scope of scopes) {
       const partner = this.#invocationPartners.get(scope);
       if (partner !== undefined && this.#contains(node, partner)) {
-        published = this.#remove(this.#remove(published, scope), partner);
+        withdrawn.add(scope);
+        withdrawn.add(partner);
       }
     }
+    const kept = scopes.filter((scope) => !withdrawn.has(scope));
+    const published = this.#rebuild(
+      node,
+      sharedPrefixLength(kept, scopes),
+      kept,
+    );
     this.#publishedTo.set(set, published.id);
     return published.id;
   }
@@ -280,6 +324,7 @@ export class ScopeStore {
         scopes: undefined,
         added: undefined,
         removed: undefined,
+        unioned: undefined,
       };
       this.#sets.set(result.id, result);
     } else {
@@ -323,6 +368,25 @@ export class ScopeStore {
       }
     }
     (node.removed ??= new Map()).set(scope, result);
+    return result;
+  }
+
+  /**
+   * The node for the sorted `scopes`, whose first `shared` scopes are the
+   * first `shared` of `node`'s. It steps back from `node` to the set those
+   * scopes form and adds each later scope as the greatest, so the only sets
+   * it interns are those the answer's own scopes start with.
+   */
+  #rebuild(
+    node: ScopeSetNode,
+    shared: number,
+    scopes: readonly ScopeId[],
+  ): ScopeSetNode {
+    let result = node;
+    while (result.size > shared) result = result.parent!;
+    for (let index = shared; index < scopes.length; index += 1) {
+      result = this.#add(result, scopes[index]!);
+    }
     return result;
   }
 
@@ -370,4 +434,23 @@ export class ScopeStore {
     }
     return node;
   }
+}
+
+/** The node's scopes, greatest first, read without building its array. */
+function descendingScopes(node: ScopeSetNode): ScopeId[] {
+  const scopes: ScopeId[] = [];
+  for (let step = node; step.last !== undefined; step = step.parent!)
+    scopes.push(step.last);
+  return scopes;
+}
+
+/** How many scopes the two sorted arrays start with in common. */
+function sharedPrefixLength(
+  left: readonly ScopeId[],
+  right: readonly ScopeId[],
+): number {
+  const length = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < length && left[index] === right[index]) index += 1;
+  return index;
 }
