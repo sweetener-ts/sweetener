@@ -60,6 +60,7 @@ import {
   asyncNamedArrow,
   classElementEndsBefore,
   classMemberNameFollows,
+  staticClassMember,
   parameterBinder,
   readTypeParenthesis,
   returnTypeReadsInConsequent,
@@ -1122,6 +1123,12 @@ export function expandMacroSyntax(
    */
   interface Binder extends Extent {
     readonly scopes: ScopeSetId;
+    /**
+     * Whether this is a class's type parameter, which the class's static
+     * members do not see: a static member belongs to the class itself, and
+     * no one instance's type argument.
+     */
+    readonly ofClass: boolean;
   }
 
   /** A stretch of a run: indexes into it, from `from` up to `to`. */
@@ -1203,28 +1210,40 @@ export function expandMacroSyntax(
     if (binders === undefined) names.set(spelling, [binder]);
     else binders.push(binder);
   };
+  /** The binder written with `scopes`, within `extent`. */
+  const binderWith = (
+    scopes: ScopeSetId,
+    extent: Extent,
+    ofClass: boolean,
+  ): Binder => ({
+    scopes,
+    from: extent.from,
+    to: extent.to,
+    ofClass,
+  });
   const recordValue = (
     into: CollectedBindings,
     spelling: string,
     scopes: ScopeSetId,
     extent: Extent,
   ): void =>
-    recordIn((into.values ??= new Map()), spelling, {
-      scopes,
-      from: extent.from,
-      to: extent.to,
-    });
+    recordIn(
+      (into.values ??= new Map()),
+      spelling,
+      binderWith(scopes, extent, false),
+    );
   const recordType = (
     into: CollectedBindings,
     spelling: string,
     scopes: ScopeSetId,
     extent: Extent,
+    ofClass = false,
   ): void =>
-    recordIn((into.types ??= new Map()), spelling, {
-      scopes,
-      from: extent.from,
-      to: extent.to,
-    });
+    recordIn(
+      (into.types ??= new Map()),
+      spelling,
+      binderWith(scopes, extent, ofClass),
+    );
   /** What was collected, as the region it describes. */
   const bindingsOf = (into: CollectedBindings): RegionBindings =>
     into.values === undefined && into.types === undefined
@@ -1440,6 +1459,7 @@ export function expandMacroSyntax(
     open: number,
     into: CollectedBindings,
     extent: Extent,
+    ofClass = false,
   ): void => {
     let depth = angles(nodes[open], "<");
     let entryBegins = true;
@@ -1460,7 +1480,7 @@ export function expandMacroSyntax(
       )
         continue;
       if (node.kind === "identifier")
-        recordType(into, node.raw, node.scopes, extent);
+        recordType(into, node.raw, node.scopes, extent, ofClass);
       entryBegins = false;
     }
   };
@@ -1941,17 +1961,23 @@ export function expandMacroSyntax(
               recordType(into, name.raw, name.scopes, extent);
           }
           if (spelling(nodes[at + 2]) === "<")
-            bindTypeParameters(nodes, at + 2, into, {
-              from: at + 2,
-              to: extent.to,
-            });
+            bindTypeParameters(
+              nodes,
+              at + 2,
+              into,
+              { from: at + 2, to: extent.to },
+              node.raw === "class",
+            );
         } else if (node.raw === "class" && spelling(name) === "<")
           // A class expression may go unnamed and still declare type
           // parameters.
-          bindTypeParameters(nodes, at + 1, into, {
-            from: at + 1,
-            to: extent.to,
-          });
+          bindTypeParameters(
+            nodes,
+            at + 1,
+            into,
+            { from: at + 1, to: extent.to },
+            true,
+          );
         continue;
       }
       // `infer U` declares `U` for the conditional type whose `extends`
@@ -2306,7 +2332,60 @@ export function expandMacroSyntax(
      * `following` binding contract binds in.
      */
     readonly context: () => ScopeId;
+    /**
+     * Where the run is a class body, the stretches of it its static members
+     * take, which the class's type parameters do not reach. Undefined for
+     * any other run.
+     */
+    readonly statics: readonly Extent[] | undefined;
   }
+
+  /**
+   * The stretches of the class body `nodes` its static members take. A body
+   * read as members is made of them, and one walked as tokens is split where
+   * the member reader would split it.
+   */
+  const staticMembers = (nodes: readonly Syntax[]): readonly Extent[] => {
+    const statics: Extent[] = [];
+    let member: Syntax[] = [];
+    let start = 0;
+    const end = (at: number): void => {
+      if (member.length > 0 && staticClassMember(member))
+        statics.push({ from: start, to: at });
+      member = [];
+      start = at;
+    };
+    for (let at = 0; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      if (node.tag === "protected" && node.category === "classElement") {
+        end(at);
+        if (staticClassMember(node.children))
+          statics.push({ from: at, to: at + 1 });
+        start = at + 1;
+        continue;
+      }
+      if (classElementEndsBefore(member, node)) end(at);
+      member.push(node);
+    }
+    end(nodes.length);
+    return statics;
+  };
+
+  /**
+   * Whether the walk stands in a static member of the class whose type
+   * parameters the region at `depth` binds: of the first class body inside
+   * that region, which is the class's own. A run or two may stand between
+   * the two, where the reader wrapped the body as it read the class.
+   */
+  const inStaticMember = (depth: number): boolean => {
+    const body = regions
+      .slice(depth + 1)
+      .find(({ statics }) => statics !== undefined);
+    return (
+      body?.statics?.some(({ from, to }) => from <= body.at && body.at < to) ===
+      true
+    );
+  };
 
   /**
    * What a macro's binding contracts declare in `following`: each binding
@@ -2545,14 +2624,15 @@ export function expandMacroSyntax(
     written: Syntax,
   ): boolean =>
     regions.some(
-      (region) =>
+      (region, depth) =>
         (category === "type" ? region.bindings.types : region.bindings.values)
           ?.get(spelling)
           ?.some(
             (binder) =>
               binder.from <= region.at &&
               region.at < binder.to &&
-              options.scopeStore.subset(binder.scopes, written.scopes),
+              options.scopeStore.subset(binder.scopes, written.scopes) &&
+              !(binder.ofClass && inStaticMember(depth)),
           ) === true,
     );
 
@@ -3417,6 +3497,8 @@ export function expandMacroSyntax(
      * otherwise the run's own.
      */
     context = definitionContextScope(options.scopeStore),
+    /** Whether the run is the inside of a class's body: its members. */
+    classBody = false,
   ): {
     readonly syntax: SyntaxSequence;
     readonly environment: BindingEnvironment;
@@ -3480,6 +3562,7 @@ export function expandMacroSyntax(
       following: options.scopeStore.empty(),
       given: options.scopeStore.empty(),
       context,
+      statics: classBody ? staticMembers(initialInput) : undefined,
     };
     regions.push(region);
     const output: Syntax[] = [];
@@ -6059,6 +6142,9 @@ export function expandMacroSyntax(
               (node.delimiter === "parenthesis" ||
                 node.delimiter === "bracket"),
             declaresAround ? context : undefined,
+            node.tag === "group" &&
+              node.delimiter === "brace" &&
+              bodyCategory === "classElement",
           );
         } finally {
           if (frame !== undefined) liftFrames.pop();

@@ -271,6 +271,13 @@ const boundaries: readonly Boundary[] = [
     outside: ["readonly number[]"],
   },
   {
+    name: "a class's type parameter, in a static member",
+    source:
+      "export class C<boxed> { v!: boxed; static s: boxed = []; static { const t: boxed = []; void t; } }",
+    inside: ["v!: boxed;"],
+    outside: ["static s: (readonly number[])", "const t: (readonly number[])"],
+  },
+  {
     name: "a method signature's type parameter in a type literal",
     source: "export type L = { m<boxed>(v: boxed): boxed; n: boxed };",
     inside: ["m<boxed>(v: boxed): boxed;"],

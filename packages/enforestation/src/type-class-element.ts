@@ -782,6 +782,33 @@ export function classMemberNameFollows(member: readonly Syntax[]): boolean {
   return memberNameFollows(member, classMemberModifiers);
 }
 
+/** What may follow a class member's name, where a modifier cannot. */
+const memberAfterName = new Set(["<", "=", ";", ":", "?", "!"]);
+
+/**
+ * Whether the class member `member` is static: `static` written among the
+ * modifiers in front of its name, or a static block. A member named `static`
+ * is not, and TypeScript tells the two apart by what follows the word: the
+ * member's name, its body or another modifier, where the name it is stands
+ * before a parameter list, a type, an initializer or the member's end.
+ */
+export function staticClassMember(member: readonly Syntax[]): boolean {
+  const declaration = member.slice(decoratorPrefixLength(member));
+  for (let at = 0; at < declaration.length; at += 1) {
+    const node = declaration[at]!;
+    if (!token(node) || !classMemberModifiers.written.has(node.raw))
+      return false;
+    if (node.raw !== "static") continue;
+    const next = declaration[at + 1];
+    return (
+      next !== undefined &&
+      !(next.tag === "group" && next.delimiter === "parenthesis") &&
+      !(token(next) && memberAfterName.has(next.raw))
+    );
+  }
+  return false;
+}
+
 /**
  * Whether `next` begins a new class member after `member`, the syntax of the
  * member read so far. A member ends at its `;`, at the body of a method or
