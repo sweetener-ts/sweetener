@@ -165,7 +165,11 @@ function computeTokenKind(
 type JsxMode = "standard" | "tag" | "text" | "expression";
 
 interface JsxContainer {
-  readonly returnMode: "standard" | "expression";
+  /**
+   * The mode the scan returns to once the element closes: `tag` for an
+   * element written as an attribute's value without braces, `<a b=<c />>`.
+   */
+  readonly returnMode: "standard" | "expression" | "tag";
   depth: number;
 }
 
@@ -258,42 +262,80 @@ function readsRegularExpression(
   return reading === undefined ? allowed : reading === "regular-expression";
 }
 
-/** Whether a token opens a parenthesis, bracket or brace group. */
-function opensGroup(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.OpenParenToken ||
-    kind === ts.SyntaxKind.OpenBracketToken ||
-    kind === ts.SyntaxKind.OpenBraceToken
-  );
-}
-
-/** Whether a token closes one. */
-function closesGroup(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.CloseParenToken ||
-    kind === ts.SyntaxKind.CloseBracketToken ||
-    kind === ts.SyntaxKind.CloseBraceToken
-  );
+/**
+ * Whether a token can stand among the parameters of a signature or function
+ * type: names, keywords, literals and the punctuation types are written with.
+ * A `-` or `+` stands there as a literal's sign or a mapped type's modifier.
+ * No parameter of a type has an initializer, so no `=` stands there, and no
+ * `/` or other operator does; nor does an unterminated literal.
+ */
+function standsInSignatureParameters(
+  kind: ts.SyntaxKind,
+  unterminated: boolean,
+): boolean {
+  if (unterminated) return false;
+  if (kind === ts.SyntaxKind.Identifier) return true;
+  if (kind >= ts.SyntaxKind.FirstKeyword && kind <= ts.SyntaxKind.LastKeyword)
+    return true;
+  switch (kind) {
+    case ts.SyntaxKind.StringLiteral:
+    case ts.SyntaxKind.NumericLiteral:
+    case ts.SyntaxKind.BigIntLiteral:
+    case ts.SyntaxKind.NoSubstitutionTemplateLiteral:
+    case ts.SyntaxKind.TemplateHead:
+    case ts.SyntaxKind.TemplateMiddle:
+    case ts.SyntaxKind.TemplateTail:
+    case ts.SyntaxKind.OpenParenToken:
+    case ts.SyntaxKind.CloseParenToken:
+    case ts.SyntaxKind.OpenBracketToken:
+    case ts.SyntaxKind.CloseBracketToken:
+    case ts.SyntaxKind.OpenBraceToken:
+    case ts.SyntaxKind.CloseBraceToken:
+    case ts.SyntaxKind.LessThanToken:
+    case ts.SyntaxKind.GreaterThanToken:
+    case ts.SyntaxKind.CommaToken:
+    case ts.SyntaxKind.ColonToken:
+    case ts.SyntaxKind.SemicolonToken:
+    case ts.SyntaxKind.QuestionToken:
+    case ts.SyntaxKind.DotToken:
+    case ts.SyntaxKind.DotDotDotToken:
+    case ts.SyntaxKind.BarToken:
+    case ts.SyntaxKind.AmpersandToken:
+    case ts.SyntaxKind.EqualsGreaterThanToken:
+    case ts.SyntaxKind.MinusToken:
+    case ts.SyntaxKind.PlusToken:
+      return true;
+    default:
+      return false;
+  }
 }
 
 /**
- * Whether a `>` closes the type parameters of a function type rather than a
- * JSX opening tag: `<T>(v: T) => T`, which is how a generic function type is
- * written in an annotation or a type alias. An element with children can have
- * a `(` next too -- `<div>(text)</div>` -- but its parentheses are text and no
- * `=>` follows them, so the arrow is what tells the two apart.
+ * Whether the `<T>` the lookahead has just read is the type parameter list of
+ * a function type, `<T>(v: T) => T`, or of a call or construct signature,
+ * `<T>(v: T): T`, rather than a JSX opening tag. An element with children can
+ * have a `(` next too -- `<div>(text)</div>` -- so what follows the
+ * parentheses is what tells them apart.
  *
- * TypeScript decides this from the parser's position rather than by lookahead,
- * knowing whether a type or an expression is expected. A token-level scanner
- * does not know, and after `:` or `=` either one may begin.
+ * TypeScript decides this from the parser's position, knowing whether a type
+ * or an expression is expected. A token-level scanner does not know, and
+ * after `:` or `=` either one may begin. An arrow after the parentheses is
+ * read as a function type wherever it stands, as it always has been. A `:` is
+ * read as a signature's only where a member of an interface or an object type
+ * begins (`memberStart`, from `beginsMember`): an element's text says
+ * `(note): see below` as readily as a signature says `(v: T): T`, and an
+ * element is not written at the start of a member.
  *
- * The lookahead stands at the `>` its caller has just read, and reads on from
- * there.
+ * Parameters of a type hold no expression -- no initializer, so no regular
+ * expression and no element -- so the walk reads them as types and stops at
+ * the first token no type contains. An element's text reaches one by its
+ * closing tag at the latest, so the walk never reads past the element.
  */
-function functionTypeFollows(
+function signatureFollows(
   lookahead: ts.Scanner,
   templates: TemplateSubstitutions,
   slashes: SlashReadings,
+  memberStart: boolean,
 ): boolean {
   if (
     nextLookaheadToken(lookahead, templates, false, slashes) !==
@@ -301,56 +343,47 @@ function functionTypeFollows(
   )
     return false;
   let depth = 1;
-  const judgement = new SlashJudgement(true);
   while (depth > 0) {
-    const kind = nextLookaheadToken(
-      lookahead,
-      templates,
-      judgement.regularExpressionAllowed,
-      slashes,
-    );
-    if (kind === ts.SyntaxKind.EndOfFileToken) return false;
+    const kind = nextLookaheadToken(lookahead, templates, false, slashes);
+    if (!standsInSignatureParameters(kind, lookahead.isUnterminated()))
+      return false;
     if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
     else if (kind === ts.SyntaxKind.CloseParenToken) depth -= 1;
-    judgement.take(kind, lookahead.hasPrecedingLineBreak());
   }
+  const after = nextLookaheadToken(lookahead, templates, false, slashes);
   return (
-    nextLookaheadToken(lookahead, templates, false, slashes) ===
-    ts.SyntaxKind.EqualsGreaterThanToken
+    after === ts.SyntaxKind.EqualsGreaterThanToken ||
+    (memberStart && after === ts.SyntaxKind.ColonToken)
   );
 }
 
 /**
- * Whether the `<` at `start` opens a JSX element rather than the type
- * parameters of a generic arrow.
+ * Whether the `<` at `start` opens a JSX element rather than a type parameter
+ * list.
  *
- * A comma or an `extends` before the closing `>` means type parameters: `<T,>`
- * and `<T extends U>` are the two spellings that are unambiguous in TSX, and
- * neither is an element. Only what is written directly inside this `<` says
- * that: a comma nested in the tag's own type arguments -- `<Comp<A, B> />`,
- * `<Comp<Map<K, V>> />` -- or one inside an attribute value is a comma of that
- * region, and reading it as the `<T,>` of a generic arrow left the element
- * ungrouped, its tag a run of loose tokens that nothing walked.
+ * Where an expression is written, TypeScript's parser decides it from the
+ * tokens straight after the name, and so does this: `<T,`, `<T =` and
+ * `<T extends U` are a generic arrow's type parameters, and anything else
+ * opens an element -- `<T extends>`, `<T extends=…` and `<T extends/` among
+ * them, whose `extends` is an attribute's name. A `const` before the name is
+ * a modifier and is passed over. What is written further on in the tag never
+ * enters into it, so an attribute holding an element, a regular expression or
+ * a string is never scanned here -- reading those with an ordinary scanner
+ * took the `/` of an inner closing tag for a regular expression and an
+ * apostrophe in an inner element's text for a string, and either one hid the
+ * end of the tag.
  *
- * Which comma is which is a question about tokens, so this reads tokens. A
- * character scan cannot tell a regular expression from a division, and a
- * regular expression holding a bracket, a quote or a comment's opening left
- * the scan looking for a region's end that never came: it ran to the end of
- * the file and reported no element, so `<div title={/\(/.source} />` lost its
- * grouping and every one of its tag's lexical modes. Scanning it as TypeScript
- * does costs one rescan and answers exactly.
- *
- * The walk ends at the first token that stands in neither grammar at the top
- * level of a `<`: a `;`, or a closer for a group that was never opened. A tag
- * writes neither, and a type argument list writes a `;` only inside the braces
- * of an object type, so reaching one means this `<` opens nothing -- and the
- * walk stops there rather than reading to the end of the file at every `<`.
+ * Where a type is written there is no element, and a type parameter list
+ * opens a function type or a signature. Every spelling of one is caught by the
+ * rule above but the bare `<T>`, so only that one asks what follows it
+ * (`signatureFollows`).
  */
 function looksLikeJsxStart(
   lookahead: ts.Scanner,
   source: string,
   start: number,
   slashes: SlashReadings,
+  memberStart: boolean,
 ): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
   const nameStart = start + 1;
@@ -358,52 +391,47 @@ function looksLikeJsxStart(
     return false;
   lookahead.setText(source, nameStart);
   const templates: TemplateSubstitutions = [];
-  /** How many `<` of the tag's own type arguments are still open. */
-  let angles = 0;
-  /** How many brace, bracket and parenthesis groups the walk stands inside. */
-  let groups = 0;
-  const judgement = new SlashJudgement(false);
-  for (;;) {
-    // An attribute's braces are the only place inside a tag or a type argument
-    // list where an expression is written, so they are the only place a `/`
-    // can begin a regular expression. Outside them a `/` closes the tag.
-    const kind = nextLookaheadToken(
-      lookahead,
-      templates,
-      groups > 0 && judgement.regularExpressionAllowed,
-      slashes,
+  if (
+    nextLookaheadToken(lookahead, templates, false, slashes) ===
+    ts.SyntaxKind.ConstKeyword
+  )
+    nextLookaheadToken(lookahead, templates, false, slashes);
+  const third = nextLookaheadToken(lookahead, templates, false, slashes);
+  if (third === ts.SyntaxKind.CommaToken || third === ts.SyntaxKind.EqualsToken)
+    return false;
+  if (third === ts.SyntaxKind.ExtendsKeyword) {
+    const fourth = nextLookaheadToken(lookahead, templates, false, slashes);
+    return (
+      fourth === ts.SyntaxKind.EqualsToken ||
+      fourth === ts.SyntaxKind.GreaterThanToken ||
+      fourth === ts.SyntaxKind.SlashToken
     );
-    judgement.take(kind, lookahead.hasPrecedingLineBreak());
-    if (kind === ts.SyntaxKind.EndOfFileToken) return false;
-    if (opensGroup(kind)) {
-      groups += 1;
-      continue;
-    }
-    if (closesGroup(kind)) {
-      if (groups === 0) return false;
-      groups -= 1;
-      continue;
-    }
-    if (groups > 0) continue;
-    if (kind === ts.SyntaxKind.LessThanToken) {
-      angles += 1;
-      continue;
-    }
-    if (kind === ts.SyntaxKind.GreaterThanToken) {
-      if (angles > 0) {
-        angles -= 1;
-        continue;
-      }
-      return !functionTypeFollows(lookahead, templates, slashes);
-    }
-    if (angles > 0) continue;
-    if (
-      kind === ts.SyntaxKind.CommaToken ||
-      kind === ts.SyntaxKind.ExtendsKeyword ||
-      kind === ts.SyntaxKind.SemicolonToken
-    )
-      return false;
   }
+  if (third === ts.SyntaxKind.GreaterThanToken)
+    return !signatureFollows(lookahead, templates, slashes, memberStart);
+  return true;
+}
+
+/**
+ * Whether a `<` written after a token of kind `previous`, inside a group
+ * opened by `innermost`, stands where a member of an interface or an object
+ * type begins: after the `{` that opens the body, after a `;` or `,` that ends
+ * the member before it inside those braces, or after the `new` of a construct
+ * signature. A `,` inside brackets or parentheses separates elements and
+ * arguments, and the braces of a JSX expression hold an expression; either
+ * may well be an element.
+ */
+function beginsMember(
+  previous: ts.SyntaxKind | undefined,
+  innermost: ts.SyntaxKind | undefined,
+): boolean {
+  if (previous === ts.SyntaxKind.NewKeyword) return true;
+  return (
+    (previous === ts.SyntaxKind.OpenBraceToken ||
+      previous === ts.SyntaxKind.SemicolonToken ||
+      previous === ts.SyntaxKind.CommaToken) &&
+    innermost === ts.SyntaxKind.OpenBraceToken
+  );
 }
 
 const endsExpression: boolean[] = [];
@@ -703,6 +731,18 @@ export function scanWithSupportedTypeScript(
   const judgement = new SlashJudgement(true);
   /** Whether a line break stands between the last token and this one. */
   let lineBreakBefore = false;
+  /** The kind of the token before this one, trivia included. */
+  let previousKind: ts.SyntaxKind | undefined;
+  /** The kind of the last token before this one that was not trivia. */
+  let previousSignificantKind: ts.SyntaxKind | undefined;
+  /**
+   * The opening token of each group the scan stands inside, innermost last:
+   * a parenthesis, bracket or brace, or a template's head for its
+   * substitution. The brace that opens a JSX expression is recorded as
+   * `JsxExpression`, since what it holds is an expression and never a member.
+   * Only `beginsMember` asks, and only which one is innermost.
+   */
+  const openGroups: ts.SyntaxKind[] = [];
   /** The offsets of `slashes` the scan has read a slash at. */
   const read = new Set<number>();
   while (true) {
@@ -719,6 +759,20 @@ export function scanWithSupportedTypeScript(
     let kind: ts.SyntaxKind;
     if (jsxMode === "text") {
       kind = scanner.scanJsxToken();
+    } else if (
+      jsxMode === "tag" &&
+      !insideTypeArguments &&
+      previousKind === ts.SyntaxKind.EqualsToken &&
+      (source.charCodeAt(scanStart) === 0x22 /* " */ ||
+        source.charCodeAt(scanStart) === 0x27) /* ' */
+    ) {
+      // An attribute's string value, which TypeScript scans with JSX's own
+      // rule when it is written straight after the `=`: a backslash escapes
+      // nothing and the string may run across lines. After a space it scans an
+      // ordinary string, and so does the branch below. The scanner leaves the
+      // token's start where the `=` began, so it is set here first.
+      scanner.resetTokenState(scanStart);
+      kind = scanner.scanJsxAttributeValue();
     } else {
       kind = scanner.scan();
       if (
@@ -792,7 +846,13 @@ export function scanWithSupportedTypeScript(
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
       judgement.regularExpressionAllowed &&
-      looksLikeJsxStart(lookahead, source, scanner.getTokenStart(), slashes)
+      looksLikeJsxStart(
+        lookahead,
+        source,
+        scanner.getTokenStart(),
+        slashes,
+        beginsMember(previousSignificantKind, openGroups.at(-1)),
+      )
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
       jsxMode = "tag";
@@ -815,6 +875,18 @@ export function scanWithSupportedTypeScript(
         jsxExpressionBraceDepth.push(0);
         jsxMode = "expression";
       }
+    } else if (
+      jsxMode === "tag" &&
+      !insideTypeArguments &&
+      kind === ts.SyntaxKind.LessThanToken &&
+      previousSignificantKind === ts.SyntaxKind.EqualsToken
+    ) {
+      // An element written as an attribute's value, `<a b=<c />>`. The tag
+      // it stands in resumes once it closes, still among its attributes.
+      jsxContainers.push({ returnMode: "tag", depth: 0 });
+      closingTag = false;
+      selfClosingTag = false;
+      typeArgumentDepth = 0;
     } else if (jsxMode === "tag") {
       if (kind === ts.SyntaxKind.LessThanSlashToken) {
         closingTag = true;
@@ -885,7 +957,29 @@ export function scanWithSupportedTypeScript(
     } else {
       judgement.take(kind, lineBreakBefore, lexicalMode !== "jsx-text");
       lineBreakBefore = false;
+      previousSignificantKind = kind;
+      if (
+        kind === ts.SyntaxKind.OpenBraceToken &&
+        (modeBeforeScan === "text" ||
+          (modeBeforeScan === "tag" && !insideTypeArguments))
+      )
+        openGroups.push(ts.SyntaxKind.JsxExpression);
+      else if (
+        kind === ts.SyntaxKind.OpenParenToken ||
+        kind === ts.SyntaxKind.OpenBracketToken ||
+        kind === ts.SyntaxKind.OpenBraceToken ||
+        kind === ts.SyntaxKind.TemplateHead
+      )
+        openGroups.push(kind);
+      else if (
+        kind === ts.SyntaxKind.CloseParenToken ||
+        kind === ts.SyntaxKind.CloseBracketToken ||
+        kind === ts.SyntaxKind.CloseBraceToken ||
+        kind === ts.SyntaxKind.TemplateTail
+      )
+        openGroups.pop();
     }
+    previousKind = kind;
     if (
       kind !== ts.SyntaxKind.EndOfFileToken &&
       scanner.getTextPos() <= scanStart

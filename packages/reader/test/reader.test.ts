@@ -5,12 +5,27 @@ import {
   type ScopeSetId,
   type SourceId,
 } from "@sweetener/shared";
-import type { Syntax } from "@sweetener/syntax";
+import type { Syntax, TokenSyntax } from "@sweetener/syntax";
 import { describe, expect, it } from "vitest";
 import { printLossless, readSyntax } from "../src/index.js";
 
 const sourceId = 7 as SourceId;
 const scopes = 0 as ScopeSetId;
+
+/** Every token under `root`, in source order. */
+function tokensOf(root: Syntax): TokenSyntax[] {
+  const tokens: TokenSyntax[] = [];
+  const pending: Syntax[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.tag === "token") tokens.push(node);
+    else if (node.tag === "group") {
+      if (node.close.tag === "token") pending.push(node.close);
+      pending.push(...[...node.children].reverse(), node.open);
+    } else pending.push(...[...node.children].reverse());
+  }
+  return tokens;
+}
 
 describe("generic JSX elements", () => {
   /**
@@ -52,6 +67,64 @@ describe("generic JSX elements", () => {
     const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
     expect(result.diagnostics).toEqual([]);
     expect(printLossless(result.root)).toBe(source);
+  });
+
+  /**
+   * A call or construct signature is written `<T>(v: T): T` among the members
+   * of an interface or an object type, where a `<` stands at the start of a
+   * member: after the `{`, `;` or `,` before it, or after `new`. Read as an
+   * element, it took the rest of the file as the element's contents.
+   */
+  it.each([
+    ["a call signature", "interface I { <T>(v: T): T; }\n"],
+    ["a construct signature", "interface I { new <T>(v: T): T; }\n"],
+    [
+      "a call signature after another member",
+      "interface I {\n  a: string;\n  <T>(v: T): T;\n}\n",
+    ],
+    [
+      "a call signature in an object type",
+      "type F = { a: string, <T>(v: T): T };\n",
+    ],
+    [
+      "a signature whose parameter is an object type",
+      "interface I { <T>(v: { a: T; b: string[] }): T; }\n",
+    ],
+    ["a constructor type", "type C = new <T>(v: T) => T;\n"],
+  ])("reads %s as type parameters, not JSX", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    expect(JSON.stringify(result.root).includes("jsx-element")).toBe(false);
+  });
+
+  /**
+   * Where an expression is written, the same `(…):` is an element's text.
+   */
+  it.each([
+    ["after `=`", "const e = <b>(note): see below</b>;\n"],
+    ["after a comma in an array", "const e = [a, <b>(note): see</b>];\n"],
+    ["after a comma in a call", "render(a, <b>(note): see</b>);\n"],
+    ["in an element's braces", "const e = <div>{<b>(note): see</b>}</div>;\n"],
+    [
+      "in an attribute's braces",
+      "const e = <div title={<b>(note): see</b>} />;\n",
+    ],
+    [
+      "after a semicolon in a block",
+      "function f() { g(); return <b>(note): see</b>; }\n",
+    ],
+  ])("reads `(…):` as an element's text %s", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    // Read as text, the words are one JSX text token; read as a signature,
+    // each is a token of its own.
+    expect(
+      tokensOf(result.root).filter(
+        (token) => token.raw === "note" || token.raw === "see",
+      ),
+    ).toEqual([]);
   });
 
   /**
@@ -98,6 +171,8 @@ describe("generic JSX elements", () => {
       "const f = <T extends string>(v: T): T => v;\n",
     ],
     ["two parameters", "const f = <T, U>(v: T, w: U) => v;\n"],
+    ["a default", "const f = <T = unknown>(v: T): T => v;\n"],
+    ["a `const` modifier", "const f = <const T,>(v: T) => v;\n"],
   ])("still reads a generic arrow with %s", (_, source) => {
     const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
     expect(result.diagnostics).toEqual([]);
@@ -190,20 +265,105 @@ describe("generic JSX elements", () => {
   });
 
   /**
-   * A `;` and an unopened closer stand in no opening tag and in no type
-   * argument list, so a `<` that reaches one opens neither, and the walk that
-   * looked for its `>` stops there rather than at the end of the file.
+   * Whether a `<` opens an element is decided as TypeScript's parser decides
+   * it: by the tokens straight after the name. A `<` that reaches a `;` opens
+   * an element there too -- TypeScript reports its missing closing tag -- and
+   * the file still reads back byte for byte.
    */
-  it("reads on after a `<` that opens nothing", () => {
-    const source = "const x = <a;\nconst y = <b;\nconst z = <div />;\n";
+  it("reads a tag left unfinished as TypeScript does", () => {
+    const source = "const x = <a;\nconst y = 1;\n";
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(printLossless(result.root)).toBe(source);
+    expect(
+      result.root.children.some(
+        (child) => child.tag === "group" && child.delimiter === "jsx-element",
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * An element written inside another's attribute is read as an element, as
+   * every other expression there is.
+   *
+   * The lookahead that judged the outer tag walked its attributes with an
+   * ordinary scanner, which knows nothing of JSX: it read the `/` of an inner
+   * closing tag as the start of a regular expression, which swallowed the
+   * attribute's `}`, and an apostrophe in an inner element's text as the start
+   * of a string. Either way the outer tag never seemed to end, so it was
+   * judged no element, and the text it holds was read -- and expanded -- as
+   * code.
+   */
+  it.each([
+    ["an element", "const e = <Tooltip title={<b>Hi</b>}>x</Tooltip>;\n"],
+    [
+      "an element returned by an arrow",
+      "const e = <List renderItem={(i) => <li>{i}</li>}>x</List>;\n",
+    ],
+    ["a fragment", "const e = <Suspense fallback={<>wait</>}>x</Suspense>;\n"],
+    [
+      "an element whose text holds an apostrophe",
+      "const e = <Tooltip title={<b>Don't</b>}>x</Tooltip>;\n",
+    ],
+    [
+      "an element given directly as the value",
+      "const e = <Tooltip title=<b>Hi</b>>x</Tooltip>;\n",
+    ],
+  ])(
+    "reads the text of an element whose attribute holds %s as text",
+    (_, source) => {
+      const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+      expect(result.diagnostics).toEqual([]);
+      expect(printLossless(result.root)).toBe(source);
+      const text = tokensOf(result.root).find((token) => token.raw === "x");
+      expect(text?.lexicalMode).toBe("jsx-text");
+    },
+  );
+
+  /**
+   * `extends` says type parameters only straight after the name, and then
+   * only when what follows it could begin a constraint. Written anywhere else
+   * in a tag it is an attribute's name.
+   */
+  it.each([
+    ["after another attribute", "const e = <Comp a extends />;\n"],
+    ["with a value", 'const e = <Comp extends="x" />;\n'],
+    ["closing the tag", "const e = <Comp extends>x</Comp>;\n"],
+  ])("groups an element with an attribute named `extends` %s", (_, source) => {
     const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
     expect(result.diagnostics).toEqual([]);
     expect(printLossless(result.root)).toBe(source);
     expect(
-      result.root.children.filter(
+      result.root.children.some(
         (child) => child.tag === "group" && child.delimiter === "jsx-element",
       ),
-    ).toHaveLength(1);
+    ).toBe(true);
+  });
+
+  /**
+   * A string attribute value is JSX's, not JavaScript's: a backslash escapes
+   * nothing in it and it may run across lines. TypeScript scans it so only
+   * where it follows the `=` directly; after a space it scans an ordinary
+   * string, and so does this.
+   */
+  it.each([
+    ["a trailing backslash", 'const e = <a title="C:\\" />;\n'],
+    ["a line break", 'const e = <a className="one\n  two" />;\n'],
+    ["a single-quoted backslash", "const e = <a title='C:\\' />;\n"],
+  ])("reads a string attribute holding %s as JSX does", (_, source) => {
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(result.diagnostics).toEqual([]);
+    expect(printLossless(result.root)).toBe(source);
+    const value = tokensOf(result.root).find((token) =>
+      token.raw.startsWith(source.includes("'") ? "'" : '"'),
+    );
+    expect(value?.raw.at(-1)).toBe(source.includes("'") ? "'" : '"');
+  });
+
+  it("reads a string after a space following `=` as TypeScript does", () => {
+    const source = 'const e = <a title= "C:\\" />;\n';
+    const result = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(printLossless(result.root)).toBe(source);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
   });
 
   it("still reads an element whose text begins with a parenthesis", () => {

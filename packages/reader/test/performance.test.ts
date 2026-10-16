@@ -102,47 +102,84 @@ function percentile(values: readonly number[], fraction: number): number {
   ]!;
 }
 
+/**
+ * The median cost per character of reading `large` against `small`, measured
+ * over interleaved rounds, with a message that says how far the rounds agreed.
+ */
+function costRatio(
+  small: string,
+  large: string,
+): {
+  readonly ratio: number;
+  readonly message: string;
+} {
+  const sources = [small, large];
+  const rates: number[][] = sources.map(() => []);
+  for (const source of sources)
+    for (let index = 0; index < 3; index += 1)
+      readSyntax(source, { sourceId, scopes, variant: "jsx" });
+  // Every round is measured, and none of them ends the loop. Stopping at the
+  // first round that passed made the statistic the best of up to
+  // twenty-four, which is blind to exactly the costs that are usually there
+  // and occasionally not: a cache that degrades, an allocation that only
+  // bites once the collector wakes, work a warm run hides. A reader over the
+  // bound four rounds in five passed on the fifth and the other four were
+  // never counted.
+  const until = performance.now() + budgetMs;
+  for (let round = 0; round < rounds; round += 1) {
+    measure(sources, rates);
+    if (performance.now() > until) break;
+  }
+
+  // The median of each, rather than the minimum of either: a machine that
+  // interrupted half the rounds still has a middle, and a reader that is
+  // slow most of the time no longer hides behind its best round.
+  const smallRate = percentile(rates[0]!, 0.5);
+  const largeRate = percentile(rates[1]!, 0.5);
+  // The spread, so a failure says whether the machine or the reader is the
+  // reason: a run where the rounds disagree wildly is a busy machine, and
+  // one where they agree is the reader.
+  const spread = (
+    percentile(rates[1]!, 0.9) / percentile(rates[1]!, 0.1)
+  ).toFixed(2);
+  return {
+    ratio: largeRate / smallRate,
+    message:
+      `${largeRate.toFixed(0)} ns/char at ${String(large.length)} characters ` +
+      `against ${smallRate.toFixed(0)} at ${String(small.length)}, over ` +
+      `${String(rates[0]!.length)} rounds with a p90/p10 spread of ${spread}`,
+  };
+}
+
+/**
+ * Elements whose text opens a parenthesis it does not close, each where an
+ * expression begins: `{ready && <span>(</span>}`. A `<span>` followed by a
+ * `(` might still be a function type's `<T>(v: T) => T`, and the lookahead
+ * that asks reads on through the parentheses -- to the end of the file, when
+ * nothing stopped it before the `)` that never comes.
+ */
+function openParentheses(count: number): string {
+  const parts = ["export const list = (\n  <ul>\n"];
+  for (let index = 0; index < count; index += 1)
+    parts.push(`    {ready${String(index)} && <span>(</span>}\n`);
+  parts.push("  </ul>\n);\n");
+  return parts.join("");
+}
+
 describe("reading scales with the size of the file", () => {
   test("costs no more per character as the file grows", () => {
     const small = components(25);
     const large = components(200);
     expect(large.length / small.length).toBeGreaterThan(7);
-    const sources = [small, large];
+    const { ratio, message } = costRatio(small, large);
+    expect(ratio, message).toBeLessThan(allowedRatio);
+  });
 
-    const rates: number[][] = sources.map(() => []);
-    for (const source of sources)
-      for (let index = 0; index < 3; index += 1)
-        readSyntax(source, { sourceId, scopes, variant: "jsx" });
-    // Every round is measured, and none of them ends the loop. Stopping at the
-    // first round that passed made the statistic the best of up to
-    // twenty-four, which is blind to exactly the costs that are usually there
-    // and occasionally not: a cache that degrades, an allocation that only
-    // bites once the collector wakes, work a warm run hides. A reader over the
-    // bound four rounds in five passed on the fifth and the other four were
-    // never counted.
-    const until = performance.now() + budgetMs;
-    for (let round = 0; round < rounds; round += 1) {
-      measure(sources, rates);
-      if (performance.now() > until) break;
-    }
-
-    // The median of each, rather than the minimum of either: a machine that
-    // interrupted half the rounds still has a middle, and a reader that is
-    // slow most of the time no longer hides behind its best round.
-    const smallRate = percentile(rates[0]!, 0.5);
-    const largeRate = percentile(rates[1]!, 0.5);
-    const ratio = largeRate / smallRate;
-    // The spread, so a failure says whether the machine or the reader is the
-    // reason: a run where the rounds disagree wildly is a busy machine, and
-    // one where they agree is the reader.
-    const spread = (
-      percentile(rates[1]!, 0.9) / percentile(rates[1]!, 0.1)
-    ).toFixed(2);
-    expect(
-      ratio,
-      `${largeRate.toFixed(0)} ns/char at ${String(large.length)} characters ` +
-        `against ${smallRate.toFixed(0)} at ${String(small.length)}, over ` +
-        `${String(rates[0]!.length)} rounds with a p90/p10 spread of ${spread}`,
-    ).toBeLessThan(allowedRatio);
+  test("reads an element's parentheses no further than the element", () => {
+    const small = openParentheses(125);
+    const large = openParentheses(1_000);
+    expect(large.length / small.length).toBeGreaterThan(7);
+    const { ratio, message } = costRatio(small, large);
+    expect(ratio, message).toBeLessThan(allowedRatio);
   });
 });
