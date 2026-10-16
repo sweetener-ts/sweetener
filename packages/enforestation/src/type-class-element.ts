@@ -833,19 +833,6 @@ export function createTypeTracker(
 
 export type TypeTracker = ReturnType<typeof createTypeTracker>;
 
-function classElementCanEndAtBrace(children: readonly Syntax[]): boolean {
-  const brace = children.at(-1);
-  if (brace?.tag !== "group" || brace.delimiter !== "brace") return false;
-  const before = children.slice(0, -1);
-  if (before.some((item) => token(item, "="))) return false;
-  if (typeOperandFollows(before.at(-1))) return false;
-  const declaration = before.slice(decoratorPrefixLength(before));
-  if (declaration.length === 1 && token(declaration[0], "static")) return true;
-  return declaration.some(
-    (item) => item.tag === "group" && item.delimiter === "parenthesis",
-  );
-}
-
 /**
  * How many nodes the decorator beginning at offset 0 takes, reading nodes with
  * `peek`; undefined where no well-formed decorator begins there. A decorator is
@@ -995,20 +982,6 @@ function signatureFollows(next: Syntax): boolean {
 }
 
 /**
- * Whether a member's header holds its parameter list: a parenthesis written
- * after its decorators and outside its type parameters.
- */
-function parametersWritten(header: readonly Syntax[]): boolean {
-  let depth = 0;
-  for (const node of header.slice(decoratorPrefixLength(header))) {
-    depth += angles(node, "<");
-    depth = Math.max(0, depth - angles(node, ">"));
-    if (depth === 0 && parenthesis(node)) return true;
-  }
-  return false;
-}
-
-/**
  * A class or interface member read one node at a time, and whether a line
  * break may end it where the walk stands.
  *
@@ -1029,6 +1002,32 @@ function createMemberTracker(modifiers: MemberModifiers) {
   let annotation: TypeTracker | undefined;
   /** Whether the walk has read the `=` that opens a field's initializer. */
   let initialized = false;
+  /**
+   * Where the last parenthesized group read before any initializer stands,
+   * and the last of those read in the header outside its type parameters:
+   * a parameter list, where it stands after the decorators. -1 for none.
+   */
+  let lastParenthesis = -1;
+  let lastParameters = -1;
+  /**
+   * Where the last node that is no modifier stands, and where the last one
+   * in front of the latest node stood. A member's name follows nodes that
+   * are all modifiers after its decorators, and the decorators are written
+   * first, so those nodes are modifiers wherever no node after the
+   * decorators is not one.
+   */
+  let lastOther = -1;
+  let lastOtherBeforeLatest = -1;
+  /**
+   * How many nodes the member's decorators take of its first `length`. A
+   * decorator is read from the start of the member and ends within a few
+   * nodes, so this reads only the decorators, whatever follows them.
+   */
+  const decorated = (length: number): number =>
+    decoratorsWidth((offset) => (offset < length ? nodes[offset] : undefined));
+  /** Whether the member's name follows its first `length` nodes. */
+  const nameFollowsAfter = (length: number, other: number): boolean =>
+    other < decorated(length);
   return Object.freeze({
     /** The member read so far. */
     nodes: nodes as readonly Syntax[],
@@ -1046,10 +1045,36 @@ function createMemberTracker(modifiers: MemberModifiers) {
         (!initialized && annotation !== undefined && annotation.nested())
       );
     },
+    /**
+     * Whether the member's name is written next: what was read holds only
+     * decorators and modifiers.
+     */
+    nameFollows(): boolean {
+      return nameFollowsAfter(nodes.length, lastOther);
+    },
+    /**
+     * Whether the member is whole at the brace it last took: a method's or an
+     * accessor's body, or a static block. A brace after an initializer's `=`
+     * is an object literal, and one where a type is still expected an object
+     * type.
+     */
+    endsAtBrace(): boolean {
+      const brace = nodes.at(-1);
+      if (brace?.tag !== "group" || brace.delimiter !== "brace") return false;
+      if (initialized || typeOperandFollows(nodes.at(-2))) return false;
+      const header = decorated(nodes.length - 1);
+      if (nodes.length - 1 - header === 1 && token(nodes[header], "static"))
+        return true;
+      return lastParenthesis >= header;
+    },
     /** Takes a node the walk has read. */
     take(node: Syntax): void {
+      const at = nodes.length;
       nodes.push(node);
+      lastOtherBeforeLatest = lastOther;
+      if (!token(node) || !modifiers.written.has(node.raw)) lastOther = at;
       if (initialized) return;
+      if (parenthesis(node)) lastParenthesis = at;
       if (annotation !== undefined) {
         if (token(node, "=") && !annotation.nested()) initialized = true;
         else annotation.take(node);
@@ -1058,6 +1083,7 @@ function createMemberTracker(modifiers: MemberModifiers) {
       typeParameters += angles(node, "<");
       typeParameters = Math.max(0, typeParameters - angles(node, ">"));
       if (typeParameters !== 0) return;
+      if (parenthesis(node)) lastParameters = at;
       if (token(node, ":"))
         annotation = createTypeTracker(node, parenthesis(nodes.at(-2)));
       else if (token(node, "=")) initialized = true;
@@ -1071,8 +1097,12 @@ function createMemberTracker(modifiers: MemberModifiers) {
         );
       if (annotation !== undefined) return !annotation.continuesAcross(next);
       if (typeParameters !== 0) return false;
-      if (signatureFollows(next) && !parametersWritten(nodes)) return false;
-      if (token(previous) && memberNameFollows(nodes.slice(0, -1), modifiers))
+      if (signatureFollows(next) && lastParameters < decorated(nodes.length))
+        return false;
+      if (
+        token(previous) &&
+        nameFollowsAfter(nodes.length - 1, lastOtherBeforeLatest)
+      )
         return !modifiers.continuing.has(previous.raw);
       return true;
     },
@@ -1110,24 +1140,13 @@ const classMemberModifiers: MemberModifiers = {
 };
 
 /**
- * Whether the name of a member is written next after `member`, the syntax of
- * the member read so far: it holds only decorators and modifiers.
- */
-function memberNameFollows(
-  member: readonly Syntax[],
-  modifiers: MemberModifiers,
-): boolean {
-  return member
-    .slice(decoratorPrefixLength(member))
-    .every((node) => token(node) && modifiers.written.has(node.raw));
-}
-
-/**
  * Whether the name of a class member is written next after `member`, the
  * syntax of the member read so far: it holds only decorators and modifiers.
+ * A walk over a class body asks `createClassMemberWalk` instead, which
+ * answers without reading the member again.
  */
 export function classMemberNameFollows(member: readonly Syntax[]): boolean {
-  return memberNameFollows(member, classMemberModifiers);
+  return trackMember(member, classMemberModifiers).nameFollows();
 }
 
 /** What may follow a class member's name, where a modifier cannot. */
@@ -1178,7 +1197,7 @@ export function classElementEndsBefore(
 function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
   const { nodes } = member;
   if (nodes.length === 0) return false;
-  if (token(nodes.at(-1), ";") || classElementCanEndAtBrace(nodes)) return true;
+  if (token(nodes.at(-1), ";") || member.endsAtBrace()) return true;
   return (
     leadingLineBreak(next) &&
     beginsClassMember(next) &&
@@ -1186,6 +1205,46 @@ function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
     member.lineCanEnd(next) &&
     !(member.initialized() && continuesInitializer(next))
   );
+}
+
+/**
+ * A class body's members, read one node at a time: where each ends and what
+ * stands at the head of the one being read. A walk over a class body asks
+ * this rather than `classElementEndsBefore`, which reads the member again for
+ * each node and makes a long member quadratic.
+ */
+export interface ClassMemberWalk {
+  /** The member read so far. */
+  readonly nodes: readonly Syntax[];
+  /** Whether the member read so far ends in front of `next`. */
+  endsBefore(next: Syntax): boolean;
+  /** Takes the next node of the member being read. */
+  take(node: Syntax): void;
+  /** Begins the next member, with nothing read of it. */
+  restart(): void;
+  /**
+   * Whether the member's name is written next: what was read of it holds only
+   * decorators and modifiers.
+   */
+  nameFollows(): boolean;
+}
+
+/** A walk over a class body, standing at the start of its first member. */
+export function createClassMemberWalk(): ClassMemberWalk {
+  let member = createMemberTracker(classMemberModifiers);
+  return Object.freeze({
+    get nodes() {
+      return member.nodes;
+    },
+    endsBefore: (next: Syntax) => classMemberEndsBefore(member, next),
+    take: (node: Syntax) => {
+      member.take(node);
+    },
+    restart: () => {
+      member = createMemberTracker(classMemberModifiers);
+    },
+    nameFollows: () => member.nameFollows(),
+  });
 }
 
 class ClassElementConsumer implements SyntaxConsumer {
@@ -1249,7 +1308,7 @@ class ClassElementConsumer implements SyntaxConsumer {
         if (token(cursor.peek(), ";")) children.push(cursor.consume()!);
         break;
       }
-      if (classElementCanEndAtBrace(children)) {
+      if (member.endsAtBrace()) {
         // The element ended at its body; enforest that body so macros inside a
         // method are reached.
         const enforest = this.options.enforestStatementBlock;
@@ -1282,7 +1341,7 @@ class ClassElementConsumer implements SyntaxConsumer {
     }
     const last = children.at(-1);
     const explicit = token(last, ";");
-    const body = classElementCanEndAtBrace(children);
+    const body = member.endsAtBrace();
     const automatic = cursor.atEnd || leadingLineBreak(cursor.peek());
     if (!explicit && !body && !automatic) {
       return failure(
