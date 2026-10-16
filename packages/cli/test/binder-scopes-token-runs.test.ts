@@ -169,7 +169,7 @@ const boundaries: readonly Boundary[] = [
   {
     name: "a function declared under a declaration that has no semicolon",
     source:
-      "const k = 1\nfunction twice(v: number): number { return v + k }\nconst after = twice(got)",
+      "const k = 1\nfunction twice(v: number): number { return v * k }\nconst after = twice(got)",
     inside: ["after = twice(got)"],
     outside: [],
   },
@@ -197,7 +197,7 @@ const boundaries: readonly Boundary[] = [
     name: "a type alias's type parameter, with no semicolon",
     source: "type P<boxed> = boxed[]\ntype After = boxed",
     inside: ["P<boxed> = boxed[]"],
-    outside: ["After = readonly number[]"],
+    outside: ["readonly number[]"],
   },
   {
     name: "a generic arrow's type parameter",

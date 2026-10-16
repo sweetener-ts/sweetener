@@ -783,12 +783,14 @@ const sameLineOperators: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether `next` carries on the expression a `#core(…)` written before it
- * heads -- a member access, a call, an index, a template, an operator -- so
- * that the directive marks only the head of that expression, as spec 04 says
- * it does, rather than a whole statement: `#core(twice).length;`.
+ * Whether `next` carries on the expression written in front of it, a line
+ * break between the two or not: a member access, a call, an index, a
+ * template, an operator. Where it does not, a statement whose expression is
+ * complete ends in front of it, as a `#core(…)` that is a whole statement
+ * does: one that heads an expression marks only that expression's head, as
+ * spec 04 says, `#core(twice).length;`.
  */
-function continuesExpression(next: Syntax | undefined): boolean {
+export function continuesExpression(next: Syntax | undefined): boolean {
   if (next === undefined) return false;
   if (next.tag === "group")
     return next.delimiter === "parenthesis" || next.delimiter === "bracket";

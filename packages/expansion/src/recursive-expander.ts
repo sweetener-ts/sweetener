@@ -68,7 +68,9 @@ import {
   asyncArrowHead,
   asyncModifies,
   asyncNamedArrow,
+  continuesExpression,
   createClassMemberWalk,
+  createTypeTracker,
   type ClassMemberWalk,
   staticClassMember,
   parameterBinder,
@@ -1876,8 +1878,6 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     return nodes.length;
   };
 
-  /** Ends a statement written as tokens. */
-  const statementEnds: ReadonlySet<string> = new Set([";"]);
   /** Ends a member of a type literal or an interface, or a class member. */
   const memberEnds: ReadonlySet<string> = new Set([";", ","]);
 
@@ -1901,6 +1901,62 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     return nodes.length;
   };
 
+  /**
+   * Whether a statement written as tokens in `nodes` ends in front of the
+   * node at `at` by automatic semicolon insertion: a line break stands before
+   * it, what stands before the break ends an operand, and the node does not
+   * carry that operand's expression on. `const k = 1` ends at the line break
+   * in front of a `function` written under it.
+   */
+  const statementEndsBefore = (nodes: readonly Syntax[], at: number): boolean =>
+    leadingLineBreak(nodes[at]) &&
+    endsOperand(nodes, at, true) &&
+    !continuesExpression(nodes[at]);
+
+  /**
+   * The index just past the statement written as tokens from `from` in
+   * `nodes`: past its `;`, or at the line break automatic semicolon insertion
+   * ends it at, outside a type argument list; the length of the run where it
+   * runs to the end.
+   */
+  const statementEnd = (nodes: readonly Syntax[], from: number): number => {
+    let depth = 0;
+    for (let at = from; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      if (depth === 0 && at > from && statementEndsBefore(nodes, at)) return at;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth === 0 && spelling(node) === ";") return at + 1;
+    }
+    return nodes.length;
+  };
+
+  /**
+   * The index just past the type alias whose `type` stands at `at` in
+   * `nodes`: past its `;`, or where a line break ends its type, which the
+   * type tracker every reader of a type asks decides. Read only to its `;`,
+   * an alias written without one bound its type parameters on into the
+   * statements under it.
+   */
+  const typeAliasEnd = (nodes: readonly Syntax[], at: number): number => {
+    let depth = 0;
+    let equals = at + 1;
+    for (; equals < nodes.length; equals += 1) {
+      const node = nodes[equals]!;
+      depth += angles(node, "<") - angles(node, ">");
+      if (depth !== 0) continue;
+      if (spelling(node) === "=") break;
+      if (spelling(node) === ";") return equals + 1;
+    }
+    const type = createTypeTracker(nodes[equals], false);
+    for (let after = equals + 1; after < nodes.length; after += 1) {
+      const node = nodes[after]!;
+      if (!type.nested() && spelling(node) === ";") return after + 1;
+      if (leadingLineBreak(node) && !type.continuesAcross(node)) return after;
+      type.take(node);
+    }
+    return nodes.length;
+  };
+
   /** Whether a `#` stands just before `at`: `# let`, a `#let` written apart. */
   const afterHash = (nodes: readonly Syntax[], at: number): boolean =>
     nodes[at - 1]?.tag === "token" &&
@@ -1919,9 +1975,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const loopEnd = (nodes: readonly Syntax[], header: number): number => {
     const body = nodes[header + 1];
     if (body === undefined) return nodes.length;
-    return body.tag === "token"
-      ? endingAt(nodes, header + 1, statementEnds)
-      : header + 2;
+    return body.tag === "token" ? statementEnd(nodes, header + 1) : header + 2;
   };
 
   /**
@@ -1947,7 +2001,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     extent: Extent,
   ): void =>
     addBinders(
-      bindingSegments(nodes, from, endingAt(nodes, from, statementEnds)),
+      bindingSegments(nodes, from, statementEnd(nodes, from)),
       into,
       extent,
     );
@@ -1975,13 +2029,15 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * statements themselves, and one of them begins with its first node. The
    * runs it leaves as tokens -- a block holding a statement operator, which
    * must reach the operator unread, and syntax it cannot read at all -- have
-   * only what was read in them and the terminators written in them to say.
+   * only what was read in them, the terminators written in them, and the line
+   * breaks automatic semicolon insertion ends a statement at to say.
    */
   const declaresAt = (nodes: readonly Syntax[], at: number): boolean => {
     let before = at - 1;
     while (declarationModifiers.has(spelling(nodes[before]) ?? "")) before -= 1;
     const previous = nodes[before];
     if (previous === undefined) return true;
+    if (statementEndsBefore(nodes, before + 1)) return true;
     if (previous.tag === "protected")
       return previous.category === "stmt" || previous.category === "item";
     if (previous.tag === "group") return previous.delimiter === "brace";
@@ -2000,7 +2056,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    */
   const declarationEnd = (nodes: readonly Syntax[], at: number): number => {
     const keyword = spelling(nodes[at]);
-    if (keyword === "type") return endingAt(nodes, at, statementEnds);
+    if (keyword === "type") return typeAliasEnd(nodes, at);
     let depth = 0;
     for (let scan = at + 1; scan < nodes.length; scan += 1) {
       const node = nodes[scan]!;
@@ -2008,10 +2064,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       if (depth !== 0) continue;
       if (keyword === "function") {
         if (node.tag === "group" && node.delimiter === "parenthesis")
-          return (
-            parameterScopeEnd(nodes, scan) ??
-            endingAt(nodes, scan, statementEnds)
-          );
+          return parameterScopeEnd(nodes, scan) ?? statementEnd(nodes, scan);
       } else if (braceBody(node)) return scan + 1;
       if (spelling(node) === ";") return scan + 1;
     }
