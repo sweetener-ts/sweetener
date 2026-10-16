@@ -103,6 +103,23 @@ describe("grouping a type expansion", () => {
     );
   });
 
+  test("a type macro inside another's argument, beside an operator", () => {
+    // Read as a name with a parenthesis after it, `orNull(string)[]` and
+    // `keyof orNull(string)` failed the outer macro's `$t:type`.
+    const text = expand(
+      [
+        "export type A = orNull(orNull(string)[]);",
+        "export type B = orNull(keyof orNull(string));",
+        "export type C = orNull(null | orNull(string));",
+        "export type D = orNull(orNull(string) | number);",
+      ].join("\n"),
+    );
+    expect(text).toContain("export type A = (string | null)[] | null;");
+    expect(text).toContain("export type B = keyof (string | null) | null;");
+    expect(text).toContain("export type C = null | string | null | null;");
+    expect(text).toContain("export type D = string | null | number | null;");
+  });
+
   test("an annotation in an async function's body", () => {
     // Read as an expression statement, an async function declaration's body
     // was taken apart as an expression's, and a type macro in an annotation
