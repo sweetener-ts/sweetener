@@ -1128,16 +1128,6 @@ function createMemberTracker(modifiers: MemberModifiers) {
 
 type MemberTracker = ReturnType<typeof createMemberTracker>;
 
-/** A tracker that has taken each of `member`'s nodes. */
-function trackMember(
-  member: readonly Syntax[],
-  modifiers: MemberModifiers,
-): MemberTracker {
-  const tracker = createMemberTracker(modifiers);
-  for (const node of member) tracker.take(node);
-  return tracker;
-}
-
 /**
  * Whether `next`, which could begin a member, instead carries an initializer
  * on from the line before: `*` multiplies, a bracket indexes, `in` and
@@ -1155,16 +1145,6 @@ const classMemberModifiers: MemberModifiers = {
   written: new Set([...classModifiers, "async", "get", "set", "*"]),
   continuing: new Set(["static", "get", "set", "*"]),
 };
-
-/**
- * Whether the name of a class member is written next after `member`, the
- * syntax of the member read so far: it holds only decorators and modifiers.
- * A walk over a class body asks `createClassMemberWalk` instead, which
- * answers without reading the member again.
- */
-export function classMemberNameFollows(member: readonly Syntax[]): boolean {
-  return trackMember(member, classMemberModifiers).nameFollows();
-}
 
 /** What may follow a class member's name, where a modifier cannot. */
 const memberAfterName = new Set(["<", "=", ";", ":", "?", "!"]);
@@ -1194,8 +1174,8 @@ export function staticClassMember(member: readonly Syntax[]): boolean {
 }
 
 /**
- * Whether `next` begins a new class member after `member`, the syntax of the
- * member read so far. A member ends at its `;`, at the body of a method or
+ * Whether `next` begins a new class member after `member`, the member a walk
+ * has read so far. A member ends at its `;`, at the body of a method or
  * static block, or -- by automatic semicolon insertion, as TypeScript reads a
  * class body -- at a line break before syntax that begins another member.
  * It does not end there where the line cannot end: after decorators alone,
@@ -1203,14 +1183,6 @@ export function staticClassMember(member: readonly Syntax[]): boolean {
  * an initializer that carries on across the break. Nor does it end where what
  * begins the next line carries a field's initializer on.
  */
-export function classElementEndsBefore(
-  member: readonly Syntax[],
-  next: Syntax,
-): boolean {
-  return classMemberEndsBefore(trackMember(member, classMemberModifiers), next);
-}
-
-/** `classElementEndsBefore`, asked of a member a walk has tracked. */
 function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
   const { nodes } = member;
   if (nodes.length === 0) return false;
@@ -1226,9 +1198,8 @@ function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
 
 /**
  * A class body's members, read one node at a time: where each ends and what
- * stands at the head of the one being read. A walk over a class body asks
- * this rather than `classElementEndsBefore`, which reads the member again for
- * each node and makes a long member quadratic.
+ * stands at the head of the one being read. Each node is taken once, so a
+ * long member costs its length rather than its square.
  */
 export interface ClassMemberWalk {
   /** The member read so far. */
