@@ -907,8 +907,10 @@ function heldAfter(surroundings: Surroundings): number | undefined {
       return commaPrecedence + 1;
     case "default":
       return assignmentPrecedence;
-    // What a class extends is a left-hand-side expression.
+    // What a class extends is a left-hand-side expression, and so is what a
+    // decorator applies; `decoratorReads` says which of those it reads whole.
     case "extends":
+    case "@":
       return primaryPrecedence;
   }
   if (iterates && (spelling === "in" || spelling === "of"))
@@ -970,6 +972,14 @@ function heldBefore(
   // -- a class's after its heritage -- or a statement of its own.
   if (after.tag === "group")
     return after.delimiter === "brace" ? 0 : primaryPrecedence;
+  // A statement, an item or a member read whole after it -- what a decorator
+  // decorates -- begins where the expression has ended.
+  if (after.tag === "protected")
+    return after.category === "stmt" ||
+      after.category === "item" ||
+      after.category === "classElement"
+      ? 0
+      : undefined;
   if (after.tag !== "token") return undefined;
   const spelling = after.raw;
   switch (spelling) {
@@ -990,6 +1000,16 @@ function heldBefore(
   }
   if (after.kind === "no-substitution-template") return primaryPrecedence;
   const infix = coreOperator(spelling, "infix");
+  // A word, or the `@` of a decorator, that is not an operator cannot go on
+  // with an operand: the expression has ended, and what is decorated or the
+  // next statement begins -- `@log m() {}`.
+  if (
+    infix === undefined &&
+    (after.kind === "identifier" ||
+      after.kind === "keyword" ||
+      spelling === "@")
+  )
+    return 0;
   if (infix === undefined) return undefined;
   if (infix.precedence === assignmentPrecedence) return primaryPrecedence;
   // An assertion ends with its type, and only an operator a type reads on
@@ -1021,8 +1041,10 @@ function typePrecedence(type: ProtectedSyntax): number {
       ({ spelling, fixity }) => spelling === head.raw && fixity === "prefix",
     );
     if (prefix !== undefined) level = prefix.precedence;
-    // `new () => T` and `asserts x is T` stand only where a whole type does.
-    if (head.raw === "new" || head.raw === "asserts") level = 0;
+    // `new () => T` is a function type's level; `asserts x is T` stands only
+    // where a whole type does.
+    if (head.raw === "new") level = operatorTypePrecedence("=>");
+    if (head.raw === "asserts") level = 0;
   }
   const last = type.children.at(-1);
   if (last?.tag === "group" && last.delimiter === "bracket")

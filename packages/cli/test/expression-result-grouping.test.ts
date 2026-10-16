@@ -521,6 +521,16 @@ export const tagged = optional(holder)\`t\`;
     expect(exports["tagged"]).toBe("t");
   });
 
+  test("needs nothing where a decorator applies a call", () => {
+    const { text, messages } = expand(
+      `const decorate = () => (_value: unknown, _context: unknown) => {};
+@make(decorate) export class Plain {}
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("@decorate() export class Plain {}");
+  });
+
   test("keeps what a decorator indexes apart from what it decorates", () => {
     // A decorator's `[` would begin a computed member name, so `@a[0]` is
     // not read as the decorator `a[0]`.
