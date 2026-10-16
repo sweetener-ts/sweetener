@@ -74,6 +74,7 @@ describe("expansion inside nested blocks", () => {
       "async function declaration body",
       "export async function f(v) { const a = duplicate(v); return a; }",
     ],
+    ["member decorator", "export class K { @duplicate(1) m() {} }"],
     ["class method body", "export class K { m(v) { return duplicate(v); } }"],
     [
       "if block",

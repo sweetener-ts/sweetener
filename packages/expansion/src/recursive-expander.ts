@@ -4245,8 +4245,18 @@ export function expandMacroSyntax(
        * a name written in front of a parameter list, a `:`, a `?` or a `!`
        * names a member there as surely as it does in a type's member list.
        */
+      /**
+       * Whether this position heads what a decorator applies: the name after
+       * `@`, which is an expression wherever the decorator stands. Before a
+       * member it has the shape of the member -- `@log(1) m() {}` -- and was
+       * read as the member's name, so the macro was never dispatched.
+       */
+      const decorates =
+        output.at(-1)?.tag === "token" &&
+        (output.at(-1) as TokenSyntax).raw === "@";
       const namesClassMember =
         category === "classElement" &&
+        !decorates &&
         classMemberNameFollows(output.slice(memberStart)) &&
         memberNameFollows();
       /**
@@ -4359,7 +4369,8 @@ export function expandMacroSyntax(
         // introduces a type, so an expression macro is not looked up after it:
         // without that, `type A = name;` dispatched an expression macro
         // spelled `name`.
-        (classHeritageFollows(output) ||
+        (decorates ||
+          classHeritageFollows(output) ||
           (!typeAliasInitializerFollows(output) &&
             (initializerFollows(output) || expressionRegion)))
       ) {
