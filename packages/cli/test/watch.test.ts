@@ -446,11 +446,15 @@ describe(
           join(directory, `listening-${attempt}.ts`),
           `export const attempt = ${attempt};\n`,
         );
+        // Asked once more after the last wait: a build runs on this thread, so
+        // on a loaded machine the build this write started can take longer
+        // than the patience, and end the wait already past it. Giving up
+        // without looking then misses every build, however many writes start.
         const patience = Date.now() + 250;
-        while (Date.now() < patience) {
-          if (builds() > before) return;
+        do {
           await new Promise((resolve) => setTimeout(resolve, 20));
-        }
+          if (builds() > before) return;
+        } while (Date.now() < patience);
       }
       throw new Error("The watch did not start listening within 90 seconds");
     };
