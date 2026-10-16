@@ -36,6 +36,8 @@ import {
   compileParsedMacros,
   expandMacroSyntax,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/protocols";
@@ -209,7 +211,10 @@ function createHarness() {
           throw new TypeError(
             `expanded protocol syntax is not item output: ${printLosslessSequence(syntax)}`,
           );
-        return result.syntax;
+        return normalizeProtectedInput(result.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

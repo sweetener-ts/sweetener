@@ -1,5 +1,6 @@
 import {
   createIdAllocator,
+  PersistentStringMap,
   type BindingId,
   type DeclarationGroupId,
   type EnvironmentEpoch,
@@ -35,8 +36,37 @@ export interface BindingEnvironment {
 
 const withBinding: unique symbol = Symbol("with-binding");
 
+/**
+ * The bindings one frame holds for one key, newest first. Extending it shares
+ * every older entry; the array `localCandidates` answers with is built once.
+ */
+class BindingList {
+  #declarationOrder: readonly Binding[] | undefined;
+
+  constructor(
+    readonly binding: Binding,
+    readonly previous: BindingList | undefined,
+  ) {}
+
+  get declarationOrder(): readonly Binding[] {
+    if (this.#declarationOrder === undefined) {
+      const newer = [this.binding];
+      let older = this.previous;
+      while (older !== undefined && older.#declarationOrder === undefined) {
+        newer.push(older.binding);
+        older = older.previous;
+      }
+      this.#declarationOrder = Object.freeze([
+        ...(older === undefined ? [] : older.declarationOrder),
+        ...newer.reverse(),
+      ]);
+    }
+    return this.#declarationOrder;
+  }
+}
+
 class PersistentBindingEnvironment implements BindingEnvironment {
-  readonly #locals: ReadonlyMap<string, readonly Binding[]>;
+  readonly #locals: PersistentStringMap<BindingList>;
 
   constructor(
     readonly owner: object,
@@ -44,7 +74,7 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     readonly epoch: EnvironmentEpoch,
     readonly parent: BindingEnvironment | undefined,
     readonly depth: number,
-    locals: ReadonlyMap<string, readonly Binding[]> = new Map(),
+    locals: PersistentStringMap<BindingList> = PersistentStringMap.empty(),
   ) {
     if (!Number.isSafeInteger(depth) || depth < 0) {
       throw new RangeError(
@@ -60,7 +90,9 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     phase: Phase,
     space: SyntaxSpace,
   ): readonly Binding[] {
-    return this.#locals.get(indexKey(spelling, phase, space)) ?? [];
+    return (
+      this.#locals.get(indexKey(spelling, phase, space))?.declarationOrder ?? []
+    );
   }
 
   [withBinding](
@@ -69,23 +101,24 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     binding: Binding,
   ): PersistentBindingEnvironment {
     const key = indexKey(binding.spelling, binding.phase, binding.space);
-    const locals = new Map(this.#locals);
-    locals.set(key, Object.freeze([...(locals.get(key) ?? []), binding]));
     return new PersistentBindingEnvironment(
       this.owner,
       id,
       epoch,
       this.parent,
       this.depth,
-      locals,
+      this.#locals.set(key, new BindingList(binding, this.#locals.get(key))),
     );
   }
 }
 
-export interface CandidateQuery {
+export interface DeclaredQuery {
   readonly spelling: string;
   readonly phase: Phase;
   readonly space: SyntaxSpace;
+}
+
+export interface CandidateQuery extends DeclaredQuery {
   readonly position: number;
 }
 
@@ -158,20 +191,35 @@ export class EnvironmentStore {
     environment: BindingEnvironment,
     query: CandidateQuery,
   ): readonly Binding[] {
+    return Object.freeze(
+      this.declared(environment, query).filter((binding) =>
+        bindingVisibleAt(binding, query.position),
+      ),
+    );
+  }
+
+  /**
+   * Every binding of the query's spelling, phase and space in the environment
+   * and the frames around it, wherever it is visible: the innermost frame's
+   * first, and each frame's in declaration order.
+   */
+  declared(
+    environment: BindingEnvironment,
+    query: DeclaredQuery,
+  ): readonly Binding[] {
     this.#requireEnvironment(environment);
-    const candidates: Binding[] = [];
+    const declared: Binding[] = [];
     let current: BindingEnvironment | undefined = environment;
     while (current !== undefined) {
       for (const binding of current.localCandidates(
         query.spelling,
         query.phase,
         query.space,
-      )) {
-        if (bindingVisibleAt(binding, query.position)) candidates.push(binding);
-      }
+      ))
+        declared.push(binding);
       current = current.parent;
     }
-    return Object.freeze(candidates);
+    return Object.freeze(declared);
   }
 
   #requireEnvironment(

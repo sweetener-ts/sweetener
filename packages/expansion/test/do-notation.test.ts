@@ -38,6 +38,8 @@ import {
   compileParsedMacros,
   expandMacroSyntax,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const definitionSource = 94 as SourceId;
@@ -180,7 +182,10 @@ function createDoHarness() {
         if (!attempted.matched || !attempted.cursor.atEnd) {
           throw new TypeError("expanded do syntax is not one expression");
         }
-        return attempted.syntax;
+        return normalizeProtectedInput(attempted.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: () => syntaxIds.allocate(),
       allocateBindingId: () => bindingIds.allocate(),

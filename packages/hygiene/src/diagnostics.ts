@@ -5,6 +5,7 @@ export const malformedBindingContractCode = diagnosticCode("SWR3002");
 export const invalidBindingPathCode = diagnosticCode("SWR3003");
 export const incompatibleBindingAlignmentCode = diagnosticCode("SWR3004");
 export const incompatibleBindingSpaceCode = diagnosticCode("SWR3005");
+export const followingOutsideLexicalScopeCode = diagnosticCode("SWR3006");
 
 export const hygieneDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -54,5 +55,15 @@ export const hygieneDiagnosticRegistry = new DiagnosticRegistry([
       "A binding space must be valid for the macro output category.",
     format: (arguments_) =>
       `Binding space ${String(arguments_[0] ?? "unknown")} is invalid for this macro category.`,
+  },
+  {
+    code: followingOutsideLexicalScopeCode,
+    owner: "hygiene-binding",
+    stage: "binding",
+    severity: "error",
+    documentation:
+      "A `following` region is the rest of the block or module an invocation stands in. A class element or type member macro stands in a member list, which binds nothing a later member can see.",
+    format: (arguments_) =>
+      `A ${String(arguments_[0] ?? "member")} macro cannot bind in following: a member list is not a lexical scope.`,
   },
 ]);

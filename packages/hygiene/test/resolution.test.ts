@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { OriginId, SourceId } from "@sweetener/shared";
 import {
   ambiguityDiagnostic,
+  BindingResolver,
   createPhase,
   EnvironmentStore,
   resolveBinding,
@@ -237,5 +238,64 @@ describe("binding resolution", () => {
         ).toEqual([origin(30), origin(10), origin(20)]);
       }
     }
+  });
+
+  test("a resolver answers every reference as resolveBinding does", () => {
+    let state = 0x2e5_01fe;
+    const random = (bound: number): number => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return state % bound;
+    };
+    const scopes = new ScopeStore();
+    const pool = Array.from({ length: 7 }, () => scopes.freshScope());
+    const randomSet = (minimum: number, maximum: number) => {
+      let set = scopes.empty();
+      const size = minimum + random(maximum - minimum + 1);
+      for (let index = 0; index < size; index += 1)
+        set = scopes.add(set, pool[random(pool.length)]!);
+      return set;
+    };
+    const spellings = ["a", "b", "c"];
+    const spaces = ["value", "type"] as const;
+    const environments = new EnvironmentStore();
+    let environment = environments.createRoot();
+    for (let index = 1; index <= 300; index += 1) {
+      if (random(40) === 0) environment = environments.child(environment);
+      const start = random(100);
+      const visibility = [
+        { kind: "whole-frame" as const },
+        { kind: "from" as const, start },
+        { kind: "range" as const, start, end: start + random(50) },
+      ][random(3)]!;
+      environment = declare(
+        environments,
+        environment,
+        randomSet(random(25) === 0 ? 0 : 1, 4),
+        index,
+        {
+          spelling: spellings[random(spellings.length)]!,
+          space: spaces[random(spaces.length)]!,
+          visibility,
+        },
+      ).environment;
+    }
+    const resolver = new BindingResolver(environments, environment, scopes);
+    const kinds = new Set<string>();
+    for (let index = 0; index < 3_000; index += 1) {
+      const identifier = reference(randomSet(0, 7), {
+        spelling: spellings[random(spellings.length)]!,
+        space: spaces[random(spaces.length)]!,
+        position: random(160),
+      });
+      const expected = resolveBinding(
+        environments,
+        environment,
+        scopes,
+        identifier,
+      );
+      kinds.add(expected.kind);
+      expect(resolver.resolve(identifier)).toEqual(expected);
+    }
+    expect(kinds).toEqual(new Set(["resolved", "unbound", "ambiguous"]));
   });
 });

@@ -3,7 +3,12 @@ import {
   StopSet,
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
-import { createPhase, EnvironmentStore, ScopeStore } from "@sweetener/hygiene";
+import {
+  createPhase,
+  definitionContextScope,
+  EnvironmentStore,
+  ScopeStore,
+} from "@sweetener/hygiene";
 import { parseMacroDefinitions } from "@sweetener/macro-language";
 import { createSyntaxClassConsumer } from "@sweetener/pattern";
 import { printLosslessSequence, readSyntax } from "@sweetener/reader";
@@ -246,6 +251,7 @@ function createOperatorHarness() {
         allocateBindingId: bindingIds.allocate,
         allocateInvocationId: invocationIds.allocate,
         position: 0,
+        followingScope: definitionContextScope(scopes),
         admit: () => true,
         diagnosticOrigin: (origin) => {
           const selected = origins.selectPrimarySource(origin)!;

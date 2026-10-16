@@ -389,6 +389,22 @@ describe("statement and item consumers", () => {
     expect(result.syntax.category).toBe("item");
   });
 
+  test.each([
+    ["stmt", "#core(const first = 1)"],
+    ["item", "#core(export const first = 1;)"],
+    ["stmt", "# core (const first = 1)"],
+  ] as const)(
+    "reads the `#core` form a %s template writes as one unit: %s",
+    (category, source) => {
+      const { result } = parse(`${source}\nconst after = 1;`, category);
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected a core form");
+      expect(result.syntax.category).toBe(category);
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+      expect(result.cursor.atEnd).toBe(false);
+    },
+  );
+
   test("dispatches category-specific macro heads before built-in syntax", () => {
     const resolver: StatementItemMacroResolver = (category, cursor) => {
       const head = cursor.peek();

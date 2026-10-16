@@ -43,6 +43,8 @@ import {
   ExpansionEnvironmentStore,
   ExpansionGuard,
   resolveCoreDispatch,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const definitionSource = 750 as SourceId;
@@ -244,7 +246,10 @@ function createHarness() {
           throw new TypeError(
             `expanded currying syntax is not one item sequence: ${printLosslessSequence(syntax)}`,
           );
-        return result.syntax;
+        return normalizeProtectedInput(result.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

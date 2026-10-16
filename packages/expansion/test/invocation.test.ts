@@ -1,6 +1,7 @@
 import {
   createBinding,
   createPhase,
+  definitionContextScope,
   EnvironmentStore,
   ScopeStore,
 } from "@sweetener/hygiene";
@@ -194,6 +195,7 @@ function invoke(
     allocateBindingId: bindingIds.allocate,
     allocateInvocationId: invocationIds.allocate,
     position: 0,
+    followingScope: definitionContextScope(scopeStore),
     admit: () => true,
     expandReplacement: (request) => {
       requests.push(request);

@@ -258,12 +258,10 @@ const classHeaderEndsBefore = new Set([";", "=", "=>", ")", "]"]);
 /**
  * How wide an arrow function is, from `(` or `async` or `<` to its body.
  *
- * Every parenthesized arrow is measured here, not only a generic one. Left to
- * the pratt `=>` infix operator, which protects what stands to its left as an
- * expression, a plain `(x) => x` would come back with its parameter list
- * wrapped in its own parentheses and the emitted TypeScript would not parse.
- * `() => x` could not be read at all: an empty parenthesis group is not a
- * primary atom, so nothing could begin it.
+ * Every parenthesized arrow is measured here, not only a generic one, but for
+ * a block-bodied one the infix `=>` reads. `() => x` could not be read
+ * otherwise: an empty parenthesis group is not a primary atom, so nothing
+ * could begin it.
  */
 interface ArrowExtent {
   readonly width: number;
@@ -283,11 +281,9 @@ function arrowWidth(
     asyncNamedArrowBodyStart(cursor) ??
     parenthesizedArrowBodyStart(cursor, context);
   if (bodyStart === undefined) return undefined;
-  // A block body goes to the infix `=>` wherever that route can read it:
-  // taking it here would protect a statement list as an expression, which
-  // mangles it at a call site. Written in a template, a block-bodied arrow is
-  // emitted wrongly by that route, and this cannot fix it without breaking the
-  // call site.
+  // A block body goes to the infix `=>` wherever that route can read it. The
+  // two routes build an arrow alike -- its parameters as written, `=>`, and
+  // the brace -- so which of them reads one decides nothing about it.
   //
   // That route reads only the arrows `infixArrowReadsHead` names, so
   // `() => {}`, `<T,>(v: T) => {}` and `(v): T => {}` could not be read at
@@ -309,8 +305,8 @@ function arrowWidth(
 /**
  * Whether the infix `=>` can read the arrow whose body begins at `bodyStart`.
  *
- * That route protects what stands to the arrow's left as its parameters, so it
- * reads exactly the heads that are one operand and then `=>`: `v => …` and
+ * That route takes the operand standing to the arrow's left as its
+ * parameters, so it reads exactly the heads that are one operand and then `=>`: `v => …` and
  * `(v) => …`. Nothing an expression can begin with stands in front of the `=>`
  * of `() => …` or `<T,>(v: T) => …`; a return type stands between the
  * parameters and the `=>` of `(v): T => …`; and `async v => …` puts two
@@ -429,12 +425,10 @@ function asyncArrowModifier(cursor: SyntaxCursor): boolean {
  * Whether the arrow these nodes are is async: `async` written in front of its
  * parameters, with no line break between the two.
  *
- * The nodes arrive in either of two shapes. Measured from its head an arrow is
- * flat -- `async`, the parameters, `=>`, the body -- while read through the
- * infix `=>` it is one operand, `=>` and the body, with the parameters already
- * protected. Both are answered by the same question, because `async` is the
- * modifier only where parameters rather than the `=>` stand after it: an arrow
- * whose one parameter is itself named `async` is `async =>`, in either shape.
+ * The nodes are an arrow as it was written, or the head of one -- `async`,
+ * the parameters, `=>`, the body -- whichever route read it. `async` is the modifier only where
+ * parameters rather than the `=>` stand after it: an arrow whose one
+ * parameter is itself named `async` is `async =>`.
  */
 export function asyncArrowHead(head: readonly Syntax[]): boolean {
   const after = head[1];

@@ -1,6 +1,6 @@
 # ADR-0007: Cache scope-set intern keys
 
-Status: accepted  
+Status: superseded by [ADR-0010](0010-scope-set-trie.md)  
 Date: 2026-08-03  
 Owners: project maintainers
 

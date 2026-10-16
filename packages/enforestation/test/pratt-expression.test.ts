@@ -733,8 +733,8 @@ describe("Pratt expression consumer", () => {
 /**
  * An arrow written with one unparenthesized parameter.
  *
- * `v => …` is read by the infix `=>`, which protects the name to its left as
- * the parameters. `async v => …` cannot be: `async` and the name are two
+ * `v => …` is read by the infix `=>`, which takes the name to its left as the
+ * parameters. `async v => …` cannot be: `async` and the name are two
  * operands, only the name stands beside the `=>`, and the `async` was left
  * behind as an operand of its own. The statement holding the arrow then did
  * not parse at all, and the block fell back to a raw token walk.
@@ -816,6 +816,44 @@ describe("an unparenthesized arrow", () => {
     expect(
       parse("v => await load()", undefined, false, inside).result.matched,
     ).toBe(false);
+  });
+});
+
+/**
+ * An arrow the infix `=>` reads holds its parameters as they were written,
+ * and a block body as the brace it is.
+ *
+ * The operand to the left of the `=>` is the arrow's parameters rather than an
+ * expression. Held as the operand it was read as, the parameter list was walked
+ * as an expression in syntax a template wrote -- normalization keeps the
+ * nesting the reader built there -- and a parameter spelled like an expression
+ * macro was dispatched, in its binder position and in the body it binds.
+ */
+describe("an arrow the infix `=>` reads", () => {
+  test.each([
+    ["v => v", "token"],
+    ["v => { return v; }", "token"],
+    ["(v) => { return v; }", "group"],
+    ["(v: number) => { return v; }", "group"],
+    ["({ v }: { v: number }) => { return v; }", "group"],
+  ])("holds the parameters of %s as written", (source, head) => {
+    const { result } = parse(source);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.syntax.form).toBe("arrow");
+    expect(result.syntax.children[0]?.tag).toBe(head);
+    expect(operatorAt(result.syntax)).toBe("=>");
+    expect(printLosslessSequence(result.syntax.children)).toBe(source);
+  });
+
+  test("holds a block body as the brace it is", () => {
+    const { result } = parse("(v) => { return v; }");
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(result.syntax.children.at(-1)).toMatchObject({
+      tag: "group",
+      delimiter: "brace",
+    });
   });
 });
 

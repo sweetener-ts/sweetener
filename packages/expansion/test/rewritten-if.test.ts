@@ -32,6 +32,8 @@ import {
   compileParsedMacros,
   expandMacroSyntax,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const definitionSource = 740 as SourceId;
@@ -163,7 +165,11 @@ function createHarness() {
           throw new TypeError(
             `expanded syntax is not one statement: ${printLosslessSequence(syntax)}`,
           );
-        return parsedStatement.syntax;
+        return normalizeProtectedInput(
+          parsedStatement.syntax,
+          handedIn(syntax),
+          { origins, allocateSyntaxId: syntaxIds.allocate },
+        );
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

@@ -1,4 +1,5 @@
 import {
+  BindingResolver,
   EnvironmentStore,
   type Binding,
   type Phase,
@@ -361,9 +362,14 @@ export function planHygienicRenames(
     if (classification.exportSpecifierOffsets.has(span.start))
       exportSpecifierSyntax.add(span.syntax);
   }
-  const exportSpecifiers = tokens.filter((token) =>
-    exportSpecifierSyntax.has(token.id),
-  );
+  const exportSpecifiersBySpelling = new Map<string, TokenSyntax[]>();
+  for (const token of tokens) {
+    if (!exportSpecifierSyntax.has(token.id)) continue;
+    const spelled = exportSpecifiersBySpelling.get(token.raw);
+    if (spelled === undefined)
+      exportSpecifiersBySpelling.set(token.raw, [token]);
+    else spelled.push(token);
+  }
   /**
    * Whether an `export { name }` in this file names this binder.
    *
@@ -374,10 +380,8 @@ export function planHygienicRenames(
    * hygiene should have renamed one of them.
    */
   const isExported = (token: TokenSyntax): boolean =>
-    exportSpecifiers.some(
-      (specifier) =>
-        specifier.raw === token.raw &&
-        options.scopes.subset(token.scopes, specifier.scopes),
+    (exportSpecifiersBySpelling.get(token.raw) ?? []).some((specifier) =>
+      options.scopes.subset(token.scopes, specifier.scopes),
     );
 
   const spaceOf = (token: TokenSyntax): NameNamespace =>
@@ -413,13 +417,6 @@ export function planHygienicRenames(
     for (const key of published) classes.delete(key);
     if (classes.size === 0) return undefined;
 
-    const belongsToClass = (token: TokenSyntax): boolean =>
-      [...classes.values()].some(
-        (candidate) =>
-          candidate.spelling === token.raw &&
-          options.scopes.subset(candidate.scopes, token.scopes),
-      );
-
     const environments = new EnvironmentStore();
     let environment = environments.createRoot();
     const bindings: Binding[] = [];
@@ -435,6 +432,22 @@ export function planHygienicRenames(
       environment = declared.environment;
       bindings.push(declared.binding);
     }
+
+    // A token belongs to a class when it is spelled as the class is and
+    // carries every one of its scopes: when the class's binding applies to it.
+    const classResolver = new BindingResolver(
+      environments,
+      environment,
+      options.scopes,
+    );
+    const belongsToClass = (token: TokenSyntax): boolean =>
+      classResolver.resolve({
+        spelling: token.raw,
+        scopes: token.scopes,
+        phase: options.phase,
+        space,
+        position: token.span.start,
+      }).kind !== "unbound";
 
     const unavailable = new Set(options.reservedNames ?? []);
     for (const token of inSpace) {

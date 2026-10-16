@@ -671,6 +671,51 @@ function braceGroup(syntax: Syntax | undefined): boolean {
   return syntax?.tag === "group" && syntax.delimiter === "brace";
 }
 
+function parenthesisGroup(syntax: Syntax | undefined): boolean {
+  return syntax?.tag === "group" && syntax.delimiter === "parenthesis";
+}
+
+/**
+ * How many nodes the `#core(…)` written at the cursor takes -- spelled as one
+ * token, or as `#` and `core` apart -- or undefined where none is written.
+ *
+ * A template writes it for the core form it holds rather than a macro of that
+ * form's spelling, and the expander puts the form in its place as it walks the
+ * replacement. The form is one unit of the list being read, so the directive
+ * is read as that unit, as it stands, for the walk to open. Read as anything
+ * else, `#core(const first = 1)` was a call whose argument list held a
+ * declaration, and the replacement it stood in did not read at all.
+ */
+function coreFormWidth(cursor: SyntaxCursor): number | undefined {
+  if (token(cursor.peek(), "#core") && parenthesisGroup(cursor.peek(1)))
+    return 2;
+  if (
+    token(cursor.peek(), "#") &&
+    token(cursor.peek(1), "core") &&
+    parenthesisGroup(cursor.peek(2))
+  )
+    return 3;
+  return undefined;
+}
+
+/** The `#core(…)` at the cursor, read as one unit of `category`. */
+function consumeCoreForm(
+  category: "stmt" | "item",
+  options: StatementItemConsumerOptions,
+  cursor: SyntaxCursor,
+): ConsumerAttempt | undefined {
+  const width = coreFormWidth(cursor);
+  if (width === undefined) return undefined;
+  const children: Syntax[] = [];
+  for (let taken = 0; taken < width; taken += 1)
+    children.push(cursor.consume()!);
+  return Object.freeze({
+    matched: true,
+    syntax: protect(category, options, children),
+    cursor,
+  });
+}
+
 /**
  * Whether a declaration's scanned head marks a generator, so that its body
  * admits `yield`. The star follows `function` for a declaration and precedes
@@ -950,6 +995,8 @@ class StatementConsumer implements SyntaxConsumer {
       cursor.advance();
       return Object.freeze({ matched: true, syntax: enforested, cursor });
     }
+    const core = consumeCoreForm("stmt", this.options, cursor);
+    if (core !== undefined) return core;
     const macro = this.options.resolveMacro?.("stmt", cursor, context);
     if (macro !== undefined)
       return validateMacroAttempt(macro, "stmt", cursor, start);
@@ -2018,6 +2065,8 @@ class ItemConsumer implements SyntaxConsumer {
         cursor,
       });
     }
+    const core = consumeCoreForm("item", this.options, cursor);
+    if (core !== undefined) return core;
     const macro = this.options.resolveMacro?.("item", cursor, context);
     if (macro !== undefined)
       return validateMacroAttempt(macro, "item", cursor, start);

@@ -149,6 +149,44 @@ describe("template privacy", () => {
     expect(store.hasUnmatchedIntroduction(seenByInner)).toBe(true);
   });
 
+  it("tells what a template wrote at an invocation made since a mark", () => {
+    const store = new ScopeStore();
+    const definition = store.singleton(store.freshScope("module", "macro"));
+    const callSite = store.singleton(store.freshScope("lexical", "caller"));
+    const before = createInvocationScopes(store);
+    const mark = store.mark();
+    const since = createInvocationScopes(store);
+    const writtenSince = introducedTemplateScopes(store, definition, since);
+    const writtenBefore = introducedTemplateScopes(store, definition, before);
+    // A template wrote the outer syntax before the mark; the inner macro
+    // wrote nothing, and only copied it.
+    const copiedSince = capturedInvocationScopes(store, writtenBefore, since);
+    const published = store.add(
+      capturedInvocationScopes(store, callSite, since),
+      since.introduction,
+    );
+    expect(store.introducedSince(writtenSince, mark)).toBe(true);
+    expect(store.introducedSince(writtenBefore, mark)).toBe(false);
+    expect(store.introducedSince(copiedSince, mark)).toBe(false);
+    expect(store.introducedSince(published, mark)).toBe(false);
+    expect(store.introducedSince(callSite, mark)).toBe(false);
+  });
+
+  it("answers the call site a published identifier binds at", () => {
+    const store = new ScopeStore();
+    const definition = store.singleton(store.freshScope("module", "macro"));
+    const callSite = store.singleton(store.freshScope("lexical", "caller"));
+    const invocation = createInvocationScopes(store);
+    const captured = capturedInvocationScopes(store, callSite, invocation);
+    const published = store.add(captured, invocation.introduction);
+    const introduced = introducedTemplateScopes(store, definition, invocation);
+    expect(store.publishedTo(published)).toBe(callSite);
+    // Neither a copied capture nor template syntax was published: each keeps
+    // the invocation scope that keeps it from binding the call site's names.
+    expect(store.publishedTo(captured)).toBe(captured);
+    expect(store.publishedTo(introduced)).toBe(introduced);
+  });
+
   it("rejects a pairing that is not an introduction and use-site pair", () => {
     const store = new ScopeStore();
     const invocation = createInvocationScopes(store);

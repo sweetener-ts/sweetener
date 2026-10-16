@@ -29,6 +29,8 @@ import {
   compileParsedMacros,
   expandMacroSyntax,
   ExpansionGuard,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const repositoryRoot = path.resolve(
@@ -166,7 +168,10 @@ describe("recursive declarative expansion", () => {
         if (!attempt.matched || !attempt.cursor.atEnd) {
           throw new TypeError("expanded syntax is not one expression");
         }
-        return attempt.syntax;
+        return normalizeProtectedInput(attempt.syntax, handedIn(syntax), {
+          origins,
+          allocateSyntaxId: syntaxIds.allocate,
+        });
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,

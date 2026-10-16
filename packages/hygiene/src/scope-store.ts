@@ -4,18 +4,21 @@ import {
   type ScopeSetId,
 } from "@sweetener/shared";
 import { createScope, type Scope, type ScopeKind } from "./scope.js";
-import {
-  scopeSetKey,
-  scopeSetSubset,
-  unionScopeArrays,
-  type ScopeSetDebugRecord,
-} from "./scope-set.js";
+import { scopeSetSubset, type ScopeSetDebugRecord } from "./scope-set.js";
 
 export interface ScopeStoreStats {
   readonly allocatedScopes: number;
   readonly internedSets: number;
   readonly internHits: number;
 }
+
+declare const scopeMarkBrand: unique symbol;
+
+/**
+ * A point in the order scopes are allocated in. Every scope allocated after
+ * the mark was taken is later than it.
+ */
+export type ScopeMark = number & { readonly [scopeMarkBrand]: "ScopeMark" };
 
 export interface SerializedScope {
   readonly id: ScopeId;
@@ -28,22 +31,46 @@ export interface SerializedScopeSet {
   readonly scopes: readonly SerializedScope[];
 }
 
+/**
+ * One interned scope set: its parent's scopes with `last` added, where `last`
+ * is greater than every scope the parent holds. The sets form a trie over
+ * their sorted scopes, so each set has exactly one node, and adding a scope
+ * greater than all of a set's scopes, as a freshly allocated scope is, is one
+ * lookup.
+ */
+interface ScopeSetNode {
+  readonly id: ScopeSetId;
+  readonly parent: ScopeSetNode | undefined;
+  readonly last: ScopeId | undefined;
+  readonly size: number;
+  /** The sorted scopes, built the first time something reads them. */
+  scopes: readonly ScopeId[] | undefined;
+  /** What adding each scope to this set gave. */
+  added: Map<ScopeId, ScopeSetNode> | undefined;
+  /** What removing each scope from this set gave. */
+  removed: Map<ScopeId, ScopeSetNode> | undefined;
+}
+
 export class ScopeStore {
   readonly #scopeIds = createIdAllocator<ScopeId>(1);
   readonly #setIds = createIdAllocator<ScopeSetId>(1);
   readonly #scopes = new Map<ScopeId, Scope>();
-  readonly #sets = new Map<ScopeSetId, readonly ScopeId[]>();
-  readonly #setByKey = new Map<string, ScopeSetId>();
-  readonly #keyBySet = new Map<ScopeSetId, string>();
+  readonly #sets = new Map<ScopeSetId, ScopeSetNode>();
   readonly #invocationPartners = new Map<ScopeId, ScopeId>();
-  readonly #empty = 0 as ScopeSetId;
+  readonly #publishedTo = new Map<ScopeSetId, ScopeSetId>();
+  readonly #empty: ScopeSetNode = {
+    id: 0 as ScopeSetId,
+    parent: undefined,
+    last: undefined,
+    size: 0,
+    scopes: Object.freeze([]),
+    added: undefined,
+    removed: undefined,
+  };
   #internHits = 0;
 
   constructor() {
-    const scopes = Object.freeze([]) as readonly ScopeId[];
-    this.#sets.set(this.#empty, scopes);
-    this.#setByKey.set("", this.#empty);
-    this.#keyBySet.set(this.#empty, "");
+    this.#sets.set(this.#empty.id, this.#empty);
   }
 
   get stats(): ScopeStoreStats {
@@ -61,42 +88,23 @@ export class ScopeStore {
   }
 
   empty(): ScopeSetId {
-    return this.#empty;
+    return this.#empty.id;
   }
 
   singleton(scope: ScopeId): ScopeSetId {
-    this.#requireScope(scope);
-    return this.#intern([scope]);
+    return this.add(this.#empty.id, scope);
   }
 
   add(set: ScopeSetId, scope: ScopeId): ScopeSetId {
-    const scopes = this.#requireSet(set);
+    const node = this.#requireSet(set);
     this.#requireScope(scope);
-    if (this.#contains(scopes, scope)) return set;
-    if (scopes.length === 0 || scopes[scopes.length - 1]! < scope) {
-      const previousKey = this.#keyBySet.get(set)!;
-      return this.#intern(
-        [...scopes, scope],
-        previousKey.length === 0
-          ? String(scope)
-          : `${previousKey},${String(scope)}`,
-      );
-    }
-    let insertion = 0;
-    while (insertion < scopes.length && scopes[insertion]! < scope)
-      insertion += 1;
-    return this.#intern([
-      ...scopes.slice(0, insertion),
-      scope,
-      ...scopes.slice(insertion),
-    ]);
+    return this.#add(node, scope).id;
   }
 
   remove(set: ScopeSetId, scope: ScopeId): ScopeSetId {
-    const scopes = this.#requireSet(set);
+    const node = this.#requireSet(set);
     this.#requireScope(scope);
-    if (!this.#contains(scopes, scope)) return set;
-    return this.#intern(scopes.filter((candidate) => candidate !== scope));
+    return this.#remove(node, scope).id;
   }
 
   flip(set: ScopeSetId, scope: ScopeId): ScopeSetId {
@@ -106,16 +114,26 @@ export class ScopeStore {
   }
 
   union(left: ScopeSetId, right: ScopeSetId): ScopeSetId {
-    if (left === right) return this.#requireSetId(left);
-    const leftScopes = this.#requireSet(left);
-    const rightScopes = this.#requireSet(right);
-    if (leftScopes.length === 0) return right;
-    if (rightScopes.length === 0) return left;
-    return this.#intern(unionScopeArrays(leftScopes, rightScopes));
+    const leftNode = this.#requireSet(left);
+    const rightNode = this.#requireSet(right);
+    if (leftNode === rightNode) return left;
+    const [smaller, larger] =
+      leftNode.size <= rightNode.size
+        ? [leftNode, rightNode]
+        : [rightNode, leftNode];
+    let union = larger;
+    for (const scope of this.#scopesOf(smaller)) {
+      union = this.#add(union, scope);
+    }
+    return union.id;
   }
 
   subset(left: ScopeSetId, right: ScopeSetId): boolean {
-    return scopeSetSubset(this.#requireSet(left), this.#requireSet(right));
+    const leftNode = this.#requireSet(left);
+    const rightNode = this.#requireSet(right);
+    if (leftNode === rightNode || leftNode.size === 0) return true;
+    if (leftNode.size > rightNode.size) return false;
+    return scopeSetSubset(this.#scopesOf(leftNode), this.#scopesOf(rightNode));
   }
 
   /**
@@ -138,11 +156,55 @@ export class ScopeStore {
    * publishes to the call site, answer false.
    */
   hasUnmatchedIntroduction(set: ScopeSetId): boolean {
-    const scopes = this.#requireSet(set);
-    return scopes.some((scope) => {
+    const node = this.#requireSet(set);
+    return this.#scopesOf(node).some((scope) => {
       const partner = this.#invocationPartners.get(scope);
-      return partner !== undefined && !this.#contains(scopes, partner);
+      return partner !== undefined && !this.#contains(node, partner);
     });
+  }
+
+  /**
+   * Whether the set carries the introduction scope of an invocation made
+   * since `mark` without that invocation's use-site scope: whether a
+   * template wrote it, at an invocation made after the mark was taken.
+   */
+  introducedSince(set: ScopeSetId, mark: ScopeMark): boolean {
+    const node = this.#requireSet(set);
+    for (
+      let since = node;
+      since.last !== undefined && since.last >= mark;
+      since = since.parent!
+    ) {
+      const partner = this.#invocationPartners.get(since.last);
+      if (partner !== undefined && !this.#contains(node, partner)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The set with each invocation's introduction and use-site scopes removed
+   * where it carries both: the scopes of the call site that `#capture`
+   * published an identifier to. A set that carries no such pair is answered
+   * as itself.
+   */
+  publishedTo(set: ScopeSetId): ScopeSetId {
+    const known = this.#publishedTo.get(set);
+    if (known !== undefined) return known;
+    const node = this.#requireSet(set);
+    let published = node;
+    for (const scope of this.#scopesOf(node)) {
+      const partner = this.#invocationPartners.get(scope);
+      if (partner !== undefined && this.#contains(node, partner)) {
+        published = this.#remove(this.#remove(published, scope), partner);
+      }
+    }
+    this.#publishedTo.set(set, published.id);
+    return published.id;
+  }
+
+  /** The point in allocation order the next scope will be allocated at. */
+  mark(): ScopeMark {
+    return this.#scopeIds.nextValue as ScopeMark;
   }
 
   has(set: ScopeSetId, scope: ScopeId): boolean {
@@ -151,13 +213,18 @@ export class ScopeStore {
   }
 
   size(set: ScopeSetId): number {
-    return this.#requireSet(set).length;
+    return this.#requireSet(set).size;
+  }
+
+  /** The set's scopes in ascending order. */
+  scopesOf(set: ScopeSetId): readonly ScopeId[] {
+    return this.#scopesOf(this.#requireSet(set));
   }
 
   debugRecord(set: ScopeSetId): ScopeSetDebugRecord {
     return Object.freeze({
       id: set,
-      scopes: Object.freeze([...this.#requireSet(set)]),
+      scopes: Object.freeze([...this.#scopesOf(this.#requireSet(set))]),
     });
   }
 
@@ -165,7 +232,7 @@ export class ScopeStore {
     const value: SerializedScopeSet = Object.freeze({
       id: set,
       scopes: Object.freeze(
-        this.#requireSet(set).map((scope) => {
+        this.#scopesOf(this.#requireSet(set)).map((scope) => {
           const metadata = this.#scopes.get(scope)!;
           return Object.freeze({
             id: metadata.id,
@@ -178,22 +245,86 @@ export class ScopeStore {
     return JSON.stringify(value);
   }
 
-  #intern(scopes: readonly ScopeId[], knownKey?: string): ScopeSetId {
-    const frozen = Object.isFrozen(scopes) ? scopes : Object.freeze(scopes);
-    const key = knownKey ?? scopeSetKey(frozen);
-    const existing = this.#setByKey.get(key);
-    if (existing !== undefined) {
+  /** The node for `node`'s scopes with `scope` added. */
+  #add(node: ScopeSetNode, scope: ScopeId): ScopeSetNode {
+    const known = node.added?.get(scope);
+    if (known !== undefined) {
       this.#internHits += 1;
-      return existing;
+      return known;
     }
-    const id = this.#setIds.allocate();
-    this.#sets.set(id, frozen);
-    this.#setByKey.set(key, id);
-    this.#keyBySet.set(id, key);
-    return id;
+    let result: ScopeSetNode;
+    if (node.last === undefined || node.last < scope) {
+      result = {
+        id: this.#setIds.allocate(),
+        parent: node,
+        last: scope,
+        size: node.size + 1,
+        scopes: undefined,
+        added: undefined,
+        removed: undefined,
+      };
+      this.#sets.set(result.id, result);
+    } else {
+      const greater: ScopeId[] = [];
+      let below = node;
+      while (below.last !== undefined && below.last > scope) {
+        greater.push(below.last);
+        below = below.parent!;
+      }
+      if (below.last === scope) {
+        result = node;
+      } else {
+        result = this.#add(below, scope);
+        for (let index = greater.length - 1; index >= 0; index -= 1) {
+          result = this.#add(result, greater[index]!);
+        }
+      }
+    }
+    (node.added ??= new Map()).set(scope, result);
+    return result;
   }
 
-  #contains(scopes: readonly ScopeId[], scope: ScopeId): boolean {
+  /** The node for `node`'s scopes with `scope` removed. */
+  #remove(node: ScopeSetNode, scope: ScopeId): ScopeSetNode {
+    const known = node.removed?.get(scope);
+    if (known !== undefined) {
+      this.#internHits += 1;
+      return known;
+    }
+    const greater: ScopeId[] = [];
+    let below = node;
+    while (below.last !== undefined && below.last > scope) {
+      greater.push(below.last);
+      below = below.parent!;
+    }
+    let result = node;
+    if (below.last === scope) {
+      result = below.parent!;
+      for (let index = greater.length - 1; index >= 0; index -= 1) {
+        result = this.#add(result, greater[index]!);
+      }
+    }
+    (node.removed ??= new Map()).set(scope, result);
+    return result;
+  }
+
+  /** The node's scopes in ascending order. */
+  #scopesOf(node: ScopeSetNode): readonly ScopeId[] {
+    if (node.scopes !== undefined) return node.scopes;
+    const newer: ScopeId[] = [];
+    let built = node;
+    while (built.scopes === undefined) {
+      newer.push(built.last!);
+      built = built.parent!;
+    }
+    node.scopes = Object.freeze([...built.scopes, ...newer.reverse()]);
+    return node.scopes;
+  }
+
+  #contains(node: ScopeSetNode, scope: ScopeId): boolean {
+    if (node.last === undefined || node.last < scope) return false;
+    if (node.last === scope) return true;
+    const scopes = this.#scopesOf(node);
     let low = 0;
     let high = scopes.length - 1;
     while (low <= high) {
@@ -214,16 +345,11 @@ export class ScopeStore {
     return value;
   }
 
-  #requireSet(set: ScopeSetId): readonly ScopeId[] {
-    const scopes = this.#sets.get(set);
-    if (scopes === undefined) {
+  #requireSet(set: ScopeSetId): ScopeSetNode {
+    const node = this.#sets.get(set);
+    if (node === undefined) {
       throw new RangeError(`Unknown scope set ${String(set)}`);
     }
-    return scopes;
-  }
-
-  #requireSetId(set: ScopeSetId): ScopeSetId {
-    this.#requireSet(set);
-    return set;
+    return node;
   }
 }

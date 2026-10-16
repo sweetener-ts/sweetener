@@ -12,6 +12,7 @@ import {
 } from "@sweetener/enforestation";
 import {
   createPhase,
+  definitionContextScope,
   EnvironmentStore,
   resolveBinding,
   ScopeStore,
@@ -55,6 +56,8 @@ import {
   ExpansionGuard,
   invokeMacro,
   processDefinitionContext,
+  handedIn,
+  normalizeProtectedInput,
 } from "../src/index.js";
 
 const fixture = "fixtures/acceptance/playground/new-language";
@@ -272,14 +275,18 @@ function createHarness() {
             );
           items.push(result.syntax);
         }
-        return createProtectedSyntax({
-          id: syntaxIds.allocate(),
-          span: spanEnvelope(syntax.map(({ span }) => span)),
-          origin: origins.composed(syntax.map(({ origin }) => origin)),
-          scopes: syntax[0]!.scopes,
-          category: "item",
-          children: createSyntaxSequence(items),
-        });
+        return normalizeProtectedInput(
+          createProtectedSyntax({
+            id: syntaxIds.allocate(),
+            span: spanEnvelope(syntax.map(({ span }) => span)),
+            origin: origins.composed(syntax.map(({ origin }) => origin)),
+            scopes: syntax[0]!.scopes,
+            category: "item",
+            children: createSyntaxSequence(items),
+          }),
+          handedIn(syntax),
+          { origins, allocateSyntaxId: syntaxIds.allocate },
+        );
       },
       allocateSyntaxId: syntaxIds.allocate,
       allocateBindingId: bindingIds.allocate,
@@ -320,6 +327,7 @@ function createHarness() {
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
       position: 0,
+      followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>
         createProtectedSyntax({
@@ -364,6 +372,7 @@ function createHarness() {
       allocateBindingId: bindingIds.allocate,
       allocateInvocationId: invocationIds.allocate,
       position: 0,
+      followingScope: definitionContextScope(scopes),
       admit: ({ cursor }) => cursor.atEnd,
       expandReplacement: ({ syntax, category }) =>
         createProtectedSyntax({

@@ -37,7 +37,6 @@ import type {
   SyntaxId,
 } from "@sweetener/shared";
 import {
-  createGroup,
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
@@ -66,10 +65,17 @@ import { invokeMacro, type MacroTraceEvent } from "./invocation.js";
 import {
   expandMacroSyntax,
   operatorWidthAt,
+  type ExpandMacroSyntaxOptions,
   type ExpandMacroSyntaxResult,
 } from "./recursive-expander.js";
 import type { ExpansionGuard } from "./progress.js";
 import { coreFormKind, isCoreForm } from "./core-shadowing.js";
+import {
+  alreadyNormal,
+  handedIn,
+  normalizeProtectedInput,
+  type NormalizedSyntax,
+} from "./normalized-syntax.js";
 import type { CoreDispatchTrace } from "./core-shadowing.js";
 
 export interface CreateExpansionFrontendSessionOptions {
@@ -177,9 +183,28 @@ function diagnosticSyntaxText(syntax: readonly Syntax[]): string {
   return text;
 }
 
+/**
+ * The routes by which the expander asks the reader to read syntax for it.
+ * Each answers with `NormalizedSyntax`, so each normalizes what it reads.
+ */
+export type ReadingRoutes = {
+  readonly [
+    Route in
+      | "enforest"
+      | "enforestExpression"
+      | "enforestStatements"
+      | "enforestItems"
+      | "enforestJsxChildren"
+      | "enforestTypeMembers"
+      | "enforestClassElements"
+  ]-?: NonNullable<ExpandMacroSyntaxOptions[Route]>;
+};
+
 export interface ExpansionFrontendSession {
   readonly consumeClass: SyntaxClassConsumer;
   readonly environment: BindingEnvironment;
+  /** The routes `expand` hands the expander, the same ones it reads through. */
+  readonly routes: ReadingRoutes;
   expand(
     syntax: SyntaxSequence,
     category?: SyntaxCategory,
@@ -498,6 +523,15 @@ export function createExpansionFrontendSession(
           allocateInvocationId: options.allocateInvocationId,
           captureSlashMisreads: captureMisreads,
           position: 0,
+          // An operator expanded here is expanded while the expression
+          // holding it is read, and the reading hands back an expression,
+          // not the definition context around it: there is nothing following
+          // the operator to give a binding's scope to.
+          followingScope: () => {
+            throw new Error(
+              `Operator ${operator.spelling} binds a name in following syntax, but it was expanded while the expression holding it was read, where no syntax following it can be bound.`,
+            );
+          },
           // The parser has already decided what the operands are, so a rule
           // must account for all of them. Admitting a rule that matched a
           // prefix dropped the rest: with rules for `$v |> await` and
@@ -785,12 +819,19 @@ export function createExpansionFrontendSession(
   }
   const consumeClass = classConsumerByModule.get(options.module)!;
 
+  /**
+   * `syntax` read as one node of `category`, normalized as every other route
+   * is. The walk reads what this hands back where it reads a substitution of
+   * a template literal, and while the infix `=>` protected an arrow's
+   * parameters as an expression, `${x => { return x; }}` reached it that way
+   * and `x` was dispatched as a macro wherever one was in scope.
+   */
   const enforest = (
     syntax: SyntaxSequence,
     category: SyntaxCategory,
     lexicalModule = options.module,
     contexts: ReadonlySet<MacroContext> = new Set(),
-  ) => {
+  ): NormalizedSyntax => {
     const consumer =
       category === "expr"
         ? expression
@@ -809,7 +850,12 @@ export function createExpansionFrontendSession(
                     : category === "jsxChild"
                       ? jsxChild
                       : undefined;
-    if (consumer === undefined) return protect(syntax, category);
+    if (consumer === undefined)
+      return normalizeProtectedInput(
+        protect(syntax, category),
+        handedIn(syntax),
+        options,
+      );
     const previousOperatorModule = activeOperatorModule;
     activeOperatorModule = lexicalModule;
     let attempted;
@@ -823,7 +869,7 @@ export function createExpansionFrontendSession(
     }
     if (!attempted.matched || !attempted.cursor.atEnd)
       throw new EnforestationError(category, diagnosticSyntaxText(syntax));
-    return attempted.syntax;
+    return normalizeProtectedInput(attempted.syntax, handedIn(syntax), options);
   };
   const protect = (
     syntax: SyntaxSequence,
@@ -840,106 +886,6 @@ export function createExpansionFrontendSession(
       category,
       children: syntax,
     });
-
-  /** Whether syntax came from source text alone, with no expansion in it. */
-  const writtenInSource = (origin: OriginId): boolean => {
-    const record = options.origins.get(origin);
-    if (record === undefined) return false;
-    if (record.kind === "source") return true;
-    return (
-      record.kind === "composed" &&
-      record.parts.every((part) => writtenInSource(part))
-    );
-  };
-
-  const normalizeProtectedInput = (node: ProtectedSyntax): ProtectedSyntax => {
-    /**
-     * What `child` normalizes to, or undefined where it normalizes to itself.
-     * Saying so rather than returning a one-element run of it lets a node
-     * whose whole subtree is already normal be kept rather than rebuilt.
-     */
-    const normalizeChild = (
-      child: Syntax,
-      category: SyntaxCategory | undefined,
-      siblings: number,
-    ): readonly Syntax[] | undefined => {
-      if (child.tag === "protected") {
-        const normalized = normalizeProtectedInput(child);
-        // An expression or type an expansion built inside another is not
-        // redundant: it is the boundary its operators bind within, and
-        // nothing in the text says so. An operator's expansion arrives
-        // here holding its operands that way, and flattening them printed
-        // `$value * $n` over `1 + 2` and `3 + 4` as `1 + 2 * 3 + 4`. What
-        // the parser built over source text is redundant with that text.
-        const bounds =
-          (category === "expr" || category === "type") &&
-          !writtenInSource(normalized.origin);
-        // A statement standing beside other syntax inside a statement is
-        // a substatement, not a redundant wrapping: `here: log(x);` and
-        // `while (c) log(x);` each read one statement inside another, and
-        // the syntax beside it is the label or the header that reads it.
-        // Flattened, the head of that statement stood right after the
-        // `:` or the header, where a type is written -- so a statement
-        // macro written there was refused for being declared `stmt`.
-        const substatement =
-          category === "stmt" && normalized.category === "stmt" && siblings > 1;
-        if (normalized.category === category && !bounds && !substatement)
-          return normalized.children;
-        return normalized === child ? undefined : [normalized];
-      }
-      if (child.tag === "group") {
-        const children = normalizeChildren(child.children, undefined);
-        if (children === child.children) return undefined;
-        return [
-          createGroup({
-            ...child,
-            id: options.allocateSyntaxId(),
-            children,
-          }),
-        ];
-      }
-      return undefined;
-    };
-
-    /**
-     * The children of a node, normalized. The run handed in is returned
-     * itself where nothing in it changed, which is what almost every prepared
-     * statement finds: rebuilding it anyway allocated a fresh id for every
-     * protected node and every group beneath it, so the id space filled with
-     * new nodes standing for syntax that had not moved.
-     */
-    const normalizeChildren = (
-      children: SyntaxSequence,
-      // Undefined inside a group: nesting is only redundant when the protected
-      // node sits directly in a protected node of its own category. A group
-      // delimits, so what it holds is a list of its own -- an interface body
-      // is protected as a `typeMember` run and holds one protected member per
-      // member, and carrying the category through the brace flattened every
-      // member back into loose tokens.
-      category: SyntaxCategory | undefined,
-    ): readonly Syntax[] => {
-      let normalized: Syntax[] | undefined;
-      for (let at = 0; at < children.length; at += 1) {
-        const child = children[at]!;
-        const replacement = normalizeChild(child, category, children.length);
-        if (replacement === undefined) {
-          normalized?.push(child);
-          continue;
-        }
-        normalized ??= children.slice(0, at);
-        normalized.push(...replacement);
-      }
-      return normalized ?? children;
-    };
-
-    const children = normalizeChildren(node.children, node.category);
-    if (children === node.children) return node;
-    return createProtectedSyntax({
-      ...node,
-      id: options.allocateSyntaxId(),
-      children,
-    });
-  };
 
   /** The macro names a file's own text can invoke: its own and its imports. */
   const macroSpellingsInScope = (): ReadonlySet<string> =>
@@ -1234,6 +1180,7 @@ export function createExpansionFrontendSession(
     category: SyntaxCategory,
   ): SyntaxSequence => {
     if (category !== "item") return syntax;
+    const handed = handedIn(syntax);
     const cursor = createSyntaxCursor(syntax);
     const prepared: ProtectedSyntax[] = [];
     const fallbackItem = (raw: readonly Syntax[]): ProtectedSyntax => {
@@ -1332,7 +1279,7 @@ export function createExpansionFrontendSession(
         continue;
       }
       cursor.advance(attempted.cursor.index - cursor.index);
-      prepared.push(normalizeProtectedInput(attempted.syntax));
+      prepared.push(normalizeProtectedInput(attempted.syntax, handed, options));
     }
     return createSyntaxSequence(prepared);
   };
@@ -1346,15 +1293,18 @@ export function createExpansionFrontendSession(
    * of this loop, which is how they came to differ from `prepareInput` and
    * from the expression route in the first place.
    *
-   * What they still do not do is normalize what they build, which those two
-   * routes do. That looked like the same omission and is not: normalizing
-   * `item` here emits TypeScript that does not parse -- the React memoization
-   * fixture is the reproduction -- because the rules in
-   * `normalizeProtectedInput` were written for a run read from source, and an
-   * item read out of a macro's replacement is not one. The other four pass
-   * their suites normalized, but nothing here asked them to be, so none of
-   * them is: one shape for the five, and a measurement rather than a guess
-   * about what the sixth should be.
+   * Each brands what it reads `NormalizedSyntax`, as those two routes do, so
+   * the walk is handed one shape whichever route read it. A statement list, an
+   * item list and a class body are read by readers that build an expression
+   * inside an expression -- an operator's operands, or a statement in a
+   * method's body -- and normalize what they read. The type member and JSX
+   * child readers build no protected node inside one of its own category, so
+   * `brand` says so for them, loudly, rather than normalizing what never
+   * changes. Normalizing `item` here once emitted TypeScript that does not
+   * parse -- the React memoization fixture -- because what is read here is
+   * often a replacement, and normalizing took apart what the expansion had
+   * built; that is why `normalizeProtectedInput` keeps what the reader was
+   * handed.
    */
   const enforestList = (
     consumer: SyntaxConsumer,
@@ -1364,12 +1314,14 @@ export function createExpansionFrontendSession(
       readonly contexts: ReadonlySet<MacroContext>;
       readonly lexicalModule?: CompileParsedMacrosResult | undefined;
     },
-  ): SyntaxSequence | undefined => {
+    brand: typeof normalizeProtectedInput,
+  ): readonly NormalizedSyntax[] | undefined => {
     const restore = enforestingModule;
     enforestingModule = request.lexicalModule ?? restore;
     try {
+      const handed = handedIn(request.syntax);
       let cursor = createSyntaxCursor(request.syntax);
-      const read: Syntax[] = [];
+      const read: NormalizedSyntax[] = [];
       while (!cursor.atEnd) {
         const before = cursor.index;
         const attempted = consumer.consume(cursor, {
@@ -1378,7 +1330,7 @@ export function createExpansionFrontendSession(
         });
         if (!attempted.matched || attempted.cursor.index <= before)
           return undefined;
-        read.push(attempted.syntax);
+        read.push(brand(attempted.syntax, handed, options));
         cursor = attempted.cursor;
       }
       return createSyntaxSequence(read);
@@ -1387,9 +1339,55 @@ export function createExpansionFrontendSession(
     }
   };
 
+  const routes: ReadingRoutes = Object.freeze({
+    enforest: ({
+      syntax: replacement,
+      category: replacementCategory,
+      lexicalModule,
+      contexts,
+    }) => enforest(replacement, replacementCategory, lexicalModule, contexts),
+    enforestStatements: (request) =>
+      enforestList(statement, "stmt", request, normalizeProtectedInput),
+    enforestItems: (request) =>
+      enforestList(item, "item", request, normalizeProtectedInput),
+    enforestJsxChildren: (request) =>
+      enforestList(jsxChild, "jsxChild", request, alreadyNormal),
+    enforestTypeMembers: (request) =>
+      enforestList(typeMember, "typeMember", request, alreadyNormal),
+    enforestClassElements: (request) =>
+      enforestList(
+        classElement,
+        "classElement",
+        request,
+        normalizeProtectedInput,
+      ),
+    enforestExpression: ({ syntax, contexts, lexicalModule }) => {
+      const restore = enforestingModule;
+      enforestingModule = lexicalModule ?? restore;
+      try {
+        const attempted = expression.consume(createSyntaxCursor(syntax), {
+          ...context("expr", contexts),
+          stopSet: StopSet.empty,
+        });
+        // Normalized, as the items handed over by `prepareInput` are. Both
+        // routes into the expander hand it the same shape, or the two
+        // disagree about what a reading means: while the infix `=>`
+        // protected an arrow's parameter list as an expression, the walk
+        // found no parameter list in front of the `=>` of a reading left
+        // that way, and walked the binders in it as an expression.
+        return attempted.matched && attempted.cursor.atEnd
+          ? normalizeProtectedInput(attempted.syntax, handedIn(syntax), options)
+          : undefined;
+      } finally {
+        enforestingModule = restore;
+      }
+    },
+  });
+
   return Object.freeze({
     consumeClass,
     environment,
+    routes,
     expand: (
       syntax: SyntaxSequence,
       category: SyntaxCategory = "item",
@@ -1411,6 +1409,7 @@ export function createExpansionFrontendSession(
         // A module's items are what is expanded under the item category, and
         // they stand at its top level.
         contexts: category === "item" ? moduleContexts : new Set(),
+        ...routes,
         consumeClass,
         consumeClassForMacro: (macro, contexts) =>
           inContexts(
@@ -1441,37 +1440,6 @@ export function createExpansionFrontendSession(
             )
           );
         },
-        enforestStatements: (request) =>
-          enforestList(statement, "stmt", request),
-        enforestItems: (request) => enforestList(item, "item", request),
-        enforestJsxChildren: (request) =>
-          enforestList(jsxChild, "jsxChild", request),
-        enforestTypeMembers: (request) =>
-          enforestList(typeMember, "typeMember", request),
-        enforestClassElements: (request) =>
-          enforestList(classElement, "classElement", request),
-        enforestExpression: ({ syntax, contexts, lexicalModule }) => {
-          const restore = enforestingModule;
-          enforestingModule = lexicalModule ?? restore;
-          try {
-            const attempted = expression.consume(createSyntaxCursor(syntax), {
-              ...context("expr", contexts),
-              stopSet: StopSet.empty,
-            });
-            // Normalized, as the items handed over by `prepareInput` are. A
-            // block-bodied arrow whose head is one operand is read through the
-            // infix `=>`, which protects its parameter list as an expression;
-            // left that way the walk found no parameter list in front of the
-            // `=>` and walked the binders in it as the expression they had
-            // been wrapped as. Both routes into the expander hand it the same
-            // shape, or the two disagree about what a reading means.
-            return attempted.matched && attempted.cursor.atEnd
-              ? normalizeProtectedInput(attempted.syntax)
-              : undefined;
-          } finally {
-            enforestingModule = restore;
-          }
-        },
         phase: options.phase,
         environmentEpoch: expansionEnvironment.epoch,
         expansionStore,
@@ -1499,13 +1467,6 @@ export function createExpansionFrontendSession(
             : [];
         },
         matchesBindingLiteral: options.matchesBindingLiteral,
-        enforest: ({
-          syntax: replacement,
-          category: replacementCategory,
-          lexicalModule,
-          contexts,
-        }) =>
-          enforest(replacement, replacementCategory, lexicalModule, contexts),
         allocateSyntaxId: options.allocateSyntaxId,
         allocateBindingId: options.allocateBindingId,
         allocateInvocationId: options.allocateInvocationId,

@@ -11,8 +11,11 @@ export type NameOccurrenceKind =
 export interface BindingNameDeclaration {
   readonly binding: BindingId;
   readonly preferredName: string;
-  /** Bindings simultaneously visible with this binding after hygiene erasure. */
-  readonly conflicts: readonly BindingId[];
+  /**
+   * Bindings simultaneously visible with this binding after hygiene erasure.
+   * None when absent; must be absent when every declaration conflicts.
+   */
+  readonly conflicts?: readonly BindingId[] | undefined;
 }
 
 export interface BindingNameOccurrence {
@@ -42,6 +45,12 @@ export interface NameAssignmentPlan {
 
 export interface AssignPrintedNamesOptions {
   readonly declarations: readonly BindingNameDeclaration[];
+  /**
+   * Every declaration conflicts with every other. Saying so once spares
+   * listing the n² conflicts between n declarations, and lets each declaration
+   * take its name without looking at every name taken before it.
+   */
+  readonly everyDeclarationConflicts?: boolean | undefined;
   /** Occurrences must be in expanded-file traversal order. */
   readonly occurrences: readonly BindingNameOccurrence[];
   /** Unbound or property names which generated binding names must not shadow. */
@@ -131,6 +140,90 @@ function immutableMap<K, V>(source: ReadonlyMap<K, V>): ReadonlyMap<K, V> {
   } as ReadonlyMap<K, V>);
 }
 
+/** `base`, then `base_1`, `base_2` and so on. */
+function suffixed(base: string, suffix: number): string {
+  return suffix === 0 ? base : `${base}_${String(suffix)}`;
+}
+
+function namesForListedConflicts(
+  ordered: readonly BindingNameDeclaration[],
+  declarations: ReadonlyMap<BindingId, BindingNameDeclaration>,
+  unavailable: ReadonlySet<string>,
+): Map<BindingId, string> {
+  const conflictGraph = new Map<BindingId, Set<BindingId>>(
+    ordered.map((declaration) => [declaration.binding, new Set()]),
+  );
+  for (const declaration of ordered) {
+    for (const conflict of declaration.conflicts ?? []) {
+      if (!declarations.has(conflict)) {
+        throw new RangeError(
+          `Binding ${String(declaration.binding)} conflicts with unknown binding ${String(conflict)}`,
+        );
+      }
+      conflictGraph.get(declaration.binding)!.add(conflict);
+      conflictGraph.get(conflict)!.add(declaration.binding);
+    }
+  }
+  const names = new Map<BindingId, string>();
+  for (const declaration of ordered) {
+    const conflictNames = new Set(
+      [...conflictGraph.get(declaration.binding)!].flatMap((binding) => {
+        const name = names.get(binding);
+        return name === undefined ? [] : [name];
+      }),
+    );
+    const base = legalBase(declaration.preferredName);
+    let suffix = 0;
+    while (
+      unavailable.has(suffixed(base, suffix)) ||
+      conflictNames.has(suffixed(base, suffix))
+    )
+      suffix += 1;
+    names.set(declaration.binding, suffixed(base, suffix));
+  }
+  return names;
+}
+
+/**
+ * The names `namesForListedConflicts` gives when every declaration conflicts
+ * with every other: each takes the first of its base's names that is neither
+ * unavailable nor taken by an earlier declaration.
+ *
+ * Taken names are never given back, so a name passed over once stays passed
+ * over, and each base's search resumes where its last one stopped. A name is
+ * among the names of at most two bases, itself and the base its numeric
+ * suffix was added to, so the searches together pass over each taken or
+ * unavailable name at most twice, where searching from the start cost n² for
+ * n declarations of one base.
+ */
+function namesAllConflicting(
+  ordered: readonly BindingNameDeclaration[],
+  unavailable: ReadonlySet<string>,
+): Map<BindingId, string> {
+  const names = new Map<BindingId, string>();
+  const taken = new Set<string>();
+  const nextSuffix = new Map<string, number>();
+  for (const declaration of ordered) {
+    if (declaration.conflicts !== undefined) {
+      throw new RangeError(
+        `Binding ${String(declaration.binding)} lists its conflicts, but every declaration conflicts with every other`,
+      );
+    }
+    const base = legalBase(declaration.preferredName);
+    let suffix = nextSuffix.get(base) ?? 0;
+    while (
+      unavailable.has(suffixed(base, suffix)) ||
+      taken.has(suffixed(base, suffix))
+    )
+      suffix += 1;
+    const name = suffixed(base, suffix);
+    nextSuffix.set(base, suffix + 1);
+    taken.add(name);
+    names.set(declaration.binding, name);
+  }
+  return names;
+}
+
 export function assignPrintedNames(
   options: AssignPrintedNamesOptions,
 ): NameAssignmentPlan {
@@ -171,38 +264,11 @@ export function assignPrintedNames(
     (left, right) =>
       firstOccurrence.get(left.binding)! - firstOccurrence.get(right.binding)!,
   );
-  const conflictGraph = new Map<BindingId, Set<BindingId>>(
-    ordered.map((declaration) => [declaration.binding, new Set()]),
-  );
-  for (const declaration of ordered) {
-    for (const conflict of declaration.conflicts) {
-      if (!declarations.has(conflict)) {
-        throw new RangeError(
-          `Binding ${String(declaration.binding)} conflicts with unknown binding ${String(conflict)}`,
-        );
-      }
-      conflictGraph.get(declaration.binding)!.add(conflict);
-      conflictGraph.get(conflict)!.add(declaration.binding);
-    }
-  }
-  const names = new Map<BindingId, string>();
   const unavailable = new Set(options.unavailableNames ?? []);
-  for (const declaration of ordered) {
-    const conflictNames = new Set(
-      [...conflictGraph.get(declaration.binding)!].flatMap((binding) => {
-        const name = names.get(binding);
-        return name === undefined ? [] : [name];
-      }),
-    );
-    const base = legalBase(declaration.preferredName);
-    let candidate = base;
-    let suffix = 1;
-    while (unavailable.has(candidate) || conflictNames.has(candidate)) {
-      candidate = `${base}_${String(suffix)}`;
-      suffix += 1;
-    }
-    names.set(declaration.binding, candidate);
-  }
+  const names =
+    options.everyDeclarationConflicts === true
+      ? namesAllConflicting(ordered, unavailable)
+      : namesForListedConflicts(ordered, declarations, unavailable);
   const readonlyNames = immutableMap(names);
   const separators = { "shorthand-value": ": ", "import-binding": " as " };
   const rewrites = options.occurrences.map((occurrence) => {

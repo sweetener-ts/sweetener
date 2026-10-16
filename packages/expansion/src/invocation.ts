@@ -178,6 +178,8 @@ export interface InvokeMacroOptions {
   readonly contexts?: ReadonlySet<MacroContext> | undefined;
   readonly coreInterception?: CoreDispatchTrace | undefined;
   readonly position: number;
+  /** See `ApplyBindingContractOptions.followingScope`. */
+  readonly followingScope: ApplyBindingContractsOptions["followingScope"];
   readonly extractBindings?: ApplyBindingContractsOptions["extractBindings"];
   readonly admit: (request: BoundaryAdmissionRequest) => boolean;
   readonly expandReplacement: (
@@ -197,6 +199,8 @@ export interface MacroInvocationSuccess {
   readonly cursor: SyntaxCursor;
   readonly environment: BindingEnvironment;
   readonly followingScopes: ScopeSetId;
+  /** What the rule's binding contracts declared. */
+  readonly bindings: readonly Binding[];
   readonly freshBindings: readonly FreshBinding[];
   readonly trace: MacroTraceEvent;
 }
@@ -609,6 +613,7 @@ function invokeMacroRules(
         environment: options.environment,
         phase: options.phase,
         position: options.position,
+        followingScope: options.followingScope,
         extractBindings: options.extractBindings,
       });
       const evaluated = evaluateTemplate(rule.template, {
@@ -733,6 +738,7 @@ function invokeMacroRules(
         cursor: matched.cursor,
         environment: contracts.environment,
         followingScopes: contracts.followingScopes,
+        bindings: contracts.bindings,
         freshBindings: instantiated.freshBindings,
         trace,
       });

@@ -2467,8 +2467,9 @@ export function demo(): number {
 describe("arrow functions", () => {
   test("a concise-bodied arrow written in a template is emitted as written", () => {
     // A plain arrow is an expression as much as a generic one is. Left to the
-    // infix `=>`, which protects what stands to its left, it is emitted with a
-    // parameter list wrapped in its own parentheses, which does not parse.
+    // infix `=>` while that protected what stood to its left, it was emitted
+    // with a parameter list wrapped in its own parentheses, which does not
+    // parse.
     const { text, messages } = expand(
       `export syntax define:item {
          rule { define($name:ident) } => {
