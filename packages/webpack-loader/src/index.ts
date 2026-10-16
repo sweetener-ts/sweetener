@@ -55,6 +55,10 @@ export default function sweetenerLoader(
     .then((result) => {
       for (const dependency of result.dependencies)
         this.addDependency(dependency);
+      // What expansion looked for and did not find: a package installed or a
+      // macro module created there changes what this file expands to.
+      for (const missing of result.missingDependencies)
+        this.addMissingDependency(missing);
       if (result.diagnostics.length > 0) {
         callback(new Error(describeDiagnostics(result.diagnostics)));
         return;

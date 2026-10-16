@@ -71,7 +71,13 @@ export const sweetenerUnplugin = createUnplugin<
           configFile: options.configFile,
           mode: "development",
         });
-        for (const dependency of result.dependencies)
+        // What expansion read, and what it looked for and did not find: a
+        // package installed or a macro module created there changes what
+        // this file expands to.
+        for (const dependency of [
+          ...result.dependencies,
+          ...result.missingDependencies,
+        ])
           this.addWatchFile(dependency);
         if (result.diagnostics.length > 0)
           this.error(describeDiagnostics(result.diagnostics));

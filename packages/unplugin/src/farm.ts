@@ -30,6 +30,13 @@ export default function sweetenerFarm(
       configFile: options.configFile,
       mode: "production",
     });
+    // Registered before a failure is reported, so fixing what failed rebuilds
+    // the file.
+    for (const dependency of [
+      ...result.dependencies,
+      ...result.missingDependencies,
+    ])
+      context?.addWatchFile(filename, dependency);
     if (result.diagnostics.length > 0)
       context?.error(
         result.diagnostics
@@ -41,8 +48,6 @@ export default function sweetenerFarm(
     // see `SweetenerTransformResult.warnings`.
     if (result.warnings.length > 0)
       context?.warn(describeDiagnostics(result.warnings));
-    for (const dependency of result.dependencies)
-      context?.addWatchFile(filename, dependency);
     return {
       content: result.code,
       moduleType: result.virtualFilename.endsWith("x") ? "tsx" : "ts",

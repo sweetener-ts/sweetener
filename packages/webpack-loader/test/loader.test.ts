@@ -1,4 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -145,6 +150,7 @@ test("reports a macro failure to webpack instead of taking the process down", as
       resourcePath: join(directory, "main.sts"),
       mode: "development",
       addDependency: () => {},
+      addMissingDependency: () => {},
       getOptions: () => ({}),
       async: () => (error: Error | null) => resolve(error),
     };
@@ -162,4 +168,55 @@ test("reports a macro failure to webpack instead of taking the process down", as
   expect(reported?.message).toContain("No rule for macro twice");
   // And with the position, as the command line reports it.
   expect(reported?.message).toMatch(/main\.sts:2:\d+/u);
+});
+
+test("tells webpack where a missing macro package would appear", async () => {
+  // A package not installed yet leaves nothing to watch for changes; webpack
+  // has to watch for it to be created, or installing it rebuilds nothing.
+  const directory = mkdtempSync(join(tmpdir(), "sweet-loader-missing-"));
+  writeFileSync(
+    join(directory, "main.sts"),
+    `import { twice } from "later-macros" for syntax;\nexport const value = twice(1);\n`,
+    "utf8",
+  );
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { target: "ES2022", module: "ESNext" },
+      files: ["main.sts"],
+    }),
+    "utf8",
+  );
+
+  const dependencies: string[] = [];
+  const missing: string[] = [];
+  await new Promise<Error | null>((resolve) => {
+    const context = {
+      resourcePath: join(directory, "main.sts"),
+      mode: "development",
+      addDependency: (path: string) => dependencies.push(path),
+      addMissingDependency: (path: string) => missing.push(path),
+      emitWarning: () => {},
+      getOptions: () => ({}),
+      async: () => (error: Error | null) => resolve(error),
+    };
+    void import(pathToFileURL(loader).href).then(
+      ({
+        default: run,
+      }: {
+        default: (this: unknown, source: string) => void;
+      }) =>
+        run.call(context, readFileSync(join(directory, "main.sts"), "utf8")),
+    );
+  });
+
+  expect(missing).toContain(
+    join(
+      realpathSync(directory),
+      "node_modules",
+      "later-macros",
+      "package.json",
+    ),
+  );
+  expect(dependencies).toContain(join(realpathSync(directory), "main.sts"));
 });

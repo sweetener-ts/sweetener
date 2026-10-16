@@ -62,6 +62,12 @@ const transformer = new PluginAPI.Transformer({
       ...(configFile === undefined ? {} : { configFile }),
       mode: options.mode === "production" ? "production" : "development",
     });
+    // Registered before a failure is reported, so fixing what failed -- a
+    // macro module, or a package not yet installed -- rebuilds the asset.
+    for (const dependency of result.dependencies)
+      asset.invalidateOnFileChange(dependency);
+    for (const missing of result.missingDependencies)
+      asset.invalidateOnFileCreate({ filePath: missing });
     if (result.diagnostics.length > 0)
       throw new Error(describeDiagnostics(result.diagnostics));
     // Nothing on this path resolves names, so a sentence expansion holds
@@ -69,8 +75,6 @@ const transformer = new PluginAPI.Transformer({
     // the asset: see `SweetenerTransformResult.warnings`.
     if (result.warnings.length > 0)
       process.emitWarning(describeDiagnostics(result.warnings));
-    for (const dependency of result.dependencies)
-      asset.invalidateOnFileChange(dependency);
     asset.type = result.virtualFilename.endsWith("x") ? "tsx" : "ts";
     asset.setCode(result.code);
     const map = new SourceMapModule.default(options.projectRoot);
