@@ -103,6 +103,17 @@ describe("grouping a type expansion", () => {
     );
   });
 
+  test("an annotation in an async function's body", () => {
+    // Read as an expression statement, an async function declaration's body
+    // was taken apart as an expression's, and a type macro in an annotation
+    // there was left as written.
+    expect(
+      expand(
+        "export async function later() { let held: orNull(string) = null; return held; }",
+      ),
+    ).toContain("let held: string | null = null;");
+  });
+
   test("a plain reference is left ungrouped", () => {
     expect(expand("export type A = justString()[];")).toContain("string[]");
   });

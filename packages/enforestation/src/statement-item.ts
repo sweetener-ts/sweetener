@@ -26,6 +26,7 @@ import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
 } from "./pratt-expression.js";
+import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 import {
   bindingMacroResolver,
@@ -287,7 +288,24 @@ function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
     noLineTerminatorAfter(cursor, offset + width)
   )
     width += 1;
-  return width;
+  return width + (asyncFunction(cursor, offset + width) ? 1 : 0);
+}
+
+/**
+ * Whether the word at `offset` is the `async` of an async function
+ * declaration: `async` with `function` after it on the same line.
+ *
+ * TypeScript reads `async function f() {}` as a declaration wherever a
+ * function declaration stands. Read as an expression statement instead, the
+ * body was taken apart by the expression reader rather than read as the
+ * statement list it is, so it stood in the expansion as a different tree from
+ * a plain function's -- and a macro's result in it printed differently.
+ */
+function asyncFunction(cursor: SyntaxCursor, offset = 0): boolean {
+  return (
+    asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
+    raw(cursor.peek(offset + 1)) === "function"
+  );
 }
 
 /**
@@ -623,7 +641,8 @@ function beginsItem(cursor: SyntaxCursor, offset = 0): boolean {
   return (
     (itemStarts.has(raw(cursor.peek(offset)) ?? "") &&
       declarationHead(cursor, offset)) ||
-    globalAugmentation(cursor, offset)
+    globalAugmentation(cursor, offset) ||
+    asyncFunction(cursor, offset)
   );
 }
 
