@@ -605,6 +605,31 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
   const unresolvedNameExplanations: Diagnostic[] = [];
+  /**
+   * Hold a sentence about the name `written` for the side that resolves
+   * names, or report it, where that side's answer would be about another
+   * scope.
+   *
+   * A name a template wrote means what its definition site sees, and is
+   * printed unrenamed at the call site, where TypeScript resolves it against
+   * whatever the call site binds under that spelling. Holding it let a local
+   * at the call site answer for a macro the template named, and the use
+   * compiled to a read of that local with nothing said.
+   *
+   * A name the author wrote is held against the place it was written, which
+   * TypeScript's sentence is matched by, so it must have one.
+   */
+  const holdForTypeScript = (written: Syntax, diagnostic: Diagnostic): void => {
+    if (options.scopeStore.hasUnmatchedIntroduction(written.scopes)) {
+      diagnostics.push(diagnostic);
+      return;
+    }
+    if (options.origins.selectPrimarySource(written.origin) === undefined)
+      throw new Error(
+        `A sentence about ${diagnostic.code} was held for a name the author wrote, but the name has no source position for TypeScript's answer to be matched against.`,
+      );
+    unresolvedNameExplanations.push(diagnostic);
+  };
   const offeredOperators = new Set<Syntax["origin"]>();
   const namedOrigins = new Set<Syntax["origin"]>();
   const generatedDefinitionTraces: GeneratedDefinitionsTrace[] = [];
@@ -4366,6 +4391,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     typeFollowsInExpression,
     typePositionFollows,
     typeReferenceStart,
+    holdForTypeScript,
     unresolvedNameExplanations,
     usedParameterizations,
     wearingLayout,
@@ -4637,7 +4663,7 @@ function* walk(
     typeFollowsInExpression,
     typePositionFollows,
     typeReferenceStart,
-    unresolvedNameExplanations,
+    holdForTypeScript,
     usedParameterizations,
     wearingLayout,
     withAwait,
@@ -5616,8 +5642,7 @@ function* walk(
           resolveSpelling(spelling, position, writtenIn, candidate, node) !==
             undefined,
       );
-      if (elsewhere !== undefined) {
-        const source = options.origins.selectPrimarySource(node.origin);
+      if (elsewhere !== undefined)
         // Held rather than reported. The expander knows the macros and the
         // bindings this module writes; it does not know `lib.d.ts`, an
         // ambient declaration, a `declare global`, or that a member list
@@ -5627,19 +5652,13 @@ function* walk(
         // a macro spelled `Partial`. The sentence goes to the side that
         // resolves names, to be written where that side says the name is
         // missing.
-        if (source !== undefined)
-          unresolvedNameExplanations.push(
-            expansionDiagnosticRegistry.create(wrongCategoryMacroCode, {
-              primaryOrigin: {
-                sourceId: source.sourceId,
-                start: source.span.start,
-                end: source.span.end,
-                originId: node.origin,
-              },
-              messageArguments: [node.raw, elsewhere, spaceReadHere],
-            }),
-          );
-      }
+        holdForTypeScript(
+          node,
+          expansionDiagnosticRegistry.create(wrongCategoryMacroCode, {
+            primaryOrigin: options.diagnosticOrigin(node.origin),
+            messageArguments: [node.raw, elsewhere, spaceReadHere],
+          }),
+        );
     }
     /**
      * A macro is visible to what follows its definition, the way a `const`
@@ -5679,19 +5698,13 @@ function* walk(
         coreFormKind(lexicalModule.get(node.raw, spaceDefinedIn)!.binding),
       )
     ) {
-      const source = options.origins.selectPrimarySource(node.origin);
-      if (source !== undefined)
-        unresolvedNameExplanations.push(
-          expansionDiagnosticRegistry.create(macroNotYetVisibleCode, {
-            primaryOrigin: {
-              sourceId: source.sourceId,
-              start: source.span.start,
-              end: source.span.end,
-              originId: node.origin,
-            },
-            messageArguments: [node.raw],
-          }),
-        );
+      holdForTypeScript(
+        node,
+        expansionDiagnosticRegistry.create(macroNotYetVisibleCode, {
+          primaryOrigin: options.diagnosticOrigin(node.origin),
+          messageArguments: [node.raw],
+        }),
+      );
     }
     // A definition context is read at module level. One written inside a
     // block is not processed, and carried through into the emitted
@@ -6655,10 +6668,9 @@ function* walk(
         // A failure that claims nothing defines the name is held for the
         // side that resolves names, the way a mismatched space is; one about
         // the syntax written here is expansion's own to report.
-        (result.explainsUnresolvedName
-          ? unresolvedNameExplanations
-          : diagnostics
-        ).push(result.diagnostic);
+        if (result.explainsUnresolvedName)
+          holdForTypeScript(node, result.diagnostic);
+        else diagnostics.push(result.diagnostic);
         output.push(node);
         if (resolvedHeadIndex > index) suppressedHeadIndex = resolvedHeadIndex;
         index += 1;

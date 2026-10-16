@@ -866,6 +866,15 @@ function* invokeMacroRules(
   // define names expansion never sees, and a macro spelled `Event` or `JSON`
   // is an ordinary global there. So it is held for TypeScript rather than
   // reported, and written only where TypeScript says the name is missing.
+  //
+  // Only a name the author wrote is held. One a template wrote means the
+  // macro its definition site sees, and is printed unrenamed at the call
+  // site, where TypeScript resolves it against whatever the call site binds
+  // under that spelling: `outer` writing `inner`, invoked beside `const inner
+  // = 5;`, compiled to `return inner` and read the call site's 5. TypeScript's
+  // answer there is about another scope than the one the name was written
+  // in, so it cannot settle what the name means, and the sentence is
+  // expansion's to report.
   if (
     !anyRuleMatched &&
     !anyRuleReadPastHead &&
@@ -880,7 +889,9 @@ function* invokeMacroRules(
     return Object.freeze({
       expanded: false,
       cursor: options.cursor.fork(),
-      explainsUnresolvedName: true,
+      explainsUnresolvedName: !options.scopeStore.hasUnmatchedIntroduction(
+        invocationHead.scopes,
+      ),
       diagnostic: expansionDiagnosticRegistry.create(bareMacroNameCode, {
         primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
         messageArguments: [options.macro.binding.spelling, options.category],

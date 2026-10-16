@@ -65,7 +65,13 @@ export function explainUnresolvedNames(
   const byPlaceAndName = new Map<string, UnresolvedNameExplanation[]>();
   for (const explanation of explanations) {
     const at = diagnosticPlace(explanation.diagnostic);
-    if (at === undefined) continue;
+    // Expansion holds only sentences about names the author wrote, each at
+    // the place it was written; one with no place could never be matched to
+    // what TypeScript says, and would be dropped without a word.
+    if (at === undefined)
+      throw new Error(
+        `A sentence was held about ${explanation.name} with no file and position to match TypeScript's answer against.`,
+      );
     const key = `${at}:${explanation.name}`;
     const held = byPlaceAndName.get(key);
     if (held === undefined) byPlaceAndName.set(key, [explanation]);

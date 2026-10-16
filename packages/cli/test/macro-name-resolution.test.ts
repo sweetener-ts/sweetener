@@ -371,7 +371,7 @@ describe("an expansion error elsewhere in the project", () => {
 describe("several names in one expansion", () => {
   test("keeps the errors the other names in the expansion earned", () => {
     const { reported } = check({
-      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax trio:expr {\n  rule { trio } => { [mkOne, alpha, beta] }\n}\nexport const x = trio;\n`,
+      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax trio:expr {\n  rule { trio($first:expr) } => { [$first, alpha, beta] }\n}\nexport const x = trio(mkOne);\n`,
     });
     expect(reported).toEqual([
       "main.sts TS4013",
@@ -382,7 +382,7 @@ describe("several names in one expansion", () => {
 
   test("writes a sentence for every name it holds one for", () => {
     const { reports } = check({
-      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax mkTwo:type {\n  rule { mkTwo } => { string }\n}\nexport syntax both:item {\n  rule { both } => { export const a = mkOne; export const b = mkTwo; }\n}\nboth\n`,
+      "main.sts": `export syntax mkOne:type {\n  rule { mkOne } => { number }\n}\nexport syntax mkTwo:type {\n  rule { mkTwo } => { string }\n}\nexport syntax both:item {\n  rule { both($a:expr, $b:expr) } => { export const a = $a; export const b = $b; }\n}\nboth(mkOne, mkTwo)\n`,
     });
     expect(reports.map(({ message }) => message)).toEqual([
       "TS4013: Macro mkOne is declared type and cannot be written where an expr is read. Declare it expr to use it here.",
@@ -434,5 +434,81 @@ describe("several names in one expansion", () => {
     expect(reports.map(({ message }) => message)).toEqual([
       "TS2693: 'Thing' only refers to a type, but is being used as a value here.",
     ]);
+  });
+});
+
+/**
+ * Only a name the author wrote is handed to TypeScript. A name a template
+ * wrote means the macro its definition site sees, and is printed unrenamed at
+ * the call site, so TypeScript would resolve it against whatever the call site
+ * binds under that spelling -- and a local there answered for the macro, with
+ * the use compiled to a read of that local and nothing said.
+ */
+describe("a macro name a template wrote", () => {
+  const sentence = (spelling: string, space: string): string =>
+    `TS4024: Macro ${spelling} is written here as a name on its own, where ${space}. ` +
+    `A macro is a compile-time name, so nothing defines ${spelling} in the emitted code. ` +
+    `Write an invocation its rules accept.`;
+  const nested =
+    `export syntax inner:expr {\n  rule { inner $x:expr } => { $x }\n}\n` +
+    `export syntax outer:expr {\n  rule { outer } => { inner }\n}\n`;
+
+  test("is named where a local at the call site spells it", () => {
+    const { text, reports, exitCode } = check({
+      "main.sts": `${nested}export function f() { const inner = 5; return outer; }\n`,
+    });
+    expect(text).toContain("return inner;");
+    expect(reports.map(({ message }) => message)).toEqual([
+      sentence("inner", "an expr is read"),
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("is named where the call site in another module spells it", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": nested,
+      "main.sts": `import { outer } from "./macros.sts" for syntax;\nconst inner = 5;\nexport const a = outer;\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      sentence("inner", "an expr is read"),
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("is named where the call site spells it in the other space", () => {
+    const { reports, exitCode } = check({
+      "macros.sts":
+        `export syntax inner:expr {\n  rule { inner $x:expr } => { $x }\n}\n` +
+        `export syntax outer:expr {\n  rule { outer } => { (0 as inner) }\n}\n`,
+      "main.sts": `import { outer } from "./macros.sts" for syntax;\ntype inner = number;\nexport const a = outer;\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      "TS4013: Macro inner is declared expr and cannot be written where a type is read. Declare it type to use it here.",
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("is named where a library global spells it", () => {
+    const { reports, exitCode } = check({
+      "macros.sts":
+        `export syntax JSON:expr {\n  rule { JSON($v:expr) } => { [$v] }\n}\n` +
+        `export syntax outer:expr {\n  rule { outer } => { JSON }\n}\n`,
+      "main.sts": `import { outer } from "./macros.sts" for syntax;\nexport const a = outer;\n`,
+    });
+    expect(reports.map(({ message }) => message)).toEqual([
+      sentence("JSON", "an expr is read"),
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("is still handed to TypeScript where the author wrote it into an argument", () => {
+    const { reports, exitCode } = check({
+      "macros.sts":
+        `export syntax JSON:expr {\n  rule { JSON($v:expr) } => { [$v] }\n}\n` +
+        `export syntax wrap:expr {\n  rule { wrap $x:expr } => { [$x] }\n}\n`,
+      "main.sts": `import { JSON, wrap } from "./macros.sts" for syntax;\nexport const a = wrap JSON;\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
   });
 });
