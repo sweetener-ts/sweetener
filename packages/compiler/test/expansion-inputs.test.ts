@@ -165,3 +165,65 @@ test("checks a binding literal's inputs against the file system expansion read",
   expect(new InputCheckRound().hold(checked)).toBe(false);
   expect(answerOf()).toContain('"other"');
 });
+
+/**
+ * A macro module whose own slash regroups its tokens is read again with the
+ * whole project. Every read takes the text the first one recorded, so a file
+ * written while the project is read again cannot give one expansion two
+ * texts -- nor slash readings made for a text it no longer holds.
+ */
+test("reads a project read again for a slash from what its first read recorded", () => {
+  const macros = `${root}/macros.sts`;
+  const main = `${root}/main.sts`;
+  const macroText = (factor: number) =>
+    `export syntax twice:expr { rule { twice($v:expr) } => { $v * ${String(factor)} } }\n` +
+    "export function test(s: string) {\n" +
+    "  let x: string\n" +
+    "  /[(]/.test(s);\n" +
+    "}\n";
+  const files = new Map([
+    [macros, macroText(2)],
+    [
+      main,
+      'import { twice } from "./macros.sts" for syntax;\nexport const t = twice(3);\n',
+    ],
+  ]);
+  const system = memorySystem(files);
+  let macroReads = 0;
+  const provider = createDefaultProjectExpansionProvider({
+    system: {
+      ...system,
+      readFile: (fileName) => {
+        const text = system.readFile(fileName);
+        if (fileName === macros) {
+          macroReads += 1;
+          // Written as soon as it has been read.
+          files.set(macros, `\n${macroText(3)}`);
+        }
+        return text;
+      },
+    },
+  });
+  const project = memoryProject([macros, main], {
+    allowNonTsExtensions: true,
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2022,
+  });
+
+  const expanded = provider.expandProject(project);
+  expect(expanded.diagnostics).toEqual([]);
+  expect(macroReads).toBe(1);
+  expect(
+    expanded.files.find(({ fileName }) => fileName.includes("main"))?.generated
+      .text,
+  ).toContain("export const t = 3 * 2;");
+  expect(
+    expanded.files.find(({ fileName }) => fileName.includes("macros"))
+      ?.generated.text,
+  ).toContain("/[(]/.test(s);");
+  expect(expanded.inputs).toContainEqual({
+    kind: "file",
+    path: macros,
+    text: macroText(2),
+  });
+});
