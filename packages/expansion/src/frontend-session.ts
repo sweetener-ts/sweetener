@@ -1,3 +1,4 @@
+import { CaptureSlashMisreads } from "./capture-slash-misreads.js";
 import { EnforestationError } from "./enforestation-error.js";
 import {
   expansionDiagnosticRegistry,
@@ -12,6 +13,7 @@ import {
   StopSet,
   type ConsumerContext,
   type ConsumerFailure,
+  type SlashMisreadListener,
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
 import type {
@@ -114,6 +116,13 @@ export interface CreateExpansionFrontendSessionOptions {
   readonly allocateSyntaxId: () => SyntaxId;
   readonly allocateBindingId: () => BindingId;
   readonly allocateInvocationId: () => InvocationId;
+  /**
+   * Told of a slash the reader read the other way from the grammar, which
+   * only reading the source again reads as the grammar does (see
+   * `SlashMisreadListener`). What a macro rule's capture finds is told once
+   * its invocation settles on it (see `CaptureSlashMisreads`).
+   */
+  readonly slashMisread?: SlashMisreadListener | undefined;
 }
 
 /**
@@ -189,6 +198,7 @@ export function createExpansionFrontendSession(
   if (modules.length === 0)
     throw new RangeError("Expansion frontend requires at least one module");
   const expansionStore = new ExpansionEnvironmentStore();
+  const captureMisreads = new CaptureSlashMisreads(options.slashMisread);
   const operatorTraces: MacroTraceEvent[] = [];
   /** Operator tokens offered to their rules while an expression was read. */
   const offeredOperatorTokens = new Set<OriginId>();
@@ -486,6 +496,7 @@ export function createExpansionFrontendSession(
           allocateSyntaxId: options.allocateSyntaxId,
           allocateBindingId: options.allocateBindingId,
           allocateInvocationId: options.allocateInvocationId,
+          captureSlashMisreads: captureMisreads,
           position: 0,
           // The parser has already decided what the operands are, so a rule
           // must account for all of them. Admitting a rule that matched a
@@ -671,6 +682,7 @@ export function createExpansionFrontendSession(
       cancellation: options.guard.cancellation,
       allowYield: contexts.has("generator"),
       allowAwait: contexts.has("async"),
+      slashMisread: options.slashMisread,
     });
   const requiredClass = (
     module: CompileParsedMacrosResult,
@@ -725,6 +737,9 @@ export function createExpansionFrontendSession(
         const start = cursor.index;
         const attempted = consumer.consume(cursor, {
           ...base,
+          // A rule is tried and may be abandoned for the next one, so what
+          // its capture finds waits on the invocation it was tried for.
+          slashMisread: captureMisreads.record,
           stopSet: base.stopSet.union(
             new StopSet(
               (boundary?.stopTokens ?? []).map((raw) => ({
@@ -1494,6 +1509,7 @@ export function createExpansionFrontendSession(
         allocateSyntaxId: options.allocateSyntaxId,
         allocateBindingId: options.allocateBindingId,
         allocateInvocationId: options.allocateInvocationId,
+        captureSlashMisreads: captureMisreads,
         position: 0,
         admit: () => true,
         diagnosticOrigin: (origin) => {

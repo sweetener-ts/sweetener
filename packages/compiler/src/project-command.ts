@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import type { SourceId } from "@sweetener/shared";
 import type {
   SourceMapComposer,
   VirtualTypeScriptFile,
@@ -13,6 +14,7 @@ import type {
 import {
   composeSourceMap,
   createVirtualProgram,
+  remapGeneratedSpan,
 } from "@sweetener/typescript-host";
 import * as ts from "typescript";
 import {
@@ -139,30 +141,9 @@ function remapGeneratedDiagnostics(options: {
     ]),
   );
   const sourceFiles = new Map<string, ts.SourceFile>();
-  /**
-   * Where in the sources a position in a generated file came from, or nothing
-   * when it came from nowhere the sources can name.
-   */
-  const locate = (
-    file: ts.SourceFile | undefined,
-    generatedStart: number | undefined,
-    generatedLength: number | undefined,
-  ):
-    | {
-        readonly file: ts.SourceFile;
-        readonly start: number;
-        readonly length: number;
-      }
-    | undefined => {
-    const virtualName = file?.fileName;
-    if (virtualName === undefined || generatedStart === undefined)
-      return undefined;
-    const originalOwner = sourceByVirtual.get(virtualName);
-    const inspection =
-      originalOwner === undefined ? undefined : inspections.get(originalOwner);
-    const mapped = inspection?.index.generatedToOriginal(generatedStart)[0];
-    if (mapped === undefined) return undefined;
-    const sourceName = sourceById.get(mapped.primary.sourceId);
+  /** The source a source id names, parsed the first time it is asked for. */
+  const sourceFileFor = (sourceId: SourceId): ts.SourceFile | undefined => {
+    const sourceName = sourceById.get(sourceId);
     if (sourceName === undefined) return undefined;
     const sourceInspection = inspections.get(sourceName);
     if (sourceInspection === undefined) return undefined;
@@ -177,17 +158,54 @@ function remapGeneratedDiagnostics(options: {
       );
       sourceFiles.set(sourceName, sourceFile);
     }
-    const start = mapped.projectedOriginalOffset;
+    return sourceFile;
+  };
+  /**
+   * Where in the sources a span of a generated file is reported, and what else
+   * in them it is about, or nothing when it came from nowhere the sources can
+   * name. The language service reports through the same remap, so an editor
+   * and `check` say the same thing about the same expansion. A related source
+   * no inspected file holds, such as a macro module inside a package, has no
+   * file to point into here and is left out.
+   */
+  const locate = (
+    file: ts.SourceFile | undefined,
+    generatedStart: number | undefined,
+    generatedLength: number | undefined,
+  ) => {
+    const originalOwner =
+      file === undefined ? undefined : sourceByVirtual.get(file.fileName);
+    const inspection =
+      originalOwner === undefined ? undefined : inspections.get(originalOwner);
+    if (inspection === undefined || generatedStart === undefined)
+      return undefined;
+    const { primaryOrigin, relatedOrigins } = remapGeneratedSpan({
+      generated: inspection.generated,
+      origins: inspection.origins,
+      start: generatedStart,
+      length: generatedLength ?? 0,
+    });
+    if (primaryOrigin === undefined) return undefined;
+    const sourceFile = sourceFileFor(primaryOrigin.sourceId);
+    if (sourceFile === undefined) return undefined;
     return {
       file: sourceFile,
-      start,
-      length: Math.max(
-        0,
-        Math.min(
-          mapped.primary.span.end - start,
-          generatedLength ?? mapped.primary.span.end - start,
-        ),
-      ),
+      start: primaryOrigin.start,
+      length: primaryOrigin.end - primaryOrigin.start,
+      related: relatedOrigins.flatMap(({ message, origin }) => {
+        const relatedFile = sourceFileFor(origin.sourceId);
+        return relatedFile === undefined
+          ? []
+          : [
+              {
+                category: ts.DiagnosticCategory.Message,
+                file: relatedFile,
+                start: origin.start,
+                length: origin.end - origin.start,
+                messageText: message,
+              },
+            ];
+      }),
     };
   };
   return options.diagnostics.map((diagnostic) => {
@@ -204,14 +222,33 @@ function remapGeneratedDiagnostics(options: {
       const entryLocation = locate(entry.file, entry.start, entry.length);
       return entryLocation === undefined
         ? entry
-        : Object.freeze({ ...entry, ...entryLocation });
+        : Object.freeze({
+            ...entry,
+            file: entryLocation.file,
+            start: entryLocation.start,
+            length: entryLocation.length,
+          });
     });
+    const relatedInformation = [
+      ...related,
+      ...(located?.related ?? []).map((entry) => ({
+        ...entry,
+        code: diagnostic.code,
+      })),
+    ];
     const remapped =
-      located === undefined ? diagnostic : { ...diagnostic, ...located };
+      located === undefined
+        ? diagnostic
+        : {
+            ...diagnostic,
+            file: located.file,
+            start: located.start,
+            length: located.length,
+          };
     return Object.freeze(
-      related.length === 0
+      relatedInformation.length === 0
         ? remapped
-        : { ...remapped, relatedInformation: related },
+        : { ...remapped, relatedInformation },
     );
   });
 }

@@ -147,6 +147,25 @@ describe("type and class-element consumers", () => {
     "Array<T & { id: string }>",
     "typeof import('module').Value",
     "new <T>(value: T) => Instance<T>",
+    // A negative number is a literal type, wherever its digits are written.
+    "-1",
+    "-1n",
+    "-\n1",
+    "T extends -1 ? A : B",
+    // Where a type is expected, a word the type grammar writes no operator
+    // with names a type, reserved or not; TypeScript leaves what it names to
+    // the checker.
+    "if",
+    "type",
+    "abstract",
+    "extends",
+    "is | in",
+    "keyof extends",
+    "infer is",
+    "typeof if",
+    "A.class<B>",
+    "abstract new () => A",
+    "abstract\nnew () => A",
   ])("consumes TypeScript type %s", (source) => {
     const { result } = consume(source, "type");
     expect(result.matched).toBe(true);
@@ -164,6 +183,28 @@ describe("type and class-element consumers", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe("Promise<T>");
     expect(result.cursor.remainingRange().toArray()).toEqual(syntax.slice(4));
     expect(result.cursor.peek()).toMatchObject({ raw: "," });
+  });
+
+  // TypeScript writes `PrimaryType [no LineTerminator here] [`, `TypeName
+  // [no LineTerminator here] TypeArguments` and `CheckType [no LineTerminator
+  // here] extends`, and the type consumer ends a type at the line break the
+  // type grammar does not carry across, as every walk that scans one does.
+  test.each([
+    ["A\n[k]", "A"],
+    ["A[]\n[k]", "A[]"],
+    ["A\n<B>", "A"],
+    ["A\nextends B ? C : D", "A"],
+    ["x\nis string", "x"],
+    ["A\n`t`", "A"],
+    ["A |\nB", "A |\nB"],
+    ["A\n| B", "A\n| B"],
+    ["const\n.x", "const\n.x"],
+  ])("ends the type %j as %j", (source, extent) => {
+    const { result } = consume(source, "type");
+    expect(result.matched).toBe(true);
+    if (!result.matched)
+      throw new Error(result.failure.expectations.join(", "));
+    expect(printLosslessSequence(result.syntax.children)).toBe(extent);
   });
 
   test.each([
@@ -330,6 +371,17 @@ describe("type and class-element consumers", () => {
     "readonly\nsecond = 2;",
     "async\nsecond(): void {}",
     "accessor\nsecond = 2;",
+    // A member's annotation is read by the type tracker a declaration's is.
+    // A word the expression grammar writes as an operator names a type there
+    // and finishes it.
+    "first!: is\nsecond = 2;",
+    "first!: as\nsecond = 2;",
+    "first!: in\nsecond = 2;",
+    "m(): satisfies\nsecond = 2;",
+    "first!: keyof extends\nsecond = 2;",
+    // A field's initializer is evaluated as a function of its own, where
+    // `await` is a name rather than an operator.
+    "first = await\nsecond = 2;",
   ])("ends a member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`class Fixture { ${source} }`)).toEqual([]);
     const { result } = consume(source, "classElement");
@@ -366,6 +418,17 @@ describe("type and class-element consumers", () => {
     "m(): { a: number } | { b: string } { return { a: 1 }; }",
     "m<T>(): T extends { a: infer U } ? { u: U } : {} { return null!; }",
     "get m(): { a: number } { return { a: 1 }; }",
+    // A generic function type's parameter list belongs to the type
+    // parameters in front of it, a constructor type's `new` to the `abstract`
+    // in front of it, an `infer` constraint's `extends` to its name, and a
+    // predicate's `is` to `asserts` and its name.
+    "first!: <T>\n(value: T) => T;",
+    "first!: abstract\nnew () => Fixture;",
+    "m(): unknown extends infer R\nextends string ? R : never { return null!; }",
+    "m(value: unknown): asserts value\nis string {}",
+    // A return type may begin with a predicate about a parameter spelled like
+    // a type operator.
+    "m(infer: unknown): infer is\nstring { return true; }",
   ])("reads one member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`class Fixture { ${source} }`)).toEqual([]);
     expect(typescriptFirstMember(source)).toBe(source);
@@ -393,6 +456,13 @@ describe("type and class-element consumers", () => {
     "first?: void\nsecond: number;",
     "[key: string]: void\nsecond: number;",
     "first: (value: number) => void\nsecond: number;",
+    // A call signature may open with its type parameters.
+    "first: string\n<T>(value: T): T;",
+    "first(): void\n<T>(value: T): T;",
+    // A type spelled like an operator is a name, and finishes the member.
+    "first: is\nsecond: number;",
+    "first: in\nsecond: number;",
+    "first(): as\nsecond: number;",
   ])("ends a type member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
     const { result } = consume(source, "typeMember");
@@ -420,6 +490,19 @@ describe("type and class-element consumers", () => {
     "first: Array<\nstring\n>;",
     "first: Array<string> |\nB;",
     "first: Array<string>\n| B;",
+    // A member's parameter list and type parameters are read after its name
+    // wherever they are written.
+    "first\n(value: number): void;",
+    "first?\n(): void;",
+    "first\n<T>(value: T): T;",
+    "[key]\n(): void;",
+    "readonly\n(value: number): void;",
+    // The type grammar carries these across the line break, as it does in a
+    // declaration.
+    "first: <T>\n(value: T) => T;",
+    "first: new <T>\n() => T;",
+    "first: abstract\nnew () => Fixture;",
+    "first(value: unknown): asserts value\nis string;",
   ])("reads one type member where TypeScript does: %s", (source) => {
     expect(parseDiagnostics(`interface Fixture { ${source} }`)).toEqual([]);
     expect(typescriptFirstTypeMember(source)).toBe(source);

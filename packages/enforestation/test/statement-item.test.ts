@@ -419,13 +419,7 @@ describe("statement and item consumers", () => {
   });
 
   test("returns ranked failures without mutating caller cursors", () => {
-    const malformed = [
-      "if value;",
-      "do work();",
-      "function missing()",
-      "try {}",
-      "switch value {}",
-    ];
+    const malformed = ["if value;", "do work();", "try {}", "switch value {}"];
     for (const source of malformed) {
       const { result, cursor } = parse(source, "stmt");
       expect(result.matched).toBe(false);
@@ -675,10 +669,46 @@ describe("statement and item consumers", () => {
     // are two statements. The constraint `extends` of a type parameter stands
     // inside the `<` the head holds open, where no line break ends anything.
     ["let x: A\nextends B ? C : D = e;", "let x: A"],
+    // The `extends` of an `infer` constraint is no conditional's, and carries
+    // no such restriction.
+    [
+      "let x: A extends infer R\nextends B ? R : never;",
+      "let x: A extends infer R\nextends B ? R : never;",
+    ],
+    // `abstract` and the `new` under it are one constructor type, and an `is`
+    // that is no predicate's is a name beginning the next statement.
+    ["let x: abstract\nnew () => A;", "let x: abstract\nnew () => A;"],
+    ["let x: A\nis(b);", "let x: A"],
     [
       "let f: <T\nextends A>(v: T) => T = g;",
       "let f: <T\nextends A>(v: T) => T = g;",
     ],
+    // A declarator's annotation is read by the tracker an alias's body and a
+    // return type are read by. A word that begins a statement begins the type
+    // where one is still expected, and a generic function type's parameter
+    // list belongs to the type parameters in front of it.
+    ['let x:\nimport("m").A;', 'let x:\nimport("m").A;'],
+    ['let x: typeof\nimport("m");', 'let x: typeof\nimport("m");'],
+    ["let x: <T>\n(v: T) => T;", "let x: <T>\n(v: T) => T;"],
+    ["let x: new <T>\n() => T;", "let x: new <T>\n() => T;"],
+    ["let x: abstract new <T>\n() => T;", "let x: abstract new <T>\n() => T;"],
+    // Type arguments are no type parameters, and the parenthesis under them
+    // begins a statement.
+    ["let x: A<B>\n(y);", "let x: A<B>"],
+    // The `=` of a type parameter's default is the type's own, and opens no
+    // initializer.
+    ["let f: <T = A>() => T = g;", "let f: <T = A>() => T = g;"],
+    ["let f: <T = A>\n() => T = g;", "let f: <T = A>\n() => T = g;"],
+    // A word the type grammar writes as an operator is a name where a type is
+    // expected, and finishes the type: TypeScript reads `keyof extends` as
+    // the keys of a type named `extends`.
+    ["let x: keyof extends\nfoo();", "let x: keyof extends"],
+    ["let x: extends\nfoo();", "let x: extends"],
+    ["let x: in\nfoo();", "let x: in"],
+    ["let x: as\nfoo();", "let x: as"],
+    ["let x: typeof if\nfoo();", "let x: typeof if"],
+    ["let x: infer\nis = 1;", "let x: infer\nis = 1;"],
+    ["let x: is\nfoo();", "let x: is"],
     // A definite assignment's `!` stands in a head, and TypeScript writes it
     // `BindingIdentifier [no LineTerminator here] !`.
     ["let x!: A;", "let x!: A;"],
@@ -699,6 +729,42 @@ describe("statement and item consumers", () => {
     ["const x = 1\nfoo();", "const x = 1"],
     ["const x = a +\nb;", "const x = a +\nb;"],
     ["let x: A = 1, y: B = 2;", "let x: A = 1, y: B = 2;"],
+    // A non-null assertion is written on its operand's own line, and the `!`
+    // under an initializer begins a statement.
+    ["const x = a\n!b;", "const x = a"],
+    ["const x = a!\n!b;", "const x = a!"],
+    // The item reader reads an annotation with the type consumer, which reads
+    // a negative number and a type spelled like a keyword as the types they
+    // are. It refused them, and with them the whole item.
+    ["let x: -1\nfoo();", "let x: -1"],
+    ["let x: -1n\nfoo();", "let x: -1n"],
+    ["let x: -\n1;", "let x: -\n1;"],
+    ["let x: A extends -1 ? B : C;", "let x: A extends -1 ? B : C;"],
+    ["let x: type\nfoo();", "let x: type"],
+    ["let x: declare\nfoo();", "let x: declare"],
+    ["let x: module\nfoo();", "let x: module"],
+    ["let x: async\nfoo();", "let x: async"],
+    ["let x: of\nfoo();", "let x: of"],
+    ["let x: abstract\nfoo();", "let x: abstract"],
+    ["let x: if | class;", "let x: if | class;"],
+    ["let x: A.class<B>\nfoo();", "let x: A.class<B>"],
+    // The type an `as` or a `satisfies` asserts ends where the type grammar
+    // ends one, and nothing after a type continues the expression but an
+    // operator: the `[k]` under it begins a statement rather than indexing.
+    ["const x = a as B\n[k] = 1;", "const x = a as B"],
+    ["const x = a satisfies B\n[k] = 1;", "const x = a satisfies B"],
+    ["const x = a as B[]\n`t`;", "const x = a as B[]"],
+    ["const x = a as B\n<C>(d);", "const x = a as B\n<C>(d);"],
+    ["const x = a as const\n.y;", "const x = a as const\n.y;"],
+    // TypeScript takes no operator after an arrow function, whose body ended
+    // it, and no postfix either: the line under one begins a statement.
+    ["const f = () => {}\n[0].map(g);", "const f = () => {}"],
+    ["const f = (v) => {}\n(0);", "const f = (v) => {}"],
+    ["const f = (v) => {}\n+x;", "const f = (v) => {}"],
+    // And it writes `UnaryExpression [no LineTerminator here] as Type`, the
+    // same of `satisfies`: one beginning a line is a name.
+    ["const x = a\nas;", "const x = a"],
+    ["const x = a\nsatisfies;", "const x = a"],
   ])(
     "reads %j as %j at statement level and at item level",
     (source, extent) => {
@@ -803,6 +869,10 @@ describe("statement and item consumers", () => {
     ["type T = A\n[];", "type T = A"],
     ["type T = A\n<B>;", "type T = A"],
     ["type T = A\nkeyof B;", "type T = A"],
+    // Nor may the `is` of a predicate, and an alias's body is never one: a
+    // type spelled `is` is finished, and so is a type the next line calls.
+    ["type T = A\nis(b);", "type T = A"],
+    ["type T = is\ntype U = A;", "type T = is"],
     // A body that genuinely carries on across the break is one item, whether
     // the operator ends the line before or begins the line after.
     ["type T = A extends\nB ? C : D;", "type T = A extends\nB ? C : D;"],
@@ -824,6 +894,15 @@ describe("statement and item consumers", () => {
     ["type T = void\nfoo();", "type T = void"],
     ["type T = A<B>\n| C;", "type T = A<B>\n| C;"],
     ["type T = void |\nA;", "type T = void |\nA;"],
+    // A generic function type's parameter list belongs to the type parameters
+    // in front of it, an `infer` constraint's `extends` to the name in front
+    // of it, and a constructor type's `new` to the `abstract` in front of it.
+    ["type T = <A>\n(a: A) => A;", "type T = <A>\n(a: A) => A;"],
+    [
+      "type T<A> = A extends infer R\nextends B ? R : never;",
+      "type T<A> = A extends infer R\nextends B ? R : never;",
+    ],
+    ["type T = abstract\nnew () => A;", "type T = abstract\nnew () => A;"],
     // A heritage clause is not a type, and TypeScript carries it across the
     // break in both directions.
     ["class C extends A\n{ }", "class C extends A\n{ }"],
@@ -884,6 +963,10 @@ describe("statement and item consumers", () => {
     ["declare(1);", "declare(1);"],
     ["declare: foo();", "declare: foo();"],
     ["declare\nlet x = 1;", "declare"],
+    // Nor does `abstract` modify anything where no class follows it on its
+    // line, and then neither does the `declare` in front of it.
+    ["declare abstract class C {}", "declare abstract class C {}"],
+    ["declare abstract\nclass C {}", "declare"],
   ])(
     "reads the ambient declaration %j as %j at statement level and at item level",
     (source, extent) => {
@@ -1105,6 +1188,11 @@ describe("statement and item consumers", () => {
     ["type T = A<B>\nfoo();", "type T = A<B>"],
     ["type T = void\nfoo();", "type T = void"],
     ["type T = A<B>\n| C;", "type T = A<B>\n| C;"],
+    ["type T = <A>\n(a: A) => A;", "type T = <A>\n(a: A) => A;"],
+    ["type T = is\ntype U = A;", "type T = is"],
+    // A body still waiting for its type is not ended by a word that begins a
+    // statement, when that word begins the type instead.
+    ['type T =\nimport("m").A;', 'type T =\nimport("m").A;'],
     // A name spelled `type` or `abstract` is a name.
     ["type;", "type;"],
     ["type = 1;", "type = 1;"],
@@ -1169,6 +1257,12 @@ describe("statement and item consumers", () => {
     ["const\nx = 1;", "const\nx = 1;"],
     ["var\nx = 1;", "var\nx = 1;"],
     ["global\n{ }", "global\n{ }"],
+    // A modifier modifies only a declaration written after it on its line,
+    // and a `declare` or an `abstract` written in front of anything else is a
+    // name: these are expressions, which the line break carries on.
+    ["declare = 1\n(x);", "declare = 1\n(x);"],
+    ["declare(x)\n[0];", "declare(x)\n[0];"],
+    ["abstract = 1\n`t`;", "abstract = 1\n`t`;"],
   ])(
     "reads %j as %j at statement level and at item level, as TypeScript does",
     (source, extent) => {
@@ -1920,4 +2014,159 @@ describe("statement and item consumers", () => {
       expect(parsed.statements[0]?.getText(parsed), source).toBe(extent);
     },
   );
+});
+
+/**
+ * A function signature with no body ends at the line break after its header.
+ *
+ * TypeScript inserts the semicolon there: `function f()` and the `run();`
+ * under it are two statements, and so are `declare function h(): void` and
+ * whatever is written beneath it. A body, a return type, and a `;` still
+ * belong to the signature, including when they are written on the next line,
+ * and a line break is the only place it ends: a return type the type grammar
+ * reads to the end of its line is the signature's, whatever it is.
+ *
+ * Every input is TypeScript that parses without an error. Where TypeScript
+ * recovers from a syntax error, the extent of the broken code changes nothing
+ * a macro sees, so it is not asked for here.
+ */
+describe("bodiless function signatures", () => {
+  const typescriptStatements = (source: string): readonly string[] => {
+    const parsed = ts.createSourceFile(
+      "fixture.ts",
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    ) as ts.SourceFile & {
+      readonly parseDiagnostics: readonly ts.Diagnostic[];
+    };
+    expect(parsed.parseDiagnostics, source).toEqual([]);
+    return parsed.statements.map((statement) => statement.getText(parsed));
+  };
+
+  test.each([
+    "function f()\nrun();",
+    "declare function h(): void\nrun();",
+    "function f<T>()\nrun();",
+    "function f(): Foo\nrun();",
+    "function f()\nfunction g() { return 1; }",
+    "declare function h(): void\nfunction g() {}",
+    "function* f()\nrun();",
+    "async function f()\nrun();",
+    "function f(): { a: number }\nrun();",
+    "declare function h(): { a: number }\nrun();",
+    "function f(): () => { a: number }\nrun();",
+    "function f(): (Foo)\nrun();",
+    "declare function h(): -1\nrun();",
+    "declare function h(): <T>(x: T) => T\nrun();",
+    "declare function h(): new <T>() => T\nrun();",
+    "declare function h(): Promise<<T>() => T>\nrun();",
+    // A word the type grammar writes as an operator somewhere is a name
+    // where it begins the next line, and so is `abstract` without the `new`
+    // of a constructor type after it.
+    "function f(): Foo\nis(x);",
+    "function f(x): x is string\nis(x);",
+    "function f(x): asserts x\nis string\nrun();",
+    "function f(): abstract\nrun();",
+  ])("ends %j where TypeScript ends it", (source) => {
+    const expected = typescriptStatements(source);
+    expect(expected.length, source).toBeGreaterThan(1);
+    for (const category of ["stmt", "item"] as const) {
+      const { result } = parse(source, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a signature");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(expected[0]);
+    }
+  });
+
+  // `export` is an item. The statement reader refuses it on purpose: inside a
+  // function body TypeScript parses it and then rejects it as a grammar error,
+  // and reading it there would be a second copy of the module-item walk.
+  test.each([
+    "export function f()\nrun();",
+    "export default function ()\nrun();",
+  ])("ends the item %j where TypeScript ends it", (source) => {
+    const expected = typescriptStatements(source);
+    expect(expected.length, source).toBeGreaterThan(1);
+    const { result } = parse(source, "item");
+    expect(result.matched, source).toBe(true);
+    if (!result.matched) throw new Error("expected a signature");
+    expect(printLosslessSequence(result.syntax.children), source).toBe(
+      expected[0],
+    );
+  });
+
+  test.each([
+    "function f()\n{ return 1; }",
+    "function f(): void\n{ return 1; }",
+    "function f():\nvoid { return 1; }",
+    "function f()\n: void { return 1; }",
+    "function f(): Foo &\nBar { return 1; }",
+    "function f(): Foo\n& Bar { return 1; }",
+    "function f(): Foo |\nBar { return 1; }",
+    "function f(): Foo\n.bar { return 1; }",
+    "function f(): Foo .\nbar { return 1; }",
+    "function f(): Array<\nnumber> { return []; }",
+    "declare function h(): void\n{ }",
+    "function f()\n;",
+    "async function f()\n{ return 1; }",
+    "function f(): (x: number)\n=> string { return String; }",
+    "function f(): (x: number) =>\nstring { return String; }",
+    "function f(): { a: number }\n{ return { a: 1 }; }",
+    "function f(): () => { a: number }\n{ return { a: 1 }; }",
+    "declare function h(): { a: number }\n{ }",
+    "function f(x): x is\nstring { return true; }",
+    "function f(x): asserts x is\nstring {}",
+    "function f(x): asserts x\nis string {}",
+    "function f(): new\n() => Foo {}",
+    "function f(): new () =>\nFoo {}",
+    "function f(): abstract\nnew () => Foo {}",
+    "function f(): infer\nR {}",
+    "function f(): readonly\nnumber[] {}",
+    "function f(): keyof\nFoo {}",
+    "function f(): unique\nsymbol {}",
+    "function f(): typeof\nFoo {}",
+    'function f(): import("m")\n.Foo {}',
+    'function f(): import(\n"m").Foo {}',
+    "function f():\nnew () => Foo {}",
+    'function f():\nimport("m").Foo {}',
+    "function f(): A extends B\n? C : D { return 1 as any }",
+    "function f(): A extends B ? C\n: D { return 1 as any }",
+    "function f(): A extends B ? C : D\n{ return 1 as any }",
+    "function f(): T extends infer U\nextends string ? U : never { return 1 as any }",
+    "function f(): A extends B ? infer R\nextends C : D {}",
+    "function f(): infer R\nextends string { return 1 as any }",
+    "function f(): infer U extends string\n? U : never { return 1 as any }",
+    // Whole on one line, each of these is one return type. A walk that could
+    // end a signature in the middle of a line cut them short of their body.
+    "function f(): -1 { return -1; }",
+    "function f(): -1n { return -1n; }",
+    "function f(): <T>(x: T) => T { return (x) => x; }",
+    "function f(): new <T>() => T { return null as any; }",
+    "function f(): Promise<<T>() => T> { return null as any; }",
+    "function f(): -\n1 { return -1; }",
+    "function f(): <T>\n(x: T) => T { return (x) => x; }",
+    "function f(): new <T>\n() => T { return null as any; }",
+    "function f(): Promise<\n<T>() => T> { return null as any; }",
+    // A signature on its own is the declaration. TypeScript reads it as an
+    // overload signature, not as a declaration missing its body.
+    "function missing()",
+    "declare function h(): -1",
+  ])("keeps %j as the one statement TypeScript reads", (source) => {
+    const expected = typescriptStatements(source);
+    expect(expected, source).toEqual([source]);
+    for (const category of ["stmt", "item"] as const) {
+      const { result } = parse(source, category);
+      expect(result.matched, `${category}: ${source}`).toBe(true);
+      if (!result.matched) throw new Error("expected a declaration");
+      expect(
+        printLosslessSequence(result.syntax.children),
+        `${category}: ${source}`,
+      ).toBe(source);
+    }
+  });
 });

@@ -22,7 +22,7 @@ import {
   type ConsumerContext,
   type SyntaxConsumer,
 } from "./consumer.js";
-import { operandExpectedAfter as expressionOperandExpectedAfter } from "./core-operators.js";
+import { operandExpectedAfter } from "./core-operators.js";
 import { asyncModifies } from "./primary-expression.js";
 import { StopSet } from "./stop-set.js";
 
@@ -68,6 +68,14 @@ export interface TypeClassConsumerOptions {
         allowAwait: boolean,
       ) => Syntax)
     | undefined;
+  /**
+   * Reads a class field's initializer, the expression after its `=`. Without
+   * it the initializer is scanned as tokens, which cannot tell where an
+   * expression ends: `x = a as B` and the `[k] = 1;` under it are two fields,
+   * because nothing but a binary operator carries an expression on past the
+   * type an `as` asserts.
+   */
+  readonly consumeInitializer?: SyntaxConsumer | undefined;
   /**
    * Enforests a brace body as a list of type members. Without it an object
    * type stays an opaque token tree and a member macro written in one never
@@ -288,6 +296,11 @@ class TypeConsumer implements SyntaxConsumer {
     // Whether the parameter list just read must, or may, be followed by `=>`.
     // One that must is not yet a type, so a caller's stop cannot end it there.
     let arrow: "none" | "allowed" | "required" = "none";
+    // What a line break ends is the type grammar's to say, and the tracker
+    // every scanning walk asks says it here too: `A` and the `[k]` under it
+    // are no array type, nor `A` and the `<B>` under it a generic one.
+    const type = createTypeTracker(undefined, false);
+    let tracked = 0;
 
     while (!cursor.atEnd) {
       checkWork(context);
@@ -299,6 +312,14 @@ class TypeConsumer implements SyntaxConsumer {
       )
         break;
       const next = cursor.peek()!;
+      for (; tracked < children.length; tracked += 1)
+        type.take(children[tracked]!);
+      if (
+        children.length > 0 &&
+        leadingLineBreak(next) &&
+        !type.continuesAcross(next)
+      )
+        break;
       if (arrow !== "none") {
         if (token(next, "=>")) {
           children.push(cursor.consume()!);
@@ -376,6 +397,23 @@ class TypeConsumer implements SyntaxConsumer {
         children.length > 0
       )
         break;
+      if (expectingOperand && namesType(next, cursor.peek(1))) {
+        children.push(cursor.consume()!);
+        expectingOperand = false;
+        continue;
+      }
+      // A `-` is a type only in front of the number it negates, which
+      // TypeScript reads wherever that number is written: `-1` and `-\n1n`
+      // are literal types.
+      if (
+        expectingOperand &&
+        spelling === "-" &&
+        numericLiteral(cursor.peek(1))
+      ) {
+        children.push(cursor.consume()!, cursor.consume()!);
+        expectingOperand = false;
+        continue;
+      }
       if (spelling === ":") {
         if (conditionalDepth === 0 || expectingOperand) break;
         children.push(cursor.consume()!);
@@ -480,6 +518,35 @@ class TypeConsumer implements SyntaxConsumer {
 }
 
 /**
+ * Whether `node`, written where a type is expected with `following` after it,
+ * is the name of a type: a word the type grammar writes no operator with
+ * there, reserved or not. TypeScript reads `let x: if`, `let x: extends` and
+ * `A.class` as references to types spelled that way, and leaves what they name
+ * to the checker.
+ *
+ * `abstract` is an operator only in front of the `new` of a constructor type,
+ * which TypeScript looks for across a line break; anywhere else it names a
+ * type. `import` names none: it is no type until its argument is written.
+ */
+export function namesType(
+  node: Syntax,
+  following: Syntax | undefined,
+): boolean {
+  if (!token(node) || node.kind !== "keyword" || node.raw === "import")
+    return false;
+  if (node.raw === "abstract") return !token(following, "new");
+  return !prefixTypeWords.has(node.raw);
+}
+
+/** Whether `node` is a number or a bigint, the operands a `-` type takes. */
+function numericLiteral(node: Syntax | undefined): boolean {
+  return (
+    token(node) &&
+    (node.kind === "numeric-literal" || node.kind === "bigint-literal")
+  );
+}
+
+/**
  * Whether the name a predicate's `asserts` is about stands after it.
  *
  * TypeScript writes `asserts [no LineTerminator here] IdentifierOrThis`: with
@@ -527,36 +594,25 @@ const typeOperandHeads = new Set([
 ]);
 
 /**
- * Spellings an expression expects an operand after which a type does not, so
- * that the expression table is not read for them. `void` is a whole type
- * rather than a prefix operator, and the type grammar has no infix `>` at all:
- * a `>` in a type closes type arguments, and closing them finishes the type
- * they belong to.
- *
- * Taken from the expression table, each held a finished type open across the
- * line break under it: `let v: Array<string>` and the `foo();` written beneath
- * were measured as one annotation, which the type reader then refused -- and a
- * refused item leaves its module to be walked as raw tokens, with every macro
- * in it unreached.
- */
-const expressionOnlyOperands = new Set(["void", ">"]);
-
-/**
  * Spellings a line cannot end after inside a type, because the type is not
- * finished: the ones an expression cannot end after that a type cannot either
- * -- `typeof` and the `new` of a constructor type are written in both
- * grammars -- the tokens the type grammar writes a type after, and the
- * `import` of `import("m").A`, which is no type until its argument is written.
+ * finished: the tokens the type grammar writes a type after, the `-` of a
+ * negative literal, the `.` of a qualified name, the `=` an alias's body and a
+ * type parameter's default are written after, the `typeof` of a type query,
+ * the `new` of a constructor type, and the `import` of `import("m").A`, which
+ * is no type until its argument is written.
  *
- * A class member's annotation and a declarator's are the same type grammar
- * read in two places, so the reader of each asks this one question of what it
- * last read.
+ * They are the type grammar's own. A word the expression grammar writes as an
+ * operator -- `as`, `in`, `await` -- names a type where a type is written and
+ * finishes it, and an expression's operators are asked of the expression
+ * table: a class field's initializer is an expression.
  */
-export const typeOperandExpectedAfter: ReadonlySet<string> = new Set([
-  ...[...expressionOperandExpectedAfter].filter(
-    (spelling) => !expressionOnlyOperands.has(spelling),
-  ),
+const typeOperandExpectedAfter: ReadonlySet<string> = new Set([
   ...typeOperandHeads,
+  "-",
+  ".",
+  "=",
+  "typeof",
+  "new",
   "import",
 ]);
 
@@ -570,6 +626,189 @@ export const typeOperandExpectedAfter: ReadonlySet<string> = new Set([
 export function typeOperandFollows(previous: Syntax | undefined): boolean {
   return token(previous) && typeOperandHeads.has(previous.raw);
 }
+
+/**
+ * What may carry a type on across a line break: the operators the type grammar
+ * writes between two types, and the `,`, `=` and `;` that end a declarator's
+ * or a member's annotation where it is written.
+ *
+ * An array type's `[` is not among them. TypeScript writes
+ * `PrimaryType [no LineTerminator here] [ ]`, and reads `let x: A` and the
+ * `[b] = c;` under it as two statements.
+ *
+ * Nor is a conditional type's `extends`. TypeScript writes
+ * `CheckType [no LineTerminator here] extends`, and reads `let x: A` and the
+ * `extends B ? C : D = e;` under it as two statements. The `extends` that
+ * gives a type parameter its constraint carries no such restriction, and it is
+ * written inside the `<` this walk holds open, where no line break ends
+ * anything; the `extends` of a class or interface heritage clause is written
+ * in a declaration's header rather than in a type, and is not read here.
+ */
+const typeContinuedBy = new Set(["|", "&", "?", ":", ",", "=>", ".", "=", ";"]);
+
+/**
+ * Whether the keyword `next` carries a type on across a line break after the
+ * two nodes read before it, `before` and `previous`. Each of these words is a
+ * name of its own anywhere else, and the line under a finished type may begin
+ * with one: `let x: Foo` and the `is(x);` under it are two statements.
+ *
+ * - The `extends` of `infer R extends C` gives `R` its constraint, which
+ *   TypeScript reads wherever it is written. Only a conditional's `extends`
+ *   needs its check type on its own line.
+ * - The `is` of `asserts x is T` belongs to the predicate. The `is` of `x is
+ *   T` does not cross a line break, but nothing stops this one.
+ * - `abstract` with `new` after it is a constructor type, however the two are
+ *   broken across lines. With anything else after it, it is a type named
+ *   `abstract`.
+ */
+function typeKeywordContinues(
+  before: Syntax | undefined,
+  previous: Syntax | undefined,
+  next: string,
+): boolean {
+  switch (next) {
+    case "extends":
+      return token(before, "infer");
+    case "is":
+      return token(before, "asserts") && predicateName(previous);
+    case "new":
+      return token(previous, "abstract");
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether `node` is a name a type predicate may be about: a parameter's, or
+ * `this`.
+ */
+function predicateName(node: Syntax | undefined): boolean {
+  return token(node) && (node.kind === "identifier" || node.raw === "this");
+}
+
+/** Whether a type still expects an operand after `previous`. */
+function typeExpectsOperand(previous: Syntax | undefined): boolean {
+  return token(previous) && typeOperandExpectedAfter.has(previous.raw);
+}
+
+/**
+ * A type read one node at a time by a walk that scans it, and where a line
+ * break ends it. `opening` is what the type is written after: an annotation's
+ * or a return type's `:`, or an alias's `=`; a type read on its own has none.
+ * `returnType` says whether it is a return type, which may begin with a type
+ * predicate.
+ *
+ * Every walk that scans a type asks this one tracker -- a declarator's
+ * annotation, an alias's body, a function's return type and a class or
+ * interface member's annotation alike -- so what a line break ends inside a
+ * type is decided once. Each node is taken once, in constant time.
+ */
+export function createTypeTracker(
+  opening: Syntax | undefined,
+  returnType: boolean,
+) {
+  /**
+   * How deep in type parameters or arguments the walk stands. A `<` still open
+   * encloses whatever is written under it, so `let x: Array<\nnumber\n>` is one
+   * type however its lines are broken, and an `=` or a `,` there -- `<T =
+   * string>`, `Map<K, V>` -- is the type's own.
+   */
+  let typeArguments = 0;
+  /**
+   * Whether the outermost `<` the walk last opened was written where a type
+   * was expected. Such a `<` opens a generic function type's type parameters
+   * rather than type arguments, and the parameter list after its `>` belongs
+   * to the same type: `<T>` and the `(x: T) => T` under it are one.
+   */
+  let typeParameters = false;
+  /** The last two nodes taken, the one before `previous` first. */
+  let before: Syntax | undefined;
+  let previous: Syntax | undefined = opening;
+  /**
+   * Whether `previous` was read where a type was expected and names one. A
+   * word the grammar writes as an operator elsewhere is a name there and
+   * finishes the type: `keyof extends` and the statement under it are two,
+   * where `A extends` waits for the type it compares against. `abstract` is
+   * taken before what follows it is seen, and the `new` that makes it an
+   * operator carries the type on by `typeKeywordContinues`.
+   */
+  let named = false;
+  /**
+   * Whether the type still expects an operand where the walk stands, so that
+   * the line break in front of the next node ends nothing, whatever that node
+   * begins: `function f():` and the `import("m").T` written under it are one
+   * signature.
+   */
+  const expectsType = (): boolean =>
+    !named &&
+    (previous === undefined ||
+      (typeParameters && typeArguments === 0 && angles(previous, ">") > 0) ||
+      typeExpectsOperand(previous));
+  /**
+   * Whether the type is unfinished where the walk stands: it still expects an
+   * operand, or a `<` it opened is still open. A word that begins a statement
+   * begins a type there instead: `let x:` and the `import("m").T;` under it
+   * are one declaration.
+   */
+  const unfinished = (): boolean => typeArguments !== 0 || expectsType();
+  /**
+   * Whether `node` is the `is` of a type predicate, `previous` being the name
+   * written in front of it and `before` what that name was written after.
+   * TypeScript reads a predicate where a return type begins -- after a
+   * signature's `:`, or a function type's `=>` -- and before it reads a type
+   * there: the name may be any identifier, so `keyof is` and `infer is` begin
+   * predicates about parameters spelled that way rather than finishing a
+   * type.
+   */
+  const predicateIs = (
+    before: Syntax | undefined,
+    previous: Syntax | undefined,
+    node: Syntax,
+  ): boolean =>
+    token(node, "is") &&
+    !leadingLineBreak(node) &&
+    ((before === opening && returnType) || token(before, "=>")) &&
+    token(previous) &&
+    isIdentifierToken(previous);
+  return Object.freeze({
+    unfinished,
+    /** Whether the walk stands inside type parameters or arguments. */
+    nested(): boolean {
+      return typeArguments !== 0;
+    },
+    /**
+     * Whether the type carries on across a line break in front of `next`: where
+     * it still expects an operand, and where `next` is one of the few things
+     * that may stand in a type there, or a keyword the two nodes before it
+     * carry on. A line cannot end after `keyof`, `infer` or `extends` any more
+     * than after `|`.
+     */
+    continuesAcross(next: Syntax): boolean {
+      return (
+        unfinished() ||
+        (next.tag === "token" &&
+          (typeContinuedBy.has(next.raw) ||
+            typeKeywordContinues(before, previous, next.raw)))
+      );
+    },
+    /** Takes a node the walk has read. */
+    take(node: Syntax): void {
+      const operand = expectsType();
+      if (typeArguments === 0 && angles(node, "<") > 0)
+        typeParameters = operand;
+      typeArguments += angles(node, "<");
+      typeArguments = Math.max(0, typeArguments - angles(node, ">"));
+      named =
+        operand &&
+        !predicateIs(before, previous, node) &&
+        namesType(node, undefined);
+      before = previous;
+      previous = node;
+    },
+  });
+}
+
+export type TypeTracker = ReturnType<typeof createTypeTracker>;
 
 function classElementCanEndAtBrace(children: readonly Syntax[]): boolean {
   const brace = children.at(-1);
@@ -704,40 +943,129 @@ interface MemberModifiers {
   readonly continuing: ReadonlySet<string>;
 }
 
-/** Whether a line can end after `member`, the syntax of a member read so far. */
-function lineCanEndAfter(
-  member: readonly Syntax[],
-  modifiers: MemberModifiers,
-): boolean {
-  const previous = member.at(-1);
-  if (!token(previous)) return true;
-  if (memberNameFollows(member.slice(0, -1), modifiers))
-    return !modifiers.continuing.has(previous.raw);
-  // `?` straight after a member's name marks it optional, and ends it.
-  if (previous.raw === "?" && memberNameFollows(member.slice(0, -2), modifiers))
-    return true;
-  // A `>` closing type arguments ends a type; any other is an operator.
-  if (angleWidth(previous.raw, ">") > 0) {
-    return (
-      typeArgumentDepth(member) === 0 &&
-      member.some((node) => angles(node, "<") > 0)
-    );
-  }
-  return !typeOperandExpectedAfter.has(previous.raw);
+/**
+ * The spellings a class field's initializer cannot end a line after: the
+ * expression grammar's, but for `await` and `yield`. An initializer is
+ * evaluated as a function of its own, where neither is an expression, so each
+ * is a name there and finishes the initializer: TypeScript reads `x = await`
+ * and the `b` under it as two members.
+ */
+const initializerOperandExpectedAfter: ReadonlySet<string> = new Set(
+  [...operandExpectedAfter].filter(
+    (spelling) => spelling !== "await" && spelling !== "yield",
+  ),
+);
+
+/** Whether `node` is a parenthesized group: a parameter list, in a header. */
+function parenthesis(node: Syntax | undefined): boolean {
+  return node?.tag === "group" && node.delimiter === "parenthesis";
 }
 
 /**
- * Whether `member` has an initializer: an `=` outside the type parameters and
- * arguments written in it.
+ * Whether `next` stands where a member's signature carries on: a parameter
+ * list, or the `<` of type parameters. TypeScript reads either after a
+ * member's name wherever it is written, so `m` and the `(x): void` under it
+ * are one method signature.
  */
-function hasInitializer(member: readonly Syntax[]): boolean {
+function signatureFollows(next: Syntax): boolean {
+  return parenthesis(next) || angles(next, "<") > 0;
+}
+
+/**
+ * Whether a member's header holds its parameter list: a parenthesis written
+ * after its decorators and outside its type parameters.
+ */
+function parametersWritten(header: readonly Syntax[]): boolean {
   let depth = 0;
-  for (const node of member) {
+  for (const node of header.slice(decoratorPrefixLength(header))) {
     depth += angles(node, "<");
     depth = Math.max(0, depth - angles(node, ">"));
-    if (depth === 0 && token(node, "=")) return true;
+    if (depth === 0 && parenthesis(node)) return true;
   }
   return false;
+}
+
+/**
+ * A class or interface member read one node at a time, and whether a line
+ * break may end it where the walk stands.
+ *
+ * A member is written in up to three parts, and a line break ends each by a
+ * grammar of its own. Its header -- decorators, modifiers, name, type
+ * parameters and parameters -- ends where no modifier TypeScript carries
+ * across a line break is left waiting and no signature is still to come. Its
+ * annotation after a `:` is a type, which the type tracker answers for as it
+ * does for a declaration, so `x: <T>` and the `(v: T) => T` under it are one
+ * member, and `x: is` and the `y: 1` under it are two. A class field's
+ * initializer after an `=` is an expression. Each node is taken once.
+ */
+function createMemberTracker(modifiers: MemberModifiers) {
+  const nodes: Syntax[] = [];
+  /** How deep in the header's type parameters the walk stands. */
+  let typeParameters = 0;
+  /** The member's annotation, once the `:` that opens it is read. */
+  let annotation: TypeTracker | undefined;
+  /** Whether the walk has read the `=` that opens a field's initializer. */
+  let initialized = false;
+  return Object.freeze({
+    /** The member read so far. */
+    nodes: nodes as readonly Syntax[],
+    /** Whether the walk stands in a field's initializer. */
+    initialized(): boolean {
+      return initialized;
+    },
+    /**
+     * Whether the walk stands inside type parameters or arguments, where a `,`
+     * is theirs: `first: Map<string, number>` is one member.
+     */
+    nested(): boolean {
+      return (
+        typeParameters !== 0 ||
+        (!initialized && annotation !== undefined && annotation.nested())
+      );
+    },
+    /** Takes a node the walk has read. */
+    take(node: Syntax): void {
+      nodes.push(node);
+      if (initialized) return;
+      if (annotation !== undefined) {
+        if (token(node, "=") && !annotation.nested()) initialized = true;
+        else annotation.take(node);
+        return;
+      }
+      typeParameters += angles(node, "<");
+      typeParameters = Math.max(0, typeParameters - angles(node, ">"));
+      if (typeParameters !== 0) return;
+      if (token(node, ":"))
+        annotation = createTypeTracker(node, parenthesis(nodes.at(-2)));
+      else if (token(node, "=")) initialized = true;
+    },
+    /** Whether a line break in front of `next` may end the member. */
+    lineCanEnd(next: Syntax): boolean {
+      const previous = nodes.at(-1);
+      if (initialized)
+        return !(
+          token(previous) && initializerOperandExpectedAfter.has(previous.raw)
+        );
+      if (annotation !== undefined) return !annotation.continuesAcross(next);
+      if (typeParameters !== 0) return false;
+      if (signatureFollows(next) && !parametersWritten(nodes)) return false;
+      if (token(previous) && memberNameFollows(nodes.slice(0, -1), modifiers))
+        return !modifiers.continuing.has(previous.raw);
+      return true;
+    },
+  });
+}
+
+type MemberTracker = ReturnType<typeof createMemberTracker>;
+
+/** A tracker that has taken each of `member`'s nodes. */
+function trackMember(
+  member: readonly Syntax[],
+  modifiers: MemberModifiers,
+): MemberTracker {
+  const tracker = createMemberTracker(modifiers);
+  for (const node of member) tracker.take(node);
+  return tracker;
 }
 
 /**
@@ -785,23 +1113,28 @@ export function classMemberNameFollows(member: readonly Syntax[]): boolean {
  * static block, or -- by automatic semicolon insertion, as TypeScript reads a
  * class body -- at a line break before syntax that begins another member.
  * It does not end there where the line cannot end: after decorators alone,
- * after a modifier TypeScript carries onto the next line, or after an operator
- * waiting for its operand. Nor does it end where what begins the next line
- * carries a field's initializer on.
+ * after a modifier TypeScript carries onto the next line, or inside a type or
+ * an initializer that carries on across the break. Nor does it end where what
+ * begins the next line carries a field's initializer on.
  */
 export function classElementEndsBefore(
   member: readonly Syntax[],
   next: Syntax,
 ): boolean {
-  if (member.length === 0) return false;
-  if (token(member.at(-1), ";") || classElementCanEndAtBrace(member))
-    return true;
+  return classMemberEndsBefore(trackMember(member, classMemberModifiers), next);
+}
+
+/** `classElementEndsBefore`, asked of a member a walk has tracked. */
+function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
+  const { nodes } = member;
+  if (nodes.length === 0) return false;
+  if (token(nodes.at(-1), ";") || classElementCanEndAtBrace(nodes)) return true;
   return (
     leadingLineBreak(next) &&
     beginsClassMember(next) &&
-    decoratorPrefixLength(member) !== member.length &&
-    lineCanEndAfter(member, classMemberModifiers) &&
-    !(hasInitializer(member) && continuesInitializer(next))
+    decoratorPrefixLength(nodes) !== nodes.length &&
+    member.lineCanEnd(next) &&
+    !(member.initialized() && continuesInitializer(next))
   );
 }
 
@@ -826,12 +1159,46 @@ class ClassElementConsumer implements SyntaxConsumer {
         40,
       );
     }
+    const member = createMemberTracker(classMemberModifiers);
     const children: Syntax[] = [];
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
-      if (classElementEndsBefore(children, next)) break;
+      if (classMemberEndsBefore(member, next)) break;
+      const initializes = !member.initialized();
+      member.take(next);
       children.push(cursor.consume()!);
+      const consumeInitializer = this.options.consumeInitializer;
+      if (
+        initializes &&
+        member.initialized() &&
+        consumeInitializer !== undefined
+      ) {
+        // An initializer is evaluated as a function of its own, where
+        // neither `yield` nor `await` is an expression, and the field ends
+        // where its expression does: at a `;`, or at the line break TypeScript
+        // inserts one at.
+        const initializer = consumeInitializer.consume(cursor, {
+          ...context,
+          category: "expr",
+          allowYield: false,
+          allowAwait: false,
+          stopSet: context.stopSet.union(
+            new StopSet([{ kind: "token", raw: ";" }]),
+          ),
+        });
+        if (!initializer.matched)
+          return failure(
+            "classElement",
+            cursor,
+            start,
+            initializer.failure.expectations,
+            initializer.failure.specificity,
+          );
+        children.push(initializer.syntax);
+        if (token(cursor.peek(), ";")) children.push(cursor.consume()!);
+        break;
+      }
       if (classElementCanEndAtBrace(children)) {
         // The element ended at its body; enforest that body so macros inside a
         // method are reached.
@@ -885,10 +1252,6 @@ class ClassElementConsumer implements SyntaxConsumer {
 }
 
 /**
- * Modifiers that may open a type member. A line beginning with one of these
- * continues the member being read rather than starting the next.
- */
-/**
  * The words before the name of an interface's member. A construct signature
  * opens with `new`, and TypeScript reads `new`, `get` and `set` across a line
  * break the way it reads a class's `static`.
@@ -903,30 +1266,17 @@ function angles(node: Syntax, character: "<" | ">"): number {
   return token(node) ? angleWidth(node.raw, character) : 0;
 }
 
-/** How deep in type arguments the end of `nodes` stands. */
-function typeArgumentDepth(nodes: readonly Syntax[]): number {
-  let depth = 0;
-  for (const node of nodes) {
-    depth += angles(node, "<");
-    depth = Math.max(0, depth - angles(node, ">"));
-  }
-  return depth;
-}
-
 /**
  * Whether `next` begins a new member of an interface or object type after
- * `member`, the syntax of the member read so far: a line break before syntax
- * that begins a member, where the line can end.
+ * `member`, the member read so far: a line break before syntax that begins a
+ * member, where the line can end.
  */
-function typeMemberEndsBefore(
-  member: readonly Syntax[],
-  next: Syntax,
-): boolean {
+function typeMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
   return (
-    member.length > 0 &&
+    member.nodes.length > 0 &&
     leadingLineBreak(next) &&
     likelyNextTypeMember(next) &&
-    lineCanEndAfter(member, typeMemberModifiers)
+    member.lineCanEnd(next)
   );
 }
 
@@ -935,18 +1285,19 @@ function typeMemberEndsBefore(
  * arguments belongs to them: `first: Map<string, number>` is one member.
  */
 function separatesTypeMembers(
-  member: readonly Syntax[],
+  member: MemberTracker,
   separator: Syntax,
 ): boolean {
   if (token(separator, ";")) return true;
-  return token(separator, ",") && typeArgumentDepth(member) === 0;
+  return token(separator, ",") && !member.nested();
 }
 
 /**
  * Whether this node can open the next member of an interface or object type.
  * A member is named by an identifier, a keyword used as a name, a string or
  * numeric literal key, or a computed key in brackets; a call signature opens
- * with its parameter list, and a construct signature with `new`.
+ * with its parameter list or its type parameters, and a construct signature
+ * with `new`.
  */
 function likelyNextTypeMember(syntax: Syntax | undefined): boolean {
   if (token(syntax)) {
@@ -954,7 +1305,8 @@ function likelyNextTypeMember(syntax: Syntax | undefined): boolean {
       syntax.kind === "identifier" ||
       syntax.kind === "keyword" ||
       syntax.kind === "string-literal" ||
-      syntax.kind === "numeric-literal"
+      syntax.kind === "numeric-literal" ||
+      angles(syntax, "<") > 0
     );
   }
   return (
@@ -982,15 +1334,15 @@ function memberSlice(
   context: ConsumerContext,
 ): readonly Syntax[] {
   const scan = cursor.fork();
-  const nodes: Syntax[] = [];
+  const member = createMemberTracker(typeMemberModifiers);
   while (!scan.atEnd && !context.stopSet.matches(scan)) {
     checkWork(context);
     const next = scan.peek()!;
-    if (typeMemberEndsBefore(nodes, next)) break;
-    nodes.push(scan.consume()!);
+    if (typeMemberEndsBefore(member, next)) break;
+    member.take(scan.consume()!);
     if (token(next, ";")) break;
   }
-  return nodes;
+  return member.nodes;
 }
 
 /**
@@ -1057,12 +1409,14 @@ class TypeMemberConsumer implements SyntaxConsumer {
         }
       }
     }
+    const member = createMemberTracker(typeMemberModifiers);
     const children: Syntax[] = [];
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
-      if (typeMemberEndsBefore(children, next)) break;
-      const separates = separatesTypeMembers(children, next);
+      if (typeMemberEndsBefore(member, next)) break;
+      const separates = separatesTypeMembers(member, next);
+      member.take(next);
       cursor.consume();
       // A member's type may itself be an object type, whose contents are
       // another member list.

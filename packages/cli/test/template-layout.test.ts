@@ -458,7 +458,7 @@ export const one: number = cast<number>(raw);`,
         `import { doubled } from "./macros.sts" for syntax;
 export const product: number = doubled<number>(3);`,
       ),
-    ).toContain("((-3 as number) * 2)");
+    ).toContain("= (-3 as number) * 2;");
   });
 
   test("is printed from the inside out where one asserts another", () => {

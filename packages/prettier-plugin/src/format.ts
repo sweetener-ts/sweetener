@@ -1,11 +1,17 @@
-import { readSyntax } from "@sweetener/reader";
+import {
+  readSyntax,
+  regularExpressionEnd,
+  typescriptSlashes,
+} from "@sweetener/reader";
 import type { ScopeSetId, SourceId } from "@sweetener/shared";
-import type {
-  GroupSyntax,
-  RootSyntax,
-  Syntax,
-  TokenSyntax,
-  Trivia,
+import {
+  divisionSlash,
+  type GroupSyntax,
+  type RootSyntax,
+  type Span,
+  type Syntax,
+  type TokenSyntax,
+  type Trivia,
 } from "@sweetener/syntax";
 
 export interface SweetenerFormatOptions {
@@ -286,6 +292,82 @@ function collectChildren(
   }
 }
 
+/**
+ * The spans of the source a slash read as a division could begin a regular
+ * expression over, where one would end on the slash's own line.
+ *
+ * Which of the two a slash begins is the parser's to say, and the reader can
+ * only judge from the token before. Read as a division, the text a regular
+ * expression is written with is names and operators with whitespace between
+ * them, which this formatter would lay out -- and `/a  b/` would become `/a
+ * b/`, another expression. So the source is read with TypeScript's own
+ * readings of its slashes wherever one of these stands (see
+ * `readForFormatting`), and a regular expression read as one is one token,
+ * nothing inside which is laid out.
+ */
+function possibleRegularExpressions(
+  source: string,
+  syntax: Syntax,
+): readonly { readonly start: number; readonly end: number }[] {
+  switch (syntax.tag) {
+    case "token": {
+      if (!divisionSlash(syntax)) return [];
+      const end = regularExpressionEnd(source, syntax.span.start);
+      return end === undefined ? [] : [{ start: syntax.span.start, end }];
+    }
+    case "group":
+    case "protected":
+    case "root":
+      return syntax.children.flatMap((child) =>
+        possibleRegularExpressions(source, child),
+      );
+  }
+}
+
+/**
+ * `spans` joined where they overlap, in source order. Two slashes may each
+ * begin an expression over the other: in `a / b / c` the first ends at the
+ * second, and the second reaches past it.
+ */
+function disjoint(
+  spans: readonly { readonly start: number; readonly end: number }[],
+): readonly { readonly start: number; readonly end: number }[] {
+  const joined: { start: number; end: number }[] = [];
+  for (const span of [...spans].sort(
+    (left, right) => left.start - right.start,
+  )) {
+    const last = joined.at(-1);
+    if (last !== undefined && span.start < last.end)
+      last.end = Math.max(last.end, span.end);
+    else joined.push({ ...span });
+  }
+  return joined;
+}
+
+/**
+ * Whether `replacement` touches the inside of any of `spans`, which are in
+ * source order and do not overlap.
+ */
+function overlapsAny(
+  spans: readonly { readonly start: number; readonly end: number }[],
+  replacement: Replacement,
+): boolean {
+  let low = 0;
+  let high = spans.length;
+  // The first span ending after the replacement begins.
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (spans[middle]!.end <= replacement.start) low = middle + 1;
+    else high = middle;
+  }
+  const span = spans[low];
+  return (
+    span !== undefined &&
+    replacement.end > span.start &&
+    replacement.start < span.end
+  );
+}
+
 function applyReplacements(
   source: string,
   replacements: readonly Replacement[],
@@ -302,15 +384,38 @@ function applyReplacements(
   return result;
 }
 
-export function readSweetenerSyntax(
+/**
+ * `source` read as the formatter lays it out, and the statements in it
+ * TypeScript's parser could not read (see `TypeScriptSlashes.unparsed`).
+ *
+ * A slash the reader judged a division may begin a regular expression, and
+ * one it judged a regular expression may divide. The expansion has the
+ * enforester to say which; a formatter has no enforester, so wherever a
+ * slash may begin a regular expression it asks TypeScript's parser, and reads
+ * each slash as the parser does where the parser read the statement holding
+ * it. That also reads `if (c) /(/.test(s)`, where the reader's judgement
+ * leaves a bracket unbalanced.
+ */
+function readForFormatting(
   source: string,
   options: SweetenerFormatOptions,
-): RootSyntax {
-  const result = readSyntax(source, {
-    sourceId,
-    scopes,
-    variant: options.filepath?.endsWith("x") === true ? "jsx" : "standard",
-  });
+): { readonly root: RootSyntax; readonly unparsed: readonly Span[] } {
+  const variant = options.filepath?.endsWith("x") === true ? "jsx" : "standard";
+  const initial = readSyntax(source, { sourceId, scopes, variant });
+  const typescript =
+    initial.diagnostics.length > 0 ||
+    possibleRegularExpressions(source, initial.root).length > 0
+      ? typescriptSlashes(source, variant)
+      : undefined;
+  const result =
+    typescript === undefined || typescript.readings.size === 0
+      ? initial
+      : readSyntax(source, {
+          sourceId,
+          scopes,
+          variant,
+          slashReadings: typescript.readings,
+        });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];
     throw new SyntaxError(
@@ -321,7 +426,14 @@ export function readSweetenerSyntax(
       }`,
     );
   }
-  return result.root;
+  return { root: result.root, unparsed: typescript?.unparsed ?? [] };
+}
+
+export function readSweetenerSyntax(
+  source: string,
+  options: SweetenerFormatOptions,
+): RootSyntax {
+  return readForFormatting(source, options).root;
 }
 
 export function formatSweetener(
@@ -329,10 +441,22 @@ export function formatSweetener(
   options: SweetenerFormatOptions = {},
 ): string {
   if (source.length === 0) return "";
-  const root = readSweetenerSyntax(source, options);
+  const { root, unparsed } = readForFormatting(source, options);
   const eol = lineEnding(source, options.endOfLine);
   const replacements: Replacement[] = [];
   collectSyntax(root, 0, options, eol, replacements);
-  const formatted = applyReplacements(source, replacements);
+  // Where TypeScript read the statement, a slash it reads as a division is
+  // one. Where it did not -- a macro's own syntax -- what the macro reads is
+  // unknown here, so the text a division-read slash could begin a regular
+  // expression over is left as written.
+  const kept = disjoint(
+    possibleRegularExpressions(source, root).filter(({ start }) =>
+      unparsed.some((span) => start >= span.start && start < span.end),
+    ),
+  );
+  const formatted = applyReplacements(
+    source,
+    replacements.filter((replacement) => !overlapsAny(kept, replacement)),
+  );
   return formatted.replace(/[ \t\r\n\u2028\u2029]+$/u, "") + eol;
 }

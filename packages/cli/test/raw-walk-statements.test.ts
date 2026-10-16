@@ -123,7 +123,7 @@ describe("a block walked as raw tokens", () => {
         "}\n",
     );
     expect(messages).toEqual([]);
-    expect(text).toContain("const held: number = ((value) * 2);");
+    expect(text).toContain("const held: number = (value) * 2;");
   });
 
   /**

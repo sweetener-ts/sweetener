@@ -151,6 +151,10 @@ export function createConsumerSuite(
     ...shared,
     enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
       statement.enforestBlock(block, blockContext, allowYield, allowAwait),
+    consumeInitializer: createPrattExpressionConsumer({
+      ...consumerShared,
+      allowComma: false,
+    }),
   });
   const typeMember = typeConsumers.typeMember;
   return Object.freeze({

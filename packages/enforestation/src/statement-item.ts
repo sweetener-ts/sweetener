@@ -24,6 +24,7 @@ import {
   expressionContinuedBy,
   operandExpectedAfter,
 } from "./core-operators.js";
+import { asyncModifies } from "./primary-expression.js";
 import {
   createPrattExpressionConsumer,
   type PrattExpressionConsumerOptions,
@@ -37,10 +38,11 @@ import {
   createClassElementConsumer,
   consumeBalancedTypeArguments,
   createTypeConsumers,
+  createTypeTracker,
   declaresAsync,
   decoratorWidth,
-  typeOperandExpectedAfter,
   typeOperandFollows,
+  type TypeTracker,
 } from "./type-class-element.js";
 
 export type StatementItemMacroResolver = MacroExtentResolver;
@@ -69,66 +71,18 @@ export interface StatementItemConsumerOptions extends PrattExpressionConsumerOpt
 const headContinuedBy = new Set([":", "=", ",", ";"]);
 
 /**
- * What may carry a declarator's type annotation on across a line break: the
- * operators the type grammar writes between two types, and what ends the
- * annotation.
- *
- * An array type's `[` is not among them. TypeScript writes
- * `PrimaryType [no LineTerminator here] [ ]`, and reads `let x: A` and the
- * `[b] = c;` under it as two statements.
- *
- * Nor is a conditional type's `extends`. TypeScript writes
- * `CheckType [no LineTerminator here] extends`, and reads `let x: A` and the
- * `extends B ? C : D = e;` under it as two statements. The `extends` that
- * gives a type parameter its constraint carries no such restriction, and it is
- * written inside the `<` this walk holds open, where no line break ends
- * anything; the `extends` of a class or interface heritage clause is written
- * in a declaration's header rather than in a type, and is not read here.
- */
-const annotationContinuedBy = new Set([
-  "|",
-  "&",
-  "?",
-  ":",
-  ",",
-  "=>",
-  ".",
-  "=",
-  ";",
-  "is",
-]);
-
-/**
  * Whether the declarator head read so far carries on across the line break in
- * front of `next`. It does where an operand is still expected after what was
- * last read, and where `next` is one of the few things that may stand in a
- * head at all -- inside the annotation, one of the few that may stand in a
- * type.
+ * front of `next`, `previous` being the last node it read, before any type is
+ * read: where an operand is still expected after `previous`, and where `next`
+ * is one of the few things that may stand in a head at all.
  *
- * Inside the annotation both halves are the type grammar's: a line cannot end
- * after `keyof`, `infer` or `extends` any more than after `|`, and it is the
- * type reader that says so.
- *
- * This is the one question both readers of a declaration ask. The statement
- * reader walks the head and asks it at each line break; the item reader asks
- * it of the annotation before handing it to the type consumer, which reads a
- * type wherever it is written and would otherwise read straight past the
- * break.
+ * A type is asked of the type tracker instead, which knows what a line break
+ * ends inside one.
  */
-function headContinues(
-  previous: Syntax | undefined,
-  next: Syntax,
-  annotated: boolean,
-): boolean {
-  const expectsOperand = annotated
-    ? typeOperandExpectedAfter
-    : operandExpectedAfter;
-  if (previous?.tag === "token" && expectsOperand.has(previous.raw))
+function headContinues(previous: Syntax | undefined, next: Syntax): boolean {
+  if (previous?.tag === "token" && operandExpectedAfter.has(previous.raw))
     return true;
-  if (next.tag !== "token") return false;
-  return annotated
-    ? annotationContinuedBy.has(next.raw)
-    : headContinuedBy.has(next.raw);
+  return next.tag === "token" && headContinuedBy.has(next.raw);
 }
 
 /**
@@ -250,6 +204,13 @@ function typeOnlyClause(
 function declarationHead(cursor: SyntaxCursor, offset = 0): boolean {
   const word = raw(cursor.peek(offset));
   if (word === undefined || !contextualHeads.has(word)) return true;
+  // A modifier modifies only a declaration written after it on its line:
+  // `declare = 1` and `declare(x)` use a name, and the line break that ends
+  // one of them carries no declaration's rule.
+  if (declarationModifiers.has(word))
+    return (
+      noLineTerminatorAfter(cursor, offset) && beginsItem(cursor, offset + 1)
+    );
   if (word === "module" || word === "namespace") {
     const following = cursor.peek(offset + 1);
     if (
@@ -280,16 +241,34 @@ function ambientDeclaration(cursor: SyntaxCursor, offset = 0): boolean {
 
 /**
  * How many modifier words stand in front of the declaration at `offset`: the
- * `declare` that marks it ambient and the `abstract` that marks a class.
+ * `declare` that marks it ambient, the `abstract` that marks a class, and the
+ * `async` that marks a function.
  */
 function modifierWidth(cursor: SyntaxCursor, offset = 0): number {
   let width = 0;
-  while (
-    declarationModifiers.has(raw(cursor.peek(offset + width)) ?? "") &&
-    noLineTerminatorAfter(cursor, offset + width)
-  )
-    width += 1;
+  while (modifierAt(cursor, offset + width)) width += 1;
   return width;
+}
+
+/**
+ * Whether the word at `offset` modifies the declaration after it.
+ *
+ * `declare` and `abstract` do where a declaration follows them on their line,
+ * through any modifiers of its own: TypeScript reads `declare abstract` and
+ * the class under it as two names and the class, because the `abstract` the
+ * `declare` stands in front of modifies nothing. `async` does only in front
+ * of `function`, on that function's own line: `async function f()` is the
+ * declaration, and `async (v) => v` is an arrow, which is an expression. A
+ * line break makes `async` a name, the same rule `asyncModifies` states for
+ * arrows.
+ */
+function modifierAt(cursor: SyntaxCursor, offset: number): boolean {
+  if (declarationModifiers.has(raw(cursor.peek(offset)) ?? ""))
+    return declarationHead(cursor, offset);
+  return (
+    asyncModifies(cursor.peek(offset), cursor.peek(offset + 1)) &&
+    raw(cursor.peek(offset + 1)) === "function"
+  );
 }
 
 /**
@@ -315,98 +294,146 @@ function globalAugmentation(cursor: SyntaxCursor, offset = 0): boolean {
 }
 
 /**
- * Where a type alias's body ends, for the walks that scan a declaration's
- * head.
+ * Where a declaration with no body ends, for the walks that scan a
+ * declaration's head.
  *
- * `type T = A` and the `extends B ? C : D;` written under it are two
- * declarations: TypeScript writes `CheckType [no LineTerminator here] extends`,
- * and an alias's body after the `=` is a type like any other. Neither scanning
- * walk knows the type grammar, so both ask this and both get the same answer.
+ * Two declarations end at a line break rather than at a body. A type alias's
+ * body after the `=` is a type, and `type T = A` and the `extends B ? C : D;`
+ * written under it are two declarations: TypeScript writes `CheckType [no
+ * LineTerminator here] extends`. A function written without a body -- an
+ * overload signature, an ambient declaration -- ends after its parameter list
+ * or its return type, by the same automatic semicolon insertion: `function
+ * f()` and the `run();` written under it are two statements, and so are
+ * `declare function h(): void` and the call under it. Ending a signature only
+ * where the next line began a declaration took that call into it. Neither
+ * scanning walk knows the type grammar, so both ask this and both get the same
+ * answer, and what the type itself carries across a line break is asked of
+ * the type tracker a declarator's annotation is read with.
  *
- * `declaresType` is false where the declaration is no alias at all --
- * `import type A = require("m")` and `export type { A }` declare none -- and
- * the tracker then ends nothing.
+ * `declared` is the word that says what the declaration declares, and the
+ * tracker ends nothing unless it is `type` or `function`. `import type A =
+ * require("m")` and `export type { A }` declare no alias, and their `type` is
+ * never followed by the `=` that opens a body.
  */
-function createAliasBodyTracker(declaresType: boolean) {
-  /** Whether the walk has passed the `=` that opens the alias's body. */
-  let inBody = false;
+function createBodilessTracker(declared: string | undefined) {
   /**
-   * How deep in type parameters the walk stands. The `=` of a parameter's
-   * default is written inside them and does not open the body; a `<` still
-   * open encloses whatever is written under it, so a line break there ends
-   * nothing.
+   * Whether the walk has passed where a line break may end the declaration:
+   * an alias's `=`, or a function's parameter list.
    */
-  let typeArguments = 0;
+  let ending = false;
+  /**
+   * The type the walk reads, once it reads one: an alias's body, or a
+   * function's return type after the `:` that opens it.
+   */
+  let type: TypeTracker | undefined;
+  /**
+   * How deep in the head's own type parameters the walk stands, before any
+   * type is read. The `=` of a parameter's default is written inside them and
+   * does not open an alias's body, and a parenthesis there is no parameter
+   * list.
+   */
+  let typeParameters = 0;
+  /** The last node taken before the type. */
+  let previous: Syntax | undefined;
   return Object.freeze({
     /**
-     * Whether the walk stands inside the alias's body, where it is the type
-     * grammar that says what a line break ends and no other rule may.
+     * Whether the walk stands inside a type, where it is the type grammar that
+     * says what a line break ends and no other rule may.
      */
-    readsBody(): boolean {
-      return inBody;
+    readsType(): boolean {
+      return type !== undefined;
     },
-    /** Whether the alias's body ends in front of `next`. */
-    endsBefore(previous: Syntax | undefined, next: Syntax): boolean {
-      return (
-        inBody &&
-        typeArguments === 0 &&
-        leadingLineBreak(next) &&
-        !headContinues(previous, next, true)
-      );
+    /**
+     * Whether the type being read is unfinished where the walk stands, so
+     * that the line break in front of the next node ends nothing.
+     */
+    unfinished(): boolean {
+      return type?.unfinished() ?? false;
+    },
+    /**
+     * Whether the declaration may end where the walk stands with no body: a
+     * function whose head is finished, written as an overload or an ambient
+     * signature. TypeScript reads `function f()` on its own as that signature
+     * rather than as a declaration missing a brace.
+     */
+    complete(): boolean {
+      return ending && typeParameters === 0 && !(type?.unfinished() ?? false);
+    },
+    /** Whether the declaration ends in front of `next`. */
+    endsBefore(next: Syntax): boolean {
+      if (!ending || !leadingLineBreak(next)) return false;
+      // A brace written under a function's head is its body.
+      if (declared === "function" && braceGroup(next)) return false;
+      return type === undefined
+        ? typeParameters === 0 && !headContinues(previous, next)
+        : !type.continuesAcross(next);
     },
     /** Takes a node the walk has read. */
     take(node: Syntax): void {
-      if (!declaresType) return;
+      if (declared !== "type" && declared !== "function") return;
+      if (type !== undefined) {
+        type.take(node);
+        return;
+      }
+      const opensParameters =
+        declared === "function" &&
+        !ending &&
+        typeParameters === 0 &&
+        node.tag === "group" &&
+        node.delimiter === "parenthesis";
       const spelling = raw(node);
-      if (spelling === undefined) return;
-      typeArguments += angleWidth(spelling, "<");
-      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-      if (typeArguments === 0 && spelling === "=") inBody = true;
+      if (spelling !== undefined) {
+        typeParameters += angleWidth(spelling, "<");
+        typeParameters = Math.max(
+          0,
+          typeParameters - angleWidth(spelling, ">"),
+        );
+      }
+      previous = node;
+      if (opensParameters) ending = true;
+      if (typeParameters !== 0) return;
+      if (declared === "type" && spelling === "=") {
+        ending = true;
+        type = createTypeTracker(node, false);
+      }
+      if (declared === "function" && ending && spelling === ":")
+        type = createTypeTracker(node, true);
     },
   });
 }
 
 /**
- * Whether the words at the head of a declaration open a type alias. `export`
- * and `declare` stand in front of one; `import type A = require("m")` and
- * `export type { A }` declare no alias, and their first word is not `type`.
+ * The word that says what the declaration with these head words declares: the
+ * first that is no modifier. `export` and `declare` stand in front of an alias
+ * or a function, and `default` and `async` in front of a function.
  */
-function declaresAlias(headWords: readonly string[]): boolean {
-  return (
-    headWords.find((word) => word !== "export" && word !== "declare") === "type"
+function declaredBy(headWords: readonly string[]): string | undefined {
+  return headWords.find(
+    (word) =>
+      word !== "export" &&
+      word !== "declare" &&
+      word !== "default" &&
+      word !== "async",
   );
 }
 
 /**
  * How many nodes the type annotation standing at the cursor may span before a
  * line break ends the declarator's head, `colon` being the `:` that opened it.
- *
- * A `<` still open encloses whatever is written under it, so
- * `let x: Array<\nnumber\n>` is one annotation however its lines are broken --
- * the same allowance the statement reader makes as it walks a head.
+ * The type tracker says where, as it does for the statement reader's walk.
  */
 function annotationExtent(
   cursor: SyntaxCursor,
   colon: Syntax,
   context: ConsumerContext,
 ): number {
-  let typeArguments = 0;
+  const type = createTypeTracker(colon, false);
   let width = 0;
   while (width < cursor.remainingLength) {
     checkWork(context);
     const next = cursor.peek(width)!;
-    const previous = width === 0 ? colon : cursor.peek(width - 1)!;
-    if (
-      typeArguments === 0 &&
-      leadingLineBreak(next) &&
-      !headContinues(previous, next, true)
-    )
-      break;
-    const spelling = raw(next);
-    if (spelling !== undefined) {
-      typeArguments += angleWidth(spelling, "<");
-      typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-    }
+    if (leadingLineBreak(next) && !type.continuesAcross(next)) break;
+    type.take(next);
     width += 1;
   }
   return width;
@@ -836,6 +863,10 @@ class StatementConsumer implements SyntaxConsumer {
       ...shared,
       enforestStatementBlock: (block, blockContext, allowYield, allowAwait) =>
         this.enforestBlock(block, blockContext, allowYield, allowAwait),
+      consumeInitializer: createPrattExpressionConsumer({
+        ...options,
+        allowComma: false,
+      }),
     });
     this.#typeMember = createTypeConsumers({
       ...shared,
@@ -1047,7 +1078,14 @@ class StatementConsumer implements SyntaxConsumer {
           : declared === "interface"
             ? ("typeMember" as const)
             : undefined;
-      return this.#consumeScanned(cursor, context, start, true, bodyCategory);
+      return this.#consumeScanned(
+        cursor,
+        context,
+        start,
+        true,
+        bodyCategory,
+        declared,
+      );
     }
     // A type alias stands in a function body as readily as it does at a
     // module's top level, and its body after the `=` is a type. Refused here,
@@ -1061,7 +1099,7 @@ class StatementConsumer implements SyntaxConsumer {
         start,
         false,
         undefined,
-        true,
+        declared,
       );
     // `import` and `export` are refused. TypeScript parses both in a function
     // body and rejects them afterwards, as a grammar error rather than a parse
@@ -1583,14 +1621,12 @@ class StatementConsumer implements SyntaxConsumer {
     let initialized = false;
     /** Whether the declarator being read has taken its binder. */
     let bound = false;
-    /** Whether it has taken the `:` that opens its type annotation. */
-    let annotated = false;
     /**
-     * How deep in type arguments the head stands. A `<` still open encloses
-     * whatever is written under it, so `let x: Array<\nnumber\n>` is one head
-     * however its lines are broken.
+     * The declarator's type annotation, once its `:` is read. The item reader
+     * measures an annotation with the same tracker, so the two readers end a
+     * head at the same line break.
      */
-    let typeArguments = 0;
+    let annotation: TypeTracker | undefined;
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
@@ -1601,9 +1637,10 @@ class StatementConsumer implements SyntaxConsumer {
       // `let x` and the `foo();` written under it are two statements.
       if (
         bound &&
-        typeArguments === 0 &&
         leadingLineBreak(next) &&
-        !headContinues(children.at(-1), next, annotated)
+        !(annotation === undefined
+          ? headContinues(children.at(-1), next)
+          : annotation.continuesAcross(next))
       )
         break;
       // A declarator ends where its initializer does, so only another
@@ -1618,7 +1655,9 @@ class StatementConsumer implements SyntaxConsumer {
       // was swallowed as loose tokens and never measured at all, so its body
       // was left in whatever context held the declaration.
       if (initialized && !token(next, ",") && asiAllowed(cursor)) break;
-      if (token(next, "=")) {
+      // The `=` of a type parameter's default, `let f: <T = A>() => T`, is the
+      // annotation's own and opens no initializer.
+      if (token(next, "=") && !annotation?.nested()) {
         children.push(cursor.consume()!);
         const expression = this.#expression.consume(cursor, {
           ...context,
@@ -1650,27 +1689,22 @@ class StatementConsumer implements SyntaxConsumer {
       if (
         children.length > 1 &&
         leadingLineBreak(next) &&
-        beginsStatement(cursor)
+        beginsStatement(cursor) &&
+        !(annotation?.unfinished() ?? false)
       )
         break;
-      const spelling = raw(next);
-      if (spelling !== undefined) {
-        typeArguments += angleWidth(spelling, "<");
-        typeArguments = Math.max(0, typeArguments - angleWidth(spelling, ">"));
-      }
       // A `,` or a `:` written inside type arguments is the type's own, not
       // the declarator list's: `let x: Map<string, number>` declares one
       // binder, and reading its comma as a separator left the walk believing
       // it stood in a binder rather than in an annotation -- so the line break
       // under it was measured by the expression grammar, and the statement
       // written there was taken into the declaration.
-      if (typeArguments === 0) {
-        if (spelling === ",") {
-          bound = false;
-          annotated = false;
-        } else if (spelling === ":") annotated = true;
-        else bound = true;
-      }
+      if (annotation?.nested() !== true && token(next, ",")) {
+        bound = false;
+        annotation = undefined;
+      } else if (annotation !== undefined) annotation.take(next);
+      else if (token(next, ":")) annotation = createTypeTracker(next, false);
+      else bound = true;
       children.push(cursor.consume()!);
     }
     const terminator = requireTerminator("stmt", cursor, start, children);
@@ -1689,23 +1723,27 @@ class StatementConsumer implements SyntaxConsumer {
     endsAtBlock: boolean,
     bodyCategory:
       "stmt" | "classElement" | "typeMember" | undefined = undefined,
-    declaresType = false,
+    declared: string | undefined = undefined,
   ): ConsumerAttempt {
     const children: Syntax[] = [];
-    const alias = createAliasBodyTracker(declaresType);
+    const head = createBodilessTracker(declared);
     while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
       checkWork(context);
       const next = cursor.peek()!;
+      // A word that begins a statement also begins a type where one is still
+      // expected: `type T =` and the `import("m").A;` under it are one alias.
       if (
         children.length > 0 &&
         leadingLineBreak(next) &&
-        beginsStatement(cursor)
+        beginsStatement(cursor) &&
+        !head.unfinished()
       )
         break;
       // An alias's body is a type, and a type ends at a line break the type
-      // grammar does not carry across. The item reader asks the same question
-      // of the same tracker.
-      if (alias.endsBefore(children.at(-1), next)) break;
+      // grammar does not carry across; a function with no body ends at one
+      // its head does not carry across. The item reader asks the same
+      // question of the same tracker.
+      if (head.endsBefore(next)) break;
       // A `<...>` region holds type parameters or type arguments, and a brace
       // inside one is an object type: `class E extends make()<{ a: string }>`,
       // or `class C<T extends { a: string }>`. Taking the first brace as the
@@ -1714,8 +1752,11 @@ class StatementConsumer implements SyntaxConsumer {
       if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
         const region = consumeBalancedTypeArguments(cursor, context);
         if (region !== undefined) {
-          for (let taken = 0; taken < region.width; taken += 1)
-            children.push(cursor.consume()!);
+          for (let taken = 0; taken < region.width; taken += 1) {
+            const node = cursor.consume()!;
+            children.push(node);
+            head.take(node);
+          }
           continue;
         }
       }
@@ -1745,13 +1786,14 @@ class StatementConsumer implements SyntaxConsumer {
         break;
       }
       children.push(next);
-      alias.take(next);
+      head.take(next);
       if (token(next, ";")) break;
     }
     if (
       endsAtBlock &&
       !token(children.at(-1), ";") &&
-      !braceGroup(children.at(-1))
+      !braceGroup(children.at(-1)) &&
+      !head.complete()
     ) {
       return failure("stmt", cursor, start, ["declaration body"], 40);
     }
@@ -1788,13 +1830,28 @@ class StatementConsumer implements SyntaxConsumer {
     }
     const children: Syntax[] = [expression.syntax];
     const terminator = requireTerminator("stmt", cursor, start, children);
-    if (terminator !== undefined) return terminator;
+    // TypeScript reads a `declare` that modifies nothing after it as a
+    // statement of its own, terminated or not: it takes the word for the
+    // modifier of a declaration that failed to read, and leaves reporting it
+    // to that declaration (`parseErrorForMissingSemicolonAfter`). So `declare
+    // abstract` and the class under it are three statements.
+    if (terminator !== undefined && !bareDeclare(expression.syntax))
+      return terminator;
     return Object.freeze({
       matched: true,
       syntax: protect("stmt", this.options, children),
       cursor,
     });
   }
+}
+
+/** Whether `syntax` is the name `declare` and nothing more. */
+function bareDeclare(syntax: Syntax): boolean {
+  return (
+    syntax.tag === "protected" &&
+    syntax.children.length === 1 &&
+    raw(syntax.children[0]) === "declare"
+  );
 }
 
 /** Whether a token is one or more `<`, which opens a type-argument region. */
@@ -2030,7 +2087,7 @@ class ItemConsumer implements SyntaxConsumer {
       // An import or export declaration, or a type alias: an item with no
       // body of its own, which ends at a line break rather than at a brace.
       const moduleItem = !endsAtBlock;
-      const alias = createAliasBodyTracker(declaresAlias(headWords));
+      const head = createBodilessTracker(declaredBy(headWords));
       /**
        * Whether the item is whole where the walk left it, because what stands
        * under it cannot belong to it. Such an item needs no terminator: what
@@ -2048,28 +2105,31 @@ class ItemConsumer implements SyntaxConsumer {
           children.length > 0 &&
           leadingLineBreak(next) &&
           beginsItem(cursor) &&
-          !headExpectsMore(raw(children.at(-1)))
+          !headExpectsMore(raw(children.at(-1))) &&
+          !head.unfinished()
         ) {
           break;
         }
         // The alias's body is a type, and a type ends at a line break the type
         // grammar does not carry across: TypeScript writes
         // `CheckType [no LineTerminator here] extends`, so `type T = A` and
-        // the `extends B ? C : D;` written under it are two items. Nothing
-        // else in this walk knows the type grammar, and reading straight past
-        // the break took both as one item -- a parse the host compiler does
-        // not share, and one that swallows whatever the next item invokes. A
-        // heritage clause's `extends` is written in a header rather than in a
-        // type and TypeScript does carry it across a break, so only the body
-        // of an alias is asked.
-        if (alias.endsBefore(children.at(-1), next)) break;
+        // the `extends B ? C : D;` written under it are two items. A function
+        // with no body ends at a line break its head does not carry across,
+        // so `function f()` and the `run();` under it are two items as well.
+        // Nothing else in this walk knows the type grammar, and reading
+        // straight past the break took both as one item -- a parse the host
+        // compiler does not share, and one that swallows whatever the next
+        // item invokes. A heritage clause's `extends` is written in a header
+        // rather than in a type and TypeScript does carry it across a break,
+        // so only an alias and a function are asked.
+        if (head.endsBefore(next)) break;
         // An item with no body of its own is terminated by a `;` or by the
         // line break that stands for one, wherever TypeScript terminates it.
         // A type alias's body is asked of the tracker above instead, which
         // knows the type grammar this does not.
         if (
           moduleItem &&
-          !alias.readsBody() &&
+          !head.readsType() &&
           children.length > 0 &&
           leadingLineBreak(next) &&
           !moduleItemContinues(children, next)
@@ -2080,13 +2140,16 @@ class ItemConsumer implements SyntaxConsumer {
         if (endsAtBlock && next.tag === "token" && isAngleOpen(next.raw)) {
           const region = consumeBalancedTypeArguments(cursor, context);
           if (region !== undefined) {
-            for (let taken = 0; taken < region.width; taken += 1)
-              children.push(cursor.consume()!);
+            for (let taken = 0; taken < region.width; taken += 1) {
+              const node = cursor.consume()!;
+              children.push(node);
+              head.take(node);
+            }
             continue;
           }
         }
         children.push(cursor.consume()!);
-        alias.take(next);
+        head.take(next);
         if (token(next, ";")) break;
         // A brace where a return type is written is an object type; the body
         // is the brace after the whole type.
@@ -2100,16 +2163,10 @@ class ItemConsumer implements SyntaxConsumer {
       }
       if (
         endsAtBlock &&
-        !(
-          headWords.includes("function") &&
-          (headWords.includes("declare") ||
-            raw(cursor.peek()) === "function" ||
-            (raw(cursor.peek()) === "export" &&
-              raw(cursor.peek(1)) === "function"))
-        ) &&
         !token(children.at(-1), ";") &&
         !braceGroup(children.at(-1)) &&
-        !braceGroup(children.at(-2))
+        !braceGroup(children.at(-2)) &&
+        !head.complete()
       ) {
         return failure("item", cursor, start, ["declaration body"], 40);
       }

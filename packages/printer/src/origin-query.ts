@@ -138,6 +138,27 @@ function plain(region: OriginQueryResult) {
   };
 }
 
+/**
+ * Where an offset inside a generated region falls in the source it stands for.
+ *
+ * A region the author wrote, or one a macro copied from what the author wrote,
+ * maps position for position, held inside that source. Any other region was
+ * written by a macro and has no position of its own: every offset in it maps
+ * to where its source begins.
+ */
+export function projectGeneratedOffset(
+  region: Pick<OriginQueryResult, "kind" | "generatedStart" | "primary">,
+  generatedOffset: number,
+): number {
+  if (region.kind !== "source" && region.kind !== "copied")
+    return region.primary.span.start;
+  const length = region.primary.span.end - region.primary.span.start;
+  return length === 0
+    ? region.primary.span.start
+    : region.primary.span.start +
+        Math.min(generatedOffset - region.generatedStart, length - 1);
+}
+
 export function createOriginQueryIndex(options: {
   readonly file: PrintedExpandedFile;
   readonly origins: OriginStore;
@@ -235,19 +256,6 @@ export function createOriginQueryIndex(options: {
       : undefined;
   }
 
-  function projectedOriginal(
-    region: OriginQueryResult,
-    generatedOffset: number,
-  ): number {
-    if (region.kind !== "source" && region.kind !== "copied")
-      return region.primary.span.start;
-    const length = region.primary.span.end - region.primary.span.start;
-    return length === 0
-      ? region.primary.span.start
-      : region.primary.span.start +
-          Math.min(generatedOffset - region.generatedStart, length - 1);
-  }
-
   return Object.freeze({
     generatedToOriginal: (offset: number) => {
       validateGeneratedOffset(offset);
@@ -259,7 +267,7 @@ export function createOriginQueryIndex(options: {
               ...plain(region),
               expansionStack: region.expansionStack,
               queriedGeneratedOffset: offset,
-              projectedOriginalOffset: projectedOriginal(region, offset),
+              projectedOriginalOffset: projectGeneratedOffset(region, offset),
             }),
           ]);
     },

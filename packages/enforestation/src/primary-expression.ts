@@ -5,6 +5,7 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  divisionSlash,
   isIdentifierToken,
   leadingLineBreak,
   spanEnvelope,
@@ -24,7 +25,12 @@ import {
 import {
   expressionContinuedBy,
   operandExpectedAfter,
+  sameLineInfix,
 } from "./core-operators.js";
+import {
+  regularExpressionAt,
+  type RegularExpressionRead,
+} from "./slash-reading.js";
 import {
   consumeBalancedTypeArguments,
   typeOperandFollows,
@@ -560,6 +566,10 @@ export interface ArrowBodyExtent {
  * break, for the same reason: a `?` still awaiting its `:` is an expression
  * nothing can end.
  *
+ * A body written as a block is the block and nothing more. TypeScript takes
+ * no operator after an arrow function, so `() => {}` and the `/re/.test(s);`
+ * written under it are two statements, not a division of the block.
+ *
  * Both readers of an arrow ask this, one over a cursor and one over an array,
  * so it is stated here once, over an offset either can answer.
  */
@@ -568,6 +578,9 @@ export function arrowBodyExtent(
   from: number,
   stopsBefore: (offset: number) => boolean = () => false,
 ): ArrowBodyExtent {
+  const block = nodeAt(from);
+  if (block?.tag === "group" && block.delimiter === "brace")
+    return { end: from + 1, conditional: false };
   let conditionals = 0;
   for (let offset = from; ; offset += 1) {
     const node = nodeAt(offset);
@@ -776,7 +789,9 @@ export function typeArgumentsFollow(following: Syntax | undefined): boolean {
       spelling === "-"
     )
       return false;
-    if (expressionContinuedBy.has(spelling)) return true;
+    // TypeScript's binary operators, `as` and `satisfies` among them.
+    if (expressionContinuedBy.has(spelling) || sameLineInfix.has(spelling))
+      return true;
   }
   return leadingLineBreak(following) || !beginsExpression(following);
 }
@@ -871,7 +886,10 @@ function consumePostfix(
     cursor.advance();
     return undefined;
   }
-  if (isPunctuation(next, "!")) {
+  // A non-null assertion is written on its operand's own line: TypeScript
+  // writes `LeftHandSideExpression [no LineTerminator here] !`, and reads `v`
+  // and the `!x;` under it as two statements.
+  if (isPunctuation(next, "!") && !leadingLineBreak(next)) {
     cursor.advance();
     return undefined;
   }
@@ -995,12 +1013,33 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       macroAttempt.cursor.index > cursor.index
         ? macroAttempt.cursor.index - cursor.index
         : undefined;
+    // A slash where an operand begins is a regular expression, whatever the
+    // reader made of it from the token before: `if (c)` and the
+    // `/re/.test(s)` under a `let x: T`. Read as one where it changes only
+    // the tokens of this operand; where it changes more, the source has to be
+    // read again, and the parser is told so.
+    let regularExpression: RegularExpressionRead | undefined;
+    const slash = cursor.peek();
     if (
       functionWidth === undefined &&
       markerWidth === undefined &&
       classWidth === undefined &&
       arrow === undefined &&
       macroOperand === undefined &&
+      divisionSlash(slash)
+    ) {
+      const read = regularExpressionAt(cursor, this.options);
+      if (read?.kind === "reread")
+        context.slashMisread?.(slash, "regular-expression");
+      else regularExpression = read;
+    }
+    if (
+      functionWidth === undefined &&
+      markerWidth === undefined &&
+      classWidth === undefined &&
+      arrow === undefined &&
+      macroOperand === undefined &&
+      regularExpression === undefined &&
       !isPrimaryAtom(cursor.peek())
     ) {
       return failure(
@@ -1018,12 +1057,21 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         classWidth ??
         arrow?.width ??
         macroOperand ??
+        regularExpression?.width ??
         1,
     );
+    // An arrow function takes nothing after its body: TypeScript reads
+    // `x = () => {}` and the `[0].map(g);` under it as two statements, not as
+    // an index into the arrow.
+    const readArrow =
+      functionWidth === undefined &&
+      markerWidth === undefined &&
+      classWidth === undefined &&
+      arrow !== undefined;
     // Postfix parsing runs first so the macro extent is compared against the
     // whole expression, not just its head.
     let optionalChain = false;
-    while (!cursor.atEnd && !context.stopSet.matches(cursor)) {
+    while (!readArrow && !cursor.atEnd && !context.stopSet.matches(cursor)) {
       const before = cursor.index;
       const beginsOptional = isPunctuation(cursor.peek(), "?.");
       const failed = consumePostfix(cursor, context, start, optionalChain);
@@ -1055,7 +1103,9 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       arrow !== undefined && cursor.index === start + arrow.width;
     const consumed = wholeArrow
       ? arrowChildren(raw, arrow, this.options, context)
-      : raw;
+      : regularExpression === undefined
+        ? raw
+        : [regularExpression.token, ...raw.slice(regularExpression.width)];
     const first = consumed[0]!;
     return Object.freeze({
       matched: true,

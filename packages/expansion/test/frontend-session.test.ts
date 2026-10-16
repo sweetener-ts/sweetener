@@ -228,6 +228,18 @@ describe("production expansion frontend session", () => {
   });
 
   /**
+   * `declare abstract` with the class under it is read as TypeScript reads it:
+   * `declare` and `abstract` are names, since the `abstract` modifies nothing
+   * on its own line, and the class is a declaration of its own. Read as a
+   * modifier of `abstract`, the `declare` left an item the reader refused.
+   */
+  test("reads a `declare` that modifies nothing without a word", () => {
+    const result = harness()("declare abstract\nclass K {}", "item");
+
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  /**
    * A recovery that did its job says nothing. The reader is not meant to read
    * an operator's operands or a macro written after its first one, so a word
    * on every recovery would be a word on most files that use macros.
