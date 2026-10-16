@@ -1,6 +1,7 @@
 import type { ScopeId, ScopeSetId } from "@sweetener/shared";
 import { describe, expect, it } from "vitest";
 import { createScope, type ScopeMark, ScopeStore } from "../src/index.js";
+import { seededRandom } from "./seeded-random.js";
 
 describe("scope store", () => {
   it("allocates fresh scopes with immutable debug metadata", () => {
@@ -90,21 +91,17 @@ describe("scope store", () => {
   });
 
   it("matches JavaScript Set algebra over fixed-seed generated operations", () => {
-    let seed = 0x51c0_5e7;
-    const random = (): number => {
-      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
-      return seed;
-    };
+    const random = seededRandom(0x51c0_5e7);
     const store = new ScopeStore();
     const scopes = Array.from({ length: 24 }, () => store.freshScope());
     const models: Set<ScopeId>[] = [new Set()];
     const ids: ScopeSetId[] = [store.empty()];
     for (let iteration = 0; iteration < 2_000; iteration += 1) {
-      const baseIndex = random() % ids.length;
+      const baseIndex = random(ids.length);
       const baseId = ids[baseIndex]!;
       const baseModel = models[baseIndex]!;
-      const scope = scopes[random() % scopes.length]!;
-      const add = (random() & 1) === 0;
+      const scope = scopes[random(scopes.length)]!;
+      const add = random(2) === 0;
       const model = new Set(baseModel);
       if (add) model.add(scope);
       else model.delete(scope);
@@ -112,7 +109,7 @@ describe("scope store", () => {
       expect(store.debugRecord(id).scopes).toEqual(
         [...model].sort((left, right) => left - right),
       );
-      const comparisonIndex = random() % ids.length;
+      const comparisonIndex = random(ids.length);
       const comparison = models[comparisonIndex]!;
       expect(store.subset(id, ids[comparisonIndex]!)).toBe(
         [...model].every((candidate) => comparison.has(candidate)),
@@ -123,11 +120,7 @@ describe("scope store", () => {
   });
 
   it("matches a model of every query and gives one set one ID however it was built", () => {
-    let seed = 0x7a3e_c41;
-    const random = (): number => {
-      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
-      return seed;
-    };
+    const random = seededRandom(0x7a3e_c41);
     const store = new ScopeStore();
     // Four batches, each a lexical scope, one invocation's paired
     // introduction and use-site scopes, and an introduction scope left
@@ -153,6 +146,9 @@ describe("scope store", () => {
     const models: Set<ScopeId>[] = [new Set()];
     const ids: ScopeSetId[] = [store.empty()];
     const idByContent = new Map<string, ScopeSetId>([["", store.empty()]]);
+    let withdrawn = 0;
+    let unmatchedSets = 0;
+    let largest = 0;
     const sorted = (model: ReadonlySet<ScopeId>): ScopeId[] =>
       [...model].sort((left, right) => left - right);
     const expectOneId = (model: ReadonlySet<ScopeId>, id: ScopeSetId): void => {
@@ -161,12 +157,12 @@ describe("scope store", () => {
       idByContent.set(content, id);
     };
     for (let iteration = 0; iteration < 3_000; iteration += 1) {
-      const baseIndex = random() % ids.length;
-      const otherIndex = random() % ids.length;
-      const scope = scopes[random() % scopes.length]!;
+      const baseIndex = random(ids.length);
+      const otherIndex = random(ids.length);
+      const scope = scopes[random(scopes.length)]!;
       const model = new Set(models[baseIndex]);
       let id: ScopeSetId;
-      switch (random() % 5) {
+      switch (random(5)) {
         case 0:
           model.add(scope);
           id = store.add(ids[baseIndex]!, scope);
@@ -218,11 +214,29 @@ describe("scope store", () => {
       }
       const publishedId = store.publishedTo(id);
       expect(store.debugRecord(publishedId).scopes).toEqual(sorted(published));
+      expect(store.introducedApartFrom(id, ids[otherIndex]!)).toBe(
+        [...model].some((scope) => {
+          const partner = partners.get(scope);
+          return (
+            partner !== undefined &&
+            !model.has(partner) &&
+            !comparison.has(scope)
+          );
+        }),
+      );
       expectOneId(model, id);
       expectOneId(published, publishedId);
       ids.push(id);
       models.push(model);
+      if (published.size < model.size) withdrawn += 1;
+      if (unmatched(model, 0)) unmatchedSets += 1;
+      largest = Math.max(largest, model.size);
     }
+    // The run reached what it checks: sets `publishedTo` withdraws a pair
+    // from, sets a template wrote, and sets larger than a handful.
+    expect(withdrawn).toBeGreaterThan(100);
+    expect(unmatchedSets).toBeGreaterThan(100);
+    expect(largest).toBeGreaterThanOrEqual(10);
   });
 
   it("interns only the sets the answer's own scopes start with", () => {

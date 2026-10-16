@@ -12,6 +12,7 @@ import {
   type BindingEnvironment,
   type IdentifierReference,
 } from "../src/index.js";
+import { seededRandom } from "./seeded-random.js";
 
 const sourceId = 1 as SourceId;
 const origin = (value: number) => value as OriginId;
@@ -241,11 +242,7 @@ describe("binding resolution", () => {
   });
 
   test("a resolver answers every reference as resolveBinding does", () => {
-    let state = 0x2e5_01fe;
-    const random = (bound: number): number => {
-      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-      return state % bound;
-    };
+    const random = seededRandom(0x2e5_01fe);
     const scopes = new ScopeStore();
     const pool = Array.from({ length: 7 }, () => scopes.freshScope());
     const randomSet = (minimum: number, maximum: number) => {
