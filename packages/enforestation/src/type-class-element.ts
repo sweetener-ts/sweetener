@@ -1020,6 +1020,13 @@ function createMemberTracker(modifiers: MemberModifiers) {
   /** Whether the walk has read the `=` that opens a field's initializer. */
   let initialized = false;
   /**
+   * The type an `as` or a `satisfies` in the initializer asserts, while the
+   * walk stands in it, and whether it has read a conditional type's
+   * `extends`, after which a `?` and a `:` are the type's own.
+   */
+  let asserted:
+    { readonly type: TypeTracker; conditional: boolean } | undefined;
+  /**
    * Where the last parenthesized group read before any initializer stands,
    * and the last of those read in the header outside its type parameters:
    * a parameter list, where it stands after the decorators. -1 for none.
@@ -1045,6 +1052,40 @@ function createMemberTracker(modifiers: MemberModifiers) {
   /** Whether the member's name follows its first `length` nodes. */
   const nameFollowsAfter = (length: number, other: number): boolean =>
     other < decorated(length);
+  /**
+   * Takes a node of a field's initializer, `previous` being the node before
+   * it. An `as` or a `satisfies` written after an operand opens the type it
+   * asserts, which the type tracker reads, and the type ends at the first
+   * token no type holds where it stands: an operator of the expression around
+   * it, or a `?` or a `:` outside a conditional type.
+   */
+  const takeInitializer = (node: Syntax, previous: Syntax | undefined) => {
+    if (
+      token(node) &&
+      (node.raw === "as" || node.raw === "satisfies") &&
+      !(token(previous) && initializerOperandExpectedAfter.has(previous.raw))
+    ) {
+      asserted = {
+        type: createTypeTracker(undefined, false),
+        conditional: false,
+      };
+      return;
+    }
+    if (asserted === undefined) return;
+    // A type still expecting an operand takes what follows as one: the `-`
+    // of `as -1` is a literal's sign.
+    if (!asserted.type.nested() && !asserted.type.unfinished() && token(node)) {
+      if (node.raw === "extends") asserted.conditional = true;
+      else if (
+        endsAssertedType.has(node.raw) ||
+        (!asserted.conditional && (node.raw === "?" || node.raw === ":"))
+      ) {
+        asserted = undefined;
+        return;
+      }
+    }
+    asserted.type.take(node);
+  };
   return Object.freeze({
     /** The member read so far. */
     nodes: nodes as readonly Syntax[],
@@ -1084,13 +1125,26 @@ function createMemberTracker(modifiers: MemberModifiers) {
         return true;
       return lastParenthesis >= header;
     },
+    /**
+     * Whether the initializer ends in a type an `as` or a `satisfies` asserts
+     * that a line break in front of `next` ends. Nothing carries an assertion
+     * on as an operand -- no member access, call or index -- so a bracket
+     * there begins the next member rather than indexing the initializer.
+     */
+    assertionEndsBefore(next: Syntax): boolean {
+      return asserted !== undefined && !asserted.type.continuesAcross(next);
+    },
     /** Takes a node the walk has read. */
     take(node: Syntax): void {
       const at = nodes.length;
+      const previous = nodes.at(-1);
       nodes.push(node);
       lastOtherBeforeLatest = lastOther;
       if (!token(node) || !modifiers.written.has(node.raw)) lastOther = at;
-      if (initialized) return;
+      if (initialized) {
+        takeInitializer(node, previous);
+        return;
+      }
       if (parenthesis(node)) lastParenthesis = at;
       if (annotation !== undefined) {
         if (token(node, "=") && !annotation.nested()) initialized = true;
@@ -1108,6 +1162,10 @@ function createMemberTracker(modifiers: MemberModifiers) {
     /** Whether a line break in front of `next` may end the member. */
     lineCanEnd(next: Syntax): boolean {
       const previous = nodes.at(-1);
+      // Inside an asserted type the type grammar says what a line break
+      // ends: the `>` closing `as Map<K, V>` compares nothing.
+      if (initialized && asserted !== undefined)
+        return !asserted.type.continuesAcross(next);
       if (initialized)
         return !(
           token(previous) && initializerOperandExpectedAfter.has(previous.raw)
@@ -1127,6 +1185,52 @@ function createMemberTracker(modifiers: MemberModifiers) {
 }
 
 type MemberTracker = ReturnType<typeof createMemberTracker>;
+
+/**
+ * The tokens that end a type an `as` or a `satisfies` asserts, written where
+ * it stands: the expression's own operators, which no type writes. A `?` and
+ * a `:` end it too outside a conditional type.
+ */
+const endsAssertedType: ReadonlySet<string> = new Set([
+  ",",
+  "=",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "**",
+  "&&",
+  "||",
+  "??",
+  "==",
+  "===",
+  "!=",
+  "!==",
+  "<=",
+  ">=",
+  "<<",
+  ">>",
+  ">>>",
+  "^",
+  "in",
+  "instanceof",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "**=",
+  "&&=",
+  "||=",
+  "??=",
+  "<<=",
+  ">>=",
+  ">>>=",
+  "&=",
+  "|=",
+  "^=",
+]);
 
 /**
  * Whether `next`, which could begin a member, instead carries an initializer
@@ -1192,7 +1296,11 @@ function classMemberEndsBefore(member: MemberTracker, next: Syntax): boolean {
     beginsClassMember(next) &&
     decoratorPrefixLength(nodes) !== nodes.length &&
     member.lineCanEnd(next) &&
-    !(member.initialized() && continuesInitializer(next))
+    !(
+      member.initialized() &&
+      continuesInitializer(next) &&
+      !(next.tag === "group" && member.assertionEndsBefore(next))
+    )
   );
 }
 

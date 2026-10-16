@@ -2,6 +2,7 @@ import { readSyntax } from "@sweetener/reader";
 import type { ScopeSetId, SourceId } from "@sweetener/shared";
 import type { Syntax } from "@sweetener/syntax";
 import { printLossless } from "@sweetener/reader";
+import ts from "typescript";
 import { describe, expect, test } from "vitest";
 import { createClassMemberWalk } from "../src/index.js";
 
@@ -96,5 +97,50 @@ describe("walking a class body's members", () => {
     expect(ended).toBe(0);
     // Read again for each node, the member made this a matter of minutes.
     expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});
+
+/** The members TypeScript reads the one class `source` declares as. */
+function typescriptMembers(source: string): string[] {
+  const file = ts.createSourceFile(
+    "fixture.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  ) as ts.SourceFile & { readonly parseDiagnostics: readonly ts.Diagnostic[] };
+  expect(file.parseDiagnostics, source).toEqual([]);
+  const declaration = file.statements[0];
+  if (declaration === undefined || !ts.isClassDeclaration(declaration))
+    throw new Error("expected a class");
+  return declaration.members.map((member) => member.getText(file));
+}
+
+/**
+ * A type asserted with `as` or `satisfies` ends a field's initializer where
+ * TypeScript ends the type: a bracket on the next line is no array type, since
+ * TypeScript writes `PrimaryType [no LineTerminator here] [ ]`, and an
+ * assertion takes no member access after it, so the bracket begins the next
+ * member. Where the expression carries on past the type on its line, a
+ * bracket under it indexes what it ends with, as it does anywhere else.
+ */
+describe("a field asserted to a type", () => {
+  test.each([
+    "class K {\n  x = a as T\n  [k] = 1\n}",
+    "class K {\n  x = a satisfies T\n  [k] = 1\n}",
+    "class K {\n  x = a as const\n  [k] = 1\n}",
+    "class K {\n  x = a as T[]\n  [k] = 1\n}",
+    "class K {\n  x = a as Map<K, V>\n  [k] = 1\n}",
+    "class K {\n  x = a as T.U\n  [k] = 1\n}",
+    "class K {\n  x = a as () => T\n  [k] = 1\n}",
+    "class K {\n  x = a as T as U\n  [k] = 1\n}",
+    "class K {\n  x = a as T |\n    [number]\n  y = 1\n}",
+    "class K {\n  x = a as T + b\n  [k]\n  y = 1\n}",
+    "class K {\n  x = c as boolean ? a : b\n  [k]\n  y = 1\n}",
+    "class K {\n  x = a as T extends U ? V : W\n  [k] = 1\n}",
+    "class K {\n  x = (a as T)\n  [k]\n  y = 1\n}",
+    "class K {\n  x = as\n  [k]\n  y = 1\n}",
+    "class K {\n  x = a as T\n  * b\n  y = 1\n}",
+  ])("ends the field where TypeScript does: %s", (source) => {
+    expect(members(source)).toEqual(typescriptMembers(source));
   });
 });
