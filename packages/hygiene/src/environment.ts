@@ -1,5 +1,6 @@
 import {
   createIdAllocator,
+  PersistentList,
   PersistentStringMap,
   type BindingId,
   type DeclarationGroupId,
@@ -18,7 +19,16 @@ import {
   type SyntaxSpace,
 } from "./binding.js";
 
-function indexKey(spelling: string, phase: Phase, space: SyntaxSpace): string {
+/**
+ * The key an environment files a spelling's bindings under in one phase and
+ * syntax space. Anything that indexes bindings the way an environment does
+ * uses this key, so the two cannot disagree about which bindings share one.
+ */
+export function bindingIndexKey(
+  spelling: string,
+  phase: Phase,
+  space: SyntaxSpace,
+): string {
   return `${String(spelling.length)}:${spelling}|${String(phase)}|${space}`;
 }
 
@@ -27,46 +37,23 @@ export interface BindingEnvironment {
   readonly epoch: EnvironmentEpoch;
   readonly parent: BindingEnvironment | undefined;
   readonly depth: number;
+  /**
+   * The bindings this frame holds for the spelling in the phase and space, in
+   * declaration order. Each declaration extends the list without copying it,
+   * and a lookup answers with the list itself, so declarations and lookups
+   * interleaved cost the same as declarations alone.
+   */
   localCandidates(
     spelling: string,
     phase: Phase,
     space: SyntaxSpace,
-  ): readonly Binding[];
+  ): PersistentList<Binding>;
 }
 
 const withBinding: unique symbol = Symbol("with-binding");
 
-/**
- * The bindings one frame holds for one key, newest first. Extending it shares
- * every older entry; the array `localCandidates` answers with is built once.
- */
-class BindingList {
-  #declarationOrder: readonly Binding[] | undefined;
-
-  constructor(
-    readonly binding: Binding,
-    readonly previous: BindingList | undefined,
-  ) {}
-
-  get declarationOrder(): readonly Binding[] {
-    if (this.#declarationOrder === undefined) {
-      const newer = [this.binding];
-      let older = this.previous;
-      while (older !== undefined && older.#declarationOrder === undefined) {
-        newer.push(older.binding);
-        older = older.previous;
-      }
-      this.#declarationOrder = Object.freeze([
-        ...(older === undefined ? [] : older.declarationOrder),
-        ...newer.reverse(),
-      ]);
-    }
-    return this.#declarationOrder;
-  }
-}
-
 class PersistentBindingEnvironment implements BindingEnvironment {
-  readonly #locals: PersistentStringMap<BindingList>;
+  readonly #locals: PersistentStringMap<PersistentList<Binding>>;
 
   constructor(
     readonly owner: object,
@@ -74,7 +61,9 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     readonly epoch: EnvironmentEpoch,
     readonly parent: BindingEnvironment | undefined,
     readonly depth: number,
-    locals: PersistentStringMap<BindingList> = PersistentStringMap.empty(),
+    locals: PersistentStringMap<
+      PersistentList<Binding>
+    > = PersistentStringMap.empty(),
   ) {
     if (!Number.isSafeInteger(depth) || depth < 0) {
       throw new RangeError(
@@ -89,9 +78,10 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     spelling: string,
     phase: Phase,
     space: SyntaxSpace,
-  ): readonly Binding[] {
+  ): PersistentList<Binding> {
     return (
-      this.#locals.get(indexKey(spelling, phase, space))?.declarationOrder ?? []
+      this.#locals.get(bindingIndexKey(spelling, phase, space)) ??
+      PersistentList.empty()
     );
   }
 
@@ -100,14 +90,15 @@ class PersistentBindingEnvironment implements BindingEnvironment {
     epoch: EnvironmentEpoch,
     binding: Binding,
   ): PersistentBindingEnvironment {
-    const key = indexKey(binding.spelling, binding.phase, binding.space);
+    const key = bindingIndexKey(binding.spelling, binding.phase, binding.space);
+    const local = this.#locals.get(key) ?? PersistentList.empty();
     return new PersistentBindingEnvironment(
       this.owner,
       id,
       epoch,
       this.parent,
       this.depth,
-      this.#locals.set(key, new BindingList(binding, this.#locals.get(key))),
+      this.#locals.set(key, local.append(binding)),
     );
   }
 }
