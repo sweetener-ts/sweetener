@@ -48,6 +48,11 @@ export interface TypeScriptSlashes {
    * one of these is no answer. An error is reported where the parser gave up,
    * which is often the start of what it read next rather than inside what it
    * misread, so the line is counted as well as the statement.
+   *
+   * A statement that uses a macro is counted too, wherever TypeScript parsed
+   * it: the macro reads its own syntax by its own rules, which TypeScript may
+   * parse cleanly as something else -- `unless(c) /a  +b/i.test(s)` divides
+   * to TypeScript, and the macro reads a regular expression.
    */
   readonly unparsed: readonly Span[];
 }
@@ -66,6 +71,7 @@ export interface TypeScriptSlashes {
 export function typescriptSlashes(
   source: string,
   variant: ScannerLanguageVariant,
+  macroUses: readonly number[] = [],
 ): TypeScriptSlashes {
   const fileName = variant === "jsx" ? "source.tsx" : "source.ts";
   const file = ts.createSourceFile(
@@ -85,9 +91,27 @@ export function typescriptSlashes(
   // Walked with a stack of its own rather than by recursion: TypeScript nests
   // a chain of binary operators one node per operator, and a chain fifty
   // thousand long exhausted the call stack.
+  const uses = [...macroUses].sort((left, right) => left - right);
+  /**
+   * The innermost statement of a statement list around each use of a macro.
+   * TypeScript reads a line that carries an expression on -- a slash written
+   * under `unless(c)` -- into the statement above it, so that statement holds
+   * whatever syntax the macro could read in a way TypeScript does not.
+   */
+  const around: (ts.Node | undefined)[] = uses.map(() => undefined);
   const pending: ts.Node[] = [file];
   while (pending.length > 0) {
     const node = pending.pop()!;
+    if (
+      (ts.isStatement(node) || ts.isClassElement(node)) &&
+      holdsStatements(node.parent)
+    )
+      for (
+        let use = firstAtOrAfter(uses, node.getStart(file));
+        use < uses.length && uses[use]! < node.end;
+        use += 1
+      )
+        around[use] = node;
     if (node.kind === ts.SyntaxKind.RegularExpressionLiteral)
       parsed.set(node.getStart(file), "regular-expression");
     if (
@@ -105,6 +129,12 @@ export function typescriptSlashes(
       pending.push(child);
     });
   }
+  for (const statement of around)
+    unparsed.push(
+      statement === undefined
+        ? createSpan(0, source.length)
+        : createSpan(statement.getStart(file), statement.end),
+    );
   const certain = (offset: number) =>
     !unparsed.some(({ start, end }) => offset >= start && offset < end);
   // Read again until the read agrees with the parser where it parsed. Each
@@ -134,6 +164,31 @@ export function typescriptSlashes(
     }
     if (!changed) return Object.freeze({ readings, unparsed });
   }
+}
+
+/** Whether `node` holds a list of statements or of class members. */
+function holdsStatements(node: ts.Node | undefined): boolean {
+  return (
+    node !== undefined &&
+    (ts.isSourceFile(node) ||
+      ts.isBlock(node) ||
+      ts.isModuleBlock(node) ||
+      ts.isCaseClause(node) ||
+      ts.isDefaultClause(node) ||
+      ts.isClassLike(node))
+  );
+}
+
+/** The index of the first of the sorted `offsets` at or after `start`. */
+function firstAtOrAfter(offsets: readonly number[], start: number): number {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (offsets[middle]! < start) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 /** Where TypeScript's parser reported an error in `file`. */

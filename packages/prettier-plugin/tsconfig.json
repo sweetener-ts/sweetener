@@ -9,6 +9,7 @@
   "references": [
     { "path": "../shared" },
     { "path": "../syntax" },
-    { "path": "../reader" }
+    { "path": "../reader" },
+    { "path": "../macro-language" }
   ]
 }

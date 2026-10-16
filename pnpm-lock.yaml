@@ -605,6 +605,9 @@ importers:
 
   packages/prettier-plugin:
     dependencies:
+      '@sweetener/macro-language':
+        specifier: workspace:*
+        version: link:../macro-language
       '@sweetener/reader':
         specifier: workspace:*
         version: link:../reader

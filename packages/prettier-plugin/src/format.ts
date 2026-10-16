@@ -1,4 +1,8 @@
 import {
+  parseCompileTimeSyntaxImports,
+  parseMacroDefinitions,
+} from "@sweetener/macro-language";
+import {
   readSyntax,
   regularExpressionEnd,
   typescriptSlashes,
@@ -398,6 +402,151 @@ function applyReplacements(
 }
 
 /**
+ * Where `root` uses a macro: each token, or run of tokens spelling an
+ * operator, named as a macro the file defines or imports for syntax. A
+ * project's macros reach a file only through these two, so a formatter that
+ * loads no macros can still tell where one is used, and where TypeScript's
+ * reading of the syntax is no answer for what the macro reads.
+ */
+function macroUses(root: RootSyntax): readonly number[] {
+  const names = macroNames(root);
+  if (names.size === 0) return [];
+  const longest = Math.max(...[...names].map((name) => name.length));
+  const tokens = flatTokens(root);
+  const uses: number[] = [];
+  for (let at = 0; at < tokens.length; at += 1) {
+    let spelled = "";
+    for (let end = at; end < tokens.length; end += 1) {
+      spelled += tokens[end]!.raw;
+      if (spelled.length > longest) break;
+      if (names.has(spelled)) {
+        uses.push(tokens[at]!.span.start);
+        break;
+      }
+    }
+  }
+  return uses;
+}
+
+/** The names of the macros `root` defines or imports for syntax. */
+function macroNames(root: RootSyntax): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const definition of parseMacroDefinitions(root, { sourceId })
+    .definitions)
+    if (definition.kind === "syntax") names.add(definition.name);
+    else if (definition.kind === "operator") names.add(definition.spelling);
+  for (const declaration of parseCompileTimeSyntaxImports(root, { sourceId })
+    .imports)
+    for (const binding of declaration.bindings) names.add(binding.local);
+  return names;
+}
+
+/**
+ * Each use of a macro operator spelled with more than one token, written as
+ * those tokens with nothing between them, in source order.
+ *
+ * Such an operator is invoked only where its tokens touch: `a +- b` invokes
+ * an operator spelled `+-`, and `a + - b` adds a negation. Both are the same
+ * tokens, so a printer that lays out a whole file -- Prettier, which writes
+ * `a + -b` -- must hand back each of these as written, which a check of the
+ * tokens alone cannot see.
+ */
+export function macroOperatorUses(
+  source: string,
+  options: SweetenerFormatOptions,
+): readonly string[] {
+  const { root } = readForFormatting(source, options);
+  const spellings = [...macroNames(root)].filter(
+    (name) => !/^[$_\p{ID_Start}][$_\u200c\u200d\p{ID_Continue}]*$/u.test(name),
+  );
+  if (spellings.length === 0) return [];
+  const longest = Math.max(...spellings.map((spelling) => spelling.length));
+  const names = new Set(spellings);
+  const tokens = flatTokens(root);
+  const uses: string[] = [];
+  for (let at = 0; at < tokens.length; at += 1) {
+    let spelled = tokens[at]!.raw;
+    for (
+      let end = at + 1;
+      end < tokens.length &&
+      tokens[end]!.span.start === tokens[end - 1]!.span.end;
+      end += 1
+    ) {
+      spelled += tokens[end]!.raw;
+      if (spelled.length > longest) break;
+      if (names.has(spelled)) {
+        uses.push(spelled);
+        at = end;
+        break;
+      }
+    }
+  }
+  return uses;
+}
+
+/**
+ * `source` with the compile-time clause of each import for syntax -- `for
+ * syntax`, and `shadows core` after it -- written as spaces, for TypeScript's
+ * parser to read. TypeScript reads `for syntax;` as a `for` statement and the
+ * statement under it as that statement's body, which it then counts as one
+ * it could not parse; every offset stays where it was.
+ */
+function withoutCompileTimeClauses(source: string, root: RootSyntax): string {
+  const tokens = flatTokens(root);
+  let text = source;
+  for (const declaration of parseCompileTimeSyntaxImports(root, { sourceId })
+    .imports) {
+    const { start, end } = declaration.span;
+    const clause = tokens.findIndex(
+      (token, index) =>
+        token.span.start >= start &&
+        token.span.end <= end &&
+        token.raw === "for" &&
+        tokens[index + 1]?.raw === "syntax",
+    );
+    if (clause < 0) continue;
+    let last = clause + 1;
+    while (
+      tokens[last + 1] !== undefined &&
+      tokens[last + 1]!.span.end <= end &&
+      tokens[last + 1]!.raw !== ";"
+    )
+      last += 1;
+    const from = tokens[clause]!.span.start;
+    const to = tokens[last]!.span.end;
+    text =
+      text.slice(0, from) +
+      text.slice(from, to).replace(/[^\r\n\u2028\u2029]/gu, " ") +
+      text.slice(to);
+  }
+  return text;
+}
+
+/** Every token of `syntax`, delimiters included, in source order. */
+function flatTokens(syntax: Syntax): readonly TokenSyntax[] {
+  const tokens: TokenSyntax[] = [];
+  const pending: Syntax[] = [syntax];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.tag === "token") {
+      if (node.kind !== "end-of-file") tokens.push(node);
+      continue;
+    }
+    const parts: Syntax[] =
+      node.tag === "group"
+        ? [
+            node.open,
+            ...node.children,
+            ...(node.close.tag === "token" ? [node.close] : []),
+          ]
+        : [...node.children];
+    for (let index = parts.length - 1; index >= 0; index -= 1)
+      pending.push(parts[index]!);
+  }
+  return tokens;
+}
+
+/**
  * `source` read as the formatter lays it out, and the statements in it
  * TypeScript's parser could not read (see `TypeScriptSlashes.unparsed`).
  *
@@ -418,7 +567,11 @@ function readForFormatting(
   const typescript =
     initial.diagnostics.length > 0 ||
     possibleRegularExpressions(source, initial.root).length > 0
-      ? typescriptSlashes(source, variant)
+      ? typescriptSlashes(
+          withoutCompileTimeClauses(source, initial.root),
+          variant,
+          macroUses(initial.root),
+        )
       : undefined;
   const result =
     typescript === undefined || typescript.readings.size === 0
@@ -442,6 +595,45 @@ function readForFormatting(
   return { root: result.root, unparsed: typescript?.unparsed ?? [] };
 }
 
+/**
+ * The text a division-read slash could begin a regular expression over, where
+ * nothing says it divides, in source order and with overlapping spans joined.
+ *
+ * Where TypeScript read the statement and no macro is used in it, a slash it
+ * reads as a division is one. Where it did not, or a macro is used -- a
+ * macro's own syntax -- what the macro reads is unknown here, so this text is
+ * left as written.
+ */
+function keptSpans(
+  source: string,
+  root: RootSyntax,
+  unparsed: readonly Span[],
+): readonly { readonly start: number; readonly end: number }[] {
+  return disjoint(
+    possibleRegularExpressions(source, root).filter(({ start }) =>
+      unparsed.some((span) => start >= span.start && start < span.end),
+    ),
+  );
+}
+
+/**
+ * The text of each span formatting leaves as written because a slash in it
+ * may begin a regular expression only a macro reads (see `keptSpans`). A
+ * printer that lays out a whole file -- Prettier -- must hand each back
+ * unchanged: the tokens a reader finds there are the same however their
+ * whitespace changes, so a check of tokens alone cannot see `/a  +b/i`
+ * become `/ a + b / i`.
+ */
+export function writtenRegularExpressionTexts(
+  source: string,
+  options: SweetenerFormatOptions,
+): readonly string[] {
+  const { root, unparsed } = readForFormatting(source, options);
+  return keptSpans(source, root, unparsed).map(({ start, end }) =>
+    source.slice(start, end),
+  );
+}
+
 export function readSweetenerSyntax(
   source: string,
   options: SweetenerFormatOptions,
@@ -458,15 +650,7 @@ export function formatSweetener(
   const eol = lineEnding(source, options.endOfLine);
   const replacements: Replacement[] = [];
   collectSyntax(root, 0, options, eol, replacements);
-  // Where TypeScript read the statement, a slash it reads as a division is
-  // one. Where it did not -- a macro's own syntax -- what the macro reads is
-  // unknown here, so the text a division-read slash could begin a regular
-  // expression over is left as written.
-  const kept = disjoint(
-    possibleRegularExpressions(source, root).filter(({ start }) =>
-      unparsed.some((span) => start >= span.start && start < span.end),
-    ),
-  );
+  const kept = keptSpans(source, root, unparsed);
   const formatted = applyReplacements(
     source,
     replacements.filter((replacement) => !overlapsAny(kept, replacement)),

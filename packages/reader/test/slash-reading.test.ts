@@ -250,4 +250,15 @@ describe("TypeScript's reading of a source's slashes", () => {
     expect(within(source.indexOf("/a"))).toBe(true);
     expect(within(source.indexOf("/ b"))).toBe(false);
   });
+
+  it("answers nothing for a statement that uses a macro", () => {
+    // TypeScript parses this cleanly as divisions, and `unless` reads a
+    // regular expression. The statement beside it is answered for.
+    const source = "unless(c) /a  +b/i.test(s);\nx = a / b / c;";
+    const { unparsed } = typescriptSlashes(source, "standard", [0]);
+    const within = (offset: number) =>
+      unparsed.some(({ start, end }) => offset >= start && offset < end);
+    expect(within(source.indexOf("/a"))).toBe(true);
+    expect(within(source.indexOf("/ b"))).toBe(false);
+  });
 });

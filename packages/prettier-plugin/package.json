@@ -13,6 +13,7 @@
     "dist"
   ],
   "dependencies": {
+    "@sweetener/macro-language": "workspace:*",
     "@sweetener/reader": "workspace:*",
     "@sweetener/shared": "workspace:*",
     "@sweetener/syntax": "workspace:*"

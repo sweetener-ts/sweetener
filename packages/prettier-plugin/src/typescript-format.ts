@@ -1,7 +1,9 @@
 import type { GroupSyntax, RootSyntax, Syntax } from "@sweetener/syntax";
 import {
   formatSweetener,
+  macroOperatorUses,
   readSweetenerSyntax,
+  writtenRegularExpressionTexts,
   type SweetenerFormatOptions,
 } from "./format.js";
 
@@ -107,6 +109,22 @@ function preservesTokens(before: RootSyntax, after: RootSyntax): boolean {
       (token, index) =>
         token.kind === right[index]?.kind && token.raw === right[index]?.raw,
     )
+  );
+}
+
+/**
+ * Whether a printing handed back, as written, each text formatting must not
+ * change though the tokens in it stay the same: a span a slash may begin a
+ * regular expression over that only a macro reads, or a macro operator
+ * spelled with tokens that touch.
+ */
+function sameTexts(
+  before: readonly string[],
+  after: readonly string[],
+): boolean {
+  return (
+    before.length === after.length &&
+    before.every((text, index) => text === after[index])
   );
 }
 
@@ -353,6 +371,8 @@ export async function formatSweetenerWithPrettier(
 ): Promise<string> {
   const structurallyFormatted = formatSweetener(source, options);
   const root = readSweetenerSyntax(structurallyFormatted, options);
+  const written = writtenRegularExpressionTexts(structurallyFormatted, options);
+  const operators = macroOperatorUses(structurallyFormatted, options);
   const masked = maskSweetenerSyntax(structurallyFormatted, root);
   const [{ format }, typescriptPlugin, estreePlugin] = await Promise.all([
     import("prettier/standalone"),
@@ -412,7 +432,12 @@ export async function formatSweetenerWithPrettier(
       formattedRoot,
     );
     const safeRoot = readSweetenerSyntax(withoutInsertedJsxLayout, options);
-    return preservesTokens(root, safeRoot)
+    return preservesTokens(root, safeRoot) &&
+      sameTexts(
+        written,
+        writtenRegularExpressionTexts(withoutInsertedJsxLayout, options),
+      ) &&
+      sameTexts(operators, macroOperatorUses(withoutInsertedJsxLayout, options))
       ? withoutInsertedJsxLayout
       : undefined;
   }

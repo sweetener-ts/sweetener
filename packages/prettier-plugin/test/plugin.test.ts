@@ -224,6 +224,60 @@ describe("slashes the reader judges from what stands before them", () => {
     ).toBe(`x = ${terms.join(" / ")};\n`);
   });
 
+  // A macro reads its own syntax by its own rules, and TypeScript may parse
+  // that syntax cleanly as something else: to TypeScript `unless(c) /a  +b/i`
+  // divides, and the macro reads a regular expression whose spaces are part
+  // of it. Laid out as divisions, it became `/a +b/i` -- another expression
+  // -- and through Prettier `/ a + b / i`, which the macro refused.
+  const importsUnless = 'import { unless } from "./macros.sts" for syntax;\n';
+  test.each([
+    ["imported for syntax", `${importsUnless}unless(c) /a  +b/i.test(s);\n`],
+    [
+      "imported, with the slash on the next line",
+      `${importsUnless}unless(c)\n/a  +b/i.test(s);\n`,
+    ],
+    [
+      "defined in the file",
+      "syntax unless:stmt { rule { unless($c:expr) $b:stmt } => { if (!$c) $b } }\nunless(c) /a  +b/i.test(s);\n",
+    ],
+    [
+      "spelled as an imported operator",
+      'import { (+-) } from "./m.sts" for syntax;\nx = a +- /b  +c/i.length;\n',
+    ],
+  ])(
+    "leaves the text of a slash a macro %s reads as written",
+    async (_, source) => {
+      expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(source);
+      expect(
+        await format(source, { filepath: "regex.sts", plugins: [plugin] }),
+      ).toBe(source);
+    },
+  );
+
+  // A macro operator spelled with more than one token is invoked only where
+  // its tokens touch. Prettier writes `a +- b` as `a + -b`, the same tokens,
+  // which added a negation where the operator had been invoked.
+  test("keeps the tokens of a macro operator touching", async () => {
+    const source =
+      'import { (+-) } from "./m.sts" for syntax;\nexport const x = a  +-  b;\n';
+    expect(
+      await format(source, { filepath: "operator.sts", plugins: [plugin] }),
+    ).toContain("a +- b");
+  });
+
+  // TypeScript reads `for syntax;` as a `for` statement with the statement
+  // under it as its body, so that statement counted as one it could not
+  // parse, and the first statement of every file importing macros was left
+  // as written.
+  test("lays out the divisions under an import for syntax and beside a macro", async () => {
+    const source = `${importsUnless}unless(c) /a  +b/i.test(s);\nx = a  /  b  /  c;\n`;
+    const formatted = `${importsUnless}unless(c) /a  +b/i.test(s);\nx = a / b / c;\n`;
+    expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(formatted);
+    expect(
+      await format(source, { filepath: "regex.sts", plugins: [plugin] }),
+    ).toBe(formatted);
+  });
+
   test("formats a source whose regular expression holds a delimiter", async () => {
     const source = "if (c) /(/.test(s);\nrun(  1 );\n";
     expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(
