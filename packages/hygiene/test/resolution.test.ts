@@ -3,6 +3,7 @@ import type { OriginId, SourceId } from "@sweetener/shared";
 import {
   ambiguityDiagnostic,
   BindingResolver,
+  bindingVisibleAt,
   createPhase,
   EnvironmentStore,
   resolveBinding,
@@ -256,6 +257,7 @@ describe("binding resolution", () => {
     const spaces = ["value", "type"] as const;
     const environments = new EnvironmentStore();
     let environment = environments.createRoot();
+    const declared: Binding[] = [];
     for (let index = 1; index <= 300; index += 1) {
       if (random(40) === 0) environment = environments.child(environment);
       const start = random(100);
@@ -264,7 +266,7 @@ describe("binding resolution", () => {
         { kind: "from" as const, start },
         { kind: "range" as const, start, end: start + random(50) },
       ][random(3)]!;
-      environment = declare(
+      const result = declare(
         environments,
         environment,
         randomSet(random(25) === 0 ? 0 : 1, 4),
@@ -274,8 +276,35 @@ describe("binding resolution", () => {
           space: spaces[random(spaces.length)]!,
           visibility,
         },
-      ).environment;
+      );
+      environment = result.environment;
+      declared.push(result.binding);
     }
+    /**
+     * The resolution as its definition states it: the applicable bindings no
+     * other applicable binding strictly extends, each compared with every
+     * other.
+     */
+    const byDefinition = (identifier: IdentifierReference) => {
+      const applicable = declared.filter(
+        (binding) =>
+          binding.spelling === identifier.spelling &&
+          binding.space === identifier.space &&
+          bindingVisibleAt(binding, identifier.position) &&
+          scopes.subset(binding.scopes, identifier.scopes),
+      );
+      return applicable
+        .filter(
+          (candidate) =>
+            !applicable.some(
+              (other) =>
+                scopes.subset(candidate.scopes, other.scopes) &&
+                !scopes.subset(other.scopes, candidate.scopes),
+            ),
+        )
+        .map((binding) => binding.id)
+        .sort((left, right) => left - right);
+    };
     const resolver = new BindingResolver(environments, environment, scopes);
     const kinds = new Set<string>();
     for (let index = 0; index < 3_000; index += 1) {
@@ -291,6 +320,14 @@ describe("binding resolution", () => {
         identifier,
       );
       kinds.add(expected.kind);
+      expect(
+        (expected.kind === "resolved"
+          ? [expected.binding.id]
+          : expected.kind === "ambiguous"
+            ? expected.candidates.map((binding) => binding.id)
+            : []
+        ).sort((left, right) => left - right),
+      ).toEqual(byDefinition(identifier));
       expect(resolver.resolve(identifier)).toEqual(expected);
       expect(resolver.applies(identifier)).toBe(expected.kind !== "unbound");
     }

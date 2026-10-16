@@ -78,20 +78,30 @@ export function resolveBinding(
  * The resolution among the bindings whose scopes a reference carries. It does
  * not depend on their order: the answer is the one binding no other one
  * extends, or every such binding in `compareBindings` order.
+ *
+ * A binding that another extends has fewer scopes than it, and is extended by
+ * one of the bindings no other extends, so the bindings are read largest
+ * first and each is compared only with those kept so far. Compared with
+ * every other binding instead, a reference that m nested binders of its
+ * spelling all applied to cost m² subset tests.
  */
 function resolveAmong(
   scopes: ScopeStore,
   applicable: readonly Binding[],
 ): BindingResolution {
-  const maximal = applicable.filter(
-    (candidate) =>
-      !applicable.some(
-        (other) =>
-          candidate !== other &&
-          scopes.subset(candidate.scopes, other.scopes) &&
-          !scopes.subset(other.scopes, candidate.scopes),
-      ),
+  const bySize = [...applicable].sort(
+    (left, right) => scopes.size(right.scopes) - scopes.size(left.scopes),
   );
+  const maximal: Binding[] = [];
+  for (const candidate of bySize)
+    if (
+      !maximal.some(
+        (kept) =>
+          scopes.size(kept.scopes) > scopes.size(candidate.scopes) &&
+          scopes.subset(candidate.scopes, kept.scopes),
+      )
+    )
+      maximal.push(candidate);
 
   if (maximal.length === 0) return Object.freeze({ kind: "unbound" });
   if (maximal.length === 1) {
