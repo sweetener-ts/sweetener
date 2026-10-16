@@ -9,6 +9,7 @@ import {
 import { describe, expect, test } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
+  languageServiceExpansion,
   loadSweetProject,
 } from "../src/index.js";
 
@@ -70,6 +71,11 @@ function editor(macros: string, main: string) {
       printed: inspected.generated,
       index: inspected.index,
       origins: inspected.origins,
+      expansion: languageServiceExpansion({
+        sourceFileName,
+        inspection: inspected,
+        explanations: expansion.unresolvedNameExplanations ?? [],
+      }),
     },
   ]);
   return { service, sourceFileName, source: main };
@@ -214,5 +220,63 @@ export const doubled = twice(seed);
       source.lastIndexOf("seed") + 1,
     );
     expect(completions?.entries.some(({ name }) => name === "seed")).toBe(true);
+  });
+});
+
+/**
+ * What expansion says about a file, said in the editor too. The language
+ * service reported only what TypeScript said about the expansion, so an editor
+ * showed `Cannot find name` where the command line names the macro, and
+ * nothing at all where expansion failed or warned.
+ */
+describe("what the language service says expansion said", () => {
+  test("names the macro where TypeScript cannot find its name", () => {
+    const source = `import { twice } from "./macros.sts" for syntax;
+export const held = twice;
+`;
+    const { service, sourceFileName } = editor(macros, source);
+    const reported = service.diagnostics(sourceFileName);
+    expect(reported.map(({ typescriptCode }) => typescriptCode)).toEqual([
+      4024,
+    ]);
+    const [sentence] = reported;
+    expect(sentence?.messageText).toContain("Macro twice");
+    expect(
+      source.slice(
+        sentence?.primaryOrigin?.start ?? 0,
+        sentence?.primaryOrigin?.end ?? 0,
+      ),
+    ).toBe("twice");
+  });
+
+  test("says nothing about a macro's name where TypeScript finds it", () => {
+    const source = `import { twice } from "./macros.sts" for syntax;
+const twice = 1;
+export const held = twice;
+`;
+    const { service, sourceFileName } = editor(macros, source);
+    expect(service.diagnostics(sourceFileName)).toEqual([]);
+  });
+
+  test("reports what is wrong with the macros a file uses", () => {
+    const source = `import { twice } from "./macros.sts" for syntax;
+export const a = twice(1);
+`;
+    const { service, sourceFileName } = editor(
+      "export syntax twice:expr { rule { twice($x:tt) } => { #bogus($x) } }",
+      source,
+    );
+    expect(
+      service.diagnostics(sourceFileName).map(({ messageText }) => messageText),
+    ).toContain("Template has no operation #bogus.");
+  });
+
+  test("reports what expansion warned about", () => {
+    const source = "declare const y: any;\nexport const x = y?.<A>;\n";
+    const { service, sourceFileName } = editor(macros, source);
+    const warning = service
+      .diagnostics(sourceFileName)
+      .find(({ typescriptCode }) => typescriptCode === 4025);
+    expect(warning?.category).toBe(ts.DiagnosticCategory.Warning);
   });
 });

@@ -1,3 +1,7 @@
+import {
+  heldSentenceAnswers,
+  nameTypeScriptNamed,
+} from "@sweetener/typescript-host";
 import * as ts from "typescript";
 
 /**
@@ -23,75 +27,11 @@ export interface UnresolvedNameExplanation {
   readonly diagnostic: ts.Diagnostic;
 }
 
-/**
- * What TypeScript says when it cannot find a value for a name. A macro written
- * outside the space it was declared for is emitted verbatim, so this is where
- * it surfaces.
- */
-const unresolvedNameCodes: ReadonlySet<number> = new Set([
-  2304, // Cannot find name 'X'.
-  2552, // Cannot find name 'X'. Did you mean 'Y'?
-  7008, // Member 'X' implicitly has an 'any' type.
-  18004, // No value exists in scope for the shorthand property 'X'.
-]);
-
-/**
- * What TypeScript says when it finds the name, in the other space.
- *
- * These answer only for `SWR4013`, which says a macro is declared for one
- * space and written where another is read -- the same mistake in TypeScript's
- * vocabulary, and with advice ("Did you mean 'typeof Thing'?") that is wrong
- * when the macro was what was meant.
- *
- * They do not answer for `SWR4017` or `SWR4024`. Those rest on nothing else
- * defining the name, and a name TypeScript found in the other space is a name
- * it found.
- */
-const resolvedInAnotherSpaceCodes: ReadonlySet<number> = new Set([
-  2693, // 'X' only refers to a type, but is being used as a value here.
-  2749, // 'X' refers to a value, but is being used as a type here.
-]);
-
-/** `SWR4013`, the sentence about a macro declared for another space. */
-const wrongCategoryMacroCode = 4013;
-
-/** Whether a held sentence is an answer to what TypeScript said here. */
-function answers(
-  typescriptCode: number,
-  explanationCode: number | undefined,
-): boolean {
-  return (
-    unresolvedNameCodes.has(typescriptCode) ||
-    (explanationCode === wrongCategoryMacroCode &&
-      resolvedInAnotherSpaceCodes.has(typescriptCode))
-  );
-}
-
 /** The file and offset a diagnostic is about, where it is about one. */
 function diagnosticPlace(diagnostic: ts.Diagnostic): string | undefined {
   return diagnostic.file === undefined || diagnostic.start === undefined
     ? undefined
     : `${diagnostic.file.fileName}:${String(diagnostic.start)}`;
-}
-
-/**
- * The name TypeScript's sentence is about.
- *
- * Read out of the message rather than out of the source, because the span has
- * been mapped back to the invocation that wrote the name and the text there is
- * the macro call, not the name. Every message these codes carry names the
- * identifier first and in quotes.
- */
-function nameTypeScriptNamed(diagnostic: ts.Diagnostic): string | undefined {
-  if (
-    !unresolvedNameCodes.has(diagnostic.code) &&
-    !resolvedInAnotherSpaceCodes.has(diagnostic.code)
-  )
-    return undefined;
-  const quoted = /'([^']+)'/u.exec(
-    ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
-  );
-  return quoted?.[1];
 }
 
 export interface ExplainedDiagnostics {
@@ -133,10 +73,14 @@ export function explainUnresolvedNames(
   }
   const answered = diagnostics.map((diagnostic) => {
     const at = diagnosticPlace(diagnostic);
-    const name = nameTypeScriptNamed(diagnostic);
+    const name = nameTypeScriptNamed(
+      diagnostic.code,
+      ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    );
     if (at === undefined || name === undefined) return diagnostic;
     const candidates = (byPlaceAndName.get(`${at}:${name}`) ?? []).filter(
-      (candidate) => answers(diagnostic.code, candidate.diagnostic.code),
+      (candidate) =>
+        heldSentenceAnswers(diagnostic.code, candidate.diagnostic.code),
     );
     // One sentence answers for every copy of the error a repeated argument
     // produced, and two sentences held against one position each answer for

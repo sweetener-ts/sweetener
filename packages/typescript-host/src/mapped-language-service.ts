@@ -2,8 +2,9 @@ import type { OriginQueryIndex, PrintedExpandedFile } from "@sweetener/printer";
 import { resolve } from "node:path";
 import type { BindingId, SourceId, SourceSpan } from "@sweetener/shared";
 import type { OriginStore } from "@sweetener/syntax";
-import type * as ts from "typescript";
+import * as ts from "typescript";
 import { remapTypeScriptDiagnostic } from "./diagnostic-remap.js";
+import { heldSentenceAnswers, nameTypeScriptNamed } from "./held-names.js";
 import type { RemappedTypeScriptDiagnostic } from "./diagnostic-remap.js";
 import type { VirtualLanguageServiceProject } from "./language-service-host.js";
 
@@ -16,6 +17,28 @@ export interface LanguageServiceSourceMapping {
   readonly origins: OriginStore;
   readonly bindingAtGenerated?:
     ((generatedOffset: number) => BindingId | undefined) | undefined;
+  /**
+   * What expansion says about the source, which TypeScript cannot. Without it
+   * an editor shows `Cannot find name` where the command line names the
+   * macro, and nothing at all where expansion itself failed or warned.
+   */
+  readonly expansion?: LanguageServiceExpansion | undefined;
+}
+
+/** What expansion says about one source, positioned in that source. */
+export interface LanguageServiceExpansion {
+  /** What it reported about the source: its errors and its warnings. */
+  readonly diagnostics: readonly ts.Diagnostic[];
+  /**
+   * The sentences it holds about names it left standing, each with the name
+   * it is about. One is said where TypeScript reports that name at that
+   * place, in place of what TypeScript said; elsewhere TypeScript found the
+   * name, and nothing is said.
+   */
+  readonly heldNames: readonly {
+    readonly name: string;
+    readonly diagnostic: ts.Diagnostic;
+  }[];
 }
 
 export interface MappedQuickInfo {
@@ -114,6 +137,37 @@ function sourceSpanForTextSpan(
   });
 }
 
+/**
+ * A diagnostic expansion reported against a source, in the shape the language
+ * service reports TypeScript's in. It is already where it belongs, so it is
+ * mapped through nothing.
+ */
+function sourceDiagnostic(
+  sourceId: SourceId,
+  diagnostic: ts.Diagnostic,
+): RemappedTypeScriptDiagnostic {
+  return Object.freeze({
+    typescriptCode: diagnostic.code,
+    category: diagnostic.category,
+    messageText: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+    primaryOrigin:
+      diagnostic.start === undefined
+        ? undefined
+        : Object.freeze({
+            sourceId,
+            start: diagnostic.start,
+            end: diagnostic.start + (diagnostic.length ?? 0),
+          }),
+    relatedOrigins: Object.freeze([]),
+    expansionStack: Object.freeze([]),
+    generatedStart: undefined,
+    generatedLength: undefined,
+    typescriptRelatedInformation: Object.freeze([
+      ...(diagnostic.relatedInformation ?? []),
+    ]),
+  });
+}
+
 export class MappedLanguageService {
   readonly #project: VirtualLanguageServiceProject;
   readonly #bySource = new Map<string, LanguageServiceSourceMapping>();
@@ -159,18 +213,42 @@ export class MappedLanguageService {
         mapping.virtualFileName,
       ),
     ];
-    return Object.freeze(
-      diagnostics.map((diagnostic) =>
-        remapTypeScriptDiagnostic({
-          diagnostic,
-          generated: mapping.printed,
-          origins: mapping.origins,
-          expansionFrames: (origin) =>
-            mapping.index.regions().find((region) => region.origin === origin)
-              ?.expansionStack ?? [],
-        }),
-      ),
+    const remapped = diagnostics.map((diagnostic) =>
+      remapTypeScriptDiagnostic({
+        diagnostic,
+        generated: mapping.printed,
+        origins: mapping.origins,
+        expansionFrames: (origin) =>
+          mapping.index.regions().find((region) => region.origin === origin)
+            ?.expansionStack ?? [],
+      }),
     );
+    const { expansion } = mapping;
+    if (expansion === undefined) return Object.freeze(remapped);
+    const inSource = (diagnostic: ts.Diagnostic) =>
+      sourceDiagnostic(mapping.sourceId, diagnostic);
+    return Object.freeze([
+      ...remapped.map((diagnostic) => {
+        const name = nameTypeScriptNamed(
+          diagnostic.typescriptCode,
+          diagnostic.messageText,
+        );
+        const at = diagnostic.primaryOrigin;
+        if (name === undefined || at?.sourceId !== mapping.sourceId)
+          return diagnostic;
+        const held = expansion.heldNames.find(
+          (candidate) =>
+            candidate.name === name &&
+            candidate.diagnostic.start === at.start &&
+            heldSentenceAnswers(
+              diagnostic.typescriptCode,
+              candidate.diagnostic.code,
+            ),
+        );
+        return held === undefined ? diagnostic : inSource(held.diagnostic);
+      }),
+      ...expansion.diagnostics.map(inSource),
+    ]);
   }
 
   quickInfo(

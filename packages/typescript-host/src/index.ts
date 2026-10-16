@@ -8,6 +8,7 @@ export * from "./compiler-host.js";
 export * from "./language-service-host.js";
 export * from "./mapped-language-service.js";
 export * from "./diagnostic-remap.js";
+export * from "./held-names.js";
 export * from "./source-map.js";
 export * from "./cache.js";
 export * from "./compatibility.js";

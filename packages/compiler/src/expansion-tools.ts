@@ -6,7 +6,12 @@ import type {
 import type * as ts from "typescript";
 import type { SourceId } from "@sweetener/shared";
 import type { OriginStore } from "@sweetener/syntax";
-import type { RawSourceMap } from "@sweetener/typescript-host";
+import type {
+  LanguageServiceExpansion,
+  RawSourceMap,
+} from "@sweetener/typescript-host";
+import { resolve } from "node:path";
+import type { UnresolvedNameExplanation } from "./unresolved-names.js";
 
 export interface SourcePositionQuery {
   readonly fileName: string;
@@ -191,5 +196,43 @@ export function explainOriginalPosition(options: {
     offset: options.offset,
     regions,
     invocations: Object.freeze(invocations),
+  });
+}
+
+/**
+ * What expansion says about a source, for a language service to report beside
+ * what TypeScript says about its expansion.
+ *
+ * `explanations` are a project expansion's `unresolvedNameExplanations`; those
+ * held against this source are handed over as held names, for the language
+ * service to say where TypeScript reports the name and nowhere else. An
+ * inspection also carries them as warnings, for the paths with no checker
+ * behind them. An editor has one, so they are not said twice: of the
+ * inspection's warnings, only what expansion itself reported is kept.
+ */
+export function languageServiceExpansion(options: {
+  readonly sourceFileName: string;
+  readonly inspection: SourceExpansionInspection;
+  readonly explanations: readonly UnresolvedNameExplanation[];
+}): LanguageServiceExpansion {
+  const sourceFileName = resolve(options.sourceFileName);
+  const heldNames = options.explanations.filter(
+    ({ diagnostic }) =>
+      diagnostic.file !== undefined &&
+      resolve(diagnostic.file.fileName) === sourceFileName,
+  );
+  const held = (warning: ts.Diagnostic): boolean =>
+    heldNames.some(
+      ({ diagnostic }) =>
+        diagnostic.start === warning.start && diagnostic.code === warning.code,
+    );
+  return Object.freeze({
+    diagnostics: Object.freeze([
+      ...options.inspection.diagnostics,
+      ...(options.inspection.warnings ?? []).filter(
+        (warning) => !held(warning),
+      ),
+    ]),
+    heldNames: Object.freeze(heldNames),
   });
 }
