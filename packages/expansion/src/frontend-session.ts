@@ -1109,11 +1109,23 @@ export function createExpansionFrontendSession(
         // A lone group is kept in its node too, as a macro's result is: the
         // braces of a captured `{ value: 1 }` spliced loose after `=>` read
         // as a block, and the function returned nothing.
+        //
+        // The node is normalized as every reading the walk is handed is. A
+        // capture is spliced into its template whole and counts there as
+        // syntax the reading of the replacement was handed, so it is never
+        // normalized later: kept as the reader built it, the walk met inside
+        // it the nesting no other route gives it.
         const syntax =
           (attempted.syntax.category === "expr" ||
             attempted.syntax.category === "type") &&
           !boundsItself(raw, attempted.syntax.form)
-            ? [attempted.syntax]
+            ? [
+                normalizeProtectedInput(
+                  attempted.syntax,
+                  handedIn(createSyntaxSequence(raw)),
+                  options,
+                ),
+              ]
             : raw;
         return Object.freeze({
           cursor: attempted.cursor,

@@ -12,6 +12,7 @@ import {
 } from "@sweetener/shared";
 import {
   createProtectedSyntax,
+  createSyntaxCursor,
   createSyntaxSequence,
   OriginStore,
   spanEnvelope,
@@ -115,6 +116,7 @@ function harness() {
   };
   return {
     routes: session.routes,
+    consumeClass: session.consumeClass,
     module,
     read,
     protect,
@@ -289,4 +291,23 @@ describe("a route whose reader builds no nesting", () => {
       built,
     );
   });
+});
+
+describe("a macro pattern's capture", () => {
+  test.each(["expr", "type"] as const)(
+    "of an %s takes apart the nesting its reader built",
+    (category) => {
+      const setup = harness();
+      const classId = setup.module.classId(category);
+      if (classId === undefined) throw new Error(`no ${category} class`);
+      const source = category === "expr" ? "a + b * c" : "A | B[]";
+      const match = setup.consumeClass(
+        classId,
+        createSyntaxCursor(setup.read(source)),
+      );
+      expect(match).toBeDefined();
+      expect(print(match!.syntax)).toBe(source);
+      expect(match!.syntax.some(nested)).toBe(false);
+    },
+  );
 });
