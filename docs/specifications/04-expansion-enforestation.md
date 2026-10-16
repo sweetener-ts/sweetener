@@ -299,6 +299,15 @@ walks. A header that does not read so is kept as written.
 The consumer wraps its result in `ProtectedSyntax` with outer precedence, and
 records its form when it is an unparenthesized conditional, arrow function,
 assignment, `yield`, or `await`. Parentheses make an expression of no form.
+
+A chain of one level's core operators is one node, whichever way the level
+associates: `a + b - c`, `a ** b ** c` and `a = b += c` each hold their
+operands and operators in the order written, and a tighter level written in
+the chain is a node of its own inside it. So is a conditional with the
+conditionals written in its alternates, `a ? b : c ? d : e`, and a run of one
+level's prefix operators other than `new` with its operand, `!-a`. The text
+says how such a chain groups. A tree is as deep as the levels written in it,
+not as long as the chain, and reading one asks for one operand at a time.
 Printing parenthesizes a protected expression or type that expansion placed
 where its own operators could re-associate. It holds together without them
 where it binds at least as tightly as what is written on either side of it
