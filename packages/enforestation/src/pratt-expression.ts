@@ -429,10 +429,16 @@ function parsePrefix(
       return fail(cursor, context, ["await inside an async function"], 9);
     }
     const operator = consumeOperator(cursor, prefix);
+    const operand = cursor.peek();
     const right = parseExpression(cursor, prefix.precedence, context);
     if ("matched" in right) return right;
+    // What `new` constructs and the arguments it passes are written as one
+    // run, `new F(1)`, so the parse of what follows it is opened into the
+    // `new`. An operand that arrived whole -- a capture, an expansion -- is
+    // not opened: it is what is constructed, and opened, `new $c` with `$c`
+    // bound to `F(1)` constructed `F` with an argument instead.
     const coreChildren =
-      prefix.spelling === "new"
+      prefix.spelling === "new" && right.syntax !== operand
         ? [...operator, ...right.syntax.children]
         : [...operator, right.syntax];
     const syntax =

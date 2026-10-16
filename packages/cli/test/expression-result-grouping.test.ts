@@ -496,6 +496,18 @@ export const written = () => target;
     });
   });
 
+  test("constructs what a capture is, not the call inside it", () => {
+    const { text, messages, exports } = expand(
+      `class Box { value = 1; }
+const factory = () => Box;
+export const built = build(factory());
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("new (factory())");
+    expect(exports["built"]).toMatchObject({ value: 1 });
+  });
+
   test("keeps an optional chain apart from a template that tags it", () => {
     const { text, messages, exports } = expand(
       `const holder: { f(strings: TemplateStringsArray): string } = { f: (strings) => strings[0]! };
