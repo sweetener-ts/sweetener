@@ -411,6 +411,7 @@ describe("statement and item consumers", () => {
     "#core(values)[0];",
     "#core(total) + 1;",
     "#core(value)!;",
+    "# core (twice).length;",
   ])(
     "reads a `#core` form that heads an expression as that expression's statement: %s",
     (source) => {
