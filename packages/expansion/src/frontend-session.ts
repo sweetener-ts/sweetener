@@ -62,6 +62,7 @@ import {
 } from "./operator-dispatch.js";
 import { invokeMacro, type MacroTraceEvent } from "./invocation.js";
 import {
+  boundsItself,
   expandMacroSyntax,
   operatorWidthAt,
   type ExpandMacroSyntaxResult,
@@ -751,10 +752,14 @@ export function createExpansionFrontendSession(
         // Whether the boundary is then printed as parentheses is the
         // printer's question, and it asks it of an expansion's own syntax the
         // same way.
+        //
+        // A lone group is kept in its node too, as a macro's result is: the
+        // braces of a captured `{ value: 1 }` spliced loose after `=>` read
+        // as a block, and the function returned nothing.
         const syntax =
           (attempted.syntax.category === "expr" ||
             attempted.syntax.category === "type") &&
-          raw.length > 1
+          !boundsItself(raw, attempted.syntax.form)
             ? [attempted.syntax]
             : raw;
         return Object.freeze({

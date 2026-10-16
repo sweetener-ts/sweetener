@@ -23,6 +23,7 @@ import {
   isPropertyNameToken,
   spanEnvelope,
   type CoreOperator,
+  type ExpressionForm,
   type GroupSyntax,
   type ProtectedSyntax,
   type Syntax,
@@ -322,9 +323,16 @@ const macroSpaces = Object.freeze([
  *
  * A lone group does not. The braces of `{ value: 1 }` spliced loose after
  * `=>` read as a block holding a label, and the function returns nothing.
+ * The same is so of a macro's result and of a capture. Nor does a lone token
+ * the parser read as an expression of a form of its own: `yield` with nothing
+ * to yield is a whole assignment expression, and spliced loose after `??` it
+ * no longer parses.
  */
-function boundsItself(syntax: readonly Syntax[]): boolean {
-  return syntax.length === 1 && syntax[0]!.tag !== "group";
+export function boundsItself(
+  syntax: readonly Syntax[],
+  form: ExpressionForm | undefined,
+): boolean {
+  return form === undefined && syntax.length === 1 && syntax[0]!.tag !== "group";
 }
 
 function punctuationSpelled(spelling: string): boolean {
@@ -4906,7 +4914,7 @@ export function expandMacroSyntax(
           // around the use would re-bind against the replacement's own.
           if (
             (macro.category === "expr" || macro.category === "type") &&
-            !boundsItself(replaced)
+            !boundsItself(replaced, undefined)
           ) {
             const origins = [...new Set(replaced.map(({ origin }) => origin))];
             output.push(
@@ -5153,7 +5161,7 @@ export function expandMacroSyntax(
           const spliceWhole =
             (result.syntax.category === "expr" ||
               result.syntax.category === "type") &&
-            !boundsItself(result.syntax.children);
+            !boundsItself(result.syntax.children, result.syntax.form);
           output.push(
             ...withLeadingTrivia(
               spliceWhole ? [result.syntax] : result.syntax.children,

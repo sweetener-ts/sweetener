@@ -484,6 +484,18 @@ export const written = () => target;
     expect(exports["negated"]).toBe(true);
   });
 
+  test("keeps a captured object literal an expression", () => {
+    const { text, messages, exports } = expand(
+      "export const made = thunk({ value: 1 });\nrun({ value: 2 });\n",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("() => ({ value: 1 })");
+    expect(text).toContain("({ value: 2 });");
+    expect((exports["made"] as () => { value: number })()).toEqual({
+      value: 1,
+    });
+  });
+
   test("keeps an optional chain apart from a template that tags it", () => {
     const { text, messages, exports } = expand(
       `const holder: { f(strings: TemplateStringsArray): string } = { f: (strings) => strings[0]! };
