@@ -176,6 +176,20 @@ function inside(root: string, candidate: string): boolean {
 }
 
 /**
+ * The name a held sentence is about: the first thing each of them is given.
+ * One without it would be matched against no name TypeScript reports, and so
+ * dropped where it should have been said.
+ */
+function heldName(diagnostic: Diagnostic): string {
+  const name = diagnostic.messageArguments[0];
+  if (typeof name !== "string" || name === "")
+    throw new Error(
+      `${diagnostic.code} was held about a name but given none to be matched by`,
+    );
+  return name;
+}
+
+/**
  * Every diagnostic carries a code and its arguments; the sentence a reader sees
  * lives on the registry that owns the code, so the registries are gathered here
  * to turn one into the other.
@@ -1933,7 +1947,7 @@ export class DefaultProjectExpansionProvider
                 )
                 .map((diagnostic) =>
                   Object.freeze({
-                    name: String(diagnostic.messageArguments[0] ?? ""),
+                    name: heldName(diagnostic),
                     diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
                   }),
                 ),
@@ -2098,7 +2112,7 @@ export class DefaultProjectExpansionProvider
           // alone cannot tell two of these apart; the spelling is the first
           // thing each of these three diagnostics is given.
           Object.freeze({
-            name: String(diagnostic.messageArguments[0] ?? ""),
+            name: heldName(diagnostic),
             diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
           }),
         ),
