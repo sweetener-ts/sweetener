@@ -367,6 +367,34 @@ Wrapper parsing MAY act as a diagnostic-recovery oracle after complete-file
 validation fails, but cannot make an invalid complete file acceptable. ADR-0008
 records the measured choice.
 
+### 8.1 A slash: regular expression or division
+
+The reader judges a slash from what stands before it, including what a closing
+bracket's group was opened after: after the head of `if`, `while`, `for` or
+`with`, or the block of such a statement, a slash begins a regular expression.
+What the token tree alone cannot tell -- the end of a type annotation, a
+function or class body's `}` -- the enforester judges, by the grammar it reads
+there:
+
+- where only the tokens of one expression change, it reads the slash as the
+  grammar does in place: a division-read `/` where an operand begins is one
+  regular expression, and a regular expression where an operator stands is
+  split into a division;
+- where reading the slash the other way regroups what follows it -- a bracket,
+  a quote or a comment's opening between the slashes, or the `=` of `/=` --
+  the source is read again with the slash read as the grammar reads it, and the
+  file is expanded again: on its own when it defines no macro and no file reads
+  macros from it, and with the whole project otherwise.
+
+A slash a template writes is read for each use, from that use's tokens. Where
+one use needs it read the other way and that regroups the template, the use
+reports `SWR4026` at the template's slash, with the use related; a template is
+never read again for one use. A slash written once that a macro puts in two
+places needing different readings, both regrouping, reports `SWR4027`. Reading
+again is bounded: a source read eight times without settling reports
+`SWR4028` at a slash still read the other way, and the last read's expansion
+stands.
+
 ## 9. Statement and item consumers
 
 The statement consumer recognizes block structure, terminators, control-flow
