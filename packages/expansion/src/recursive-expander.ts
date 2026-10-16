@@ -5397,11 +5397,16 @@ export function expandMacroSyntax(
         // written in a block walked as tokens was descended into as an
         // expression all the same -- and there the key of each member stood
         // at the head of an expression and was dispatched as a macro.
+        //
+        // A function's body is a block wherever the function stands, and
+        // its `:` is a label's: read as a literal, `() => { done: f(); }` was
+        // walked as one member named `done`.
         if (
           node.tag === "group" &&
           node.delimiter === "brace" &&
           (category === "expr" || initializerFollows(output)) &&
           !typeFollows() &&
+          braceOpens(walkedRun, output.length) === "other" &&
           node.children.some(
             (child) => child.tag === "token" && child.raw === ":",
           )

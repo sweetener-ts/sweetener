@@ -528,3 +528,18 @@ export const tagged = optional(holder)\`t\`;
   });
 });
 
+describe("a statement after a label, in a function's body", () => {
+  test("is a statement however the function is written", () => {
+    // Read as an object literal, the body of an arrow with a label in it was
+    // walked as members, and the expression after the label was printed as
+    // a block.
+    const { text, messages } = expand(
+      `export const looped = () => { outer: for (;;) { obj(9); break outer; } };
+export async function waited() { outer: for (;;) { obj(10); break outer; } }
+`,
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("({ value: 9 });");
+    expect(text).toContain("({ value: 10 });");
+  });
+});
