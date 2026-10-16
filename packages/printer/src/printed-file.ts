@@ -1525,8 +1525,7 @@ export function printExpandedFile<Trace>(
     for (const open of pendingOpens) {
       emit(open.text, open.origin, "grouping");
       trackBrackets(open.text, "");
-      closedOperand = undefined;
-      lastPrinted = open.text;
+      markPrinted(open.text);
       previousWritten = undefined;
     }
     pendingOpens.length = 0;
@@ -1625,17 +1624,25 @@ export function printExpandedFile<Trace>(
   /** What `closerEnds` says of the bracket last printed, if anything. */
   let closedOperand: boolean | undefined;
   /**
+   * Records `text` as what was last printed, and `written` as the token it
+   * printed, where it printed one: what it closed is then read from it.
+   */
+  const markPrinted = (text: string, written?: Syntax) => {
+    lastPrinted = text;
+    closedOperand = written === undefined ? undefined : closerEnds.get(written);
+  };
+  /**
    * Where the seam about to be printed stands. Only one seam is being spaced
    * at a time and `seamSpace` only reads what it is handed, so the same record
    * is filled in again rather than a fresh one minted per token.
    */
-  const seam = {
-    bracket: undefined as string | undefined,
+  const seam: { -readonly [Field in keyof SeamContext]: SeamContext[Field] } = {
+    bracket: undefined,
     conditional: false,
     prefix: false,
     memberName: false,
     closedTypeArguments: false,
-    closedOperand: undefined as boolean | undefined,
+    closedOperand: undefined,
   };
   const seamContext = (): SeamContext => {
     const innermost = brackets[brackets.length - 1]!;
@@ -1831,8 +1838,7 @@ export function printExpandedFile<Trace>(
     for (const piece of token.trailingTrivia) trailing += piece.raw;
     emit(trailing, token.origin, "synthesized");
     trackBrackets(text, leading, typeParameterOpens.has(token));
-    closedOperand = closerEnds.get(token);
-    lastPrinted = text;
+    markPrinted(text, token);
     previousKind = kind;
     previousWritten =
       written === undefined || trailing.length > 0 ? undefined : written;
@@ -1861,8 +1867,7 @@ export function printExpandedFile<Trace>(
       if (wordCharacter(item.text[0])) emit(" ", item.origin, "grouping");
       emit(item.text, item.origin, "grouping");
       trackBrackets(item.text, "");
-      closedOperand = undefined;
-      lastPrinted = item.text;
+      markPrinted(item.text);
       previousKind = undefined;
       previousWritten = undefined;
       continue;
