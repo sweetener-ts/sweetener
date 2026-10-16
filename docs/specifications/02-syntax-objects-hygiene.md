@@ -150,12 +150,63 @@ same of its expression space -- a binding there "hides any binding for another
 space in an enclosing scope".
 
 Macro resolution here is a module-table lookup rather than a walk of this
-algorithm, so the equivalent rule is applied separately: the expander records
-what each region of source binds, and a macro is not dispatched for a spelling
-an enclosing region binds. Value and type are kept apart, because TypeScript
-keeps them apart -- `const list` and `type list` are both legal, and neither
-shadows the other's macro. That is the one point where this cannot follow
-Rhombus, whose expression space hides every other space.
+algorithm, so the equivalent rule is applied separately. The expander records,
+for each run of syntax it walks, every binder written in it, with the stretch
+of the run the binder is in scope for and the scope set it was written with. A
+macro is not dispatched for a name when a binder of its spelling:
+
+1. is in scope where the name stands. The stretch is the language's: a
+   parameter's function, a `catch` binding's clause, a loop variable's loop, a
+   type parameter's declaration, a mapped type's key's type, and the `extends`
+   clause and true branch of the conditional an `infer` is written in. A
+   block's `let`, `const`, class and function declarations are in scope for
+   the whole block, the part before the declaration (its temporal dead zone)
+   included, and a `var` for the whole function. A function or class
+   expression's name is in scope inside that expression, and a class's type
+   parameters are not in scope in its static members. Where a statement begins
+   and ends is where the statement reader says it does, so a declaration
+   written under a line with no `;` is one. A block holding a statement
+   operator is the exception: the reader leaves it as tokens, for the operator
+   to be offered its statement, and it is split at its `;`s and at the
+   statements already read in it;
+2. has a scope set that is a subset of the name's, as in step 2 above; and
+3. shares the name's binding-form scope. Hygiene gives each binding form a
+   scope of its own, on its binders and on everything written in its body, and
+   template syntax does not receive it: a template was written where its macro
+   was defined, at the top of a module, never inside the function or block.
+   The expander does not put this scope on syntax; it reads it where it would
+   be, as the absence of an introduction scope (§7) from an invocation made
+   since the walk entered the region. At a module's top level the scope is the
+   module scope, which every token written in the module already carries, so
+   a template written in the same module sees what the module declares there.
+   Without this, a parameter named `twice` captured the `twice` a template
+   from the same module wrote, since both carried only the module scope. A
+   macro a `#syntax` generates inside a block is the one macro defined there:
+   where the `#syntax` stands in the block as written, the block's scope is
+   put on what it generates, and that macro's template sees what the block
+   binds.
+
+Value and type are kept apart, because TypeScript keeps them apart -- `const
+list` and `type list` are both legal, and neither shadows the other's macro.
+That is the one point where this cannot follow Rhombus, whose expression space
+hides every other space.
+
+A declaration an expansion writes in a block or a module binds from the
+invocation to the end of that block, and binds what its scopes say it binds.
+A name the template wrote carries the invocation's introduction scope, and a
+name copied from the call site carries its use-site scope (§7). Nothing written
+after the invocation carries either, so neither binds a name the call site
+writes later. It does only where the macro says so: through a binding contract
+(§8), or with `#capture` (§10). So `defineBound twice; twice(2)` keeps
+`twice(2)` where `defineBound` binds `$name in following`, and `defineUnbound
+twice; twice(2)` expands it. A pass-through macro copies what it was handed
+from its own call site, so `emit { defineBound twice; } twice(2)` expands the
+`twice(2)` too: the binder `emit` hands back carries `emit`'s use-site scope,
+and no contract of `emit`'s publishes it.
+
+A binding contract binds only what follows the invocation, where a declaration
+written in source binds its whole block. So `twice(1); letBound twice;` expands
+the `twice(1)`, and `twice(1); let twice = f;` does not.
 
 What an import binds is read from its clause: the name of a default binding,
 the name a `* as` introduces, the local name of each specifier, and the name
