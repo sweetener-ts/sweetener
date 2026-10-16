@@ -176,24 +176,37 @@ wrapped const example = { single: 'quoted' };
 
 /**
  * Whether a slash begins a regular expression is the parser's to say, and the
- * reader judges it from the token before: after `)` or a name, a division. A
- * formatter has no parser of Sweetener's to ask, so it never lays out the text
- * a slash could begin an expression over, and where the reader's judgement
- * left the read unbalanced it reads the slashes as TypeScript's parser does.
+ * reader judges it from what stands before it. A formatter has no parser of
+ * Sweetener's to ask, so where a slash could begin a regular expression it
+ * asks TypeScript's: a division TypeScript reads is laid out, a regular
+ * expression is one token and is left as written, and where TypeScript could
+ * not read the statement -- a macro's own syntax -- the text a slash could
+ * begin an expression over is left as written.
  */
-describe("slashes the reader judges from the token before", () => {
+describe("slashes the reader judges from what stands before them", () => {
   test.each([
     ["after a condition", "if (c) /a  b/.test(s);\n"],
     ["under a bodiless signature", "function f()\n/a  b/.test(s);\n"],
     ["under an annotation", "let x: T\n/a  {2}/.test(s);\n"],
+    ["in a macro's own syntax", "unless (c) /a  b/.test(s);\n"],
   ])("leaves the text of a regular expression %s as written", (_, source) => {
     expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(source);
   });
 
-  test("lays out a division no slash could begin an expression over", () => {
-    expect(formatSweetener("x = a  /  2;\n", { filepath: "regex.sts" })).toBe(
-      "x = a / 2;\n",
-    );
+  test.each([
+    ["x = a  /  2;\n", "x = a / 2;\n"],
+    ["x = a  /  b  /  c;\n", "x = a / b / c;\n"],
+    [
+      "const r = width  /  2  +  height  /  2;\n",
+      "const r = width / 2 + height / 2;\n",
+    ],
+    ["f(a  /  2,   b  /  2);\n", "f(a / 2, b / 2);\n"],
+    [
+      "unless (c) /a  b/.test(s);\nx = a  /  b  /  c;\n",
+      "unless (c) /a  b/.test(s);\nx = a / b / c;\n",
+    ],
+  ])("lays out the divisions of %j", (source, formatted) => {
+    expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(formatted);
   });
 
   test("formats a source whose regular expression holds a delimiter", async () => {
@@ -204,6 +217,14 @@ describe("slashes the reader judges from the token before", () => {
     expect(
       await format(source, { filepath: "regex.sts", plugins: [plugin] }),
     ).toBe("if (c) /(/.test(s);\nrun(1);\n");
+  });
+
+  test("formats a source where only TypeScript's parser reads the delimiter", () => {
+    expect(
+      formatSweetener("let x: T\n/(/.test(s);\nrun(  1 );\n", {
+        filepath: "regex.sts",
+      }),
+    ).toBe("let x: T\n/(/.test(s);\nrun( 1 );\n");
   });
 });
 

@@ -8,6 +8,7 @@ import {
   divisionSlash,
   type GroupSyntax,
   type RootSyntax,
+  type Span,
   type Syntax,
   type TokenSyntax,
   type Trivia,
@@ -296,14 +297,13 @@ function collectChildren(
  * expression over, where one would end on the slash's own line.
  *
  * Which of the two a slash begins is the parser's to say, and the reader can
- * only judge from the token before: after `)` or a name it reads a division,
- * where `if (c) /a  b/.test(s)` writes a regular expression. Read as a
- * division, the text inside is names and operators with whitespace between
+ * only judge from the token before. Read as a division, the text a regular
+ * expression is written with is names and operators with whitespace between
  * them, which this formatter would lay out -- and `/a  b/` would become `/a
- * b/`, another expression. A formatter has no parser to ask, and no macros to
- * say what their own syntax reads, so it leaves the text of every such span
- * exactly as written. A regular expression the reader read where a division
- * stands is one token already, and nothing inside a token is laid out.
+ * b/`, another expression. So the source is read with TypeScript's own
+ * readings of its slashes wherever one of these stands (see
+ * `readForFormatting`), and a regular expression read as one is one token,
+ * nothing inside which is laid out.
  */
 function possibleRegularExpressions(
   source: string,
@@ -384,25 +384,37 @@ function applyReplacements(
   return result;
 }
 
-export function readSweetenerSyntax(
+/**
+ * `source` read as the formatter lays it out, and the statements in it
+ * TypeScript's parser could not read (see `TypeScriptSlashes.unparsed`).
+ *
+ * A slash the reader judged a division may begin a regular expression, and
+ * one it judged a regular expression may divide. The expansion has the
+ * enforester to say which; a formatter has no enforester, so wherever a
+ * slash may begin a regular expression it asks TypeScript's parser, and reads
+ * each slash as the parser does where the parser read the statement holding
+ * it. That also reads `if (c) /(/.test(s)`, where the reader's judgement
+ * leaves a bracket unbalanced.
+ */
+function readForFormatting(
   source: string,
   options: SweetenerFormatOptions,
-): RootSyntax {
+): { readonly root: RootSyntax; readonly unparsed: readonly Span[] } {
   const variant = options.filepath?.endsWith("x") === true ? "jsx" : "standard";
   const initial = readSyntax(source, { sourceId, scopes, variant });
-  // A slash the reader judged a division may begin a regular expression
-  // holding a bracket or a quote, which then leaves the read unbalanced:
-  // `if (c) /(/.test(s)`. The expansion reads the source again with the
-  // enforester's answer; a formatter has no enforester, so it asks
-  // TypeScript's parser, and only where the read went wrong.
+  const typescript =
+    initial.diagnostics.length > 0 ||
+    possibleRegularExpressions(source, initial.root).length > 0
+      ? typescriptSlashes(source, variant)
+      : undefined;
   const result =
-    initial.diagnostics.length === 0
+    typescript === undefined || typescript.readings.size === 0
       ? initial
       : readSyntax(source, {
           sourceId,
           scopes,
           variant,
-          slashReadings: typescriptSlashes(source, variant).readings,
+          slashReadings: typescript.readings,
         });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];
@@ -414,7 +426,14 @@ export function readSweetenerSyntax(
       }`,
     );
   }
-  return result.root;
+  return { root: result.root, unparsed: typescript?.unparsed ?? [] };
+}
+
+export function readSweetenerSyntax(
+  source: string,
+  options: SweetenerFormatOptions,
+): RootSyntax {
+  return readForFormatting(source, options).root;
 }
 
 export function formatSweetener(
@@ -422,11 +441,19 @@ export function formatSweetener(
   options: SweetenerFormatOptions = {},
 ): string {
   if (source.length === 0) return "";
-  const root = readSweetenerSyntax(source, options);
+  const { root, unparsed } = readForFormatting(source, options);
   const eol = lineEnding(source, options.endOfLine);
   const replacements: Replacement[] = [];
   collectSyntax(root, 0, options, eol, replacements);
-  const kept = disjoint(possibleRegularExpressions(source, root));
+  // Where TypeScript read the statement, a slash it reads as a division is
+  // one. Where it did not -- a macro's own syntax -- what the macro reads is
+  // unknown here, so the text a division-read slash could begin a regular
+  // expression over is left as written.
+  const kept = disjoint(
+    possibleRegularExpressions(source, root).filter(({ start }) =>
+      unparsed.some((span) => start >= span.start && start < span.end),
+    ),
+  );
   const formatted = applyReplacements(
     source,
     replacements.filter((replacement) => !overlapsAny(kept, replacement)),
