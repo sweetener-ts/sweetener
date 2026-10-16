@@ -45,6 +45,36 @@ describe("binding environments", () => {
     ).toEqual([declared.binding]);
   });
 
+  it("keeps one frame's same-spelled bindings in declaration order in every version", () => {
+    const store = new EnvironmentStore();
+    const versions = [store.createRoot()];
+    const bindings = [];
+    for (let index = 0; index < 3; index += 1) {
+      const declared = store.declare(versions.at(-1)!, {
+        spelling: "value",
+        scopes,
+        phase: runtimePhase,
+        space: "value",
+        declaration,
+        kind: "lexical",
+      });
+      versions.push(declared.environment);
+      bindings.push(declared.binding);
+    }
+    const query = {
+      spelling: "value",
+      phase: runtimePhase,
+      space: "value",
+      position: 0,
+    } as const;
+    expect(store.candidates(versions[3]!, query)).toEqual(bindings);
+    expect(store.candidates(versions[2]!, query)).toEqual(bindings.slice(0, 2));
+    expect(store.candidates(versions[1]!, query)).toEqual(bindings.slice(0, 1));
+    expect(versions[3]!.localCandidates("value", runtimePhase, "value")).toBe(
+      versions[3]!.localCandidates("value", runtimePhase, "value"),
+    );
+  });
+
   it("keeps child frames attached to their parent snapshot", () => {
     const store = new EnvironmentStore();
     const root = store.createRoot();
