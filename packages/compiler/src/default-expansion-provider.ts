@@ -1883,6 +1883,21 @@ export class DefaultProjectExpansionProvider
       const macroModules = [...macroSourcesFor(file.fileName)]
         .map((sourceId) => bySource.get(sourceId)!)
         .filter((module) => module !== file);
+      // Everything raised expanding this file and against this file, so an
+      // inspection can say that what it holds is unexpanded rather than
+      // presenting it as output -- and what is wrong with the macro modules it
+      // reads its macros from, which stops those macros running and leaves
+      // this file expanding into itself. Reporting only the first would have
+      // `expand` print the unexpanded source and report success whenever the
+      // fault is in the macros rather than in their use. Only a module's
+      // errors stop its macros; anything else it says is its own to report.
+      const reported = [
+        ...answerableFor(file),
+        ...macroModules.flatMap((module) =>
+          answerableFor(module).filter(({ severity }) => severity === "error"),
+        ),
+        ...held,
+      ].map((diagnostic) => asTypeScriptDiagnostic(diagnostic, bySource));
       this.#inspections.set(
         resolve(file.fileName),
         Object.freeze({
@@ -1891,43 +1906,39 @@ export class DefaultProjectExpansionProvider
           virtualFileName: file.kind.virtualFileName,
           generated,
           origins,
-          // Everything raised expanding this file and against this file, so
-          // an inspection can say that what it holds is unexpanded rather
-          // than presenting it as output -- and what is wrong with the macro
-          // modules it reads its macros from, which stops those macros
-          // running and leaves this file expanding into itself. Reporting
-          // only the first would have `expand` print the unexpanded source and
-          // report success whenever the fault is in the macros rather than in
-          // their use. Only a module's errors stop its macros; anything else
-          // it says is its own to report.
+          // Its errors, which say the expansion did not happen. A warning
+          // says something about an expansion that did -- an item passed
+          // through as written, which TypeScript may well accept -- so it is
+          // reported with the warnings below and stops nothing: a build tool
+          // or `expand` failing over one failed on valid TypeScript.
           diagnostics: Object.freeze(
-            [
-              ...answerableFor(file),
-              ...macroModules.flatMap((module) =>
-                answerableFor(module).filter(
-                  ({ severity }) => severity === "error",
-                ),
-              ),
-              ...held,
-            ].map((diagnostic) => asTypeScriptDiagnostic(diagnostic, bySource)),
+            reported.filter(
+              ({ category }) => category === ts.DiagnosticCategory.Error,
+            ),
           ),
           inputs: inputsFor([file, ...macroModules]),
-          // What is held about a name this file left standing. `expand` and a
-          // build tool's transform read an inspection and then stop; there is
-          // no checker behind either, so this is the last chance anything has
-          // to say the name is a macro's.
-          warnings: warnAboutHeldNames(
-            result.unresolvedNameExplanations
-              .filter(
-                ({ primaryOrigin }) => primaryOrigin.sourceId === file.sourceId,
-              )
-              .map((diagnostic) =>
-                Object.freeze({
-                  name: String(diagnostic.messageArguments[0] ?? ""),
-                  diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
-                }),
-              ),
-          ),
+          // The rest of what was reported, and what is held about a name this
+          // file left standing. `expand` and a build tool's transform read an
+          // inspection and then stop; there is no checker behind either, so
+          // this is the last chance anything has to say the name is a macro's.
+          warnings: Object.freeze([
+            ...reported.filter(
+              ({ category }) => category !== ts.DiagnosticCategory.Error,
+            ),
+            ...warnAboutHeldNames(
+              result.unresolvedNameExplanations
+                .filter(
+                  ({ primaryOrigin }) =>
+                    primaryOrigin.sourceId === file.sourceId,
+                )
+                .map((diagnostic) =>
+                  Object.freeze({
+                    name: String(diagnostic.messageArguments[0] ?? ""),
+                    diagnostic: asTypeScriptDiagnostic(diagnostic, bySource),
+                  }),
+                ),
+            ),
+          ]),
           generatedNames: Object.freeze(generatedNames),
           // Building a source map walks every printed region. Only the
           // build-tool transforms ask for one; `check` never does, so it is

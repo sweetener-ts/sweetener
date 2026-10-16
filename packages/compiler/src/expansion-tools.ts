@@ -21,14 +21,17 @@ export interface SourceExpansionInspection {
   readonly sourceMap?: RawSourceMap | undefined;
   readonly index: OriginQueryIndex;
   /**
-   * What went wrong expanding this file, if anything.
+   * What went wrong expanding this file, if anything: errors only.
    *
    * Without these an inspection could not tell a caller that what it holds is
-   * the unexpanded source, so `expand` printed it and reported success.
+   * the unexpanded source, so `expand` printed it and reported success. A
+   * warning is not among them -- it is about an expansion that happened, and
+   * is in `warnings` -- so a caller can fail on any of these.
    */
   readonly diagnostics: readonly ts.Diagnostic[];
   /**
-   * What expansion holds about a name this file left standing.
+   * What expansion holds about a name this file left standing, and every
+   * warning it raised about the file.
    *
    * Everywhere a project is checked these go to TypeScript, which resolves
    * names and decides whether each one is true. An inspection is read by the

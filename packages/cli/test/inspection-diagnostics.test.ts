@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -152,5 +152,81 @@ export const a = nop(1);
     expect(source.slice(diagnostic?.start, (diagnostic?.start ?? 0) + 4)).toBe(
       "size",
     );
+  });
+});
+
+/**
+ * A warning is said about an expansion that happened -- here an item passed
+ * through as written because the reader could not read it -- so it stops
+ * nothing. Carried among an inspection's diagnostics, it had `expand` refuse
+ * the file and every build tool fail over it, and standalone `emit` write
+ * nothing while reporting success.
+ */
+describe("a warning about an expansion", () => {
+  const unread = "declare const y: any;\nexport const x = y?.<A>;\n";
+
+  function warningProject(): string {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-inspection-warning-"));
+    writeFileSync(join(directory, "main.sts"), unread);
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { noEmit: true, strict: false, target: "ES2022" },
+        sweet: { macroExtensions: [".sts"] },
+        files: ["main.sts"],
+      }),
+    );
+    return directory;
+  }
+
+  test("is among an inspection's warnings, not its diagnostics", () => {
+    const directory = warningProject();
+    const provider = createDefaultProjectExpansionProvider();
+    provider.expandProject(loadSweetProject(join(directory, "tsconfig.json")));
+    const inspection = provider.inspectSource(join(directory, "main.sts"));
+    expect(inspection?.diagnostics).toEqual([]);
+    expect(inspection?.warnings?.map(({ code }) => code)).toEqual([4025]);
+  });
+
+  test("does not stop expand printing the expansion", () => {
+    const directory = warningProject();
+    const provider = createDefaultProjectExpansionProvider();
+    provider.expandProject(loadSweetProject(join(directory, "tsconfig.json")));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    expect(
+      runCli({
+        argv: ["expand", join(directory, "main.sts")],
+        expansionProvider: provider,
+        inspectionProvider: provider,
+        io: {
+          stdout: (text: string) => stdout.push(text),
+          stderr: (text: string) => stderr.push(text),
+        },
+      }).exitCode,
+    ).toBe(0);
+    expect(stdout.join("")).toContain("y?.<A>");
+    expect(stderr.join("")).toContain("warning TS4025");
+  });
+
+  test("does not stop a standalone emit writing the file", () => {
+    const directory = warningProject();
+    const out = join(directory, "out");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    expect(
+      runCli({
+        argv: ["emit", join(directory, "main.sts"), "--out-dir", out],
+        io: {
+          stdout: (text: string) => stdout.push(text),
+          stderr: (text: string) => stderr.push(text),
+        },
+      }).exitCode,
+    ).toBe(0);
+    expect(stderr.join("")).toContain("warning TS4025");
+    expect(stdout.join("")).toContain("emit: success");
+    const written = readdirSync(out);
+    expect(written).toHaveLength(1);
+    expect(readFileSync(join(out, written[0]!), "utf8")).toContain("y?.<A>");
   });
 });

@@ -2031,6 +2031,33 @@ function formsProject(): {
   };
 }
 
+/**
+ * A warning is about an expansion that happened -- an item the reader passed
+ * through as written -- and every build tool fails over a result's
+ * `diagnostics`. Carried there, it failed the build on valid TypeScript and
+ * kept the expansion from being kept.
+ */
+test("reports a warning beside the expansion, and keeps it", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-session-warning-"));
+  const main = join(directory, "main.sts");
+  const source = "declare const y: any;\nexport const x = y?.<A>;\n";
+  writeFileSync(main, source);
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      files: ["main.sts"],
+    }),
+  );
+  const session = createSweetenerSession();
+  const first = await session.transform({ code: source, filename: main });
+  expect(first.diagnostics).toEqual([]);
+  expect(first.warnings.map(({ code }) => code)).toEqual([4025]);
+  expect(first.code).toContain("y?.<A>");
+  expect(await session.transform({ code: source, filename: main })).toBe(first);
+  await session.close();
+});
+
 test("expands a failing file again each time it is asked for", async () => {
   // A failure may come of a limit or a deadline as much as of the source, so
   // it is never served from a cache: asked for again, unchanged, the file is

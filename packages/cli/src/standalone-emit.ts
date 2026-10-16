@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type * as ts from "typescript";
+import * as ts from "typescript";
 import { loadStandaloneProject } from "./configuration.js";
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
 import {
@@ -54,7 +54,14 @@ export function expandStandalone(options: {
   const output: ProjectExpansionOutput = Array.isArray(expanded)
     ? { files: expanded, diagnostics: Object.freeze([]) }
     : (expanded as ProjectExpansionOutput);
-  if (output.diagnostics.length > 0)
+  // Only an error stops the expansion. A warning is about output that was
+  // made -- an item passed through as written -- and stopping over one wrote
+  // nothing while the command line, seeing no error, reported success.
+  if (
+    output.diagnostics.some(
+      ({ category }) => category === ts.DiagnosticCategory.Error,
+    )
+  )
     return Object.freeze({
       outputs: new Map<string, string>(),
       diagnostics: Object.freeze([...output.diagnostics]),
@@ -73,7 +80,10 @@ export function expandStandalone(options: {
   // either way because it is the same text either way.
   return Object.freeze({
     outputs,
-    diagnostics: warnAboutHeldNames(output.unresolvedNameExplanations ?? []),
+    diagnostics: Object.freeze([
+      ...output.diagnostics,
+      ...warnAboutHeldNames(output.unresolvedNameExplanations ?? []),
+    ]),
   });
 }
 
