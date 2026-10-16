@@ -507,6 +507,72 @@ const blockHeads = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.CatchKeyword,
 ]);
 
+/**
+ * The words that declare what their body is the whole of, wherever they begin
+ * a statement: a function's, a class's or an enum's. The `}` that ends the
+ * body ends the statement, so what follows begins another -- where a slash
+ * begins a regular expression -- just as after an `if`'s block.
+ */
+const declarationKeywords = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.FunctionKeyword,
+  ts.SyntaxKind.ClassKeyword,
+  ts.SyntaxKind.EnumKeyword,
+]);
+
+/**
+ * The words that declare a body as those above do, but are names anywhere
+ * they are not followed by what they declare: an interface's or a
+ * namespace's name, a module's string, or the braces of `declare global`.
+ * `module.exports = {}` assigns, and `global.x` reads.
+ */
+const contextualDeclarationKeywords = new Map<
+  ts.SyntaxKind,
+  ReadonlySet<ts.SyntaxKind>
+>([
+  [ts.SyntaxKind.InterfaceKeyword, new Set([ts.SyntaxKind.Identifier])],
+  [ts.SyntaxKind.NamespaceKeyword, new Set([ts.SyntaxKind.Identifier])],
+  [
+    ts.SyntaxKind.ModuleKeyword,
+    new Set([ts.SyntaxKind.Identifier, ts.SyntaxKind.StringLiteral]),
+  ],
+  [ts.SyntaxKind.GlobalKeyword, new Set([ts.SyntaxKind.OpenBraceToken])],
+]);
+
+/**
+ * The modifiers written in front of a declaration, which begin the statement
+ * the declaration does: `export default async function`, `declare abstract
+ * class`, `const enum`.
+ */
+const declarationModifiers = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.ExportKeyword,
+  ts.SyntaxKind.DefaultKeyword,
+  ts.SyntaxKind.AsyncKeyword,
+  ts.SyntaxKind.DeclareKeyword,
+  ts.SyntaxKind.AbstractKeyword,
+  ts.SyntaxKind.ConstKeyword,
+]);
+
+/**
+ * The tokens a type is written after, where a brace in a declaration's header
+ * opens an object type rather than the declaration's body: a return type's
+ * `:`, a constraint's `extends`, a default's `=`, and the operators and
+ * separators of the type grammar.
+ */
+const typeBraceAfter = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.ColonToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.EqualsGreaterThanToken,
+  ts.SyntaxKind.CommaToken,
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.QuestionToken,
+  ts.SyntaxKind.ExtendsKeyword,
+  ts.SyntaxKind.KeyOfKeyword,
+  ts.SyntaxKind.ReadonlyKeyword,
+  ts.SyntaxKind.IsKeyword,
+]);
+
 /** The opening delimiter each closing one closes. */
 const opens = new Map<ts.SyntaxKind, ts.SyntaxKind>([
   [ts.SyntaxKind.CloseParenToken, ts.SyntaxKind.OpenParenToken],
@@ -548,6 +614,21 @@ class SlashJudgement {
   #beforePrevious: ts.SyntaxKind | undefined;
   /** What the group the latest token closed was opened after. */
   #closed: GroupHead | undefined;
+  /** Whether the next token begins a statement, as the first one does. */
+  #nextBeginsStatement = true;
+  /**
+   * How many groups stood open at the declaring word of a declaration whose
+   * body has not been read yet: its body is the first brace opened at that
+   * depth where no type is written. Undefined where no such word was read.
+   */
+  #declaration: number | undefined;
+  /**
+   * What must follow a contextual declaring word just read for it to declare,
+   * and how many groups stood open at it. Undefined where none was.
+   */
+  #candidate:
+    | { readonly follows: ReadonlySet<ts.SyntaxKind>; readonly depth: number }
+    | undefined;
 
   constructor(allowed: boolean) {
     this.#allowed = allowed;
@@ -564,6 +645,17 @@ class SlashJudgement {
    * follows it -- JSX text -- is taken only for the groups it closes.
    */
   take(kind: ts.SyntaxKind, lineBreakBefore: boolean, judged = true): void {
+    const beginsStatement = this.#nextBeginsStatement;
+    // After a `.` a declaring word names a member, and no statement begins
+    // there.
+    if (this.#candidate?.follows.has(kind) === true)
+      this.#declaration = this.#candidate.depth;
+    this.#candidate = undefined;
+    if (beginsStatement && declarationKeywords.has(kind))
+      this.#declaration = this.#open.length;
+    const follows = contextualDeclarationKeywords.get(kind);
+    if (beginsStatement && follows !== undefined)
+      this.#candidate = { follows, depth: this.#open.length };
     let closed: GroupHead | undefined;
     const opener = opens.get(kind);
     if (opener !== undefined) {
@@ -590,6 +682,29 @@ class SlashJudgement {
             : kind,
         head: "other",
       });
+    if (this.#declaration !== undefined) {
+      // A `;` at the declaration's depth ends one with no body -- an
+      // overload, or an ambient declaration -- and a closer below it leaves
+      // the scope it was written in.
+      if (
+        this.#open.length < this.#declaration ||
+        (kind === ts.SyntaxKind.SemicolonToken &&
+          this.#open.length === this.#declaration)
+      )
+        this.#declaration = undefined;
+    }
+    this.#nextBeginsStatement =
+      kind === ts.SyntaxKind.SemicolonToken ||
+      kind === ts.SyntaxKind.ElseKeyword ||
+      kind === ts.SyntaxKind.DoKeyword ||
+      (kind === ts.SyntaxKind.OpenBraceToken &&
+        this.#open.at(-1)?.head === "block") ||
+      (declarationModifiers.has(kind)
+        ? beginsStatement
+        : // A declaring word cannot carry an expression on, so after one that
+          // ends an expression it begins a statement: by a line break, or as
+          // an error TypeScript reports.
+          judged && tokenCanEndExpression(kind));
     if (judged)
       this.#allowed =
         closed === "statement" || closed === "for" || closed === "block"
@@ -632,6 +747,13 @@ class SlashJudgement {
 
   #braceHead(): GroupHead {
     const previous = this.#previous;
+    if (
+      this.#declaration === this.#open.length &&
+      !(previous !== undefined && typeBraceAfter.has(previous))
+    ) {
+      this.#declaration = undefined;
+      return "block";
+    }
     if (previous === ts.SyntaxKind.CloseParenToken)
       return this.#closed === "statement" ||
         this.#closed === "for" ||

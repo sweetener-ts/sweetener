@@ -157,6 +157,57 @@ describe("what the reader judges a slash by", () => {
     ["a `for` head's `of`", "for (const x of /a/g.exec(s));", "re:/a/g"],
     ["`await`", "await /a/g.exec(s);", "re:/a/g"],
     ["a prefix `!`", "a\n!/a/.test(s);", "re:/a/"],
+    ["a function declaration", "function f() {}\n/re/.test(s);", "re:/re/"],
+    [
+      "a function declaration with an object return type",
+      "function f(): { a: 1 } {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "a function declaration with an object in its type parameters",
+      "function f<T extends { a: 1 } = {}>() {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "an async generator declaration",
+      "async function* f() {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "an exported default function",
+      "export default function () {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "a function declared after another statement",
+      "x = 1\nfunction f() {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "a function declared in a function's body",
+      "function f() {\n  function g() {}\n  /re/.test(s);\n}",
+      "re:/re/",
+    ],
+    ["a class declaration", "class C {}\n/re/.test(s);", "re:/re/"],
+    [
+      "a class declaration with an object in what it extends",
+      "class C extends B<{ a: 1 }> implements I {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    [
+      "a decorated abstract class",
+      "@d()\nexport abstract class C {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    ["an enum declaration", "const enum E { A }\n/re/.test(s);", "re:/re/"],
+    [
+      "an interface declaration",
+      "interface I extends J<{ a: 1 }> {}\n/re/.test(s);",
+      "re:/re/",
+    ],
+    ["a namespace declaration", "namespace N {}\n/re/.test(s);", "re:/re/"],
+    ["a module declaration", 'declare module "m" {}\n/re/.test(s);', "re:/re/"],
+    ["a global declaration", "declare global {}\n/re/.test(s);", "re:/re/"],
   ])("begins a regular expression after %s", (_, source, token) => {
     expect(tokens(source)).toContain(token);
   });
@@ -169,6 +220,19 @@ describe("what the reader judges a slash by", () => {
     ["a name spelled `of`", "x = of / 2 / 3;"],
     ["a name spelled `undefined`", "x = undefined / 2 / 3;"],
     ["a name spelled `type`", "x = type / 2 / 3;"],
+    ["a function expression", "x = function () {} / 2 / 3;"],
+    ["an async function expression", "x = async function () {} / 2 / 3;"],
+    ["a class expression", "x = class {} / 2 / 3;"],
+    ["an object after an overload", "function f(): void;\nx = {} / 2 / 3;"],
+    ["a method named `function`", "x = { function() {} }.a / 2 / 3;"],
+    [
+      "a function assigned to a name spelled `module`",
+      "module.exports = function () {} / 2 / 3;",
+    ],
+    [
+      "an object assigned to a name spelled `namespace`",
+      "namespace = {} / 2 / 3;",
+    ],
   ])("divides after %s", (_, source) => {
     expect(tokens(source).filter((token) => token === "/")).toHaveLength(2);
   });
