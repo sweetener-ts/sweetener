@@ -8,14 +8,26 @@ import type { BindingId, SyntaxId } from "@sweetener/shared";
 export type NameOccurrenceKind =
   "identifier" | "shorthand-value" | "import-binding";
 
-export interface BindingNameDeclaration {
+interface NamedBinding {
   readonly binding: BindingId;
   readonly preferredName: string;
+}
+
+/** A declaration that lists the bindings it conflicts with. */
+export interface BindingNameDeclaration extends NamedBinding {
   /**
    * Bindings simultaneously visible with this binding after hygiene erasure.
-   * None when absent; must be absent when every declaration conflicts.
+   * A declaration that conflicts with none lists none.
    */
-  readonly conflicts?: readonly BindingId[] | undefined;
+  readonly conflicts: readonly BindingId[];
+}
+
+/**
+ * A declaration among ones that each conflict with every other, which lists
+ * no conflicts of its own.
+ */
+export interface ConflictingBindingNameDeclaration extends NamedBinding {
+  readonly conflicts?: never;
 }
 
 export interface BindingNameOccurrence {
@@ -43,19 +55,36 @@ export interface NameAssignmentPlan {
   nameFor(binding: BindingId): string | undefined;
 }
 
-export interface AssignPrintedNamesOptions {
-  readonly declarations: readonly BindingNameDeclaration[];
-  /**
-   * Every declaration conflicts with every other. Saying so once spares
-   * listing the n² conflicts between n declarations, and lets each declaration
-   * take its name without looking at every name taken before it.
-   */
-  readonly everyDeclarationConflicts?: boolean | undefined;
+interface AssignPrintedNamesCommonOptions {
   /** Occurrences must be in expanded-file traversal order. */
   readonly occurrences: readonly BindingNameOccurrence[];
   /** Unbound or property names which generated binding names must not shadow. */
   readonly unavailableNames?: readonly string[] | undefined;
 }
+
+/** Declarations that each list what they conflict with. */
+export interface ListedConflictsOptions extends AssignPrintedNamesCommonOptions {
+  readonly declarations: readonly BindingNameDeclaration[];
+  readonly everyDeclarationConflicts?: false | undefined;
+}
+
+/**
+ * Declarations that each conflict with every other. Saying so once spares
+ * listing the n² conflicts between n declarations, and lets each declaration
+ * take its name without looking at every name taken before it.
+ */
+export interface EveryDeclarationConflictsOptions extends AssignPrintedNamesCommonOptions {
+  readonly declarations: readonly ConflictingBindingNameDeclaration[];
+  readonly everyDeclarationConflicts: true;
+}
+
+/**
+ * Either every declaration lists its conflicts, or none does and every one
+ * conflicts with every other: a declaration whose conflicts were forgotten is
+ * a type error, not one that conflicts with nothing.
+ */
+export type AssignPrintedNamesOptions =
+  ListedConflictsOptions | EveryDeclarationConflictsOptions;
 
 const reservedWords = new Set([
   "await",
@@ -140,21 +169,29 @@ function immutableMap<K, V>(source: ReadonlyMap<K, V>): ReadonlyMap<K, V> {
   } as ReadonlyMap<K, V>);
 }
 
+type AnyBindingNameDeclaration =
+  BindingNameDeclaration | ConflictingBindingNameDeclaration;
+
 /** `base`, then `base_1`, `base_2` and so on. */
 function suffixed(base: string, suffix: number): string {
   return suffix === 0 ? base : `${base}_${String(suffix)}`;
 }
 
 function namesForListedConflicts(
-  ordered: readonly BindingNameDeclaration[],
-  declarations: ReadonlyMap<BindingId, BindingNameDeclaration>,
+  ordered: readonly AnyBindingNameDeclaration[],
+  declarations: ReadonlyMap<BindingId, AnyBindingNameDeclaration>,
   unavailable: ReadonlySet<string>,
 ): Map<BindingId, string> {
   const conflictGraph = new Map<BindingId, Set<BindingId>>(
     ordered.map((declaration) => [declaration.binding, new Set()]),
   );
   for (const declaration of ordered) {
-    for (const conflict of declaration.conflicts ?? []) {
+    if (declaration.conflicts === undefined) {
+      throw new TypeError(
+        `Binding ${String(declaration.binding)} lists no conflicts, and not every declaration conflicts with every other`,
+      );
+    }
+    for (const conflict of declaration.conflicts) {
       if (!declarations.has(conflict)) {
         throw new RangeError(
           `Binding ${String(declaration.binding)} conflicts with unknown binding ${String(conflict)}`,
@@ -197,7 +234,7 @@ function namesForListedConflicts(
  * n declarations of one base.
  */
 function namesAllConflicting(
-  ordered: readonly BindingNameDeclaration[],
+  ordered: readonly AnyBindingNameDeclaration[],
   unavailable: ReadonlySet<string>,
 ): Map<BindingId, string> {
   const names = new Map<BindingId, string>();
@@ -205,7 +242,7 @@ function namesAllConflicting(
   const nextSuffix = new Map<string, number>();
   for (const declaration of ordered) {
     if (declaration.conflicts !== undefined) {
-      throw new RangeError(
+      throw new TypeError(
         `Binding ${String(declaration.binding)} lists its conflicts, but every declaration conflicts with every other`,
       );
     }
@@ -227,7 +264,7 @@ function namesAllConflicting(
 export function assignPrintedNames(
   options: AssignPrintedNamesOptions,
 ): NameAssignmentPlan {
-  const declarations = new Map<BindingId, BindingNameDeclaration>();
+  const declarations = new Map<BindingId, AnyBindingNameDeclaration>();
   for (const declaration of options.declarations) {
     if (declarations.has(declaration.binding)) {
       throw new RangeError(`Duplicate binding ${String(declaration.binding)}`);

@@ -199,6 +199,7 @@ describe("deterministic printed-name assignment", () => {
   test("refuses listed conflicts when every declaration conflicts", () => {
     expect(() =>
       assignPrintedNames({
+        // @ts-expect-error A declaration among all-conflicting ones lists none.
         declarations: [
           { binding: binding(1), preferredName: "x", conflicts: [binding(2)] },
           { binding: binding(2), preferredName: "x" },
@@ -210,6 +211,24 @@ describe("deterministic printed-name assignment", () => {
         ],
       }),
     ).toThrow(/lists its conflicts/);
+  });
+
+  // Absent conflicts once meant none, so a caller that forgot to list them
+  // was told every name was free.
+  test("refuses a declaration that does not list its conflicts", () => {
+    expect(() =>
+      assignPrintedNames({
+        // @ts-expect-error Each declaration lists its conflicts.
+        declarations: [
+          { binding: binding(1), preferredName: "x", conflicts: [binding(2)] },
+          { binding: binding(2), preferredName: "x" },
+        ],
+        occurrences: [
+          { syntax: syntax(1), binding: binding(1), kind: "identifier" },
+          { syntax: syntax(2), binding: binding(2), kind: "identifier" },
+        ],
+      }),
+    ).toThrow(/lists no conflicts/);
   });
 
   test("prints planned names and shorthand expansions without formatting", () => {
