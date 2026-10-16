@@ -122,6 +122,55 @@ describe("scope store", () => {
     }
   });
 
+  it("gives one set one ID however it was built", () => {
+    let seed = 0x7a3e_c41;
+    const random = (): number => {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      return seed;
+    };
+    const store = new ScopeStore();
+    const scopes = Array.from({ length: 12 }, () => store.freshScope());
+    const models: Set<ScopeId>[] = [new Set()];
+    const ids: ScopeSetId[] = [store.empty()];
+    const idByContent = new Map<string, ScopeSetId>([["", store.empty()]]);
+    for (let iteration = 0; iteration < 3_000; iteration += 1) {
+      const baseIndex = random() % ids.length;
+      const otherIndex = random() % ids.length;
+      const scope = scopes[random() % scopes.length]!;
+      const model = new Set(models[baseIndex]);
+      let id: ScopeSetId;
+      switch (random() % 4) {
+        case 0:
+          model.add(scope);
+          id = store.add(ids[baseIndex]!, scope);
+          break;
+        case 1:
+          model.delete(scope);
+          id = store.remove(ids[baseIndex]!, scope);
+          break;
+        case 2:
+          if (model.has(scope)) model.delete(scope);
+          else model.add(scope);
+          id = store.flip(ids[baseIndex]!, scope);
+          break;
+        default:
+          for (const other of models[otherIndex]!) model.add(other);
+          id = store.union(ids[baseIndex]!, ids[otherIndex]!);
+      }
+      const sorted = [...model].sort((left, right) => left - right);
+      expect(store.debugRecord(id).scopes).toEqual(sorted);
+      expect(store.size(id)).toBe(sorted.length);
+      for (const candidate of scopes) {
+        expect(store.has(id, candidate)).toBe(model.has(candidate));
+      }
+      const content = sorted.join(",");
+      expect(idByContent.get(content) ?? id).toBe(id);
+      idByContent.set(content, id);
+      ids.push(id);
+      models.push(model);
+    }
+  });
+
   it("allocates large batches without exposing mutable set storage", () => {
     const store = new ScopeStore();
     let set = store.empty();
