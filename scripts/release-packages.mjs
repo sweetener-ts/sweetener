@@ -48,8 +48,10 @@ export const unpublished = Object.freeze(["test-support"]);
  *
  * Only what a published package actually reaches for: the command line and the
  * Node loader use the TypeScript host, and the Prettier plugin reads syntax
- * without expanding it. The other seven layers have no entry point, which is
- * the point — they stop being a public surface.
+ * without expanding it, and reads which macros a file defines and imports for
+ * syntax, so that it leaves what a macro reads as written. The other six
+ * layers have no entry point, which is the point — they stop being a public
+ * surface.
  */
 export const coreEntryPoints = Object.freeze({
   ".": core,
@@ -57,6 +59,7 @@ export const coreEntryPoints = Object.freeze({
   "./reader": "reader",
   "./syntax": "syntax",
   "./shared": "shared",
+  "./macro-language": "macro-language",
 });
 
 /**
