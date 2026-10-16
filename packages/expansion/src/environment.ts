@@ -1,6 +1,12 @@
-import type { Binding, Phase, SyntaxSpace } from "@sweetener/hygiene";
+import {
+  bindingIndexKey,
+  type Binding,
+  type Phase,
+  type SyntaxSpace,
+} from "@sweetener/hygiene";
 import {
   createIdAllocator,
+  PersistentList,
   PersistentStringMap,
   type BindingId,
   type DefinitionContextId,
@@ -81,14 +87,6 @@ export function syntaxSpaceForCategory(category: SyntaxCategory): SyntaxSpace {
   }
 }
 
-function bindingKey(
-  spelling: string,
-  phase: Phase,
-  space: SyntaxSpace,
-): string {
-  return `${String(spelling.length)}:${spelling}|${String(phase)}|${space}`;
-}
-
 function operatorKey(
   spelling: string,
   phase: Phase,
@@ -126,9 +124,19 @@ class PersistentExpansionEnvironment implements ExpansionEnvironment {
     readonly parent: ExpansionEnvironment | undefined,
     readonly depth: number,
     readonly definitionContext: DefinitionContextId,
+    /**
+     * The bindings this frame holds for each key, in the order they were
+     * added. Adding one extends its key's list without copying it.
+     */
     readonly bindings: PersistentStringMap<
-      readonly Binding[]
+      PersistentList<Binding>
     > = PersistentStringMap.empty(),
+    /** Every binding this frame holds, by its key and ID. */
+    readonly bindingIds: PersistentStringMap<true> = PersistentStringMap.empty(),
+    /**
+     * The operators this frame holds for each key. A key holds at most one
+     * operator of each fixity, so at most three.
+     */
     readonly operators: PersistentStringMap<
       readonly OperatorBinding[]
     > = PersistentStringMap.empty(),
@@ -139,7 +147,8 @@ class PersistentExpansionEnvironment implements ExpansionEnvironment {
   [extendEnvironment](
     id: EnvironmentId,
     epoch: EnvironmentEpoch,
-    bindings: PersistentStringMap<readonly Binding[]>,
+    bindings: PersistentStringMap<PersistentList<Binding>>,
+    bindingIds: PersistentStringMap<true>,
     operators: PersistentStringMap<readonly OperatorBinding[]>,
   ): PersistentExpansionEnvironment {
     return new PersistentExpansionEnvironment(
@@ -150,6 +159,7 @@ class PersistentExpansionEnvironment implements ExpansionEnvironment {
       this.depth,
       this.definitionContext,
       bindings,
+      bindingIds,
       operators,
     );
   }
@@ -195,13 +205,15 @@ export class ExpansionEnvironmentStore {
         "Expansion environment accepts only syntax-space bindings",
       );
     }
-    const key = bindingKey(binding.spelling, binding.phase, binding.space);
-    const local = checked.bindings.get(key) ?? [];
-    if (local.some((candidate) => candidate.id === binding.id)) return checked;
+    const key = bindingIndexKey(binding.spelling, binding.phase, binding.space);
+    const idKey = `${String(binding.id)}#${key}`;
+    if (checked.bindingIds.get(idKey) !== undefined) return checked;
+    const local = checked.bindings.get(key) ?? PersistentList.empty();
     return checked[extendEnvironment](
       this.#environmentIds.allocate(),
       this.#epochs.allocate(),
-      checked.bindings.set(key, Object.freeze([...local, binding])),
+      checked.bindings.set(key, local.append(binding)),
+      checked.bindingIds.set(idKey, true),
       checked.operators,
     );
   }
@@ -211,7 +223,7 @@ export class ExpansionEnvironmentStore {
     query: ExpansionBindingQuery,
   ): readonly Binding[] {
     this.#require(environment);
-    const key = bindingKey(
+    const key = bindingIndexKey(
       query.spelling,
       query.phase,
       syntaxSpaceForCategory(query.category),
@@ -220,7 +232,8 @@ export class ExpansionEnvironmentStore {
     while (current !== undefined) {
       const checked = this.#require(current);
       const candidates = checked.bindings.get(key);
-      if (candidates !== undefined && candidates.length > 0) return candidates;
+      if (candidates !== undefined && candidates.length > 0)
+        return Object.freeze(candidates.toArray());
       current = checked.parent;
     }
     return Object.freeze([]);
@@ -245,6 +258,7 @@ export class ExpansionEnvironmentStore {
       this.#environmentIds.allocate(),
       this.#epochs.allocate(),
       checked.bindings,
+      checked.bindingIds,
       checked.operators.set(key, Object.freeze([...local, value])),
     );
   }

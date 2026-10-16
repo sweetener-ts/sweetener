@@ -302,4 +302,30 @@ describe("expansion environments", () => {
       }),
     ).toHaveLength(1);
   });
+
+  test("keeps many bindings of one spelling in order in every snapshot", () => {
+    const store = new ExpansionEnvironmentStore();
+    const query = { spelling: "form", phase, category: "expr" } as const;
+    const declarations = Array.from({ length: 2_000 }, (_, index) =>
+      binding(index + 1, "form"),
+    );
+    const versions = [store.createRoot()];
+    for (const declaration of declarations)
+      versions.push(store.extendBinding(versions.at(-1)!, declaration));
+    // Re-extending any of them, however old, leaves the snapshot as it is.
+    const last = versions.at(-1)!;
+    expect(store.extendBinding(last, declarations[0]!)).toBe(last);
+    expect(store.extendBinding(last, declarations[1_000]!)).toBe(last);
+    for (const size of [0, 1, 999, 2_000]) {
+      expect(
+        store.lookupBindings(versions[size]!, query).map(({ id }) => id),
+      ).toEqual(declarations.slice(0, size).map(({ id }) => id));
+    }
+    // An older snapshot extended with a binding a later one holds gains it.
+    const branched = store.extendBinding(versions[10]!, declarations[1_500]!);
+    expect(store.lookupBindings(branched, query).map(({ id }) => id)).toEqual([
+      ...declarations.slice(0, 10).map(({ id }) => id),
+      declarations[1_500]!.id,
+    ]);
+  });
 });
