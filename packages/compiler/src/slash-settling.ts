@@ -7,17 +7,22 @@ import type {
 } from "@sweetener/syntax";
 
 /**
- * How many times one source is read to settle how its slashes read.
+ * How many reads in a row may settle no slash that no read before them
+ * settled, before the last of them reports what it still finds.
  *
  * The enforester finds a slash read the other way from the grammar wherever
  * it reaches one, and a source is read again with every slash it found read
  * as it found it. Its finding at a slash depends on what was read in front of
  * it, which the readings of the slashes there settle, so the reads come to
- * agree with the enforester, usually after one read again. A read whose
- * findings it acts on is one closer to that only while the findings were
- * made in syntax that stands, and a macro's rules decide by what is written
- * after the slash too; so the number of reads is bounded rather than trusted,
- * and the last one reports what it still finds instead of reading again.
+ * agree with the enforester. A read that asks for a reading no read asked for
+ * before has made progress, and there are only two readings of each slash in
+ * a source, so reads that make progress end by themselves however many a
+ * source needs: a regular expression holding a bracket hides the next one from
+ * the enforester until it is read as one, so a source of many such needs a
+ * read for each. A read that asks only for readings asked for before goes
+ * round where an earlier one went -- a finding made in syntax that a later
+ * reading took apart, or a macro's rule that decides by what is written after
+ * the slash -- and only those reads are counted against this.
  */
 export const slashReadLimit = 8;
 
@@ -28,28 +33,51 @@ export type SlashAttempt<Settled, Readings> =
 
 /**
  * Reads a source, by `attempt`, until its slashes settle: from `readings`,
- * and then with each set of readings an attempt asks to be read with, at most
- * `limit` times. The last attempt is told it is the last, and settles with
- * whatever it found.
+ * and then with each set of readings an attempt asks to be read with.
+ * `asked` names each reading a set holds, so that a read asking for one no
+ * read asked for before is told from one that only asks again; after `limit`
+ * reads in a row of the second kind the next is told it is the last, and
+ * settles with whatever it found. Each attempt is told how many reads it
+ * makes, itself included.
  */
 export function settleSlashReadings<Settled, Readings>(
   readings: Readings,
+  asked: (readings: Readings) => Iterable<string>,
   attempt: (
     readings: Readings,
     final: boolean,
+    reads: number,
   ) => SlashAttempt<Settled, Readings>,
   limit: number = slashReadLimit,
 ): Settled {
+  const seen = new Set(asked(readings));
   let current = readings;
-  for (let read = 1; ; read += 1) {
-    const result = attempt(current, read >= limit);
+  /** How many reads in a row have asked for nothing new. */
+  let repeated = 0;
+  for (let reads = 1; ; reads += 1) {
+    const final = repeated >= limit - 1;
+    const result = attempt(current, final, reads);
     if (result.kind === "settled") return result.settled;
-    if (read >= limit)
+    if (final)
       throw new RangeError(
-        `A read told it was the last of ${String(limit)} asked to be read again`,
+        `A read told it was the last after ${String(limit)} that settled nothing new asked to be read again`,
       );
+    let progressed = false;
+    for (const reading of asked(result.readings))
+      if (!seen.has(reading)) {
+        seen.add(reading);
+        progressed = true;
+      }
+    repeated = progressed ? 0 : repeated + 1;
     current = result.readings;
   }
+}
+
+/** Names each reading of one source's `readings`, for `settleSlashReadings`. */
+export function askedReadings(readings: SlashReadings): Iterable<string> {
+  return [...readings].map(
+    ([offset, reading]) => `${String(offset)} ${reading}`,
+  );
 }
 
 /**

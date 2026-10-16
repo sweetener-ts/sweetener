@@ -65,9 +65,9 @@ import {
   type Trivia,
 } from "@sweetener/syntax";
 import {
+  askedReadings,
   nextSlashReadings,
   settleSlashReadings,
-  slashReadLimit,
   writtenSource,
   type SlashAttempt,
 } from "./slash-settling.js";
@@ -863,8 +863,14 @@ export class DefaultProjectExpansionProvider
     return settleSlashReadings<
       DefaultProjectExpansionOutput,
       ReadonlyMap<string, SlashReadings>
-    >(new Map(), (readings, final) =>
-      this.#expandProjectReading(project, recorder, readings, final),
+    >(
+      new Map(),
+      (readings) =>
+        [...readings].flatMap(([fileName, file]) =>
+          [...askedReadings(file)].map((reading) => `${fileName} ${reading}`),
+        ),
+      (readings, final, reads) =>
+        this.#expandProjectReading(project, recorder, readings, final, reads),
     );
   }
 
@@ -873,6 +879,7 @@ export class DefaultProjectExpansionProvider
     recorder: InputRecorder,
     readings: ReadonlyMap<string, SlashReadings>,
     final: boolean,
+    projectReads: number,
   ): SlashAttempt<
     DefaultProjectExpansionOutput,
     ReadonlyMap<string, SlashReadings>
@@ -1494,6 +1501,7 @@ export class DefaultProjectExpansionProvider
     const expandFile = (
       file: ParsedFile,
       final: boolean,
+      reads: number,
     ): SlashAttempt<undefined, SlashReadings> => {
       const held: Diagnostic[] = [];
       /** The slashes of the file's text found read the other way, by offset. */
@@ -1749,7 +1757,7 @@ export class DefaultProjectExpansionProvider
               start: offset,
               end: offset + 1,
             },
-            messageArguments: [reading, slashReadLimit],
+            messageArguments: [reading, reads],
           }),
         );
       }
@@ -2032,14 +2040,15 @@ export class DefaultProjectExpansionProvider
       let file = projectFile;
       settleSlashReadings<undefined, SlashReadings>(
         file.slashReadings,
-        (slashReadings, last) => {
+        askedReadings,
+        (slashReadings, last, fileReads) => {
           const alone = readAlone(file);
           if (slashReadings !== file.slashReadings) {
             const again = alone ? readAgain(file, slashReadings) : undefined;
             if (again === undefined) {
               // On the project's last read the file settles as it was read,
               // and says what it still found.
-              if (final) return expandFile(file, true);
+              if (final) return expandFile(file, true, projectReads);
               passReadings.set(file.fileName, slashReadings);
               rereadProject = true;
               return { kind: "settled", settled: undefined };
@@ -2047,7 +2056,9 @@ export class DefaultProjectExpansionProvider
             passReadings.set(file.fileName, again.slashReadings);
             file = again;
           }
-          return expandFile(file, alone ? last : final);
+          return alone
+            ? expandFile(file, last, fileReads)
+            : expandFile(file, final, projectReads);
         },
       );
     }
