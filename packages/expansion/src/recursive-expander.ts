@@ -26,6 +26,7 @@ import {
   createTrivia,
   isIdentifierToken,
   isPropertyNameToken,
+  leadingLineBreak,
   spanEnvelope,
   type ExpressionForm,
   type GroupSyntax,
@@ -1716,22 +1717,33 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
 
   /**
    * Where the type parameter list whose `>` stands just before `end` in `run`
-   * opens: the index of its `<`. Undefined where no `>` stands there, or where
-   * the list it closes never opened.
+   * opens: the index of the token its `<` is written in, and whether that
+   * token opens something else first. `Array<<T>(x: T) => T>` writes the
+   * type arguments' `<` and the type parameters' as one `<<`. Undefined where
+   * no `>` stands there, or where the list it closes never opened.
    */
-  const typeParametersOpenBefore = (
+  const typeParameterListOpening = (
     run: SyntaxRun,
     end: number,
-  ): number | undefined => {
+  ): { readonly open: number; readonly shared: boolean } | undefined => {
     if (angles(nodeAt(run, end - 1), ">") === 0) return undefined;
     let depth = 0;
     for (let at = end - 1; at >= 0; at -= 1) {
       const node = nodeAt(run, at)!;
       depth += angles(node, ">") - angles(node, "<");
-      if (depth <= 0) return at;
+      if (depth <= 0) return { open: at, shared: depth < 0 };
     }
     return undefined;
   };
+
+  /**
+   * Where the type parameter list whose `>` stands just before `end` in `run`
+   * opens, as `typeParameterListOpening` answers it.
+   */
+  const typeParametersOpenBefore = (
+    run: SyntaxRun,
+    end: number,
+  ): number | undefined => typeParameterListOpening(run, end)?.open;
 
   /** The words that may modify a type parameter, written before its name. */
   const typeParameterModifiers = new Set(["const", "in", "out"]);
@@ -1749,7 +1761,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     extent: Extent,
     ofClass = false,
   ): void => {
-    let depth = angles(nodes[open], "<");
+    // The list's own `<` is the last its opening token writes.
+    let depth = 1;
     let entryBegins = true;
     for (let at = open + 1; at < nodes.length && depth > 0; at += 1) {
       const node = nodes[at]!;
@@ -1761,36 +1774,53 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       }
       if (!entryBegins) continue;
       const next = nodes[at + 1];
+      // A modifier is followed by the parameter's name, or by another
+      // modifier: `in out T`. Followed by anything else it is the name,
+      // which a contextual keyword may be.
       if (
         typeParameterModifiers.has(node.raw) &&
         next?.tag === "token" &&
-        next.kind === "identifier"
+        isIdentifierToken(next)
       )
         continue;
-      if (node.kind === "identifier")
+      if (isIdentifierToken(node))
         recordType(into, node.raw, node.scopes, extent, ofClass);
       entryBegins = false;
     }
   };
 
   /**
-   * Records what each `infer` written in `nodes`, at any depth, declares,
-   * within `extent`.
+   * Records what each `infer` written in `nodes` from `from` up to `to`, at
+   * any depth, declares, within `extent`.
+   *
+   * An `infer` in the `extends` clause of a conditional type written inside
+   * the clause belongs to that conditional, which binds it in its own true
+   * branch when the walk reaches it: in `X extends (Y extends infer U ? U :
+   * never) ? U : never` the second `U` is not the first's.
    */
   const bindInferred = (
     nodes: readonly Syntax[],
     into: CollectedBindings,
     extent: Extent,
+    from = 0,
+    to = nodes.length,
   ): void => {
-    for (let at = 0; at < nodes.length; at += 1) {
+    for (let at = from; at < to; at += 1) {
       const node = nodes[at]!;
+      if (spelling(node) === "extends") {
+        const question = conditionalCheckEnd(nodes, at + 1);
+        if (question !== undefined && question < to) {
+          at = question;
+          continue;
+        }
+      }
       if (node.tag === "group" || node.tag === "protected")
         bindInferred(node.children, into, extent);
       const name = nodes[at + 1];
       if (
         spelling(node) === "infer" &&
         name?.tag === "token" &&
-        name.kind === "identifier"
+        isIdentifierToken(name)
       )
         recordType(into, name.raw, name.scopes, extent);
     }
@@ -1921,6 +1951,15 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       into,
       extent,
     );
+
+  /**
+   * Where the name of the declaration whose keyword stands at `at` in `nodes`
+   * stands: just after the keyword, or after the `*` of a `function*`.
+   */
+  const declaredNameAt = (nodes: readonly Syntax[], at: number): number =>
+    spelling(nodes[at]) === "function" && spelling(nodes[at + 1]) === "*"
+      ? at + 2
+      : at + 1;
 
   /** Words a declared `function` or `class` may be written after. */
   const declarationModifiers = new Set(["async", "declare", "abstract"]);
@@ -2084,11 +2123,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       return undefined;
     }
     const named = namedDeclarations.get(node.raw);
-    const name = nodes[at + 1];
+    const name = nodes[declaredNameAt(nodes, at)];
     if (
       named !== undefined &&
       name?.tag === "token" &&
-      name.kind === "identifier" &&
+      isIdentifierToken(name) &&
       ((node.raw !== "function" && node.raw !== "class") ||
         declaresAt(nodes, at))
     ) {
@@ -2096,6 +2135,47 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       if (named !== "value") recordType(into, name.raw, name.scopes, wholeRun);
     }
     return undefined;
+  };
+
+  /**
+   * Whether a member of a type literal or an interface begins at `at` in
+   * `nodes`, a run of them: at the start of the run, after a member's `;` or
+   * `,` or a member the reader read, or on a line of its own.
+   */
+  const typeMemberBeginsAt = (
+    nodes: readonly Syntax[],
+    at: number,
+  ): boolean => {
+    const previous = nodes[at - 1];
+    if (previous === undefined) return true;
+    if (previous.tag === "token" && memberEnds.has(previous.raw)) return true;
+    if (previous.tag === "protected" && previous.category === "typeMember")
+      return true;
+    return leadingLineBreak(nodes[at]);
+  };
+
+  /**
+   * Whether the type parameter list whose `<` stands at `open` in `nodes`, a
+   * run of types or type members, is a signature's: a call signature's,
+   * written where a member begins; a construct signature's, after `new`; or
+   * a method signature's, after a name that begins a member and the `?` that
+   * may follow it. Written after any other name it is that name's type
+   * arguments: `a: Array<T>` with a call signature on the line under it.
+   */
+  const signatureTypeParametersAt = (
+    nodes: readonly Syntax[],
+    open: number,
+  ): boolean => {
+    if (typeMemberBeginsAt(nodes, open)) return true;
+    let name = open - 1;
+    if (spelling(nodes[name]) === "new") return true;
+    if (spelling(nodes[name]) === "?") name -= 1;
+    const named = nodes[name];
+    const isName =
+      named?.tag === "token"
+        ? isPropertyNameToken(named)
+        : named?.tag === "group" && named.delimiter === "bracket";
+    return isName && typeMemberBeginsAt(nodes, name);
   };
 
   /**
@@ -2161,7 +2241,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           category === "typeMember" &&
           node.delimiter === "bracket" &&
           mappedKey?.tag === "token" &&
-          mappedKey.kind === "identifier" &&
+          isIdentifierToken(mappedKey) &&
           spelling(node.children[1]) === "in"
         )
           recordType(into, mappedKey.raw, mappedKey.scopes, {
@@ -2215,7 +2295,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
             bindTypeParameters(nodes, open, into, { from: open, to: end });
         } else if (
           open !== undefined &&
-          (typesRun ||
+          ((typesRun && signatureTypeParametersAt(nodes, open)) ||
             (category === "classElement" &&
               open > memberStart &&
               classMemberNameFollows(nodes.slice(memberStart, open - 1))))
@@ -2235,12 +2315,13 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       const named = namedDeclarations.get(node.raw);
       const expression = node.raw === "function" || node.raw === "class";
       if (named !== undefined && (statements || expression)) {
-        const name = nodes[at + 1];
+        const nameAt = declaredNameAt(nodes, at);
+        const name = nodes[nameAt];
         const declared = statements && (!expression || declaresAt(nodes, at));
         const extent: Extent = declared
           ? { from: at, to: declarationEnd(nodes, at) }
           : { from: at, to: closureEndAt(nodes, at)?.end ?? nodes.length };
-        if (name?.tag === "token" && name.kind === "identifier") {
+        if (name?.tag === "token" && isIdentifierToken(name)) {
           // A function or class expression's name is bound inside it alone.
           if (!declared) {
             if (named !== "type")
@@ -2248,12 +2329,12 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
             if (named !== "value")
               recordType(into, name.raw, name.scopes, extent);
           }
-          if (spelling(nodes[at + 2]) === "<")
+          if (spelling(nodes[nameAt + 1]) === "<")
             bindTypeParameters(
               nodes,
-              at + 2,
+              nameAt + 1,
               into,
-              { from: at + 2, to: extent.to },
+              { from: nameAt + 1, to: extent.to },
               node.raw === "class",
             );
         } else if (node.raw === "class" && spelling(name) === "<")
@@ -2275,17 +2356,20 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       if (node.raw === "extends") {
         const question = conditionalCheckEnd(nodes, at + 1);
         if (question !== undefined)
-          bindInferred(nodes.slice(at + 1, question), into, {
-            from: at,
-            to: trueBranchEnd(nodes, question),
-          });
+          bindInferred(
+            nodes,
+            into,
+            { from: at, to: trueBranchEnd(nodes, question) },
+            at + 1,
+            question,
+          );
         continue;
       }
       // An arrow's single parameter is written without parentheses, and is
       // bound to the end of the arrow's body.
       const following = nodes[at + 1];
       if (
-        node.kind === "identifier" &&
+        isIdentifierToken(node) &&
         following?.tag === "token" &&
         following.raw === "=>"
       )
@@ -2407,6 +2491,24 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   ]);
 
   /**
+   * Tokens after which a function type, written as an arrow is, begins, and
+   * an arrow expression cannot: after `new` it is a constructor type, `new
+   * <T>(x: T) => T`; after a type argument list's `<` one of its types,
+   * `Array<(x: T) => T>`; and after `extends`, `as`, `satisfies`, `|` or `&`
+   * the type they read.
+   */
+  const functionTypeHeads = new Set([
+    "new",
+    "<",
+    "<<",
+    "extends",
+    "as",
+    "satisfies",
+    "|",
+    "&",
+  ]);
+
+  /**
    * Where the syntax before an arrow's head ends, when the head ends at `end`
    * in `run`: `async` and a type parameter list are read past. Undefined where
    * a type parameter list does not close.
@@ -2414,9 +2516,12 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const arrowHeadBefore = (run: SyntaxRun, end: number): number | undefined => {
     let at = end - 1;
     if (angles(nodeAt(run, at), ">") > 0) {
-      const open = typeParametersOpenBefore(run, end);
-      if (open === undefined) return undefined;
-      at = open - 1;
+      const opening = typeParameterListOpening(run, end);
+      if (opening === undefined) return undefined;
+      // A `<<` holds the `<` before the list as well as the list's own, and
+      // nothing but that `<` stands between the two.
+      if (opening.shared) return opening.open;
+      at = opening.open - 1;
     }
     const modifier = nodeAt(run, at);
     if (modifier?.tag === "token" && modifier.raw === "async") at -= 1;
@@ -2440,7 +2545,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     if (previous.tag === "group") return previous.delimiter === "brace";
     if (previous.tag === "protected") return previous.category !== "expr";
     return (
-      previous.tag === "token" && assignmentExpressionHeads.has(previous.raw)
+      previous.tag === "token" &&
+      (assignmentExpressionHeads.has(previous.raw) ||
+        functionTypeHeads.has(previous.raw))
     );
   };
 

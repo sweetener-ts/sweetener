@@ -332,6 +332,68 @@ const boundaries: readonly Boundary[] = [
     outside: ["readonly number[]"],
   },
   {
+    name: "a generator's name",
+    source:
+      "export function* twice(v: number): Generator<number> { yield v; }\nexport const after = twice(2);",
+    inside: ["after = twice(2)"],
+    outside: [],
+  },
+  {
+    name: "a generator expression's name",
+    source:
+      "export const f = function* twice(v: number): Generator<number> { yield* twice(v); };\nexport const after = twice(2);",
+    inside: ["yield* twice(v);"],
+    outside: ["(2 + 2)"],
+  },
+  {
+    name: "a constructor type's type parameter",
+    source:
+      "export type C = new <boxed>(x: boxed) => boxed;\nexport type After = boxed;",
+    inside: ["new <boxed>(x: boxed) => boxed;"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "a constructor type's type parameter, in a parameter's annotation",
+    source:
+      "export function f(c: new <boxed>(x: boxed) => boxed): void { void c; }\nexport type After = boxed;",
+    inside: ["new <boxed>(x: boxed) => boxed)"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "a constructor type's type parameter, in a type argument",
+    source:
+      "export type C = Array<new <boxed>(x: boxed) => boxed>;\nexport type After = boxed;",
+    inside: ["new <boxed>(x: boxed) => boxed>"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "a function type's type parameter, opening a type argument",
+    source:
+      "export type C = Array<<boxed>(x: boxed) => boxed>;\nexport type After = boxed;",
+    inside: ["<<boxed>(x: boxed) => boxed>"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "a type parameter with two variance modifiers",
+    source:
+      "export type L<in out boxed> = { v: boxed };\nexport type After = boxed;",
+    inside: ["{ v: boxed }"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "what `infer` declares, in a conditional inside an `extends` clause",
+    source:
+      "export type N<X> = X extends (X extends infer boxed ? boxed : never) ? boxed : never;",
+    inside: ["infer boxed ? boxed : never)"],
+    outside: ["? readonly number[] : never;"],
+  },
+  {
+    name: "a type argument list before a call signature on the next line",
+    source: "export type P = {\n  a: Array<boxed>\n  (x: string): void\n};",
+    inside: [],
+    outside: ["Array<readonly number[]>"],
+  },
+  {
     name: "a mapped type's key",
     source:
       "export type M<K extends string> = { [boxed in K]: boxed } | boxed;",
