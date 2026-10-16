@@ -296,6 +296,24 @@ function commitExists(commit) {
  * byte-for-byte render comparison fail from 0.1.0-alpha.3 until `a943ead`
  * removed the marker.
  */
+/**
+ * What a check report says happened, in the validation table's words.
+ *
+ * A run fails without failing a test when a test file cannot be loaded or an
+ * error belongs to no test, so the files that failed and the exit code are
+ * asked after the tests: counted by tests alone, such a run read as a pass.
+ * A report written before either was recorded has neither, and is read by
+ * its tests.
+ */
+export function checkResult(report) {
+  if ((report.failed ?? 0) > 0) return `${report.failed} failed`;
+  if ((report.failedFiles ?? 0) > 0)
+    return `${report.failedFiles} test files failed`;
+  if ((report.exitCode ?? 0) !== 0)
+    return `run failed (exit ${report.exitCode})`;
+  return `${report.passed ?? 0} passed`;
+}
+
 export function staleReports(reports, head, exists = commitExists) {
   if (head === undefined) return [];
   const stale = [];
@@ -381,12 +399,8 @@ export async function renderStatus(state, review) {
   } else {
     lines.push("| Check | Result | Commit |", "|---|---|---|");
     for (const report of reports) {
-      const result =
-        report.failed > 0
-          ? `${report.failed} failed`
-          : `${report.passed ?? 0} passed`;
       lines.push(
-        `| ${report.name} | ${result} | ${report.commit ?? "unknown"} |`,
+        `| ${report.name} | ${checkResult(report)} | ${report.commit ?? "unknown"} |`,
       );
     }
     lines.push("");

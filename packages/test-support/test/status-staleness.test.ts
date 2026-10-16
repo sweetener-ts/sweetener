@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { staleReports } from "../../../scripts/status-lib.mjs";
+import { checkResult, staleReports } from "../../../scripts/status-lib.mjs";
 
 /**
  * `STATUS.md` records the commit each check ran at, and until now nothing read
@@ -47,5 +47,34 @@ describe("check report staleness", () => {
     expect(
       staleReports([{ name: "unit", commit: "abc1234" }], undefined, exists),
     ).toEqual([]);
+  });
+});
+
+/**
+ * A run can fail without failing a test: a test file that cannot be loaded,
+ * or an error no test owns. Counted by tests alone, `STATUS.md` recorded such
+ * a run as a pass.
+ */
+describe("a check report's result", () => {
+  it("is its failed tests where any failed", () => {
+    expect(checkResult({ passed: 10, failed: 2 })).toBe("2 failed");
+  });
+
+  it("is a failure where a test file failed and no test did", () => {
+    expect(checkResult({ passed: 10, failed: 0, failedFiles: 1 })).toBe(
+      "1 test files failed",
+    );
+  });
+
+  it("is a failure where the run exited badly and nothing else says so", () => {
+    expect(
+      checkResult({ passed: 10, failed: 0, failedFiles: 0, exitCode: 1 }),
+    ).toBe("run failed (exit 1)");
+  });
+
+  it("is a pass only where the tests, files and exit all say so", () => {
+    expect(
+      checkResult({ passed: 10, failed: 0, failedFiles: 0, exitCode: 0 }),
+    ).toBe("10 passed");
   });
 });

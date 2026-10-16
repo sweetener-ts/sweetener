@@ -4,6 +4,7 @@ export interface VitestRawReport {
   readonly numFailedTests: number;
   readonly numPendingTests: number;
   readonly numTodoTests: number;
+  readonly numFailedTestSuites: number;
   readonly testResults: readonly {
     readonly assertionResults: readonly {
       readonly status: string;

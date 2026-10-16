@@ -109,6 +109,12 @@ async function main() {
     durationMs: Math.round(performance.now() - start),
     passed: raw.numPassedTests,
     failed: raw.numFailedTests,
+    // A test file that fails to load, or an error no test owns, fails the run
+    // without failing a test: counted by tests alone, such a run read as a
+    // pass. What the run exited with is recorded beside the counts for that
+    // reason.
+    failedFiles: raw.numFailedTestSuites,
+    exitCode: result.status ?? 1,
     skipped: raw.numPendingTests + raw.numTodoTests,
     testFiles: raw.testResults.length,
     capabilities: ["FOUNDATION-WORKSPACE", "FOUNDATION-BOUNDARIES"],
