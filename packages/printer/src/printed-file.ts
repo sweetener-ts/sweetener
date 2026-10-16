@@ -21,6 +21,10 @@ import {
   type TokenSyntax,
 } from "@sweetener/syntax";
 import type { NameAssignmentPlan } from "./name-assignment.js";
+const orPrecedence = operatorPrecedence("||", "infix");
+const andPrecedence = operatorPrecedence("&&", "infix");
+const nullishPrecedence = operatorPrecedence("??", "infix");
+const asPrecedence = operatorPrecedence("as", "infix");
 
 export type GeneratedRegionKind = Origin["kind"] | "grouping";
 
@@ -1017,7 +1021,7 @@ function heldBefore(
     case ":":
       return commaPrecedence + 1;
     case "?":
-      return endsInType(expression) ? 0 : operatorPrecedence("??", "infix");
+      return endsInType(expression) ? 0 : nullishPrecedence;
     case ".":
     case "?.":
     case "!":
@@ -1280,7 +1284,7 @@ export function printExpandedFile<Trace>(
       // comma, and the last alternate an assignment-level one.
       const alternate = children.length - 1;
       for (let test = 0; test < alternate; test += 4) {
-        bind(children[test], operatorPrecedence("??", "infix"));
+        bind(children[test], nullishPrecedence);
         bind(children[test + 2], commaPrecedence + 1);
       }
       bind(children[alternate], assignmentPrecedence);
@@ -1318,23 +1322,21 @@ export function printExpandedFile<Trace>(
     // Each operator must be one of this node's level, which holds operators
     // of one associativity. A run the walk left flat -- `v = y ?? $e` read as
     // one node -- is not, and nothing in it is bound.
-    const ofThisLevel = operators.every((written) =>
-      coreExpressionOperators.some(
-        ({ spelling: candidate, fixity, precedence: level }) =>
-          candidate === written && fixity === "infix" && level === precedence,
-      ),
-    );
+    const ofThisLevel = () =>
+      operators.every(
+        (written) => coreOperator(written, "infix")?.precedence === precedence,
+      );
     if (
       children.length >= 3 &&
       operandAt(first) &&
       operandAt(last) &&
-      ofThisLevel
+      ofThisLevel()
     ) {
       const assignment = parent.form === "assignment";
       const rightAssociative = operators[0] === "**" || assignment;
       const logical = (node: ProtectedSyntax | undefined) =>
-        node?.precedence === operatorPrecedence("||", "infix") ||
-        node?.precedence === operatorPrecedence("&&", "infix");
+        node?.precedence === orPrecedence ||
+        node?.precedence === andPrecedence;
       operands.forEach((node, at) => {
         const inner = operand(node);
         const before = operators[at - 1];
@@ -1449,8 +1451,8 @@ export function printExpandedFile<Trace>(
       const nullish = (node: Neighbour) =>
         node !== "edge" && node?.tag === "token" && node.raw === "??";
       const logical =
-        item.precedence === operatorPrecedence("||", "infix") ||
-        item.precedence === operatorPrecedence("&&", "infix");
+        item.precedence === orPrecedence ||
+        item.precedence === andPrecedence;
       return (
         (holdingPrecedence(item) ?? -Infinity) >= required &&
         !(
@@ -2010,7 +2012,7 @@ export function printExpandedFile<Trace>(
           if (
             assertion.operand.tag === "protected" &&
             (holdingPrecedence(assertion.operand) ?? 0) >
-              operatorPrecedence("as", "infix")
+              asPrecedence
           )
             boundOperands.add(assertion.operand);
           pushChildren([assertion.operand]);

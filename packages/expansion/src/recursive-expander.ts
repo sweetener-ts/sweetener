@@ -580,6 +580,20 @@ interface Region {
   readonly statics: readonly Extent[] | undefined;
 }
 
+/** Where a run spells the infix operators asked about, as `infixSpellings` reads it. */
+interface InfixSpellings {
+  readonly spellings: string;
+  readonly positions: readonly number[];
+  readonly segmentEnds: readonly number[];
+}
+
+/** What a run spells when no infix operator is asked about. */
+const noInfixSpellings: InfixSpellings = Object.freeze({
+  spellings: "",
+  positions: Object.freeze([]),
+  segmentEnds: Object.freeze([]),
+});
+
 /**
  * What every walk of one expansion shares: the state it builds up and the
  * readings it asks of the syntax around a position.
@@ -1267,33 +1281,28 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * segment: a statement of fifty thousand operators read forwards from each
    * of them, though no operator macro was spelled anywhere in it.
    */
-  const infixSpellingsByRun = new WeakMap<
-    readonly Syntax[],
-    {
-      readonly spellings: string;
-      readonly positions: readonly number[];
-      readonly segmentEnds: readonly number[];
-    }
-  >();
+  const infixSpellingsByRun = new WeakMap<readonly Syntax[], InfixSpellings>();
   const infixSpellings = (
     input: readonly Syntax[],
     operators: CompileParsedMacrosResult["operators"],
   ) => {
+    // With no infix operator in scope there is nothing to find, and a run
+    // walked for none of them is not worth reading for where its segments end.
+    if (operators.length === 0) return noInfixSpellings;
     const spellings = operators.map(({ spelling }) => spelling).join(" ");
     const known = infixSpellingsByRun.get(input);
     if (known?.spellings === spellings) return known;
     const positions: number[] = [];
-    if (operators.length > 0)
-      input.forEach((node, at) => {
-        if (
-          node.tag === "token" &&
-          operators.some(
-            (operator) =>
-              operatorWidthAt(input, at, operator.spelling) !== undefined,
-          )
+    input.forEach((node, at) => {
+      if (
+        node.tag === "token" &&
+        operators.some(
+          (operator) =>
+            operatorWidthAt(input, at, operator.spelling) !== undefined,
         )
-          positions.push(at);
-      });
+      )
+        positions.push(at);
+    });
     const segmentEnds = new Array<number>(input.length + 1);
     segmentEnds[input.length] = input.length;
     for (let at = input.length - 1; at >= 0; at -= 1) {

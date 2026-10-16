@@ -267,6 +267,7 @@ function definitionRanges(
   origins: OriginStore,
 ) {
   const ranges: { start: number; end: number }[] = [];
+  if (parsed.definitions.length === 0) return ranges;
   // Where each top-level node stands, and the first node beginning at each
   // offset, found once for the module rather than searched for each of its
   // definitions: a module of many definitions searched its whole length for
@@ -1981,9 +1982,14 @@ export class DefaultProjectExpansionProvider
      * defines no macro and no file reads macros from it, so nothing but its
      * own expansion was made from what it read.
      */
-    const readAlone = (file: ParsedFile): boolean =>
-      file.parsed.definitions.length === 0 &&
-      ![...macroSources.values()].some((sources) => sources.has(file.sourceId));
+    let readFrom: ReadonlySet<SourceId> | undefined;
+    const readAlone = (file: ParsedFile): boolean => {
+      if (file.parsed.definitions.length !== 0) return false;
+      readFrom ??= new Set(
+        [...macroSources.values()].flatMap((sources) => [...sources]),
+      );
+      return !readFrom.has(file.sourceId);
+    };
     /**
      * `file` read again with `slashReadings`, in its place in the project;
      * undefined where the read reads the file's macros or its imports for

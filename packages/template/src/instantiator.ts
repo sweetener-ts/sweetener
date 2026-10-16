@@ -76,12 +76,12 @@ function unknownToken(node: Syntax | undefined, raw: string): boolean {
 /** The operand fold `syntax` carries, when it carries one. */
 export function foldCarrier(syntax: Syntax): FoldCarrier | undefined {
   if (syntax.tag !== "protected") return undefined;
-  const [marker, initial, ...steps] = syntax.children;
-  if (
-    !unknownToken(marker, foldSpelling) ||
-    initial?.tag !== "group" ||
-    steps.some((step) => step.tag !== "group")
-  )
+  // Asked of every protected node the walk meets, so the marker is checked
+  // before the rest of its children are gathered.
+  const [marker] = syntax.children;
+  if (!unknownToken(marker, foldSpelling)) return undefined;
+  const [, initial, ...steps] = syntax.children;
+  if (initial?.tag !== "group" || steps.some((step) => step.tag !== "group"))
     return undefined;
   return {
     marker: marker as TokenSyntax,

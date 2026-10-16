@@ -90,7 +90,7 @@ export function suppliedFileSystem(
  * bare `EISDIR` -- or a file that cannot be read.
  */
 function fileText(system: ExpansionSystem, path: string): string | undefined {
-  return system.fileExists(path) ? system.readFile(path) : undefined;
+  return system.readFile(path);
 }
 
 function realpathOf(system: ExpansionSystem, path: string): string {
