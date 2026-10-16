@@ -3175,19 +3175,79 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     category: SyntaxCategory,
     written: Syntax,
   ): boolean =>
-    regions.some(
-      (region, depth) =>
-        (category === "type" ? region.bindings.types : region.bindings.values)
-          ?.get(spelling)
-          ?.some(
-            (binder) =>
-              binder.from <= region.at &&
-              region.at < binder.to &&
-              options.scopeStore.subset(binder.scopes, written.scopes) &&
-              !(binder.ofClass && inStaticMember(depth)) &&
-              presentWith(written.scopes, binder, region),
-          ) === true,
-    );
+    regions.some((region, depth) => {
+      const binders = (
+        category === "type" ? region.bindings.types : region.bindings.values
+      )?.get(spelling);
+      if (binders === undefined) return false;
+      const applies = (binder: Binder): boolean =>
+        binder.from <= region.at &&
+        region.at < binder.to &&
+        options.scopeStore.subset(binder.scopes, written.scopes) &&
+        !(binder.ofClass && inStaticMember(depth)) &&
+        presentWith(written.scopes, binder, region);
+      if (binders.length <= scanLimit) return binders.some(applies);
+      const index = indexedBinders(binders);
+      if (index.unscoped.some(applies)) return true;
+      // A binder applies only to a name carrying its largest scope, so only
+      // the binders filed under a scope the name carries are asked, read from
+      // whichever of the two is shorter.
+      const scopes = options.scopeStore.scopesOf(written.scopes);
+      if (scopes.length <= index.byScope.size)
+        return scopes.some(
+          (scope) => index.byScope.get(scope)?.some(applies) === true,
+        );
+      for (const [scope, filed] of index.byScope)
+        if (
+          options.scopeStore.has(written.scopes, scope) &&
+          filed.some(applies)
+        )
+          return true;
+      return false;
+    });
+
+  /**
+   * How many binders of one spelling a lookup reads one by one before it
+   * files them by scope instead.
+   */
+  const scanLimit = 8;
+
+  /**
+   * The binders of one spelling in one region, filed under each one's
+   * largest scope: a name carries every scope of a binder that captures it,
+   * so it is asked only of the binders filed under scopes it carries. A
+   * region's binders of a spelling grow as the walk declares into the run,
+   * and the index files each once, the next time it is asked.
+   *
+   * Asked of every binder, a run that declares a name of one spelling per
+   * statement -- a file of invocations whose template each writes `const v`
+   * -- cost the square of its length.
+   */
+  interface BinderIndex {
+    filed: number;
+    readonly unscoped: Binder[];
+    readonly byScope: Map<ScopeId, Binder[]>;
+  }
+  const binderIndexes = new WeakMap<readonly Binder[], BinderIndex>();
+  const indexedBinders = (binders: readonly Binder[]): BinderIndex => {
+    let index = binderIndexes.get(binders);
+    if (index === undefined) {
+      index = { filed: 0, unscoped: [], byScope: new Map() };
+      binderIndexes.set(binders, index);
+    }
+    for (; index.filed < binders.length; index.filed += 1) {
+      const binder = binders[index.filed]!;
+      const largest = options.scopeStore.scopesOf(binder.scopes).at(-1);
+      if (largest === undefined) {
+        index.unscoped.push(binder);
+        continue;
+      }
+      const filed = index.byScope.get(largest);
+      if (filed === undefined) index.byScope.set(largest, [binder]);
+      else filed.push(binder);
+    }
+    return index;
+  };
 
   const liftFrames: LiftFrame[] = [];
 

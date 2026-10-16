@@ -21,6 +21,11 @@ const BINDERS = 2_000;
  * `v`, `v_1`, `v_2` from the start for every binding each cost the square of
  * the binders: 10,000 took a minute. A file of ordinary size never shows that,
  * because a few binders cost the same either way.
+ *
+ * Each template declares its `v` in the module's own run, beside the item it
+ * exports, where the expander asks whether the `v` the template reads is one
+ * of those declarations. Asked of every binder of the spelling the run held,
+ * that was the square of the invocations too: 8,000 took 14 s.
  */
 export function defineHygienicRenamesBenchmark() {
   const directory = mkdtempSync(join(tmpdir(), "sweet-hygienic-renames-"));
@@ -34,7 +39,7 @@ export function defineHygienicRenamesBenchmark() {
     `export syntax defineBound:item {
   rule { defineBound $name:binding; }
   bind $name in following as recursive value;
-  => { export const $name = (v: number) => v; }
+  => { const v = 1; export const $name = (w: number) => w + v; }
 }
 `,
   );
