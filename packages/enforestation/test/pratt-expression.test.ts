@@ -809,10 +809,14 @@ describe("Pratt expression consumer", () => {
     test("is not an arrow unless the operator says so", () => {
       const { resolver } = pipe({});
       const { result } = parse("x |> n => f(n)", resolver);
-      if (!result.matched) throw new Error("expected an expression");
-      // `=>` binds looser than the pipe, so the pipe becomes its parameters.
-      expect(result.syntax.form).toBe("arrow");
-      expect(operatorAt(result.syntax)).toBe("=>");
+      // `=>` binds looser than the pipe, so the `=>` stands after the whole
+      // pipe, and a pipe is no parameter list: the expression is refused
+      // rather than read as an arrow TypeScript never reads.
+      expect(result.matched).toBe(false);
+      if (result.matched) return;
+      expect(result.failure.expectations).toEqual([
+        "a parameter name or a parenthesized parameter list before '=>'",
+      ]);
     });
   });
 });
@@ -932,6 +936,21 @@ describe("an arrow the infix `=>` reads", () => {
     expect(operatorAt(result.syntax)).toBe("=>");
     expect(printLosslessSequence(result.syntax.children)).toBe(source);
   });
+
+  // TypeScript writes an arrow's parameters as one name or one parenthesized
+  // list. Read as parameters, any other operand built an arrow TypeScript
+  // never reads, and a macro that captured it emitted what it was not given.
+  test.each(["!a => b", "a || b => c", "a.b => c", "f(a) => b", "1 => b"])(
+    "refuses %s, whose operand is no parameter list",
+    (source) => {
+      const { result } = parse(source);
+      expect(result.matched).toBe(false);
+      if (result.matched) return;
+      expect(result.failure.expectations).toEqual([
+        "a parameter name or a parenthesized parameter list before '=>'",
+      ]);
+    },
+  );
 
   test("holds a block body as the brace it is", () => {
     const { result } = parse("(v) => { return v; }");

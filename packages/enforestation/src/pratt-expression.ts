@@ -6,6 +6,7 @@ import {
   createPrecedence,
   createProtectedSyntax,
   createSyntaxSequence,
+  isIdentifierToken,
   primaryPrecedence,
   sameLineInfix,
   unaryPrecedence,
@@ -1008,6 +1009,22 @@ function arrowRightOperand(
 }
 
 /**
+ * Whether `left` may stand as the parameters of an arrow the infix `=>`
+ * reads: one name, or one parenthesized list, as written or as a capture
+ * spliced into a template holds it.
+ */
+function arrowParameters(left: ParsedExpression): boolean {
+  const parameters = left.primary ? left.syntax.children : [left.syntax];
+  if (parameters.length !== 1) return false;
+  let parameter = parameters[0]!;
+  while (parameter.tag === "protected" && parameter.children.length === 1)
+    parameter = parameter.children[0]!;
+  return parameter.tag === "token"
+    ? isIdentifierToken(parameter)
+    : parameter.tag === "group" && parameter.delimiter === "parenthesis";
+}
+
+/**
  * The arrow the infix `=>` reads, with `left` the operand standing to its
  * left: `v => …` and `(v) => …`.
  *
@@ -1389,6 +1406,20 @@ function parseOperators(
         40,
       );
     }
+    // TypeScript writes an arrow's parameters as one name or a parenthesized
+    // list, so a `=>` after any other operand -- `!a`, `a || b`, `a.b` -- is
+    // no arrow, and the expression is refused rather than read as one.
+    if (
+      infix.macro === undefined &&
+      infix.spelling === "=>" &&
+      !arrowParameters(left)
+    )
+      return fail(
+        cursor,
+        context,
+        ["a parameter name or a parenthesized parameter list before '=>'"],
+        40,
+      );
     const operator = consumeOperator(cursor, infix);
     if (infix.macro === undefined && infix.spelling === "=>") {
       const arrow = infixArrow(
