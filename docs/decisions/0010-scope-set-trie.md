@@ -81,10 +81,14 @@ interns 2,001 sets in a few milliseconds, and at d = 16,000 interns 16,001.
   did not already hold; a test counts the sets `union` and `publishedTo`
   intern where the inputs share little.
 - The fixed-seed model tests check `add`, `remove`, `flip`, `union`,
-  `publishedTo`, `has`, `size`, `subset`, `hasUnmatchedIntroduction` and
-  `introducedSince` against a model of plain sets over lexical scopes and
-  paired and unpaired invocation scopes, and check that one set gets one ID
-  however it was built.
+  `publishedTo`, `has`, `size`, `subset`, `hasUnmatchedIntroduction`,
+  `introducedSince` and `introducedApartFrom` against a model of plain sets
+  over lexical scopes and paired and unpaired invocation scopes, and check
+  that one set gets one ID however it was built. They draw their choices
+  from a generator whose every bit varies, and assert that the run reached
+  sets `publishedTo` withdraws from, sets a template wrote, and sets of ten
+  scopes or more: an earlier generator's low bits picked 4 scopes of 16,
+  and the checks it ran were vacuous.
 
 ## Reversal condition
 
