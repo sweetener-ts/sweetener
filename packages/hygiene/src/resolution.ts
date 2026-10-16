@@ -149,8 +149,32 @@ export class BindingResolver {
   }
 
   resolve(identifier: IdentifierReference): BindingResolution {
-    const carried = this.#scopes.scopesOf(identifier.scopes);
     const applicable: Binding[] = [];
+    this.#visitApplicable(identifier, (binding) => {
+      applicable.push(binding);
+      return false;
+    });
+    return resolveAmong(this.#scopes, applicable);
+  }
+
+  /**
+   * Whether some binding applies to the reference: whether `resolve` would
+   * answer other than unbound, since among bindings that apply one always
+   * extends no other. It stops at the first, and never compares bindings.
+   */
+  applies(identifier: IdentifierReference): boolean {
+    return this.#visitApplicable(identifier, () => true);
+  }
+
+  /**
+   * Calls `visit` with each binding that applies to the reference until it
+   * answers true, and says whether one did.
+   */
+  #visitApplicable(
+    identifier: IdentifierReference,
+    visit: (binding: Binding) => boolean,
+  ): boolean {
+    const carried = this.#scopes.scopesOf(identifier.scopes);
     // Each entry is a node whose path the reference carries, and the index in
     // `carried` past that path's greatest scope.
     const pending: [ScopeTrieNode, number][] = [[this.#filed(identifier), 0]];
@@ -161,8 +185,8 @@ export class BindingResolver {
     ) {
       const [node, next] = entry;
       for (const binding of node.bindings) {
-        if (bindingVisibleAt(binding, identifier.position))
-          applicable.push(binding);
+        if (bindingVisibleAt(binding, identifier.position) && visit(binding))
+          return true;
       }
       if (node.children.size <= carried.length - next) {
         for (const [scope, child] of node.children) {
@@ -176,7 +200,7 @@ export class BindingResolver {
         }
       }
     }
-    return resolveAmong(this.#scopes, applicable);
+    return false;
   }
 
   #filed(identifier: IdentifierReference): ScopeTrieNode {

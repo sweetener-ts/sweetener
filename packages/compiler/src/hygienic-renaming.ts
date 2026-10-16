@@ -456,13 +456,13 @@ export function planHygienicRenames(
       options.scopes,
     );
     const belongsToClass = (token: TokenSyntax): boolean =>
-      classResolver.resolve({
+      classResolver.applies({
         spelling: token.raw,
         scopes: token.scopes,
         phase: options.phase,
         space,
         position: token.span.start,
-      }).kind !== "unbound";
+      });
 
     const unavailable = new Set(options.reservedNames ?? []);
     for (const token of inSpace) {

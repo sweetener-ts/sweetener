@@ -295,6 +295,7 @@ describe("binding resolution", () => {
       );
       kinds.add(expected.kind);
       expect(resolver.resolve(identifier)).toEqual(expected);
+      expect(resolver.applies(identifier)).toBe(expected.kind !== "unbound");
     }
     expect(kinds).toEqual(new Set(["resolved", "unbound", "ambiguous"]));
   });
