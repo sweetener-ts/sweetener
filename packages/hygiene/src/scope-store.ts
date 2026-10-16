@@ -216,6 +216,11 @@ export class ScopeStore {
     return this.#requireSet(set).size;
   }
 
+  /** The set's scopes in ascending order. */
+  scopesOf(set: ScopeSetId): readonly ScopeId[] {
+    return this.#scopesOf(this.#requireSet(set));
+  }
+
   debugRecord(set: ScopeSetId): ScopeSetDebugRecord {
     return Object.freeze({
       id: set,

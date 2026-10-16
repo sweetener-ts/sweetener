@@ -112,10 +112,13 @@ class PersistentBindingEnvironment implements BindingEnvironment {
   }
 }
 
-export interface CandidateQuery {
+export interface DeclaredQuery {
   readonly spelling: string;
   readonly phase: Phase;
   readonly space: SyntaxSpace;
+}
+
+export interface CandidateQuery extends DeclaredQuery {
   readonly position: number;
 }
 
@@ -188,20 +191,35 @@ export class EnvironmentStore {
     environment: BindingEnvironment,
     query: CandidateQuery,
   ): readonly Binding[] {
+    return Object.freeze(
+      this.declared(environment, query).filter((binding) =>
+        bindingVisibleAt(binding, query.position),
+      ),
+    );
+  }
+
+  /**
+   * Every binding of the query's spelling, phase and space in the environment
+   * and the frames around it, wherever it is visible: the innermost frame's
+   * first, and each frame's in declaration order.
+   */
+  declared(
+    environment: BindingEnvironment,
+    query: DeclaredQuery,
+  ): readonly Binding[] {
     this.#requireEnvironment(environment);
-    const candidates: Binding[] = [];
+    const declared: Binding[] = [];
     let current: BindingEnvironment | undefined = environment;
     while (current !== undefined) {
       for (const binding of current.localCandidates(
         query.spelling,
         query.phase,
         query.space,
-      )) {
-        if (bindingVisibleAt(binding, query.position)) candidates.push(binding);
-      }
+      ))
+        declared.push(binding);
       current = current.parent;
     }
-    return Object.freeze(candidates);
+    return Object.freeze(declared);
   }
 
   #requireEnvironment(

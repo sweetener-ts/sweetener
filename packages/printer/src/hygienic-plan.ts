@@ -1,5 +1,5 @@
 import {
-  resolveBinding,
+  BindingResolver,
   type Binding,
   type BindingEnvironment,
   type EnvironmentStore,
@@ -67,22 +67,22 @@ export function createHygienicNamePlan(
     throw new RangeError(
       "Duplicate binding supplied to hygienic name planning",
     );
+  const resolver = new BindingResolver(
+    options.environments,
+    options.environment,
+    options.scopes,
+  );
   const occurrences = tokensInTraversalOrder(options.syntax).flatMap(
     (token) => {
       if (token.kind !== "identifier") return [];
       if (options.includeToken?.(token) === false) return [];
-      const resolution = resolveBinding(
-        options.environments,
-        options.environment,
-        options.scopes,
-        {
-          spelling: token.raw,
-          scopes: token.scopes,
-          phase: options.phase,
-          space: options.space ?? "value",
-          position: token.span.start,
-        },
-      );
+      const resolution = resolver.resolve({
+        spelling: token.raw,
+        scopes: token.scopes,
+        phase: options.phase,
+        space: options.space ?? "value",
+        position: token.span.start,
+      });
       if (
         resolution.kind !== "resolved" ||
         !bindingById.has(resolution.binding.id)
@@ -106,16 +106,16 @@ export function createHygienicNamePlan(
   );
   const used = new Set<BindingId>(occurrences.map(({ binding }) => binding));
   const bindings = options.bindings.filter(({ id }) => used.has(id));
+  // Any two of these bindings are taken to be visible together once hygiene
+  // is erased.
   return assignPrintedNames({
     declarations: bindings.map((binding) =>
       Object.freeze({
         binding: binding.id,
         preferredName: binding.spelling,
-        conflicts: Object.freeze(
-          bindings.filter(({ id }) => id !== binding.id).map(({ id }) => id),
-        ),
       }),
     ),
+    everyDeclarationConflicts: true,
     occurrences,
     unavailableNames: options.unavailableNames,
   });

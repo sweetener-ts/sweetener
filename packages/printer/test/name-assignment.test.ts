@@ -126,6 +126,92 @@ describe("deterministic printed-name assignment", () => {
     ).toThrow(/no traversal occurrence/);
   });
 
+  test("names declarations that all conflict as listing every conflict does", () => {
+    let state = 0x6a5_17e5;
+    const random = (bound: number): number => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      return state % bound;
+    };
+    // Spellings whose suffixed names are other spellings, as `v_1` is `v`'s
+    // first, and one that is a reserved word.
+    const spellings = ["v", "v_1", "v_2", "v_1_1", "w", "class", "_class"];
+    for (let trial = 0; trial < 40; trial += 1) {
+      const count = 1 + random(60);
+      const ids = Array.from({ length: count }, (_, index) =>
+        binding(index + 1),
+      );
+      const preferred = ids.map(() => spellings[random(spellings.length)]!);
+      const occurrences = ids
+        .map((id, index) => ({ id, order: random(1_000), index }))
+        .sort(
+          (left, right) => left.order - right.order || left.index - right.index,
+        )
+        .map(({ id }, index) => ({
+          syntax: syntax(index + 1),
+          binding: id,
+          kind: "identifier" as const,
+        }));
+      const unavailableNames = spellings
+        .flatMap((spelling) => [spelling, `${spelling}_1`, `${spelling}_3`])
+        .filter(() => random(4) === 0);
+      const listed = assignPrintedNames({
+        declarations: ids.map((id, index) => ({
+          binding: id,
+          preferredName: preferred[index]!,
+          conflicts: ids.filter((other) => other !== id),
+        })),
+        occurrences,
+        unavailableNames,
+      });
+      const all = assignPrintedNames({
+        declarations: ids.map((id, index) => ({
+          binding: id,
+          preferredName: preferred[index]!,
+        })),
+        everyDeclarationConflicts: true,
+        occurrences,
+        unavailableNames,
+      });
+      expect([...all.names]).toEqual([...listed.names]);
+      expect(all.rewrites).toEqual(listed.rewrites);
+    }
+  });
+
+  test("names thousands of conflicting declarations of one spelling", () => {
+    const count = 20_000;
+    const plan = assignPrintedNames({
+      declarations: Array.from({ length: count }, (_, index) => ({
+        binding: binding(index + 1),
+        preferredName: "v",
+      })),
+      everyDeclarationConflicts: true,
+      occurrences: Array.from({ length: count }, (_, index) => ({
+        syntax: syntax(index + 1),
+        binding: binding(index + 1),
+        kind: "identifier" as const,
+      })),
+    });
+    expect(plan.nameFor(binding(1))).toBe("v");
+    expect(plan.nameFor(binding(count))).toBe(`v_${String(count - 1)}`);
+    expect(new Set(plan.names.values()).size).toBe(count);
+  });
+
+  test("refuses listed conflicts when every declaration conflicts", () => {
+    expect(() =>
+      assignPrintedNames({
+        declarations: [
+          { binding: binding(1), preferredName: "x", conflicts: [binding(2)] },
+          { binding: binding(2), preferredName: "x" },
+        ],
+        everyDeclarationConflicts: true,
+        occurrences: [
+          { syntax: syntax(1), binding: binding(1), kind: "identifier" },
+          { syntax: syntax(2), binding: binding(2), kind: "identifier" },
+        ],
+      }),
+    ).toThrow(/lists its conflicts/);
+  });
+
   test("prints planned names and shorthand expansions without formatting", () => {
     const token = createToken({
       id: syntax(1),
