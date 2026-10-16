@@ -20,34 +20,30 @@ used to inherit the heap its predecessors left behind.
 
 ## `node26.json`
 
-- Recorded 2026-09-06 at commit `8a08744`, on a **dirty** worktree.
+- Recorded 2026-10-16 at commit `d0d36e6`, on a **clean** worktree.
 - Apple M2 Max, 12 logical CPUs, 64 GiB, macOS 25.5.0, Node 26.5.0, exposed GC.
-- One-minute load average 6.82 on 12 CPUs, which is above the runner's own
-  warning threshold. The runner would have printed its "treat this run as
-  provisional" warning while recording it.
-- Protocol: **all fourteen scenarios in one process**. `cache/…` ran first and
-  `reader/…` last, so every row after the first carries some of the heap its
-  predecessors left. `expansion/project-scale` in particular inflated the rows
-  behind it — `hygiene/fresh-scopes` by about 12 percent and
-  `matcher/dense-choice` by about 27 percent when measured against the same
-  scenario run alone.
-
-Both of those make the file a lenient reference rather than a false-alarming
-one: a row recorded too slow lets a real regression of the same size through.
-Treat a pass on the rows after the first as weaker evidence than a failure.
+- One-minute load average 5.10 on 12 CPUs, under the runner's warning
+  threshold of 6. The machine was not idle: other work it was running could
+  not be stopped, so the run was started only once the load fell below 4, and
+  a run whose recorded load ended above 6 was discarded.
+- Protocol: one process per scenario (the runner's default isolation), all
+  twenty-one scenarios.
+- Checked against itself straight afterwards, at a load near 6, the same
+  commit varied by up to 17 percent (`matcher/dense-choice` +17.2,
+  `printer/generated-origin-map` +13.6, `hygiene/union-older-into-newer`
+  -15.2) and failed the 15 percent tolerance. On this machine a failure of that
+  size from a loaded run says more about the machine than the change: re-run
+  idle before reading it as a regression.
 
 ## `node24.json`
 
-- Recorded 2026-08-03 at commit `fbd8512`, on a **dirty** worktree, Node
-  24.18.1, same machine. Predates the `loadAverage` field, so the conditions it
-  was taken under are unrecorded, and predates `expansion/project-scale`, which
-  therefore has no row to compare against.
-- Protocol: all scenarios in one process, as above.
-
-The repository supports Node 24, but development runs on Node 26, so this file
-has not been re-recorded alongside `node26.json`. Re-record it from a Node 24
-runtime before relying on it: until then a check under Node 24 fails on the
-missing `expansion/project-scale` row rather than passing over it.
+- Recorded 2026-10-16 at commit `d0d36e6`, on a **clean** worktree, Node
+  24.18.1 (the version CI pins), same machine, same protocol, all twenty-one
+  scenarios.
+- One-minute load average 5.98 on 12 CPUs, just under the threshold. Four
+  earlier attempts were discarded for ending above 6. Treat it as the
+  `node26.json` file above: a loaded-machine measurement, so a pass is real
+  but a marginal failure is weak evidence.
 
 ## Recording
 

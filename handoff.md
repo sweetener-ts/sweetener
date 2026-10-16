@@ -71,14 +71,6 @@ Cheap wins identified and not taken:
 .freeze(...))` is 31% of `pushToken` self time. Both are the design (this
   codebase freezes pervasively), so they are costs to know rather than bugs.
 
-## Test and tooling debt
-
-- **Benchmark baselines:** `benchmarks/baselines/node24.json` is stale (commit
-  `fbd8512`, no `loadAverage`, **no `expansion/project-scale` row**, so that
-  scenario is unchecked under Node 24); both checked-in baselines were recorded
-  with `dirty: true`; and `--baseline auto` silently skips scenarios missing from
-  the baseline, so a new scenario is unguarded until someone re-records.
-
 ## Features not built
 
 - **Local macro scope.** `processLocalDefinitionContext` exists and
