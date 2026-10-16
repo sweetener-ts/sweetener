@@ -14,11 +14,11 @@
   ],
   "dependencies": {
     "@sweetener/hygiene": "workspace:*",
+    "@sweetener/reader": "workspace:*",
     "@sweetener/shared": "workspace:*",
     "@sweetener/syntax": "workspace:*"
   },
   "devDependencies": {
-    "@sweetener/reader": "workspace:*",
     "typescript": "npm:@typescript/typescript6@6.0.2"
   }
 }

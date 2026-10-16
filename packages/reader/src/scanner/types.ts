@@ -39,5 +39,12 @@ export interface ScanOptions {
 export interface ScanResult {
   readonly tokens: readonly ScannerToken[];
   readonly diagnostics: readonly Diagnostic[];
+  /**
+   * The slash readings the scan was given that it read a slash at. One it
+   * read none at was found in an earlier read of the text, at a slash that a
+   * reading in front of it has since taken inside a regular expression or
+   * split out of one; it no longer applies, and is not in this.
+   */
+  readonly slashReadings: SlashReadings;
   readonly typescriptVersion: string;
 }

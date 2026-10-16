@@ -50,6 +50,8 @@ export interface ReadSyntaxResult {
   readonly root: RootSyntax;
   readonly diagnostics: readonly Diagnostic[];
   readonly origins: OriginStore;
+  /** The slash readings the read applied; see `ScanResult.slashReadings`. */
+  readonly slashReadings: SlashReadings;
   readonly typescriptVersion: string;
 }
 
@@ -328,6 +330,7 @@ export function readSyntax(
     root,
     diagnostics: Object.freeze(diagnostics),
     origins,
+    slashReadings: scanned.slashReadings,
     typescriptVersion: scanned.typescriptVersion,
   });
 }

@@ -15,10 +15,11 @@ export type SlashReading = "regular-expression" | "division";
  * operand, and leaves it a division where it expects an operator. A reader
  * that runs ahead of its parser can judge only from the token before -- after
  * a name, a literal or a closer, a division -- and that judgement is wrong
- * where the grammar says otherwise: `if (c) /re/.test(s)`, `let x: T` and the
- * `/re/.test(s);` under it, or a name spelled `of` divided by two. The
- * enforester is the parser here; it says which, and the reader reads the
- * source again with its answer.
+ * where the grammar says otherwise: `let x: T` and the `/re/.test(s);` under
+ * it, or `x as const / 2 / 3`. The enforester is the parser here, and it says
+ * which. Where its answer changes only the tokens of one expression it reads
+ * them so in place; where it changes the groups the reader built, the reader
+ * reads the source again with its answer, given as these.
  */
 export type SlashReadings = ReadonlyMap<number, SlashReading>;
 

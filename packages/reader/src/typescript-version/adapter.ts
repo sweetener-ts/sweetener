@@ -301,18 +301,18 @@ function functionTypeFollows(
   )
     return false;
   let depth = 1;
-  let regularExpressionAllowed = true;
+  const judgement = new SlashJudgement(true);
   while (depth > 0) {
     const kind = nextLookaheadToken(
       lookahead,
       templates,
-      regularExpressionAllowed,
+      judgement.regularExpressionAllowed,
       slashes,
     );
     if (kind === ts.SyntaxKind.EndOfFileToken) return false;
     if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
     else if (kind === ts.SyntaxKind.CloseParenToken) depth -= 1;
-    regularExpressionAllowed = !tokenCanEndExpression(kind);
+    judgement.take(kind, lookahead.hasPrecedingLineBreak());
   }
   return (
     nextLookaheadToken(lookahead, templates, false, slashes) ===
@@ -362,7 +362,7 @@ function looksLikeJsxStart(
   let angles = 0;
   /** How many brace, bracket and parenthesis groups the walk stands inside. */
   let groups = 0;
-  let regularExpressionAllowed = false;
+  const judgement = new SlashJudgement(false);
   for (;;) {
     // An attribute's braces are the only place inside a tag or a type argument
     // list where an expression is written, so they are the only place a `/`
@@ -370,10 +370,10 @@ function looksLikeJsxStart(
     const kind = nextLookaheadToken(
       lookahead,
       templates,
-      groups > 0 && regularExpressionAllowed,
+      groups > 0 && judgement.regularExpressionAllowed,
       slashes,
     );
-    regularExpressionAllowed = !tokenCanEndExpression(kind);
+    judgement.take(kind, lookahead.hasPrecedingLineBreak());
     if (kind === ts.SyntaxKind.EndOfFileToken) return false;
     if (opensGroup(kind)) {
       groups += 1;
@@ -418,6 +418,15 @@ function tokenCanEndExpression(kind: ts.SyntaxKind): boolean {
 }
 
 function computeEndsExpression(kind: ts.SyntaxKind): boolean {
+  // A contextual keyword is a name wherever no declaration or type is being
+  // written with it, and none of them is followed by an operand where it is
+  // the keyword: `as` and `satisfies` take a type, `type` and `declare` a
+  // name, `from` a string. So a slash after one divides the name -- `of / 2`
+  // and `undefined / 2` -- but for `await`, which takes an operand, and `of`
+  // in a `for` head, which the scan below judges by where it stands.
+  // TypeScript's own range of them, from `abstract` to `of`.
+  if (kind >= ts.SyntaxKind.AbstractKeyword && kind <= ts.SyntaxKind.OfKeyword)
+    return kind !== ts.SyntaxKind.AwaitKeyword;
   switch (kind) {
     case ts.SyntaxKind.Identifier:
     case ts.SyntaxKind.PrivateIdentifier:
@@ -440,6 +449,168 @@ function computeEndsExpression(kind: ts.SyntaxKind): boolean {
       return true;
     default:
       return false;
+  }
+}
+
+/**
+ * What a group was opened after, as far as a slash written after its closing
+ * delimiter is concerned.
+ */
+type GroupHead = "statement" | "for" | "catch" | "block" | "other";
+
+/** The words a statement's parenthesized head is written after. */
+const statementHeads = new Map<ts.SyntaxKind, GroupHead>([
+  [ts.SyntaxKind.IfKeyword, "statement"],
+  [ts.SyntaxKind.WhileKeyword, "statement"],
+  [ts.SyntaxKind.WithKeyword, "statement"],
+  [ts.SyntaxKind.ForKeyword, "for"],
+  [ts.SyntaxKind.CatchKeyword, "catch"],
+]);
+
+/** The words a block is written after, as a statement's own body. */
+const blockHeads = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.ElseKeyword,
+  ts.SyntaxKind.DoKeyword,
+  ts.SyntaxKind.TryKeyword,
+  ts.SyntaxKind.FinallyKeyword,
+  ts.SyntaxKind.CatchKeyword,
+]);
+
+/** The opening delimiter each closing one closes. */
+const opens = new Map<ts.SyntaxKind, ts.SyntaxKind>([
+  [ts.SyntaxKind.CloseParenToken, ts.SyntaxKind.OpenParenToken],
+  [ts.SyntaxKind.CloseBracketToken, ts.SyntaxKind.OpenBracketToken],
+  [ts.SyntaxKind.CloseBraceToken, ts.SyntaxKind.OpenBraceToken],
+  [ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateHead],
+  [ts.SyntaxKind.TemplateTail, ts.SyntaxKind.TemplateHead],
+]);
+
+/**
+ * Whether a slash begins a regular expression, judged from what stands
+ * before it, as a scan reads one token after another.
+ *
+ * Which of the two a slash begins is the parser's to say, and a scan that runs
+ * ahead of its parser judges from the token before: after a name, a literal
+ * or a closer, a division. A closer on its own says only that an operand may
+ * have ended there, and what its group was opened after says more where that
+ * was a statement's head. The `)` that closes `if (c)`, `while (c)`, `with
+ * (o)` or a `for` head ends the head, and the body after it begins where an
+ * expression does, so `if (c) /re/.test(s)` writes a regular expression. The
+ * `}` that closes a block written as such a body, or after `else`, `do`,
+ * `try`, `finally` or `catch`, or as an arrow's body, ends a statement or an
+ * arrow function, and TypeScript takes no operator after either. That is the
+ * sweet.js reader's lookbehind, as far as the groups alone can tell it. A
+ * block written on its own, or a function's or a class's body, is a
+ * statement's end or an operand's by where the declaration stands, which is
+ * the enforester's to say (see `SlashReadings`).
+ *
+ * The groups are matched as the reader matches them: a closer closes the
+ * nearest group it can, and every group still open inside that one with it.
+ */
+class SlashJudgement {
+  #allowed: boolean;
+  readonly #open: {
+    readonly opener: ts.SyntaxKind;
+    readonly head: GroupHead;
+  }[] = [];
+  #previous: ts.SyntaxKind | undefined;
+  #beforePrevious: ts.SyntaxKind | undefined;
+  /** What the group the latest token closed was opened after. */
+  #closed: GroupHead | undefined;
+
+  constructor(allowed: boolean) {
+    this.#allowed = allowed;
+  }
+
+  /** Whether a slash read next begins a regular expression. */
+  get regularExpressionAllowed(): boolean {
+    return this.#allowed;
+  }
+
+  /**
+   * Takes in the next token that is not trivia. `lineBreakBefore` says whether
+   * a line break stands in front of it. A token that says nothing of what
+   * follows it -- JSX text -- is taken only for the groups it closes.
+   */
+  take(kind: ts.SyntaxKind, lineBreakBefore: boolean, judged = true): void {
+    let closed: GroupHead | undefined;
+    const opener = opens.get(kind);
+    if (opener !== undefined) {
+      const index = this.#open.findLastIndex((open) => open.opener === opener);
+      if (index >= 0) {
+        closed = this.#open[index]!.head;
+        this.#open.length = index;
+      }
+      this.#closed = closed ?? "other";
+    }
+    if (kind === ts.SyntaxKind.OpenParenToken)
+      this.#open.push({ opener: kind, head: this.#parenthesisHead() });
+    else if (kind === ts.SyntaxKind.OpenBraceToken)
+      this.#open.push({ opener: kind, head: this.#braceHead() });
+    else if (
+      kind === ts.SyntaxKind.OpenBracketToken ||
+      kind === ts.SyntaxKind.TemplateHead ||
+      kind === ts.SyntaxKind.TemplateMiddle
+    )
+      this.#open.push({
+        opener:
+          kind === ts.SyntaxKind.TemplateMiddle
+            ? ts.SyntaxKind.TemplateHead
+            : kind,
+        head: "other",
+      });
+    if (judged)
+      this.#allowed =
+        closed === "statement" || closed === "for" || closed === "block"
+          ? true
+          : kind === ts.SyntaxKind.ExclamationToken
+            ? // A `!` on its operand's own line is a non-null assertion, and
+              // the operand it ends still ends there: TypeScript writes
+              // `LeftHandSideExpression [no LineTerminator here] !`, so
+              // `a! / 2` divides. Anywhere else it is the prefix operator.
+              lineBreakBefore || this.#allowed
+            : kind === ts.SyntaxKind.OfKeyword
+              ? this.#open.at(-1)?.head === "for"
+              : !tokenCanEndExpression(kind);
+    this.#beforePrevious = this.#previous;
+    this.#previous = kind;
+  }
+
+  /**
+   * Whether the latest token is the keyword it is spelled as, rather than a
+   * member named after it: `o.if (x)` calls a method.
+   */
+  #keyword(): boolean {
+    return (
+      this.#beforePrevious !== ts.SyntaxKind.DotToken &&
+      this.#beforePrevious !== ts.SyntaxKind.QuestionDotToken
+    );
+  }
+
+  #parenthesisHead(): GroupHead {
+    const previous = this.#previous;
+    if (previous === undefined) return "other";
+    const head = statementHeads.get(previous);
+    if (head !== undefined) return this.#keyword() ? head : "other";
+    // `for await (`.
+    return previous === ts.SyntaxKind.AwaitKeyword &&
+      this.#beforePrevious === ts.SyntaxKind.ForKeyword
+      ? "for"
+      : "other";
+  }
+
+  #braceHead(): GroupHead {
+    const previous = this.#previous;
+    if (previous === ts.SyntaxKind.CloseParenToken)
+      return this.#closed === "statement" ||
+        this.#closed === "for" ||
+        this.#closed === "catch"
+        ? "block"
+        : "other";
+    if (previous === ts.SyntaxKind.EqualsGreaterThanToken) return "block";
+    return previous !== undefined && blockHeads.has(previous) && this.#keyword()
+      ? "block"
+      : "other";
   }
 }
 
@@ -529,7 +700,9 @@ export function scanWithSupportedTypeScript(
    * escaping.
    */
   let typeArgumentDepth = 0;
-  let regularExpressionAllowed = true;
+  const judgement = new SlashJudgement(true);
+  /** Whether a line break stands between the last token and this one. */
+  let lineBreakBefore = false;
   /** The offsets of `slashes` the scan has read a slash at. */
   const read = new Set<number>();
   while (true) {
@@ -576,7 +749,13 @@ export function scanWithSupportedTypeScript(
       ) {
         const start = scanner.getTokenStart();
         if (slashes.has(start)) read.add(start);
-        if (readsRegularExpression(slashes, start, regularExpressionAllowed))
+        if (
+          readsRegularExpression(
+            slashes,
+            start,
+            judgement.regularExpressionAllowed,
+          )
+        )
           kind = scanner.reScanSlashToken();
       }
     }
@@ -612,7 +791,7 @@ export function scanWithSupportedTypeScript(
       // comparison. Deciding from the lookahead alone read the `<T>` of
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
-      regularExpressionAllowed &&
+      judgement.regularExpressionAllowed &&
       looksLikeJsxStart(lookahead, source, scanner.getTokenStart(), slashes)
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
@@ -700,8 +879,12 @@ export function scanWithSupportedTypeScript(
     }
 
     const lexicalMode = tokenLexicalMode(kind, modeForToken);
-    if (projectTriviaKind(kind) === undefined && lexicalMode !== "jsx-text") {
-      regularExpressionAllowed = !tokenCanEndExpression(kind);
+    if (projectTriviaKind(kind) !== undefined) {
+      if (/[\r\n\u2028\u2029]/u.test(scanner.getTokenText()))
+        lineBreakBefore = true;
+    } else {
+      judgement.take(kind, lineBreakBefore, lexicalMode !== "jsx-text");
+      lineBreakBefore = false;
     }
     if (
       kind !== ts.SyntaxKind.EndOfFileToken &&

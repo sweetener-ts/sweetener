@@ -1,7 +1,7 @@
 import {
   readSyntax,
   regularExpressionEnd,
-  typescriptSlashReadings,
+  typescriptSlashes,
 } from "@sweetener/reader";
 import type { ScopeSetId, SourceId } from "@sweetener/shared";
 import {
@@ -402,7 +402,7 @@ export function readSweetenerSyntax(
           sourceId,
           scopes,
           variant,
-          slashReadings: typescriptSlashReadings(source, variant),
+          slashReadings: typescriptSlashes(source, variant).readings,
         });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];

@@ -25,6 +25,14 @@ export const unusedRequiredParameterCode = diagnosticCode("SWR4022");
 export const uncopiableClosureCode = diagnosticCode("SWR4023");
 export const bareMacroNameCode = diagnosticCode("SWR4024");
 export const unreadItemCode = diagnosticCode("SWR4025");
+export const unreadableTemplateSlashCode = diagnosticCode("SWR4026");
+export const ambiguousSlashCode = diagnosticCode("SWR4027");
+export const unsettledSlashCode = diagnosticCode("SWR4028");
+
+/** How a slash reading reads, as a sentence says it. */
+function slashReadingName(reading: unknown): string {
+  return reading === "division" ? "a division" : "a regular expression";
+}
 
 /**
  * The indefinite article for a space's name. The spaces a macro can be
@@ -36,6 +44,36 @@ function article(word: string): string {
 }
 
 export const expansionDiagnosticRegistry = new DiagnosticRegistry([
+  {
+    code: unreadableTemplateSlashCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Whether a slash begins a regular expression or divides is the grammar's to say where the slash stands, and the reader judges it from the token before. A macro's template is read once, where it is written, and each use of it decides afresh where its slashes stand: `$k / 2 /g` divides `x / 2` by `g` for one use and returns `/ 2 /g` for another. Where reading a slash the other way changes only the tokens of the expression it is in, each use reads it as it needs. Where it would change more -- a bracket, a quote or a comment's opening between the slashes, which the template's tokens were grouped around the other way -- only reading the text again could give the tokens this use needs, and a template is not read again for one use of it. The slash is reported at the template, for the use that needed it read the other way.",
+    format: (arguments_) =>
+      `This slash, written in a macro's template, is ${slashReadingName(arguments_[0])} where the use of the macro related here puts it, and the template was read the other way. Reading it as ${slashReadingName(arguments_[0])} would group the tokens after it differently, which a use of a template cannot do; write the template so that the slash reads the same wherever the macro is used, for instance by putting the regular expression or the division in parentheses.`,
+  },
+  {
+    code: ambiguousSlashCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "A slash written once is read once, as a regular expression or as a division. A macro can put what one invocation captured in more than one place, and where the grammar reads a captured slash one way in one place and the other way in another, and reading it either way changes the tokens after it, no reading of the source serves both.",
+    format: () =>
+      "This slash is read as a regular expression in one place a macro puts it and as a division in another, and the tokens after it are grouped differently each way. Put the regular expression or the division in parentheses where it is written, so that it reads the same in both.",
+  },
+  {
+    code: unsettledSlashCode,
+    owner: "expansion-enforestation",
+    stage: "expansion",
+    severity: "error",
+    documentation:
+      "Where the enforester finds a slash read the other way from the grammar, and reading it so changes more than the tokens of one expression, the source is read again with the slash read as the grammar reads it and expanded again. That ends once a read agrees with what the enforester finds, which is ordinarily after one read again; the number of reads is bounded rather than trusted, and the expansion of the last read is the one reported, with this at a slash the enforester still found read the other way.",
+    format: (arguments_) =>
+      `Sweetener read this file ${String(arguments_[1] ?? "several")} times without settling whether this slash begins a regular expression or divides: the last read found it should be ${slashReadingName(arguments_[0])}. Put the regular expression or the division in parentheses, which reads the same either way.`,
+  },
   {
     code: unparameterizedSyntaxParameterCode,
     owner: "expansion-enforestation",

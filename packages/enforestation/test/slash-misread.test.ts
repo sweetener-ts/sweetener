@@ -1,5 +1,5 @@
 import { createPhase } from "@sweetener/hygiene";
-import { nextSlashReadings, readSyntax } from "@sweetener/reader";
+import { readSyntax } from "@sweetener/reader";
 import {
   createIdAllocator,
   createResourceBudget,
@@ -15,6 +15,7 @@ import {
   type SlashReading,
   type SlashReadings,
   type Syntax,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
@@ -26,13 +27,18 @@ type Category = "item" | "classElement";
 
 /**
  * The source split into what `category` reads one after another, read with
- * `readings`, and the slashes the consumers said were read the other way.
+ * `readings`; the slashes the consumers said only reading the source again
+ * reads as the grammar does; and the tokens of what they read.
  */
 function splitOnce(
   source: string,
   category: Category,
   readings: SlashReadings,
-): { readonly parts: readonly string[]; readonly misread: SlashReadings } {
+): {
+  readonly parts: readonly string[];
+  readonly misread: SlashReadings;
+  readonly tokens: readonly string[];
+} {
   const origins = new OriginStore();
   const read = readSyntax(source, {
     sourceId,
@@ -58,6 +64,7 @@ function splitOnce(
   const misread = new Map<number, SlashReading>();
   let cursor = createSyntaxCursor(syntax);
   const parts: string[] = [];
+  const tokens: string[] = [];
   while (cursor.remainingLength > 0) {
     const result = registry.consume(category, {
       cursor,
@@ -70,18 +77,42 @@ function splitOnce(
     });
     if (!result.matched) break;
     parts.push(source.slice(result.syntax.span.start, result.syntax.span.end));
+    tokens.push(...tokensOf(result.syntax));
     cursor = result.cursor;
   }
-  return { parts, misread };
+  return { parts, misread, tokens };
 }
 
-/** Read and split again until the consumers find no slash misread. */
+/** The tokens of `syntax`, with a regular expression marked as one. */
+function tokensOf(syntax: Syntax): readonly string[] {
+  const token = (node: TokenSyntax) =>
+    node.kind === "regular-expression-literal" ? `re:${node.raw}` : node.raw;
+  switch (syntax.tag) {
+    case "token":
+      return [token(syntax)];
+    case "group":
+      return [
+        token(syntax.open),
+        ...syntax.children.flatMap(tokensOf),
+        ...(syntax.close.tag === "token" ? [token(syntax.close)] : []),
+      ];
+    case "protected":
+    case "root":
+      return syntax.children.flatMap(tokensOf);
+  }
+}
+
+/**
+ * Read and split again, with every slash the consumers found read as they
+ * found it, until they find none: what the project expansion does.
+ */
 function split(source: string, category: Category): readonly string[] {
   let readings: SlashReadings = new Map();
-  for (;;) {
+  for (let read = 1; ; read += 1) {
     const { parts, misread } = splitOnce(source, category, readings);
     if (misread.size === 0) return parts;
-    readings = nextSlashReadings(source, "standard", readings, misread);
+    expect(read, source).toBeLessThan(4);
+    readings = new Map([...readings, ...misread]);
   }
 }
 
@@ -112,8 +143,9 @@ function typescript(source: string, category: Category): readonly string[] {
 /**
  * A slash is a regular expression where an operand begins and a division
  * where an operator stands, whatever the reader judged from the token before
- * it. The consumers say where it judged wrong, and the source read again with
- * their answer splits where TypeScript splits it.
+ * it. The consumers read it as the grammar does where only the tokens of the
+ * one expression change, and say so where reading it so changes more; the
+ * source read again with their answer splits where TypeScript splits it.
  */
 describe("slashes read the other way from the grammar", () => {
   test.each([
@@ -130,16 +162,47 @@ describe("slashes read the other way from the grammar", () => {
     "if (c) /[/]/.test(s);\nrun();",
     "if (c) /'/.test(s);\nrun();",
     "function f()\n/=x/.test(s);\nrun();",
+    "let x: Foo\n/[(]/.test(s);\nrun();",
+    "let x: Foo\n/[(]/.test(s);\nlet y: Foo\n/'/.test(s);\nrun();",
     // A name spelled like a keyword divided: read as a regular expression,
     // the line break under `x = of` ended the statement there.
     "x = of / 2 / 3;\nrun();",
     "x = undefined\n/ 2 /g;\nrun();",
     "x = a!\n/ 2 /g;\nrun();",
-    // Several in one source, read again together where each changes only
-    // itself.
+    "x = y as const / 2 / 1;\nrun();",
+    "x = y as const\n/ 2 /g;\nrun();",
+    "for (let i = of / 2 / 1;;) run();\nrun();",
+    // Several in one source.
     "if (a) /x/.test(s);\nif (b) /(/.test(s);\nif (c) /y/.test(s);\nrun();",
   ])("splits %j as TypeScript does", (source) => {
     expect(split(source, "item")).toEqual(typescript(source, "item"));
+  });
+
+  // The reader reads these as the grammar does from the groups around them,
+  // or the parser reads them again where they stand: nothing is read again.
+  test.each([
+    ["if (c) /(/.test(s);", "re:/(/"],
+    ["for (const x of /a/g.exec(s)) run();", "re:/a/g"],
+    ["let x: Foo\n/a  b/.test(s);", "re:/a  b/"],
+    ["function f()\n/=x/g.test(s);", "re:/=x/g"],
+    ["x = y as const / 2 /g;", "g"],
+  ])("reads %j in one read", (source, token) => {
+    const { misread, tokens } = splitOnce(source, "item", new Map());
+    expect(misread.size).toBe(0);
+    expect(tokens).toContain(token);
+    expect(split(source, "item")).toEqual(typescript(source, "item"));
+  });
+
+  // Read the other way, the slash changes the groups or the tokens after the
+  // expression: a bracket or a quote inside, the `=` of a `/=`.
+  test.each([
+    ["let x: Foo\n/[(]/.test(s);", 11],
+    ["let x: Foo\n/'/.test(s);", 11],
+    ["let x: Foo\n/a/=b;", 11],
+  ])("asks for %j to be read again", (source, offset) => {
+    expect(splitOnce(source, "item", new Map()).misread).toEqual(
+      new Map([[offset, "regular-expression"]]),
+    );
   });
 
   test.each([
@@ -147,8 +210,23 @@ describe("slashes read the other way from the grammar", () => {
     "x = /re/g;",
     "x = {}\n/ 2 /g;",
     "x = a\n/ 2 / b;",
+    "x = a ** of / 2 / 1;",
   ])("finds nothing misread in %j", (source) => {
     expect(splitOnce(source, "item", new Map()).misread.size).toBe(0);
+    expect(split(source, "item")).toEqual(typescript(source, "item"));
+  });
+
+  // A regular expression read where an operator stands is split where the
+  // division it is would be taken, and the expression reads on over its
+  // tokens in every operand open around it.
+  test.each([
+    "x = a * (y as const) / 2, 3 / g;",
+    "x = y as const / 2, 3 / g;",
+    "x = a < y as const / 2 / g;",
+  ])("reads %j on over a split literal", (source) => {
+    const { misread, tokens } = splitOnce(source, "item", new Map());
+    expect(misread.size).toBe(0);
+    expect(tokens.some((token) => token.startsWith("re:"))).toBe(false);
     expect(split(source, "item")).toEqual(typescript(source, "item"));
   });
 

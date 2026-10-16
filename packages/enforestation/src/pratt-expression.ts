@@ -2,7 +2,7 @@ import type { BindingId } from "@sweetener/shared";
 import {
   createPrecedence,
   createProtectedSyntax,
-  divisionSlash,
+  createSyntaxSequence,
   leadingLineBreak,
   regularExpression,
   spanEnvelope,
@@ -11,6 +11,8 @@ import {
   type ProtectedSyntax,
   type Syntax,
   type SyntaxCursor,
+  type SyntaxSequence,
+  type TokenSyntax,
 } from "@sweetener/syntax";
 import {
   createConsumerFailure,
@@ -24,6 +26,7 @@ import {
   createPrimaryExpressionConsumer,
   type PrimaryExpressionConsumerOptions,
 } from "./primary-expression.js";
+import { divisionAt } from "./slash-reading.js";
 import { StopSet } from "./stop-set.js";
 import { consumeBalancedTypeArguments } from "./type-class-element.js";
 
@@ -48,13 +51,7 @@ const coreByKey = new Map(
   ]),
 );
 
-/**
- * What a division binds its left operand at. Only an operand that binds at
- * least as tightly can stand to the left of one: a regular expression read
- * after `a * b`, `-a` or a call stands where a division does, and one read
- * after a block-bodied arrow does not, because TypeScript takes no binary
- * operator after an arrow function.
- */
+/** What a division binds at. */
 const divisionPrecedence = coreByKey.get("infix|/")!.precedence;
 
 /**
@@ -134,6 +131,32 @@ interface PrattContext {
   readonly primary: SyntaxConsumer;
   readonly start: number;
   readonly allowComma: boolean;
+  /**
+   * The regular expressions read where an operator stands that are not to be
+   * split into a division here, because the expression would end among the
+   * tokens they split into (see `parseExpressionAt`).
+   */
+  readonly unsplit: ReadonlySet<TokenSyntax>;
+}
+
+/**
+ * Thrown where the parser reads a regular expression literal where an
+ * operator stands, and the literal splits into the tokens of a division: the
+ * literal read the other way, in place (see `divisionAt`). Caught where the
+ * expression it stands in began to be read from its sequence, which reads the
+ * expression again over the tokens the literal splits into.
+ */
+class DivisionRead extends Error {
+  override readonly name = "DivisionRead";
+
+  constructor(
+    readonly sequence: SyntaxSequence,
+    readonly index: number,
+    readonly literal: TokenSyntax,
+    readonly tokens: readonly TokenSyntax[],
+  ) {
+    super("A regular expression literal stands where an operator does");
+  }
 }
 
 function tokenSpelling(cursor: SyntaxCursor): string | undefined {
@@ -448,11 +471,6 @@ function parsePrefix(
   const operandStart = cursor.index;
   const operand = cursor.peek();
   const attempt = context.primary.consume(cursor, context.consumer);
-  // A slash where an operand begins is a regular expression, whatever the
-  // reader made of it from the token before: `if (c) /re/.test(s)`.
-  const slash = cursor.peek();
-  if (!attempt.matched && cursor.index === operandStart && divisionSlash(slash))
-    context.consumer.slashMisread?.(slash, "regular-expression");
   if (!attempt.matched) {
     // The primary consumer read no operand, and a `<` standing where the
     // operand began is the one thing that still can be one. Asked only where
@@ -800,17 +818,32 @@ function parseExpression(
       continue;
     }
     const infix = resolveOperator(cursor, "infix", context);
-    // A slash where an operator stands is a division, whatever the reader
-    // made of it from the token before: `x = of / 2 / 3` divides a name
-    // spelled `of`, and the line break under `x = a` carries `a` on into the
-    // `/ 2 /g` written there rather than ending the statement.
+    // A regular expression where an operator stands is a division, whatever
+    // the reader made of it from the token before: `x = y as const / 2 / 3`
+    // divides the assertion, where the reader took `const` for a word an
+    // operand follows. It is one where a `/` would be taken here: not after
+    // an assignment or an arrow function, which take no operator after them,
+    // and not in an operand whose operators bind more tightly, where the
+    // operand around it takes it.
     const slash = cursor.peek();
     if (
       infix === undefined &&
       regularExpression(slash) &&
-      left.outerPrecedence >= divisionPrecedence
-    )
+      divisionPrecedence >= minimumPrecedence &&
+      left.outerPrecedence > assignmentPrecedence
+    ) {
+      const tokens = context.unsplit.has(slash)
+        ? undefined
+        : divisionAt(slash, cursor.peek(1), context.options);
+      if (tokens !== undefined && !("kind" in tokens))
+        throw new DivisionRead(
+          cursor.remainingRange().sequence,
+          cursor.index,
+          slash,
+          tokens,
+        );
       context.consumer.slashMisread?.(slash, "division");
+    }
     if (infix === undefined || infix.precedence < minimumPrecedence) break;
     // TypeScript takes no operator but a comma after an assignment
     // expression. One that could have taken the operator already did, inside
@@ -936,6 +969,97 @@ function parseExpression(
   return left;
 }
 
+/**
+ * The expression at the cursor, read whole: where the cursor began reading
+ * its sequence, so that a regular expression read where an operator stands
+ * can be split into the division it is.
+ *
+ * The parser finds such a literal only once it reaches it, and the tokens it
+ * splits into carry the expression on in every operand open around it:
+ * `x = y as const / 2, 3 / g` reads `, 3 / g` in the outermost one. So the
+ * expression is read again from here over its sequence with the literal
+ * split, and where it ends is carried back to the sequence the cursor reads.
+ * An expression that ends among the tokens a literal split into ends where
+ * the source holds more than the one expression: reading it means reading
+ * the source again, and the literal is left whole for that.
+ */
+function parseExpressionAt(
+  cursor: SyntaxCursor,
+  context: Omit<PrattContext, "start" | "unsplit">,
+): ParsedExpression | ConsumerAttempt {
+  const written = cursor.remainingRange().sequence;
+  const unsplit = new Set<TokenSyntax>();
+  let sequence = written;
+  let working = cursor.fork();
+  /** Each split made, in order, in the sequence it was made in. */
+  const splits: {
+    readonly index: number;
+    readonly width: number;
+    readonly literal: TokenSyntax;
+  }[] = [];
+  for (;;) {
+    let parsed: ParsedExpression | ConsumerAttempt;
+    try {
+      parsed = parseExpression(working, 0, {
+        ...context,
+        start: cursor.index,
+        unsplit,
+      });
+    } catch (error) {
+      if (!(error instanceof DivisionRead) || error.sequence !== sequence)
+        throw error;
+      splits.push({
+        index: error.index,
+        width: error.tokens.length,
+        literal: error.literal,
+      });
+      sequence = createSyntaxSequence([
+        ...sequence.slice(0, error.index),
+        ...error.tokens,
+        ...sequence.slice(error.index + 1),
+      ]);
+      working = cursor.over(sequence);
+      continue;
+    }
+    const end = writtenIndex(working.index, splits);
+    if (!("matched" in parsed) && end.inside !== undefined) {
+      unsplit.add(end.inside);
+      sequence = written;
+      working = cursor.fork();
+      splits.length = 0;
+      continue;
+    }
+    cursor.advance(end.at - cursor.index);
+    return "matched" in parsed ? parsed : { ...parsed, cursor };
+  }
+}
+
+/**
+ * Where `index`, in the sequence the splits made, stands in the sequence they
+ * were made from, and the literal it stands among the tokens of, if it does;
+ * there it stands at the literal.
+ */
+function writtenIndex(
+  index: number,
+  splits: readonly {
+    readonly index: number;
+    readonly width: number;
+    readonly literal: TokenSyntax;
+  }[],
+): { readonly at: number; readonly inside: TokenSyntax | undefined } {
+  let at = index;
+  let inside: TokenSyntax | undefined;
+  for (let made = splits.length - 1; made >= 0; made -= 1) {
+    const split = splits[made]!;
+    if (at <= split.index) continue;
+    if (at < split.index + split.width) {
+      inside = split.literal;
+      at = split.index;
+    } else at -= split.width - 1;
+  }
+  return { at, inside };
+}
+
 class PrattExpressionConsumer implements SyntaxConsumer {
   readonly #primary: SyntaxConsumer;
 
@@ -947,11 +1071,10 @@ class PrattExpressionConsumer implements SyntaxConsumer {
     const primary: SyntaxConsumer = createPrimaryExpressionConsumer({
       ...options,
       consumeExpression: (cursor, context) => {
-        const parsed = parseExpression(cursor, 0, {
+        const parsed = parseExpressionAt(cursor, {
           consumer: context,
           options,
           primary,
-          start: cursor.index,
           allowComma: false,
         });
         return "matched" in parsed
@@ -968,11 +1091,10 @@ class PrattExpressionConsumer implements SyntaxConsumer {
   }
 
   consume(cursor: SyntaxCursor, consumer: ConsumerContext): ConsumerAttempt {
-    const parsed = parseExpression(cursor, 0, {
+    const parsed = parseExpressionAt(cursor, {
       consumer,
       options: this.options,
       primary: this.#primary,
-      start: cursor.index,
       allowComma: this.options.allowComma ?? false,
     });
     if ("matched" in parsed) return parsed;

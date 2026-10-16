@@ -456,6 +456,9 @@ importers:
       '@sweetener/hygiene':
         specifier: workspace:*
         version: link:../hygiene
+      '@sweetener/reader':
+        specifier: workspace:*
+        version: link:../reader
       '@sweetener/shared':
         specifier: workspace:*
         version: link:../shared
@@ -463,9 +466,6 @@ importers:
         specifier: workspace:*
         version: link:../syntax
     devDependencies:
-      '@sweetener/reader':
-        specifier: workspace:*
-        version: link:../reader
       typescript:
         specifier: npm:@typescript/typescript6@6.0.2
         version: '@typescript/typescript6@6.0.2'

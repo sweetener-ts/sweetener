@@ -117,7 +117,8 @@ export interface CreateExpansionFrontendSessionOptions {
   readonly allocateBindingId: () => BindingId;
   readonly allocateInvocationId: () => InvocationId;
   /**
-   * Told of a slash the reader read the other way from the grammar (see
+   * Told of a slash the reader read the other way from the grammar, which
+   * only reading the source again reads as the grammar does (see
    * `SlashMisreadListener`). What a macro rule's capture finds is told once
    * its invocation settles on it (see `CaptureSlashMisreads`).
    */

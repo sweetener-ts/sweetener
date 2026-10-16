@@ -8,7 +8,8 @@ import type { SlashReading, TokenSyntax } from "@sweetener/syntax";
  * A capture reads by a grammar -- `$body:stmt` reads a statement -- and where
  * its grammar begins an operand at a slash the reader judged a division, the
  * slash is a regular expression, as it is anywhere else that grammar is read:
- * `unless (c) /re/.test(s)`. But a rule is tried and may be abandoned for the
+ * `unless (c) /[(]/.test(s)`, which only reading the source again reads (see
+ * `SlashMisreadListener`). But a rule is tried and may be abandoned for the
  * next one, and what one rule's capture found is no finding if another rule
  * reads the invocation. So what a capture finds waits on its invocation:
  *

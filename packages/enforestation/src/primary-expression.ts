@@ -5,6 +5,7 @@ import {
   createProtectedSyntax,
   createSyntaxCursor,
   createSyntaxSequence,
+  divisionSlash,
   isIdentifierToken,
   leadingLineBreak,
   spanEnvelope,
@@ -26,6 +27,10 @@ import {
   operandExpectedAfter,
   sameLineInfix,
 } from "./core-operators.js";
+import {
+  regularExpressionAt,
+  type RegularExpressionRead,
+} from "./slash-reading.js";
 import {
   consumeBalancedTypeArguments,
   typeOperandFollows,
@@ -1008,12 +1013,33 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       macroAttempt.cursor.index > cursor.index
         ? macroAttempt.cursor.index - cursor.index
         : undefined;
+    // A slash where an operand begins is a regular expression, whatever the
+    // reader made of it from the token before: `if (c)` and the
+    // `/re/.test(s)` under a `let x: T`. Read as one where it changes only
+    // the tokens of this operand; where it changes more, the source has to be
+    // read again, and the parser is told so.
+    let regularExpression: RegularExpressionRead | undefined;
+    const slash = cursor.peek();
     if (
       functionWidth === undefined &&
       markerWidth === undefined &&
       classWidth === undefined &&
       arrow === undefined &&
       macroOperand === undefined &&
+      divisionSlash(slash)
+    ) {
+      const read = regularExpressionAt(cursor, this.options);
+      if (read?.kind === "reread")
+        context.slashMisread?.(slash, "regular-expression");
+      else regularExpression = read;
+    }
+    if (
+      functionWidth === undefined &&
+      markerWidth === undefined &&
+      classWidth === undefined &&
+      arrow === undefined &&
+      macroOperand === undefined &&
+      regularExpression === undefined &&
       !isPrimaryAtom(cursor.peek())
     ) {
       return failure(
@@ -1031,6 +1057,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
         classWidth ??
         arrow?.width ??
         macroOperand ??
+        regularExpression?.width ??
         1,
     );
     // An arrow function takes nothing after its body: TypeScript reads
@@ -1076,7 +1103,9 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
       arrow !== undefined && cursor.index === start + arrow.width;
     const consumed = wholeArrow
       ? arrowChildren(raw, arrow, this.options, context)
-      : raw;
+      : regularExpression === undefined
+        ? raw
+        : [regularExpression.token, ...raw.slice(regularExpression.width)];
     const first = consumed[0]!;
     return Object.freeze({
       matched: true,

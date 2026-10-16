@@ -1,187 +1,154 @@
-import type { SlashReading, SlashReadings } from "@sweetener/syntax";
+import {
+  createSpan,
+  type SlashReading,
+  type SlashReadings,
+  type Span,
+} from "@sweetener/syntax";
 import * as ts from "typescript";
+import { scannerTokens } from "./scanner/scan.js";
+import type { ScannerToken } from "./scanner/types.js";
 import {
   scanWithSupportedTypeScript,
   type ScannerLanguageVariant,
-  type TypeScriptScannedToken,
 } from "./typescript-version/adapter.js";
 
-/** The spellings that open or close a group the reader builds. */
-const delimiters = new Set(["(", ")", "[", "]", "{", "}"]);
-
-/** Whether `token` opens, closes or continues a group the reader builds. */
-function delimits(token: TypeScriptScannedToken): boolean {
-  return (
-    delimiters.has(token.raw) ||
-    token.projectKind === "template-head" ||
-    token.projectKind === "template-middle" ||
-    token.projectKind === "template-tail" ||
-    token.lexicalMode === "jsx-tag" ||
-    token.lexicalMode === "jsx-text"
-  );
-}
-
-function alike(
-  left: TypeScriptScannedToken,
-  right: TypeScriptScannedToken,
-): boolean {
-  return (
-    left.start === right.start &&
-    left.end === right.end &&
-    left.kind === right.kind &&
-    left.lexicalMode === right.lexicalMode
-  );
-}
-
 /**
- * What to read `source` with next: `readings`, which it was read with, and
- * the slashes `misread` names, which the enforester found read the other way
- * from the grammar.
+ * The tokens the text of a regular expression literal reads as where its
+ * first slash is a division, ending with the end of the text; undefined where
+ * it does not read as tokens at all.
  *
- * The misreadings are taken in source order, and the first is always sound:
- * everything in front of it was read as the grammar reads it. A later one was
- * found in syntax read after an earlier misreading, and holds only where that
- * misreading was local: reading the slash the other way changed the read only
- * as far as the end of the regular expression it begins one way -- `/re/`
- * read as `/`, `re`, `/` -- without opening or closing a group in between,
- * and every token from there on is read alike either way. Where the two ways
- * part for good -- a quote, a bracket or a comment's opening inside the
- * expression, read as what it is outside one -- nothing found after the slash
- * can be trusted until the source has been read again. So the misreadings are
- * taken up to and including the first that was not local, and the rest are
- * left for the read after this one to find again if they still stand.
- *
- * Whether each was local is read off two scans of the whole source, one each
- * way, however many misreadings there are.
+ * A literal read where the grammar takes an operator is split into these:
+ * `/ 2 /g` after a name spelled `of` is the name divided by two, and then by
+ * `g`. Each token keeps the trivia written in front of it inside the text.
  */
-export function nextSlashReadings(
-  source: string,
-  variant: ScannerLanguageVariant,
-  readings: SlashReadings,
-  misread: SlashReadings,
-): SlashReadings {
-  const candidates = [...misread].sort(([left], [right]) => left - right);
-  for (const [offset, reading] of candidates)
-    // A slash read as the grammar asked is read that way, and is never
-    // found misread again: finding it so means the enforester read the same
-    // slash both ways.
-    if (readings.has(offset))
-      throw new RangeError(
-        `The slash at offset ${String(offset)} was read as ${String(readings.get(offset))} and then found misread as ${reading}`,
-      );
-  const before = scanWithSupportedTypeScript(
-    source,
-    variant,
+export function divisionTokens(
+  text: string,
+): readonly ScannerToken[] | undefined {
+  const scanned = scanWithSupportedTypeScript(
+    text,
+    "standard",
     undefined,
-    readings,
-  ).tokens;
-  const after = scanWithSupportedTypeScript(
-    source,
-    variant,
-    undefined,
-    new Map([...readings, ...candidates]),
-  ).tokens;
-  const next = new Map(readings);
-  let inBefore = 0;
-  let inAfter = 0;
-  for (const [offset, reading] of candidates) {
-    // Read alike up to this slash, or an earlier misreading was not local
-    // after all and this one was found in syntax that is not there.
-    while (
-      before[inBefore] !== undefined &&
-      after[inAfter] !== undefined &&
-      before[inBefore]!.start < offset &&
-      alike(before[inBefore]!, after[inAfter]!)
-    ) {
-      inBefore += 1;
-      inAfter += 1;
-    }
-    if (before[inBefore]?.start !== offset || after[inAfter]?.start !== offset)
-      break;
-    next.set(offset, reading);
-    const expression =
-      reading === "regular-expression" ? after[inAfter]! : before[inBefore]!;
-    const end = expression.end;
-    let delimited = false;
-    for (; before[inBefore] !== undefined; inBefore += 1) {
-      if (before[inBefore]!.start >= end) break;
-      if (delimits(before[inBefore]!)) delimited = true;
-    }
-    for (; after[inAfter] !== undefined; inAfter += 1) {
-      if (after[inAfter]!.start >= end) break;
-      if (delimits(after[inAfter]!)) delimited = true;
-    }
-    const resumes = (tokens: readonly TypeScriptScannedToken[], at: number) =>
-      tokens[at] === undefined || tokens[at]!.start === end;
-    if (delimited || !resumes(before, inBefore) || !resumes(after, inAfter))
-      break;
-  }
-  return next;
+    new Map([[0, "division"]]),
+  );
+  return scanned.errors.length === 0 ? scannerTokens(scanned) : undefined;
+}
+
+/** How TypeScript's parser reads the slashes of a source; see below. */
+export interface TypeScriptSlashes {
+  /**
+   * How TypeScript's parser reads the slashes the reader reads the other way,
+   * in the statements it parsed without error.
+   */
+  readonly readings: SlashReadings;
+  /**
+   * Where TypeScript did not parse the source without error: each line it
+   * reported an error on, and each statement or class member holding one. A
+   * Sweetener source is not TypeScript where it writes a macro's own syntax,
+   * and there the parser reads what it recovers to, so how it read a slash in
+   * one of these is no answer. An error is reported where the parser gave up,
+   * which is often the start of what it read next rather than inside what it
+   * misread, so the line is counted as well as the statement.
+   */
+  readonly unparsed: readonly Span[];
 }
 
 /**
- * How TypeScript's own parser reads each slash of `source`, for a reader
- * that has no enforester to ask.
+ * How TypeScript's own parser reads each slash of `source`, for a reader that
+ * has no enforester to ask: the formatter.
  *
  * The parser rescans a slash as a regular expression where it expects an
- * operand, so the regular expressions in the tree it builds are where
- * TypeScript read one. A Sweetener source is not TypeScript where it writes a
- * macro's own syntax, and there the parser reads what it recovers to; so this
- * is the answer only for what TypeScript's grammar reads, and it costs a parse
- * of the whole source. Only the slashes the reader read the other way are
- * returned.
+ * operand and leaves it a division where it expects an operator, so the
+ * literals and the division operators in the tree it builds are where it read
+ * each. Only where it parsed the statement holding the slash is that the
+ * grammar's answer; elsewhere the reader's own judgement stands. The answer
+ * costs a parse of the whole source.
  */
-export function typescriptSlashReadings(
+export function typescriptSlashes(
   source: string,
   variant: ScannerLanguageVariant,
-): SlashReadings {
-  const expressions = new Set(parsedRegularExpressions(source, variant));
-  let readings: SlashReadings = new Map();
-  // Read again until the read agrees with the parser, taking the slashes it
-  // disagrees about as the enforester's findings are taken.
+): TypeScriptSlashes {
+  const fileName = variant === "jsx" ? "source.tsx" : "source.ts";
+  const file = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    variant === "jsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const parsed = new Map<number, SlashReading>();
+  const errors = syntacticErrorPositions(file);
+  const unparsed: Span[] = errors.map((at) => {
+    const { line } = file.getLineAndCharacterOfPosition(at);
+    const lines = file.getLineStarts();
+    return createSpan(lines[line]!, lines[line + 1] ?? source.length);
+  });
+  const visit = (node: ts.Node): void => {
+    if (node.kind === ts.SyntaxKind.RegularExpressionLiteral)
+      parsed.set(node.getStart(file), "regular-expression");
+    if (
+      ts.isBinaryExpression(node) &&
+      (node.operatorToken.kind === ts.SyntaxKind.SlashToken ||
+        node.operatorToken.kind === ts.SyntaxKind.SlashEqualsToken)
+    )
+      parsed.set(node.operatorToken.getStart(file), "division");
+    ts.forEachChild(node, visit);
+    if (
+      (ts.isStatement(node) || ts.isClassElement(node)) &&
+      errors.some((at) => at >= node.getStart(file) && at < node.end)
+    )
+      unparsed.push(createSpan(node.getStart(file), node.end));
+  };
+  visit(file);
+  const certain = (offset: number) =>
+    !unparsed.some(({ start, end }) => offset >= start && offset < end);
+  // Read again until the read agrees with the parser where it parsed. Each
+  // time round settles at least one more slash, and a reading taken never
+  // changes, so this ends; it is usually once.
+  let readings = new Map<number, SlashReading>();
   for (;;) {
-    const misread = new Map<number, SlashReading>();
+    let changed = false;
     for (const token of scanWithSupportedTypeScript(
       source,
       variant,
       undefined,
       readings,
     ).tokens) {
-      if (
-        token.projectKind === "regular-expression-literal" &&
-        !expressions.has(token.start)
-      )
-        misread.set(token.start, "division");
-      if (
-        token.projectKind === "punctuation" &&
-        (token.raw === "/" || token.raw === "/=") &&
-        expressions.has(token.start)
-      )
-        misread.set(token.start, "regular-expression");
+      const reading = parsed.get(token.start);
+      if (reading === undefined || !certain(token.start)) continue;
+      const read =
+        token.projectKind === "regular-expression-literal"
+          ? "regular-expression"
+          : token.raw === "/" || token.raw === "/="
+            ? "division"
+            : undefined;
+      if (read === undefined || read === reading || readings.has(token.start))
+        continue;
+      readings = new Map([...readings, [token.start, reading]]);
+      changed = true;
     }
-    if (misread.size === 0) return readings;
-    readings = nextSlashReadings(source, variant, readings, misread);
+    if (!changed) return Object.freeze({ readings, unparsed });
   }
 }
 
-/** Where TypeScript's parser read a regular expression in `source`. */
-function parsedRegularExpressions(
-  source: string,
-  variant: ScannerLanguageVariant,
-): readonly number[] {
-  const file = ts.createSourceFile(
-    variant === "jsx" ? "source.tsx" : "source.ts",
-    source,
-    ts.ScriptTarget.Latest,
-    false,
-    variant === "jsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  const found: number[] = [];
-  const visit = (node: ts.Node): void => {
-    if (node.kind === ts.SyntaxKind.RegularExpressionLiteral)
-      found.push(node.getStart(file));
-    ts.forEachChild(node, visit);
+/** Where TypeScript's parser reported an error in `file`. */
+function syntacticErrorPositions(file: ts.SourceFile): readonly number[] {
+  const host: ts.CompilerHost = {
+    getSourceFile: (name) => (name === file.fileName ? file : undefined),
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => {},
+    getCurrentDirectory: () => "",
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    fileExists: (name) => name === file.fileName,
+    readFile: () => undefined,
   };
-  visit(file);
-  return found;
+  const program = ts.createProgram({
+    rootNames: [file.fileName],
+    options: { noLib: true, noResolve: true, types: [] },
+    host,
+  });
+  return program
+    .getSyntacticDiagnostics(file)
+    .flatMap(({ start }) => (start === undefined ? [] : [start]));
 }

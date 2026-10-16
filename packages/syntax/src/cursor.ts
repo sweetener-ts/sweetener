@@ -191,6 +191,21 @@ export class SyntaxCursor {
     );
   }
 
+  /**
+   * A cursor standing where this one does, in the same traversal and group,
+   * over `sequence`: this cursor's sequence as far as the cursor, written
+   * differently somewhere after it. A parser that finds it has read a token
+   * the way the grammar does not reads on over the tokens the grammar reads.
+   */
+  over(sequence: readonly Syntax[]): SyntaxCursor {
+    return new SyntaxCursor(
+      this.#context,
+      createSyntaxSequence(sequence),
+      this.#index,
+      this.#parent,
+    );
+  }
+
   enterGroup(): SyntaxCursor {
     const syntax = this.peek();
     if (syntax === undefined) {

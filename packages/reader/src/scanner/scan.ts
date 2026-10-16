@@ -7,6 +7,7 @@ import {
 import {
   scanWithSupportedTypeScript,
   type TypeScriptScannedToken,
+  type TypeScriptScanResult,
 } from "../typescript-version/adapter.js";
 import { readerDiagnosticRegistry, scannerErrorCode } from "./diagnostics.js";
 import type { ScanOptions, ScanResult, ScannerToken } from "./types.js";
@@ -47,31 +48,15 @@ function toTrivia(token: TypeScriptScannedToken): Trivia | undefined {
   });
 }
 
-export function scanTypeScript(
-  source: string,
-  options: ScanOptions,
-): ScanResult {
-  const tracker = new ResourceTracker(options.budget ?? defaultResourceBudget);
-  const scanned = scanWithSupportedTypeScript(
-    source,
-    options.variant ?? "standard",
-    () => {
-      (options.cancellation ?? neverCancelled).throwIfCancellationRequested();
-      tracker.chargeInputTokens();
-    },
-    options.slashReadings,
-  );
-  // A reading names a slash the parser stood at in an earlier read of the
-  // same text, and everything in front of a slash is scanned alike either
-  // way. One that names no slash was given for some other text.
-  const [unread] = scanned.unread;
-  if (unread !== undefined)
-    throw new RangeError(
-      `No slash at offset ${String(unread)} to read as ${String(options.slashReadings?.get(unread))}`,
-    );
+/**
+ * The tokens of a scan, each with the trivia written in front of it, ending
+ * with the end of the file.
+ */
+export function scannerTokens(
+  scanned: TypeScriptScanResult,
+): readonly ScannerToken[] {
   const tokens: ScannerToken[] = [];
   let leadingTrivia: Trivia[] = [];
-
   for (const token of scanned.tokens) {
     if (token.projectKind === undefined) {
       const trivia = toTrivia(token);
@@ -96,9 +81,27 @@ export function scanTypeScript(
     );
     leadingTrivia = [];
   }
+  return Object.freeze(tokens);
+}
 
+export function scanTypeScript(
+  source: string,
+  options: ScanOptions,
+): ScanResult {
+  const tracker = new ResourceTracker(options.budget ?? defaultResourceBudget);
+  const slashReadings = options.slashReadings ?? new Map();
+  const scanned = scanWithSupportedTypeScript(
+    source,
+    options.variant ?? "standard",
+    () => {
+      (options.cancellation ?? neverCancelled).throwIfCancellationRequested();
+      tracker.chargeInputTokens();
+    },
+    slashReadings,
+  );
+  const unread = new Set(scanned.unread);
   return Object.freeze({
-    tokens: Object.freeze(tokens),
+    tokens: scannerTokens(scanned),
     diagnostics: Object.freeze(
       scanned.errors.map((error) =>
         readerDiagnosticRegistry.create(scannerErrorCode, {
@@ -110,6 +113,9 @@ export function scanTypeScript(
           messageArguments: [error.message],
         }),
       ),
+    ),
+    slashReadings: new Map(
+      [...slashReadings].filter(([offset]) => !unread.has(offset)),
     ),
     typescriptVersion: scanned.version,
   });
