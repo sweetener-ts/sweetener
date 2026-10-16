@@ -287,15 +287,6 @@ describe("a name TypeScript resolves is not a mismatched space", () => {
     expect(exitCode).toBe(0);
   });
 
-  test("an interface member against a class-element macro of the same name", () => {
-    const { reports, exitCode } = check({
-      "macros.sts": `export syntax held:classElement {\n  rule { held } => { readonly at = 1; }\n}\n`,
-      "main.sts": `import { held } from "./macros.sts" for syntax;\nexport interface I { held }\n`,
-    });
-    expect(reports).toEqual([]);
-    expect(exitCode).toBe(0);
-  });
-
   test("an ambient declaration against an expression macro of the same name", () => {
     const { reports, exitCode } = check({
       "macros.sts": `export syntax Box:expr {\n  rule { Box($value:expr) } => { [$value] }\n}\n`,
@@ -311,6 +302,38 @@ describe("a name TypeScript resolves is not a mismatched space", () => {
       "macros.sts": `export syntax Crate:expr {\n  rule { Crate($value:expr) } => { [$value] }\n}\n`,
       "ambient.d.ts": `export {};\ndeclare global {\n  type Crate<T> = { readonly value: T };\n}\n`,
       "main.sts": `import { Crate } from "./macros.sts" for syntax;\nexport type Held = Crate<number>;\nexport const boxed = Crate(1);\n`,
+    });
+    expect(reports).toEqual([]);
+    expect(exitCode).toBe(0);
+  });
+});
+
+/**
+ * A member's key is a declaration, not a reference: TypeScript never resolves
+ * it, and asks about a bare one only under `noImplicitAny`. A macro declared
+ * for another space and written there is therefore said by expansion, not
+ * held for a question TypeScript never asks -- held, `interface I { held }`
+ * declared a member `held: any` in silence.
+ */
+describe("a member key spelled like a macro of another space", () => {
+  test("is named without noImplicitAny", () => {
+    const { reports, exitCode } = check(
+      {
+        "macros.sts": `export syntax held:classElement {\n  rule { held } => { readonly at = 1; }\n}\n`,
+        "main.sts": `import { held } from "./macros.sts" for syntax;\nexport interface I { held }\n`,
+      },
+      { noImplicitAny: false },
+    );
+    expect(reports).toEqual([
+      "TS4013: Macro held is declared classElement and cannot be written where a typeMember is read. Declare it typeMember to use it here.",
+    ]);
+    expect(exitCode).toBe(1);
+  });
+
+  test("is not named where the member is written with a type", () => {
+    const { reports, exitCode } = check({
+      "macros.sts": `export syntax held:classElement {\n  rule { held } => { readonly at = 1; }\n}\n`,
+      "main.sts": `import { held } from "./macros.sts" for syntax;\nexport interface I { held: number }\n`,
     });
     expect(reports).toEqual([]);
     expect(exitCode).toBe(0);

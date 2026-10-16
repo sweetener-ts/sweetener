@@ -291,23 +291,23 @@ describe("the typeMember category", () => {
    * that resolves in no member space but does resolve elsewhere is answered
    * for by the category it was declared for.
    *
-   * Held rather than reported, because a bare name in a member list is a
-   * member of its own: `interface Row { nowhere }` declares an implicitly
-   * typed member, which TypeScript accepts outright unless `noImplicitAny` is
-   * on. So the sentence goes to TypeScript, to be written where TypeScript
-   * says there is something to write it about.
+   * Reported rather than held for TypeScript. A bare name in a member list
+   * is a member's key, a declaration rather than a reference, so TypeScript
+   * never resolves it and asks about it only under `noImplicitAny`: held, the
+   * sentence was said nowhere else, and `interface Row { nowhere }` declared
+   * an implicitly typed member over a macro declared for another category.
    */
-  test("holds a macro declared for another category for TypeScript", () => {
+  test("reports a macro declared for another category", () => {
     const { diagnose, explain } = harness(definitions);
-    expect(diagnose("interface Row { nowhere }")).toEqual([]);
-    const explanations = explain("interface Row { nowhere }");
-    expect(explanations).toHaveLength(1);
-    expect(explanations[0]?.code).toBe("SWR4013");
-    expect(explanations[0]?.messageArguments).toEqual([
+    const diagnostics = diagnose("interface Row { nowhere }");
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.code).toBe("SWR4013");
+    expect(diagnostics[0]?.messageArguments).toEqual([
       "nowhere",
       "item",
       "typeMember",
     ]);
+    expect(explain("interface Row { nowhere }")).toEqual([]);
   });
 
   test("does not report an ordinary member that shares a macro name", () => {

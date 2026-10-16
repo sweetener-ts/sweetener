@@ -442,12 +442,27 @@ export function operatorWidthAt(
  * across the join built `[...preceding, group, ...following]` once per token
  * it looked at. Reading in place asks the same question and copies nothing.
  */
+/**
+ * A `<` the walk has passed and nothing has closed: how many angles it still
+ * holds open, and what reading ahead to where it closes found, once read.
+ */
+interface OpenAngles {
+  readonly held: number;
+  answer: { readonly until: number; readonly encloses: boolean } | undefined;
+}
+
 interface SyntaxRun {
   /** The syntax walked so far, read from its start. */
   readonly walked: readonly Syntax[];
   /** What follows it, read from `from` on. */
   readonly following: readonly Syntax[];
   readonly from: number;
+  /**
+   * Whether the run is a run of statements, where no method stands: a
+   * parameter list there is a function's only behind the `function` that
+   * declares it.
+   */
+  readonly statements?: boolean | undefined;
 }
 
 /**
@@ -1129,6 +1144,36 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     "namespace",
     "declare",
   ]);
+
+  /**
+   * Tokens after which a declaring keyword is a name: a key's `:`, the end
+   * of a member or a statement, a member access, and a call -- `import(`
+   * and `type(` read a value. A `function (` declares an anonymous function,
+   * and an `export =` assigns the module's export, so each of those is the
+   * keyword still.
+   */
+  const namedBefore = new Set([":", ",", ";", ".", "?."]);
+
+  /**
+   * Whether `keyword`, spelled like a declaring keyword, is written as a
+   * name: read through a member access, or followed by what follows a name
+   * rather than what a declaration writes next -- `{ enum: 1 }`, `{ type }`,
+   * `import("m")`, `type = 1`.
+   */
+  const keywordSpellsName = (
+    before: Syntax | undefined,
+    keyword: TokenSyntax,
+    after: Syntax | undefined,
+  ): boolean => {
+    if (before?.tag === "token" && (before.raw === "." || before.raw === "?."))
+      return true;
+    if (after === undefined) return true;
+    if (after.tag === "group")
+      return after.delimiter === "parenthesis" && keyword.raw !== "function";
+    if (after.tag !== "token") return false;
+    if (after.raw === "=") return keyword.raw !== "export";
+    return namedBefore.has(after.raw);
+  };
 
   /** How many angles of `character` a node opens or closes. */
   const angles = (node: Syntax | undefined, character: "<" | ">"): number =>
@@ -2302,6 +2347,24 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * references, `type List<T> = T[]` had both its `T`s dispatched to a type
    * macro of that spelling.
    */
+  /**
+   * An enum's members are in scope in its body: `enum E { x = 1, y = x * 2 }`
+   * reads `E.x` in the second initializer. Each member's name is bound in the
+   * body, at `body`, so a macro spelled like one is not dispatched there.
+   */
+  const bindEnumMembers = (
+    nodes: readonly Syntax[],
+    body: number,
+    into: CollectedBindings,
+  ): void => {
+    const brace = nodes[body];
+    if (brace?.tag !== "group" || brace.delimiter !== "brace") return;
+    for (const { run } of commaSeparatedMembers(brace.children, false)) {
+      const name = run[0];
+      if (name?.tag === "token" && isIdentifierToken(name))
+        recordValue(into, name.raw, name.scopes, { from: body, to: body + 1 });
+    }
+  };
   const collectRegion = (
     nodes: readonly Syntax[],
     into: CollectedBindings,
@@ -2396,7 +2459,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           hoistVars(header, into);
           continue;
         }
-        const end = parameterScopeEnd(nodes, at);
+        const end = parameterScopeEnd(nodes, at, statements);
         const open = typeParametersOpenBefore(run, at);
         if (end !== undefined) {
           // A parameter's binder stands after the modifiers of a parameter
@@ -2456,6 +2519,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
               { from: nameAt + 1, to: extent.to },
               node.raw === "class",
             );
+          if (node.raw === "enum") bindEnumMembers(nodes, nameAt + 1, into);
         } else if (node.raw === "class" && spelling(name) === "<")
           // A class expression may go unnamed and still declare type
           // parameters.
@@ -2730,6 +2794,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const parameterScopeEnd = (
     nodes: readonly Syntax[],
     at: number,
+    /** Whether `nodes` is a run of statements, where no method stands. */
+    statements = false,
   ): number | undefined => {
     const node = nodes[at];
     if (node?.tag !== "group" || node.delimiter !== "parenthesis")
@@ -2751,7 +2817,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // only what comes next. A body already enforested arrives protected rather
     // than as the brace it was read from, which `parametersFunction` reads
     // through.
-    const fn = parametersFunction(node, runOf(nodes), at);
+    const fn = parametersFunction(node, { ...runOf(nodes), statements }, at);
     if (fn === undefined) return undefined;
     return "arrow" in fn ? arrowBodyEnd(nodes, fn.arrow + 1).end : fn.body + 1;
   };
@@ -3115,6 +3181,97 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     return false;
   };
 
+  /** Whether an object literal's member is a shorthand property: `{ x }`. */
+  const shorthandProperty = (
+    member: readonly Syntax[],
+  ): member is readonly [TokenSyntax] =>
+    member.length === 1 &&
+    member[0]!.tag === "token" &&
+    isIdentifierToken(member[0]!);
+
+  /**
+   * Whether the brace at `at` in `nodes` is the pattern of an assignment or
+   * of a `for` loop's head rather than an object literal: `({ x } = o)`,
+   * `for ({ x } of xs)`. Its names are the targets the values are written to.
+   */
+  const assignmentPatternAt = (
+    nodes: readonly Syntax[],
+    at: number,
+  ): boolean => {
+    const next = nodes[at + 1];
+    return (
+      next?.tag === "token" &&
+      (next.raw === "=" || next.raw === "of" || next.raw === "in")
+    );
+  };
+
+  /**
+   * The members of an object literal or an enum body, each with the `,` that
+   * ends it. Type parameters and type arguments hold commas of their own --
+   * `*run(): Generator<number, void, unknown> {`,
+   * `<T, U>(a: T, b: U) => [a, b]`, `A = make<number, string>(x)` -- which
+   * do not end the member.
+   *
+   * `methods` says whether a member may be a method, whose head is a
+   * signature, read up to its body, where every `<` opens angles. An enum
+   * member is a name and a value and never one.
+   */
+  const commaSeparatedMembers = (
+    children: readonly Syntax[],
+    methods: boolean,
+  ): {
+    readonly run: readonly Syntax[];
+    readonly separator: Syntax | undefined;
+  }[] => {
+    const members: {
+      readonly run: readonly Syntax[];
+      readonly separator: Syntax | undefined;
+    }[] = [];
+    let member: Syntax[] = [];
+    let methodHead = methods;
+    let typeArguments = 0;
+    for (let at = 0; at < children.length; at += 1) {
+      const child = children[at]!;
+      if (child.tag === "token" && child.raw === "," && typeArguments === 0) {
+        members.push({ run: member, separator: child });
+        member = [];
+        methodHead = methods;
+        continue;
+      }
+      const previous = member.at(-1);
+      const opensAngles =
+        typeArguments > 0 ||
+        (child.tag === "token" &&
+          child.raw === "<" &&
+          anglesOpen(children, at, member, methodHead));
+      member.push(child);
+      if (opensAngles)
+        typeArguments = Math.max(
+          0,
+          typeArguments + angles(child, "<") - angles(child, ">"),
+        );
+      if (!methodHead) continue;
+      if (child.tag !== "token") {
+        if (child.tag === "group" && child.delimiter === "brace") {
+          methodHead = false;
+          typeArguments = 0;
+        }
+        continue;
+      }
+      if (
+        typeArguments === 0 &&
+        ((child.raw === "..." && previous === undefined) ||
+          (child.raw === ":" &&
+            !(
+              previous?.tag === "group" && previous.delimiter === "parenthesis"
+            )))
+      )
+        methodHead = false;
+    }
+    members.push({ run: member, separator: undefined });
+    return members;
+  };
+
   /**
    * Whether syntax carrying `scopes` stands in `region` as the walk found it
    * there, written in it or copied from what was, rather than written by a
@@ -3372,9 +3529,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
 
   /**
    * Where the name of the function whose parameter list stands at `parameters`
-   * is written: a type parameter list between the two is read past. A function
-   * written `function* (` names itself nothing, and the star stands there
-   * instead.
+   * is written: a type parameter list between the two is read past, and so is
+   * an optional method's `?`. A function written `function* (` names itself
+   * nothing, and the star stands there instead.
    */
   const functionNameAt = (run: SyntaxRun, parameters: number): number => {
     let at = parameters - 1;
@@ -3387,7 +3544,26 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
       }
       at -= 1;
     }
+    // An optional method's `?` stands after its name: `async *m?(`.
+    const optional = nodeAt(run, at);
+    if (optional?.tag === "token" && optional.raw === "?") at -= 1;
     return at;
+  };
+
+  /**
+   * Whether the parameter list at `parameters` is a `function`'s: the keyword
+   * stands in front of its name, in front of a generator's star, or in place
+   * of the name -- `function f(`, `function* f(`, `function (`.
+   */
+  const declaredFunctionAt = (run: SyntaxRun, parameters: number): boolean => {
+    const name = functionNameAt(run, parameters);
+    for (let at = name; at >= name - 2; at -= 1) {
+      const node = nodeAt(run, at);
+      if (node?.tag !== "token") return false;
+      if (node.raw === "function") return true;
+      if (at < name && node.raw !== "*") return false;
+    }
+    return false;
   };
 
   /**
@@ -3430,6 +3606,61 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   };
 
   /**
+   * The body each declaring keyword opens.
+   *
+   * An interface body is a member list, and so is an object type written in
+   * what the interface extends: `interface I extends Pick<{ a: 1 }, "a">`.
+   * Only a module-level interface is read by the item consumer, so this is
+   * how a body nested any deeper -- inside a namespace, a `declare global`, a
+   * function body, an item recovery swallowed -- is recognized as the member
+   * list it is. An enum body is a member list too, and `const enum` and
+   * `declare enum` are read past on the way back to the keyword that says so.
+   */
+  const declarationBraces: ReadonlyMap<string, BraceHeader> = new Map([
+    ["class", classBrace],
+    ["namespace", namespaceBrace],
+    ["module", namespaceBrace],
+    ["interface", interfaceBrace],
+    ["enum", enumBrace],
+  ]);
+
+  /**
+   * Whether the word at `at` declares what it is spelled: whether it is the
+   * keyword, rather than a member or a key spelled like one. Every one of
+   * them is a property name too -- `o.class`, `{ enum: 1 }`, `case K.module:`
+   * -- and taking `o.class || { k: x }` for a class header made the object
+   * literal a class body, where `x` was never expanded.
+   *
+   * A keyword is not read through a member access, and is followed by what it
+   * declares: a name, a module's string, or, for a class, `extends` or the
+   * body of an anonymous class. The brace being asked about, at `end`, may
+   * not be in the run yet: the walk asks before it has walked it.
+   */
+  const declarationKeywordAt = (
+    run: SyntaxRun,
+    at: number,
+    end: number,
+  ): boolean => {
+    const keyword = nodeAt(run, at);
+    if (keyword?.tag !== "token") return false;
+    const before = nodeAt(run, at - 1);
+    if (before?.tag === "token" && (before.raw === "." || before.raw === "?."))
+      return false;
+    if (at + 1 === end) return keyword.raw === "class";
+    const after = nodeAt(run, at + 1);
+    if (after === undefined) return false;
+    if (keyword.raw === "class")
+      return after.tag === "group"
+        ? after.delimiter === "brace"
+        : after.tag === "token" &&
+            (isIdentifierToken(after) || after.raw === "extends");
+    if (after.tag !== "token") return false;
+    if (keyword.raw === "module" && after.kind === "string-literal")
+      return true;
+    return isIdentifierToken(after);
+  };
+
+  /**
    * What reading a brace's header back from `from` finds, `end` being where
    * the brace stands: the kind of body its keyword opens, or else the
    * function parameter list it is read up to, if any. The header is read back
@@ -3463,19 +3694,10 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           continue;
         }
         if (typeArguments > 0) continue;
-        if (node.raw === "class") return { found: classBrace };
-        if (node.raw === "namespace" || node.raw === "module")
-          return { found: namespaceBrace };
-        // An interface body is a member list, and so is an object type
-        // written in what the interface extends: `interface I extends
-        // Pick<{ a: 1 }, "a">`. Only a module-level interface is read by the
-        // item consumer, so this is how a body nested any deeper -- inside a
-        // namespace, a `declare global`, a function body, an item recovery
-        // swallowed -- is recognized as the member list it is.
-        if (node.raw === "interface") return { found: interfaceBrace };
-        // An enum body is a member list too, and `const enum` and `declare
-        // enum` are read past on the way back to the keyword that says so.
-        if (node.raw === "enum") return { found: enumBrace };
+        const declared = declarationKeywordAt(run, at, end)
+          ? declarationBraces.get(node.raw)
+          : undefined;
+        if (declared !== undefined) return { found: declared };
         if (
           statementBoundaries.has(node.raw) ||
           node.raw === "=" ||
@@ -3572,11 +3794,35 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     const read =
       "behind" in first ? readHeaderBehind(run, first.behind) : first;
     if ("found" in read) return read.found;
-    let parameters = read.parameters;
-    if (previous?.tag === "group" && previous.delimiter === "parenthesis")
-      parameters = end - 1;
+    // A parameter list the header found behind a return type is the one: a
+    // return type may be parenthesized itself, `f(x: number): (number) {`,
+    // and taking that for the parameter list read the `:` as the name of a
+    // function and the body as a block.
+    const parameters =
+      read.parameters ??
+      (previous?.tag === "group" && previous.delimiter === "parenthesis"
+        ? end - 1
+        : undefined);
     if (parameters === undefined) return otherBrace;
-    const opener = nodeAt(run, parameters - 1);
+    // A statement holds no method, so a parameter list there with nothing
+    // declaring it a function's is a call, and a brace on the line under it
+    // is a block of its own: `use(x)` then `{ use(x) }`. On the same line
+    // the two cannot be a call and a block, and are read as a method, which
+    // is what a literal's member is where the walk took the literal's braces
+    // for a block.
+    if (
+      run.statements === true &&
+      leadingLineBreak(nodeAt(run, end)) &&
+      !declaredFunctionAt(run, parameters)
+    )
+      return otherBrace;
+    // An optional method writes `?` between its name and its parameter list:
+    // `m?(x: number) {`.
+    const optional = nodeAt(run, parameters - 1);
+    const opener =
+      optional?.tag === "token" && optional.raw === "?"
+        ? nodeAt(run, parameters - 2)
+        : optional;
     const functionBrace: BraceHeader = {
       opens: "function",
       parameters,
@@ -4339,6 +4585,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     afterDirectives,
     angles,
     anglesOpen,
+    commaSeparatedMembers,
+    assignmentPatternAt,
+    shorthandProperty,
     binderFollows,
     braceOpens,
     builtAccumulators,
@@ -4359,6 +4608,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     enforestSequence,
     expressionOf,
     expressionRegionEnds,
+    keywordSpellsName,
     expressionRegionHeads,
     fillAccumulators,
     freshCopy,
@@ -4611,7 +4861,9 @@ function* walk(
     substatementAt,
     addScopes,
     angles,
-    anglesOpen,
+    commaSeparatedMembers,
+    assignmentPatternAt,
+    shorthandProperty,
     binderFollows,
     braceOpens,
     builtAccumulators,
@@ -4632,6 +4884,7 @@ function* walk(
     enforestSequence,
     expressionOf,
     expressionRegionEnds,
+    keywordSpellsName,
     expressionRegionHeads,
     fillAccumulators,
     freshCopy,
@@ -4739,7 +4992,7 @@ function* walk(
    * than copied, so this reads what has been walked at the moment it is
    * asked and one run serves the whole walk.
    */
-  const walkedRun = runOf(output);
+  const walkedRun: SyntaxRun = { ...runOf(output), statements: statementRun };
   /**
    * Everything walked so far and then what is yet to be walked, read from
    * `from` on. A rule that reads across the two -- a parameter list and the
@@ -4749,6 +5002,7 @@ function* walk(
     walked: output,
     following: input,
     from,
+    statements: statementRun,
   });
   /**
    * Gives `scopes`, which binding contracts gave the syntax following them,
@@ -4859,10 +5113,10 @@ function* walk(
    * back from the end every time the question is asked: asked after every
    * `,` of a long list, reading back cost the square of its length.
    */
-  const openAngles: number[] = [];
+  const openAngles: OpenAngles[] = [];
   let anglesRead = 0;
-  /** How many `<` the innermost one still open holds open. */
-  const unclosedAngles = (): number => {
+  /** The innermost `<` still open. */
+  const unclosedAngles = (): OpenAngles | undefined => {
     for (; anglesRead < output.length; anglesRead += 1) {
       const node = output[anglesRead]!;
       if (node.tag !== "token") continue;
@@ -4873,13 +5127,14 @@ function* walk(
       let closes = angles(node, ">");
       while (closes > 0 && openAngles.length > 0) {
         const open = openAngles.pop()!;
-        if (open > closes) openAngles.push(open - closes);
-        closes -= Math.min(open, closes);
+        if (open.held > closes)
+          openAngles.push({ held: open.held - closes, answer: open.answer });
+        closes -= Math.min(open.held, closes);
       }
       const opens = angles(node, "<");
-      if (opens > 0) openAngles.push(opens);
+      if (opens > 0) openAngles.push({ held: opens, answer: undefined });
     }
-    return openAngles.at(-1) ?? 0;
+    return openAngles.at(-1);
   };
   const typeArgumentsEnclose = (at: number): boolean => {
     const previous = output.at(-1);
@@ -4888,12 +5143,28 @@ function* walk(
       (previous.raw !== "," && angles(previous, "<") === 0)
     )
       return false;
-    let depth = unclosedAngles();
-    if (depth === 0) return false;
+    const open = unclosedAngles();
+    if (open === undefined) return false;
+    // Every `,` the one `<` holds is answered by where that `<` closes, so
+    // the answer is read ahead once for all of them, and kept until the walk
+    // passes where reading ahead stopped. Read ahead again at every `,`, a
+    // `<` that never closes -- `[a < 1, {}, {}, ...]` -- read to the end of
+    // the run each time.
+    if (open.answer !== undefined && open.answer.until > at)
+      return open.answer.encloses;
+    const answer = readTypeArgumentsAhead(at, open.held);
+    open.answer = answer;
+    return answer.encloses;
+  };
+  const readTypeArgumentsAhead = (
+    at: number,
+    held: number,
+  ): { readonly until: number; readonly encloses: boolean } => {
+    let depth = held;
     for (let forward = at + 1; forward < input.length; forward += 1) {
       const node = input[forward]!;
       if (node.tag !== "token") continue;
-      if (node.raw === ";") return false;
+      if (node.raw === ";") return { until: forward, encloses: false };
       depth += angles(node, "<");
       depth -= angles(node, ">");
       // The candidate has closed, and what stands after it says whether it
@@ -4910,12 +5181,15 @@ function* walk(
       // succeeded.
       if (depth <= 0) {
         const following = input[forward + 1];
-        return (
-          callFollowsTypeArguments(following) || typeArgumentsFollow(following)
-        );
+        return {
+          until: forward,
+          encloses:
+            callFollowsTypeArguments(following) ||
+            typeArgumentsFollow(following),
+        };
       }
     }
-    return false;
+    return { until: input.length, encloses: false };
   };
   /**
    * The class member being walked, read from `output` a node at a time as it
@@ -5083,8 +5357,13 @@ function* walk(
     contexts = withinOpenArrow(regionContexts);
     if (walked?.tag === "token") {
       // A declaration keyword ends the declaration before it, so it closes
-      // both regions the same way a `;` does.
-      if (expressionRegionEnds.has(walked.raw)) {
+      // both regions the same way a `;` does. A member or a key spelled like
+      // one is a name, and closes nothing: `o.type + x` and `{ enum: 1, b: x }`
+      // left `x` read as a statement's head rather than an operand.
+      if (
+        expressionRegionEnds.has(walked.raw) &&
+        !keywordSpellsName(output.at(-2), walked, node)
+      ) {
         expressionRegion = false;
         typeAliasRegion = false;
       } else if (typeAliasInitializerFollows(output)) typeAliasRegion = true;
@@ -5642,23 +5921,30 @@ function* walk(
           resolveSpelling(spelling, position, writtenIn, candidate, node) !==
             undefined,
       );
-      if (elsewhere !== undefined)
-        // Held rather than reported. The expander knows the macros and the
-        // bindings this module writes; it does not know `lib.d.ts`, an
-        // ambient declaration, a `declare global`, or that a member list
-        // names members of its own, so a name it cannot account for is not
-        // thereby a name nothing defines. Reporting on its own knowledge
-        // refused `type Halved = Partial<{ a: number }>` in a module holding
-        // a macro spelled `Partial`. The sentence goes to the side that
-        // resolves names, to be written where that side says the name is
-        // missing.
-        holdForTypeScript(
-          node,
-          expansionDiagnosticRegistry.create(wrongCategoryMacroCode, {
+      if (elsewhere !== undefined) {
+        const diagnostic = expansionDiagnosticRegistry.create(
+          wrongCategoryMacroCode,
+          {
             primaryOrigin: options.diagnosticOrigin(node.origin),
             messageArguments: [node.raw, elsewhere, spaceReadHere],
-          }),
+          },
         );
+        // A member's key is a declaration, not a reference: TypeScript never
+        // resolves it, and asks about it only under `noImplicitAny`. Held for
+        // it, the sentence was said nowhere else, and `interface I { Shape }`
+        // declared a member `Shape: any` in silence over a macro declared
+        // for another space. So it is said here.
+        if (spaceReadHere === "typeMember") diagnostics.push(diagnostic);
+        // Held rather than reported anywhere else. The expander knows the
+        // macros and the bindings this module writes; it does not know
+        // `lib.d.ts`, an ambient declaration or a `declare global`, so a name
+        // it cannot account for is not thereby a name nothing defines.
+        // Reporting on its own knowledge refused `type Halved = Partial<{ a:
+        // number }>` in a module holding a macro spelled `Partial`. The
+        // sentence goes to the side that resolves names, to be written where
+        // that side says the name is missing.
+        else holdForTypeScript(node, diagnostic);
+      }
     }
     /**
      * A macro is visible to what follows its definition, the way a `const`
@@ -6806,6 +7092,35 @@ function* walk(
             jsxChildren.push(child);
             continue;
           }
+          // An attribute's braces are an expression container, not an
+          // object literal, so what is walked as an expression is what they
+          // hold: walked whole, `title={c ? x : 1}` was split at its `:`
+          // into a key and a value, and `x` was never expanded.
+          if (child.delimiter === "brace") {
+            const contents = yield* walkInside(
+              scope,
+              child,
+              nestedWalk(
+                child.children,
+                currentEnvironment,
+                "expr",
+                parentInvocation,
+                lexicalModule,
+                contexts,
+                false,
+                recursiveBinding,
+              ),
+            );
+            currentEnvironment = contents.environment;
+            jsxChildren.push(
+              createGroup({
+                ...child,
+                id: options.allocateSyntaxId(),
+                children: contents.syntax,
+              }),
+            );
+            continue;
+          }
           const nested = yield nestedWalk(
             createSyntaxSequence([child]),
             currentEnvironment,
@@ -6987,9 +7302,9 @@ function* walk(
         braceOpens(walkedRun, output.length) === "enum"
       ) {
         const children: Syntax[] = [];
-        for (const { run: member, separator } of separatedRuns(
+        for (const { run: member, separator } of commaSeparatedMembers(
           node.children,
-          spelledComma,
+          false,
         )) {
           const equals = member.findIndex(
             (child) => child.tag === "token" && child.raw === "=",
@@ -7033,70 +7348,22 @@ function* walk(
       // A function's body is a block wherever the function stands, and
       // its `:` is a label's: read as a literal, `() => { done: f(); }` was
       // walked as one member named `done`.
+      //
+      // A literal holding only shorthand properties is one too, unless it is
+      // the pattern of an assignment, where each name is a target.
       if (
         node.tag === "group" &&
         node.delimiter === "brace" &&
         (category === "expr" || initializerFollows(output)) &&
         !typeFollows() &&
         braceOpens(walkedRun, output.length) === "other" &&
-        node.children.some(
+        (node.children.some(
           (child) => child.tag === "token" && child.raw === ":",
-        )
+        ) ||
+          !assignmentPatternAt(input, index))
       ) {
-        // Type parameters and type arguments hold commas of their own --
-        // `*run(): Generator<number, void, unknown> {`,
-        // `<T, U>(a: T, b: U) => [a, b]` -- which do not end the member.
-        const members: {
-          readonly run: readonly Syntax[];
-          readonly separator: Syntax | undefined;
-        }[] = [];
-        let member: Syntax[] = [];
-        let methodHead = true;
-        let typeArguments = 0;
-        for (let at = 0; at < node.children.length; at += 1) {
-          const child = node.children[at]!;
-          if (
-            child.tag === "token" &&
-            child.raw === "," &&
-            typeArguments === 0
-          ) {
-            members.push({ run: member, separator: child });
-            member = [];
-            methodHead = true;
-            continue;
-          }
-          const previous = member.at(-1);
-          const opensAngles =
-            typeArguments > 0 ||
-            (child.tag === "token" &&
-              child.raw === "<" &&
-              anglesOpen(node.children, at, member, methodHead));
-          member.push(child);
-          if (opensAngles)
-            typeArguments = Math.max(
-              0,
-              typeArguments + angles(child, "<") - angles(child, ">"),
-            );
-          if (!methodHead) continue;
-          if (child.tag !== "token") {
-            if (child.tag === "group" && child.delimiter === "brace") {
-              methodHead = false;
-              typeArguments = 0;
-            }
-            continue;
-          }
-          if (
-            typeArguments === 0 &&
-            ((child.raw === "..." && previous === undefined) ||
-              (child.raw === ":" &&
-                !(
-                  previous?.tag === "group" &&
-                  previous.delimiter === "parenthesis"
-                )))
-          )
-            methodHead = false;
-        }
-        members.push({ run: member, separator: undefined });
+        const members = commaSeparatedMembers(node.children, true);
+        const pattern = assignmentPatternAt(input, index);
         const children: Syntax[] = [];
         for (const { run, separator } of members) {
           const colon = run.findIndex(
@@ -7151,6 +7418,43 @@ function* walk(
               );
               currentEnvironment = value.environment;
               children.push(...value.syntax);
+            }
+          } else if (!pattern && shorthandProperty(run)) {
+            // `{ x }` is `{ x: x }`: the name is the key, and as the value it
+            // is an expression like any other. Where it is a macro its
+            // expansion is the value and the name stays the key -- spliced
+            // in its place, `{ x }` became `{ 99 }`, which is not an object
+            // literal at all.
+            const name = run[0];
+            const value = yield* walkInside(scope, node, expressionWalk(run));
+            currentEnvironment = value.environment;
+            // An ordinary name walks to itself, perhaps wrapped as the
+            // expression it was read as, and is written as it was.
+            let only: Syntax | undefined =
+              value.syntax.length === 1 ? value.syntax[0] : undefined;
+            while (only?.tag === "protected" && only.children.length === 1)
+              only = only.children[0];
+            if (
+              only?.tag === "token" &&
+              only.raw === name.raw &&
+              only.origin === name.origin
+            )
+              children.push(...value.syntax);
+            else {
+              namedOrigins.add(name.origin);
+              children.push(
+                name,
+                createToken({
+                  id: options.allocateSyntaxId(),
+                  span: { start: name.span.end, end: name.span.end },
+                  origin: name.origin,
+                  scopes: name.scopes,
+                  kind: "punctuation",
+                  raw: ":",
+                  leadingTrivia: [],
+                }),
+                ...value.syntax,
+              );
             }
           } else if (run.length > 0) {
             const value = yield* walkInside(
