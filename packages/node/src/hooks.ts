@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createSweetenerSession,
@@ -58,16 +58,19 @@ export function load<Context, Next>(
     mode: "development",
   });
   if (expanded.diagnostics.length > 0)
-    throw new Error(
-      expanded.diagnostics
-        .map(({ messageText }) => String(messageText))
-        .join("\n"),
-    );
+    throw new Error(describeDiagnostics(expanded.diagnostics));
   // Nothing on this path resolves names, so a sentence expansion holds about a
   // name it left standing is said here or nowhere. It does not refuse the
   // module: see `SweetenerTransformResult.warnings`.
+  //
+  // Written now, and straight to the descriptor. `process.emitWarning` prints
+  // on a later tick, and a module that throws at its top level -- most often
+  // over the very name the sentence is about -- ends the process before that
+  // tick comes. A hook run on `module.register`'s thread has its stream
+  // forwarded to the main thread later still; the descriptor is the process's
+  // own either way.
   if (expanded.warnings.length > 0)
-    process.emitWarning(describeDiagnostics(expanded.warnings));
+    writeSync(2, `${describeDiagnostics(expanded.warnings)}\n`);
   const emitted = ts.transpileModule(expanded.code, {
     fileName: expanded.virtualFilename,
     compilerOptions: {

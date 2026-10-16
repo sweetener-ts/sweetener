@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { BunPlugin, Loader } from "bun";
 import {
@@ -33,19 +34,14 @@ export default function sweetener(
           mode: "development",
         });
         if (result.diagnostics.length > 0)
-          throw new Error(
-            result.diagnostics
-              .map(
-                ({ code: diagnosticCode, messageText }) =>
-                  `SWR${String(diagnosticCode)} ${String(messageText)}`,
-              )
-              .join("\n"),
-          );
+          throw new Error(describeDiagnostics(result.diagnostics));
         // Nothing on this path resolves names, so a sentence expansion
         // holds about a name it left standing is said here or nowhere. It is
-        // a warning: see `SweetenerTransformResult.warnings`.
+        // a warning: see `SweetenerTransformResult.warnings`. Written now: a
+        // warning emitted for a later tick is never printed when the module
+        // throws at its top level, most often over that very name.
         if (result.warnings.length > 0)
-          process.emitWarning(describeDiagnostics(result.warnings));
+          writeSync(2, `${describeDiagnostics(result.warnings)}\n`);
         return { contents: result.code, loader: loader(path) };
       });
     },

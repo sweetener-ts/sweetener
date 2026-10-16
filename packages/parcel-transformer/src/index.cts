@@ -52,7 +52,7 @@ const transformer = new PluginAPI.Transformer({
     return found?.contents ?? {};
   },
 
-  async transform({ asset, options, config }) {
+  async transform({ asset, options, config, logger }) {
     const configFile = (config as SweetenerTransformerConfig | undefined)
       ?.configFile;
     const { session, describeDiagnostics } = await loadCompiler();
@@ -72,9 +72,19 @@ const transformer = new PluginAPI.Transformer({
       throw new Error(describeDiagnostics(result.diagnostics));
     // Nothing on this path resolves names, so a sentence expansion holds
     // about a name it left standing is said here or nowhere. It does not fail
-    // the asset: see `SweetenerTransformResult.warnings`.
-    if (result.warnings.length > 0)
-      process.emitWarning(describeDiagnostics(result.warnings));
+    // the asset: see `SweetenerTransformResult.warnings`. Said through
+    // Parcel's logger, which reporters and the CLI read; a bare
+    // `process.emitWarning` reached neither, and printed from a worker if at
+    // all.
+    //
+    // Parcel says what a transformer logged only on a build that runs it, and
+    // serves an asset from its cache without running anything, so a warning
+    // said once was never said again. An asset with something to say is
+    // transformed on every build instead; one with nothing stays cached.
+    if (result.warnings.length > 0) {
+      logger.warn({ message: describeDiagnostics(result.warnings) });
+      asset.invalidateOnBuild();
+    }
     asset.type = result.virtualFilename.endsWith("x") ? "tsx" : "ts";
     asset.setCode(result.code);
     const map = new SourceMapModule.default(options.projectRoot);

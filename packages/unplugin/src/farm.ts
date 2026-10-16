@@ -38,11 +38,7 @@ export default function sweetenerFarm(
     ])
       context?.addWatchFile(filename, dependency);
     if (result.diagnostics.length > 0)
-      context?.error(
-        result.diagnostics
-          .map(({ messageText }) => String(messageText))
-          .join("\n"),
-      );
+      context?.error(describeDiagnostics(result.diagnostics));
     // Nothing on this path resolves names, so a sentence expansion holds
     // about a name it left standing is said here or nowhere. It is a warning:
     // see `SweetenerTransformResult.warnings`.

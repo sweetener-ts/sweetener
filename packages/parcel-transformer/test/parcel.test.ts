@@ -131,3 +131,38 @@ test("a Parcel build with the transformer installed warns about nothing", async 
   }
   expect(warnings).toEqual([]);
 });
+
+/**
+ * What expansion holds about a name it left standing is said through Parcel's
+ * logger, where Parcel's reporters read it -- on a build that runs the
+ * transformer and on one that serves the asset from Parcel's cache.
+ */
+test("says what it holds about a name through Parcel's logger, cached or not", async () => {
+  const require = createRequire(import.meta.url);
+  const logger = (require("@parcel/logger") as { default: ParcelLogger })
+    .default;
+  const root = createProject();
+  writeFileSync(
+    join(root, "main.sts"),
+    `import { twice } from "./macros.sts" for syntax;\nconsole.log(typeof twice);\n`,
+  );
+  const warningsOfBuild = async (): Promise<string[]> => {
+    const warnings: string[] = [];
+    const subscription = logger.onLog((event) => {
+      if (event.level !== "warn") return;
+      for (const diagnostic of event.diagnostics ?? [])
+        warnings.push(diagnostic.message);
+    });
+    try {
+      const event = await buildProject(root, join(root, "dist"));
+      expect(event.type).toBe("buildSuccess");
+    } finally {
+      subscription.dispose();
+    }
+    return warnings;
+  };
+  const first = await warningsOfBuild();
+  expect(first.join("\n")).toContain("warning TS4024");
+  const cached = await warningsOfBuild();
+  expect(cached.join("\n")).toContain("warning TS4024");
+});

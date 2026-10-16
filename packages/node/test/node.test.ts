@@ -95,3 +95,47 @@ test("reports a stack frame at the line in the .sts source", async () => {
   expect(failure).toContain("value.sts:4:9");
   expect(failure).toContain("value.sts:8:1");
 });
+
+/**
+ * What expansion holds about a name it left standing is said before the
+ * module runs, so it is there beside the error the name then throws.
+ *
+ * Said through `process.emitWarning`, it was printed on a later tick -- and a
+ * module that throws at its top level ends the process before that tick, so
+ * the `ReferenceError` the sentence explains was printed alone.
+ */
+test("says what it holds about a name before the module throws over it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sweet-node-held-"));
+  writeFileSync(
+    join(root, "macros.sts"),
+    `export syntax query:expr { rule { query($x:expr) } => { [$x] } }\n`,
+  );
+  writeFileSync(
+    join(root, "main.sts"),
+    `import { query } from "./macros.sts" for syntax;\nconsole.log(query);\n`,
+  );
+  writeFileSync(
+    join(root, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { module: "ESNext" },
+      files: ["main.sts", "macros.sts"],
+    }),
+  );
+  const failure = await execute(
+    process.execPath,
+    [
+      "--import",
+      resolve("packages/node/dist/src/register.js"),
+      join(root, "main.sts"),
+    ],
+    { encoding: "utf8" },
+  ).then(
+    () => undefined,
+    (error: { readonly stderr: string }) => error,
+  );
+  expect(failure?.stderr).toContain("ReferenceError: query is not defined");
+  expect(failure?.stderr).toContain("warning TS4024");
+  expect(failure?.stderr.indexOf("warning TS4024")).toBeLessThan(
+    failure?.stderr.indexOf("ReferenceError") ?? 0,
+  );
+});

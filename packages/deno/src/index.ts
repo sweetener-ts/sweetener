@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   createSweetenerSession,
@@ -70,15 +70,17 @@ export function createSweetenerHooks(
           expanded.diagnostics
             .map(
               ({ code, messageText }) =>
-                `SWR${String(code)} ${String(messageText)}`,
+                `SWR${String(code)} ${ts.flattenDiagnosticMessageText(messageText, "\n")}`,
             )
             .join("\n"),
         );
       // Nothing on this path resolves names, so a sentence expansion holds
       // about a name it left standing is said here or nowhere. It does not
-      // refuse the module: see `SweetenerTransformResult.warnings`.
+      // refuse the module: see `SweetenerTransformResult.warnings`. Written
+      // now: a warning emitted for a later tick is never printed when the
+      // module throws at its top level, most often over that very name.
       if (expanded.warnings.length > 0)
-        process.emitWarning(describeDiagnostics(expanded.warnings));
+        writeSync(2, `${describeDiagnostics(expanded.warnings)}\n`);
       // The hook must hand back something the runtime will execute, and what
       // expansion produces is TypeScript.
       const emitted = ts.transpileModule(expanded.code, {

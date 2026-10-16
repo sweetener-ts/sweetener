@@ -171,3 +171,65 @@ test("Jest resolves the transformer by package name", async () => {
   );
   expect(result.stderr).toMatch(/1 passed/u);
 });
+
+/**
+ * What expansion holds about a name it left standing is said whenever a test
+ * loads the module -- including on a run that takes the transform from Jest's
+ * cache, which never calls the transformer at all. Said once while
+ * transforming, it was said on the first run and never again.
+ */
+test("says what it holds about a name on every run, cached or not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sweet-jest-held-"));
+  const config = join(root, "sweetener.json");
+  writeFileSync(
+    join(root, "macros.sts"),
+    `export syntax twice:expr { rule { twice($x:tt) } => { [$x, $x] } }\n`,
+  );
+  writeFileSync(
+    join(root, "value.sts"),
+    `import { twice } from "./macros.sts" for syntax;\nexport const kind = typeof twice;\n`,
+  );
+  writeFileSync(
+    join(root, "value.test.mjs"),
+    `import { kind } from "./value.sts";\ntest("loaded", () => expect(kind).toBe("undefined"));\n`,
+  );
+  writeFileSync(
+    config,
+    JSON.stringify({
+      compilerOptions: { module: "ESNext" },
+      files: ["value.sts", "macros.sts"],
+    }),
+  );
+  const transformer = resolve("packages/jest/dist/src/index.js");
+  const jestConfig = join(root, "jest.config.mjs");
+  writeFileSync(
+    jestConfig,
+    `export default { rootDir: ${JSON.stringify(root)}, cacheDirectory: ${JSON.stringify(join(root, "cache"))}, testEnvironment: "node", testMatch: ["**/*.test.mjs"], extensionsToTreatAsEsm: [".sts"], transform: { "\\.sts$": [${JSON.stringify(transformer)}, { configFile: ${JSON.stringify(config)} }] } };\n`,
+  );
+  const binary = resolve("packages/jest/node_modules/jest/bin/jest.js");
+  const run = () =>
+    execute(
+      process.execPath,
+      [
+        "--experimental-vm-modules",
+        binary,
+        "--runInBand",
+        "--config",
+        jestConfig,
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, NODE_NO_WARNINGS: "1" },
+        timeout: 60_000,
+      },
+    );
+  // Jest prints what a test's modules write to the console on stdout, and its
+  // own summary on stderr.
+  const first = await run();
+  expect(first.stderr).toMatch(/1 passed/u);
+  expect(first.stdout).toContain("warning TS4024");
+  const cached = await run();
+  expect(cached.stderr).toMatch(/1 passed/u);
+  expect(cached.stdout).toContain("warning TS4024");
+});

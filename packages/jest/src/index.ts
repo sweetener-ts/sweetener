@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { transformAsync } from "@babel/core";
+import { transformAsync, type PluginAPI, type PluginObject } from "@babel/core";
 import typescript from "@babel/preset-typescript";
 import {
   createSweetenerSession,
@@ -16,6 +16,36 @@ function discoverSweetConfigFor(sourcePath: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A Babel plugin that has the module say `sentences` before anything else in
+ * it runs.
+ *
+ * Jest keeps what a transformer returned and serves it without calling the
+ * transformer again until the file or its macros change, so anything said
+ * while transforming was said on the first run and never after. Said by the
+ * module, it travels with the cached code and is printed wherever a test
+ * loads it -- ahead of the error its name throws, if it throws. Inserted by
+ * Babel, after any directive and with the source map kept, rather than
+ * prepended to the text.
+ */
+function warnWhenLoaded(sentences: string) {
+  return ({ types: t }: PluginAPI): PluginObject => ({
+    visitor: {
+      Program(path) {
+        path.unshiftContainer(
+          "body",
+          t.expressionStatement(
+            t.callExpression(
+              t.memberExpression(t.identifier("console"), t.identifier("warn")),
+              [t.stringLiteral(sentences)],
+            ),
+          ),
+        );
+      },
+    },
+  });
 }
 
 interface TransformerConfig {
@@ -69,11 +99,14 @@ const transformer = {
       // Nothing on this path resolves names, so a sentence expansion holds
       // about a name it left standing is said here or nowhere. It does not
       // fail the file: see `SweetenerTransformResult.warnings`.
-      if (expanded.warnings.length > 0)
-        process.emitWarning(describeDiagnostics(expanded.warnings));
+      const warnings =
+        expanded.warnings.length > 0
+          ? [warnWhenLoaded(describeDiagnostics(expanded.warnings))]
+          : [];
       const babel = await transformAsync(expanded.code, {
         filename: expanded.virtualFilename,
         presets: [typescript],
+        plugins: warnings,
         sourceMaps: true,
         inputSourceMap: {
           ...expanded.map,
