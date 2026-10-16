@@ -20,6 +20,13 @@ used to inherit the heap its predecessors left behind.
 
 ## `node26.json`
 
+- **This file includes an open regression.** `expansion/project-scale` and
+  `expansion/threading-end-to-end` cost +24% and +25% per unit of work against
+  `ab7c214`, the previous reference, and this file was recorded after them, so
+  the check no longer reports them. `handoff.md` ("Performance") records where
+  the cost comes from. The previous file could not stay as the reference: it
+  ran every scenario in one process, so its numbers are not comparable with the
+  per-process runs below.
 - Recorded 2026-10-16 at commit `d0d36e6`, on a **clean** worktree.
 - Apple M2 Max, 12 logical CPUs, 64 GiB, macOS 25.5.0, Node 26.5.0, exposed GC.
 - One-minute load average 5.10 on 12 CPUs, under the runner's warning

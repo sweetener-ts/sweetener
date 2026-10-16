@@ -1,13 +1,16 @@
 # Handoff
 
-State at `2403709`: 36 commits since `22a98a5`, 2644 unit tests, `pnpm check` green
-end to end. Everything below is open.
+Written at `2403709` (36 commits since `22a98a5`, 2644 unit tests); brought up
+to date at `aa1caec`, where `pnpm check` is green end to end with 3658 unit
+tests. Everything below is open except "Reviewed", "Decided, not bugs" and the
+closing notes.
 
 The session began by deleting a hand-written `declare module "*.sts"` stub and
 turned into a long chain of parser and expander fixes. Five of those were silent
 — wrong output with no diagnostic — and one was a runtime miscompile. A review of
 the whole diff then found nine regressions the session had itself introduced; all
-nine are fixed, and the fixes are the part nobody has reviewed yet.
+nine are fixed. A review of those fixes on 2026-10-16 found more, and those are
+fixed too (see "Reviewed" below).
 
 Two facts worth keeping in mind while reading the rest:
 
@@ -21,31 +24,53 @@ Two facts worth keeping in mind while reading the rest:
 
 ## Before shipping
 
-1. **Review the last five commits.** `b07fb68`, `7c80c50`, `2403709` and their
-   two predecessors are the fixes for the nine review regressions, and they are
-   substantial: a new `unresolved-names.ts` in the compiler, a scanner-based tag
-   lookahead in the reader, `braceHeader` and enum-body changes in the expander.
-   The rest of the session was reviewed; this part was not.
+1. **Review `d4882cf`, `dd455b8` and `aa1caec`.** They fix what the review of
+   the round's own fixes found (see "Reviewed"). Every finding's reproduction
+   was run again against them and now behaves, but nobody has reviewed the
+   three commits afresh, as each commit before them was.
 2. **Cut an alpha.** Nothing but our own suites has exercised any of this.
+
+## Reviewed
+
+The five commits that fixed the nine regressions (`9daa5ec`, `1b66315`,
+`b07fb68`, `7c80c50`, `2403709`) were reviewed on 2026-10-16 against the tree
+of that day, every finding reproduced before it was fixed:
+
+- **Hygiene.** A macro name a template wrote was handed to TypeScript like one
+  the author wrote, so a call-site local of that spelling captured it and the
+  file compiled silently. Fixed in `503c11e`, with a member key spelled like a
+  macro of another space now reported as spec 04 says.
+- **Saying held sentences.** The node, deno and bun hooks said them a tick too
+  late to be seen before a top-level throw; Parcel and Jest lost them on a
+  cached build; `noCheck`, a `// @TS-NOCHECK` and an unchecked `.sjs` in the
+  editor dropped them; TypeScript's "cannot find name" codes with advice
+  attached were not answered. Fixed in `7d2e7c6`.
+- **Brace headers and enums.** A key or member spelled `class`, `enum` or
+  `module` read as a declaration; a parenthesized return type or an optional
+  method's `?` hid the parameter list; enum members were split inside type
+  arguments and not bound; `{ x }` with a macro became `{ 99 }`. Fixed in
+  `503c11e`.
+- **The reader's JSX lookahead.** A closing tag in an attribute ended the tag
+  early, generic signatures and defaulted type parameters read as elements, a
+  `(` in an element's text was quadratic, and attribute strings were scanned
+  as JavaScript's. Fixed in `8fc5bb1`, with a bare `<T>` the reader still
+  judges corrected by the enforester in `3df047e`.
+
+Those fixes were reviewed in turn, with the two former open bugs' (`6a07306`,
+`3c71179`), and what that found is fixed in `d4882cf`, `dd455b8` and `aa1caec`
+-- confirmed by running every finding's reproduction again, not yet reviewed
+afresh: an element written as an attribute's value without braces, a call
+signature under a member with no `;`, JSX text spelled `(`, a `>` comparison
+after an asserted type, the reader's statement starts outside statement lists,
+and an element a template writes read as a signature. The reader's slash judgement
+was compared with TypeScript's parser over 4,501 files from this repository
+and its dependencies, and agrees everywhere.
 
 ## Open bugs
 
-- **A chain of slashes the reader misjudges is expanded once per slash.** A
-  regular expression holding a bracket, written where the reader judged a
-  division -- at the start of a statement after a function declaration, say --
-  hides the next such one from the enforester until it is read as one. A source
-  of N of them is read and expanded N times: 150 take about four seconds. It
-  settles however many there are (`slashReadLimit` counts only reads that settle
-  nothing new); only the cost grows. Judging the `}` of a function or class
-  declaration as a statement's end in the reader would remove the commonest
-  case.
-- **The token-level class member walk joins `x = a as T` and a `[k]` under
-  it.** `createClassMemberWalk` takes a bracket on the next line as indexing
-  the initializer, where TypeScript ends the field at the asserted type. The
-  class element reader reads the initializer with the expression reader and
-  ends it correctly; only a walk over a class body that reader could not take
-  whole asks the token-level question. Answering it needs to know where the
-  asserted type ends, which a token walk can only guess.
+None known. The two listed here last were fixed in `6a07306` and `dd455b8` (the
+class member walk joining `x = a as T` and a `[k]` under it) and in `3c71179`
+and `dd455b8` (a declaration's `}` misjudged as an expression's end).
 
 ## Performance
 
@@ -61,9 +86,24 @@ not mysterious:
 - The rest is more protected nodes being built, which is what the correctness
   work required.
 
-`pnpm benchmark:check` fails on three scenarios and is **not part of `pnpm
-check`**, so nothing gates on it. The baseline was deliberately not re-recorded —
-re-recording now would bury those two regressions in the reference.
+Both baselines in `benchmarks/baselines/` were re-recorded at `d0d36e6`, so
+these costs are now **inside the reference**: `pnpm benchmark:check` measures
+change from `d0d36e6`, and it will not report them. The old Node 26 baseline
+could not have kept them visible anyway — it was taken with every scenario in
+one process, which the runner no longer does and whose numbers are not
+comparable with per-process ones — and the old Node 24 one had no
+`expansion/project-scale` row at all. The figures above are the record of what
+the session cost; to measure them again, run the suite at `ab7c214` and at the
+commit in question under the same protocol. `pnpm benchmark:check` is **not part
+of `pnpm check`**, so nothing gates on it.
+
+A slash the reader still judges the other way from the grammar costs a read of
+its file. The reader now ends a statement at a declaration's `}`, but where only
+the enforester can see a statement end -- a type annotation's, `let x: T` and
+the `/[(]/.test(s);` under it -- the file is read again with the slash corrected,
+and where each such regular expression holds a bracket it hides the next from the
+enforester, so a chain of them costs a read apiece. The output is right; only the
+cost grows, and `readLimit` counts only reads that settle nothing new.
 
 Cheap wins identified and not taken:
 
