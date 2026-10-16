@@ -9,9 +9,9 @@ import {
   SyntaxRange,
   type CursorIdentity,
   type ProtectedSyntax,
-  type SlashReading,
   type SyntaxCategory,
   type SyntaxCursor,
+  type TokenReading,
   type TokenSyntax,
 } from "@sweetener/syntax";
 import { StopSet } from "./stop-set.js";
@@ -38,26 +38,32 @@ export interface ConsumerAttemptFailure {
 export type ConsumerAttempt = ConsumerAttemptSuccess | ConsumerAttemptFailure;
 
 /**
- * Told of a slash the reader read the other way from the grammar -- a `/`
- * read as a division where an operand begins, or a regular expression read
- * where an operator stands -- where the consumers cannot read it as the
- * grammar does in place. `reading` is how the grammar reads it.
+ * Told of a token the reader read the other way from the grammar, where the
+ * consumers cannot read it as the grammar does in place: a `/` read as a
+ * division where an operand begins, a regular expression read where an
+ * operator stands, or a bare `<T>` read as type parameters where an operand
+ * begins, which in a JSX file opens an element. `reading` is how the grammar
+ * reads it.
  *
- * The reader judges a slash from what stands before it, and only the parser
- * knows which it is (see `SlashReadings`). Where reading the slash the other
+ * The reader judges these from what stands around them, and only the parser
+ * knows which each is (see `TokenReadings`). Where reading a slash the other
  * way changes only the tokens of the one expression, the expression reader
  * reads them so where they stand and tells no one. Where it changes more --
- * a bracket or a quote between the slashes -- what a consumer reads after
- * the slash was read from groups that are not there, so whoever reads the
- * source reads it again with the slash read as the grammar says. A consumer
- * reading speculatively -- a macro rule's capture, tried and perhaps
- * abandoned for the next rule -- is given a listener that holds what it
- * finds until the reading is settled, because where it stands an operand may
- * begin only in a reading that is never taken.
+ * a bracket or a quote between the slashes, or an element's text read as
+ * code -- what a consumer reads after the token was read from groups that are
+ * not there, so whoever reads the source reads it again with the token read
+ * as the grammar says. A consumer reading speculatively -- a macro rule's
+ * capture, tried and perhaps abandoned for the next rule -- is given a
+ * listener that holds what it finds until the reading is settled, because
+ * where it stands an operand may begin only in a reading that is never taken.
+ *
+ * A consumer is not told whether the file it reads is a JSX file, so it says
+ * how a `<` reads where JSX is read; whoever reads the source knows, and
+ * there is no element to read anywhere else.
  */
-export type SlashMisreadListener = (
-  slash: TokenSyntax,
-  reading: SlashReading,
+export type MisreadListener = (
+  token: TokenSyntax,
+  reading: TokenReading,
 ) => void;
 
 export interface ConsumerContext {
@@ -74,8 +80,8 @@ export interface ConsumerContext {
    * function and at the top level of a module.
    */
   readonly allowAwait: boolean;
-  /** Told of a slash read the other way from the grammar, where one is. */
-  readonly slashMisread?: SlashMisreadListener | undefined;
+  /** Told of a token read the other way from the grammar, where one is. */
+  readonly misread?: MisreadListener | undefined;
 }
 
 export interface ConsumeRequest {
@@ -87,7 +93,7 @@ export interface ConsumeRequest {
   readonly cancellation?: CancellationToken | undefined;
   readonly allowYield: boolean;
   readonly allowAwait: boolean;
-  readonly slashMisread?: SlashMisreadListener | undefined;
+  readonly misread?: MisreadListener | undefined;
 }
 
 export interface ConsumeSuccess extends ConsumerAttemptSuccess {
@@ -246,7 +252,7 @@ export class ConsumerRegistry {
         cancellation,
         allowYield: request.allowYield,
         allowAwait: request.allowAwait,
-        slashMisread: request.slashMisread,
+        misread: request.misread,
       }),
     );
     cancellation.throwIfCancellationRequested();

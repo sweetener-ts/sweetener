@@ -6,7 +6,7 @@ import {
   printLossless,
   readSyntax,
   regularExpressionEnd,
-  typescriptSlashes,
+  typescriptReadings,
 } from "../src/index.js";
 
 const sourceId = 9 as SourceId;
@@ -20,7 +20,7 @@ function tokens(
   const read = readSyntax(source, {
     sourceId,
     scopes,
-    slashReadings: readings,
+    readings: readings,
   });
   expect(printLossless(read.root)).toBe(source);
   const out: string[] = [];
@@ -96,10 +96,10 @@ describe("slash readings", () => {
     const read = readSyntax(source, {
       sourceId,
       scopes,
-      slashReadings: new Map([[9, "regular-expression"]]),
+      readings: new Map([[9, "regular-expression"]]),
     });
     expect(read.diagnostics).toEqual([]);
-    expect([...read.slashReadings]).toEqual([[9, "regular-expression"]]);
+    expect([...read.readings]).toEqual([[9, "regular-expression"]]);
   });
 
   it("reads an element's tag with the slashes in it read as told", () => {
@@ -112,7 +112,7 @@ describe("slash readings", () => {
       sourceId,
       scopes,
       variant: "jsx",
-      slashReadings: new Map([[slash, "regular-expression"]]),
+      readings: new Map([[slash, "regular-expression"]]),
     });
     expect(read.diagnostics).toEqual([]);
     expect(
@@ -129,12 +129,12 @@ describe("slash readings", () => {
     const read = readSyntax("f() /a/b/c/;", {
       sourceId,
       scopes,
-      slashReadings: new Map([
+      readings: new Map([
         [4, "regular-expression"],
         [6, "regular-expression"],
       ]),
     });
-    expect([...read.slashReadings]).toEqual([[4, "regular-expression"]]);
+    expect([...read.readings]).toEqual([[4, "regular-expression"]]);
   });
 });
 
@@ -214,15 +214,14 @@ describe("reading a slash's text the other way", () => {
 describe("TypeScript's reading of a source's slashes", () => {
   it("reads slashes as TypeScript's parser reads them", () => {
     const source = "let x: T\n/(/.test(s);\nx = y as const / 2 / 3;";
-    const { readings, unparsed } = typescriptSlashes(source, "standard");
+    const { readings, unparsed } = typescriptReadings(source, "standard");
     expect([...readings]).toEqual([
       [9, "regular-expression"],
       [source.indexOf("/ 2"), "division"],
     ]);
     expect(unparsed).toEqual([]);
     expect(
-      readSyntax(source, { sourceId, scopes, slashReadings: readings })
-        .diagnostics,
+      readSyntax(source, { sourceId, scopes, readings: readings }).diagnostics,
     ).toEqual([]);
   });
 
@@ -232,7 +231,7 @@ describe("TypeScript's reading of a source's slashes", () => {
    */
   it("reads the slashes of fifty thousand divisions", () => {
     const source = `x = ${Array.from({ length: 50_000 }, () => "a").join(" / ")};\nlet y: T\n/(/.test(s);`;
-    const { readings, unparsed } = typescriptSlashes(source, "standard");
+    const { readings, unparsed } = typescriptReadings(source, "standard");
     expect(unparsed).toEqual([]);
     expect([...readings]).toEqual([
       [source.indexOf("/(/"), "regular-expression"],
@@ -244,7 +243,7 @@ describe("TypeScript's reading of a source's slashes", () => {
     // written, and reports the error where it gave up: at `b`, in what it
     // read as the next statement.
     const source = "unless (c) /a  b/.test(s);\nx = a / b / c;";
-    const { unparsed } = typescriptSlashes(source, "standard");
+    const { unparsed } = typescriptReadings(source, "standard");
     const within = (offset: number) =>
       unparsed.some(({ start, end }) => offset >= start && offset < end);
     expect(within(source.indexOf("/a"))).toBe(true);
@@ -255,10 +254,91 @@ describe("TypeScript's reading of a source's slashes", () => {
     // TypeScript parses this cleanly as divisions, and `unless` reads a
     // regular expression. The statement beside it is answered for.
     const source = "unless(c) /a  +b/i.test(s);\nx = a / b / c;";
-    const { unparsed } = typescriptSlashes(source, "standard", [0]);
+    const { unparsed } = typescriptReadings(source, "standard", [0]);
     const within = (offset: number) =>
       unparsed.some(({ start, end }) => offset >= start && offset < end);
     expect(within(source.indexOf("/a"))).toBe(true);
     expect(within(source.indexOf("/ b"))).toBe(false);
+  });
+});
+
+/** Whether a read of `source` groups an element anywhere in it. */
+function groupsElement(syntax: Syntax): boolean {
+  if (syntax.tag === "token") return false;
+  if (
+    syntax.tag === "group" &&
+    (syntax.delimiter === "jsx-element" || syntax.delimiter === "jsx-fragment")
+  )
+    return true;
+  return syntax.children.some(groupsElement);
+}
+
+describe("the reading of a bare `<T>` in a JSX file", () => {
+  const statement = "function g() {\n  <b>(note): x</b>;\n}\n";
+  const angle = statement.indexOf("<b>");
+
+  it("is judged type parameters where a member begins", () => {
+    const read = readSyntax(statement, { sourceId, scopes, variant: "jsx" });
+    expect(groupsElement(read.root)).toBe(false);
+  });
+
+  it("is read as the reading given for it says", () => {
+    const read = readSyntax(statement, {
+      sourceId,
+      scopes,
+      variant: "jsx",
+      readings: new Map([[angle, "element"]]),
+    });
+    expect(read.diagnostics).toEqual([]);
+    expect(groupsElement(read.root)).toBe(true);
+    expect([...read.readings]).toEqual([[angle, "element"]]);
+    expect(printLossless(read.root)).toBe(statement);
+  });
+
+  it("can be given as type parameters where it would open an element", () => {
+    const source = "const e = <b>(note)</b>;\n";
+    const read = readSyntax(source, {
+      sourceId,
+      scopes,
+      variant: "jsx",
+      readings: new Map([[source.indexOf("<b>"), "type-parameters"]]),
+    });
+    expect(groupsElement(read.root)).toBe(false);
+    expect(printLossless(read.root)).toBe(source);
+  });
+
+  it("is not applied where the reader judges no `<`", () => {
+    // After a name a `<` opens type arguments or compares, and is not judged.
+    const source = "const e = a <b>(c);\n";
+    const read = readSyntax(source, {
+      sourceId,
+      scopes,
+      variant: "jsx",
+      readings: new Map([[source.indexOf("<b>"), "element"]]),
+    });
+    expect(groupsElement(read.root)).toBe(false);
+    expect([...read.readings]).toEqual([]);
+  });
+});
+
+describe("TypeScript's reading of a JSX source's `<`s", () => {
+  it("reads an element where TypeScript does", () => {
+    const source = "function g() {\n  <b>(note): x</b>;\n}\n";
+    const { readings, unparsed } = typescriptReadings(source, "jsx");
+    expect(unparsed).toEqual([]);
+    expect([...readings]).toEqual([[source.indexOf("<b>"), "element"]]);
+    const read = readSyntax(source, {
+      sourceId,
+      scopes,
+      variant: "jsx",
+      readings,
+    });
+    expect(groupsElement(read.root)).toBe(true);
+  });
+
+  it("asks for nothing where the reader already agrees", () => {
+    const source =
+      "interface I { <T>(v: T); }\nconst f: <T>(v: T) => T = (v) => v;\nconst e = <b>(x)</b>;\n";
+    expect([...typescriptReadings(source, "jsx").readings]).toEqual([]);
   });
 });

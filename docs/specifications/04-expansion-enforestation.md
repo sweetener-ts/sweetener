@@ -405,6 +405,27 @@ again is bounded: a source read eight times without settling reports
 `SWR4028` at a slash still read the other way, and the last read's expansion
 stands.
 
+### 8.2 A `<` in a JSX file: element or type parameters
+
+Where an expression is written, TypeScript decides whether a `<` opens an
+element from the tokens straight after the name: `<T,`, `<T =` and
+`<T extends U` are a generic arrow's type parameters, and anything else opens an
+element. The reader decides the same way. Where a type is written there is no
+element, and the reader cannot see which is written, so a bare `<T>` it judges
+from what follows: at the start of a member -- after a `{`, or a `;` or `,`
+inside braces other than a JSX expression's, or after `new` -- a parameter list
+of types makes a signature's type parameters; elsewhere a parameter list and an
+`=>` make a function type's; and otherwise it opens an element.
+
+A bare `<T>` judged type parameters where an operand begins is an element, and
+the enforester says so: `function g() { <b>(note): x</b>; }` is read again
+with the `<` opening an element, so its text is text and `x` is not expanded
+there. Reading again is the slash's (§8.1): bounded, and reported by `SWR4027`
+and `SWR4028` as a slash is. Only a `<` the file's own text writes is read
+again. One a template writes was read where the template is written, and the
+printer spells it for the file it is printed into -- `<T,>` for a generic
+arrow.
+
 ## 9. Statement and item consumers
 
 The statement consumer recognizes block structure, terminators, control-flow

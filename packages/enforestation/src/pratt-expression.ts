@@ -1342,7 +1342,7 @@ function parseOperators(
           slash,
           tokens,
         );
-      context.consumer.slashMisread?.(slash, "division");
+      context.consumer.misread?.(slash, "division");
     }
     if (infix === undefined || infix.precedence < minimumPrecedence) break;
     if (

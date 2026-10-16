@@ -1,15 +1,16 @@
-import type { SlashMisreadListener } from "@sweetener/enforestation";
-import type { SlashReading, TokenSyntax } from "@sweetener/syntax";
+import type { MisreadListener } from "@sweetener/enforestation";
+import type { TokenReading, TokenSyntax } from "@sweetener/syntax";
 
 /**
- * The slashes a macro rule's captures found read the other way from the
- * grammar, held until the invocation they were found in settles.
+ * The tokens a macro rule's captures found read the other way from the
+ * grammar -- slashes, and `<`s -- held until the invocation they were found
+ * in settles.
  *
  * A capture reads by a grammar -- `$body:stmt` reads a statement -- and where
  * its grammar begins an operand at a slash the reader judged a division, the
  * slash is a regular expression, as it is anywhere else that grammar is read:
  * `unless (c) /[(]/.test(s)`, which only reading the source again reads (see
- * `SlashMisreadListener`). But a rule is tried and may be abandoned for the
+ * `MisreadListener`). But a rule is tried and may be abandoned for the
  * next one, and what one rule's capture found is no finding if another rule
  * reads the invocation. So what a capture finds waits on its invocation:
  *
@@ -23,21 +24,21 @@ import type { SlashReading, TokenSyntax } from "@sweetener/syntax";
  * macro's extent measured while the syntax around it is read -- a capture's
  * findings are dropped, because the invocation that follows finds them again.
  */
-export class CaptureSlashMisreads {
-  readonly #listener: SlashMisreadListener | undefined;
+export class CaptureMisreads {
+  readonly #listener: MisreadListener | undefined;
   readonly #found: {
-    readonly slash: TokenSyntax;
-    readonly reading: SlashReading;
+    readonly token: TokenSyntax;
+    readonly reading: TokenReading;
   }[] = [];
   #open = 0;
 
-  constructor(listener: SlashMisreadListener | undefined) {
+  constructor(listener: MisreadListener | undefined) {
     this.#listener = listener;
   }
 
   /** The listener a capture is given. */
-  readonly record: SlashMisreadListener = (slash, reading) => {
-    if (this.#open > 0) this.#found.push({ slash, reading });
+  readonly record: MisreadListener = (token, reading) => {
+    if (this.#open > 0) this.#found.push({ token, reading });
   };
 
   /** How many findings are held, which marks where the next ones begin. */
@@ -71,8 +72,8 @@ export class CaptureSlashMisreads {
     this.#found.push(...retained);
     this.#open -= 1;
     if (this.#open > 0) return;
-    for (const { slash, reading } of this.#found)
-      this.#listener?.(slash, reading);
+    for (const { token, reading } of this.#found)
+      this.#listener?.(token, reading);
     this.#found.length = 0;
   }
 }

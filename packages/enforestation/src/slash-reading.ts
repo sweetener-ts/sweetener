@@ -27,7 +27,7 @@ import {
  * What reading a slash read one way as the other leaves to be done where it
  * stands, when it is more than the tokens of the one expression.
  *
- * The reader judges a slash from the token before it (see `SlashReadings`),
+ * The reader judges a slash from the token before it (see `TokenReadings`),
  * and the parser finds where it judged wrong. Where reading the slash the
  * other way changes only which tokens the expression is made of -- `/re/`
  * read as `/`, `re` and `/`, with nothing between the slashes that opens or

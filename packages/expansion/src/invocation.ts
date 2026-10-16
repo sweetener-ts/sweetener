@@ -56,7 +56,7 @@ import {
   type SequenceTemplate,
   type TemplateOperationTrace,
 } from "@sweetener/template";
-import type { CaptureSlashMisreads } from "./capture-slash-misreads.js";
+import type { CaptureMisreads } from "./capture-misreads.js";
 import { EnforestationError } from "./enforestation-error.js";
 import {
   bareMacroNameCode,
@@ -201,10 +201,10 @@ export interface InvokeMacroOptions {
   ) => ProtectedSyntax;
   readonly diagnosticOrigin: (origin: OriginId) => SourceSpan;
   /**
-   * Holds what the rules' captures find of slashes read the other way, until
+   * Holds what the rules' captures find of tokens read the other way, until
    * the invocation settles which of them it keeps.
    */
-  readonly captureSlashMisreads?: CaptureSlashMisreads | undefined;
+  readonly captureMisreads?: CaptureMisreads | undefined;
 }
 
 export interface MacroInvocationSuccess {
@@ -336,7 +336,7 @@ const continuesEnclosingSyntax: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Where each rule's captures began to find slashes read the other way, and
+ * Where each rule's captures began to find tokens read the other way, and
  * which findings the invocation keeps once it settles.
  */
 interface RuleFindings {
@@ -383,14 +383,14 @@ export function invokeMacro(
 
 /**
  * Expands one macro invocation, handing the selected rule's replacement out to
- * be walked and resuming with what the walk expanded it to. The slashes its
+ * be walked and resuming with what the walk expanded it to. The tokens its
  * rules found read the other way are settled when it finishes, after its
  * replacement's own invocations have settled theirs.
  */
 export function* invokeMacroStepwise(
   options: Omit<InvokeMacroOptions, "expandReplacement">,
 ): MacroInvocation {
-  const misreads = options.captureSlashMisreads;
+  const misreads = options.captureMisreads;
   if (misreads === undefined)
     return yield* invokeMacroRules(options, undefined);
   const start = misreads.open();
@@ -511,7 +511,7 @@ function* invokeMacroRules(
   for (const rule of orderedRules(options.macro.rules)) {
     cancellation.throwIfCancellationRequested();
     const ruleIndex = findings?.starts.length ?? 0;
-    findings?.starts.push(options.captureSlashMisreads?.position() ?? 0);
+    findings?.starts.push(options.captureMisreads?.position() ?? 0);
     const matched = executeMatcher(rule.matcher, options.cursor, {
       consumeClass: options.consumeClass,
       matchesTokenLiteral: (token, literal) =>
@@ -641,7 +641,7 @@ function* invokeMacroRules(
     }
 
     if (findings !== undefined)
-      findings.through = options.captureSlashMisreads?.position();
+      findings.through = options.captureMisreads?.position();
     const fingerprint = createExpansionFingerprint({
       binding: options.macro.binding.id,
       category: options.category,
@@ -807,7 +807,7 @@ function* invokeMacroRules(
   }
 
   if (findings !== undefined)
-    findings.through = options.captureSlashMisreads?.position();
+    findings.through = options.captureMisreads?.position();
   const failure = farthestFailure(failures);
   // What the closest rule was still waiting for, rather than how many rules
   // were tried. A count says only that something is wrong; this says what

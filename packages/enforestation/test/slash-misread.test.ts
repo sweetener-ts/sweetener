@@ -10,10 +10,11 @@ import {
   type SyntaxId,
 } from "@sweetener/shared";
 import {
+  angleReading,
   createSyntaxCursor,
   OriginStore,
-  type SlashReading,
-  type SlashReadings,
+  type TokenReading,
+  type TokenReadings,
   type Syntax,
   type TokenSyntax,
 } from "@sweetener/syntax";
@@ -33,10 +34,11 @@ type Category = "item" | "classElement";
 function splitOnce(
   source: string,
   category: Category,
-  readings: SlashReadings,
+  readings: TokenReadings,
+  variant: "standard" | "jsx" = "standard",
 ): {
   readonly parts: readonly string[];
-  readonly misread: SlashReadings;
+  readonly misread: TokenReadings;
   readonly tokens: readonly string[];
 } {
   const origins = new OriginStore();
@@ -44,7 +46,8 @@ function splitOnce(
     sourceId,
     scopes: 0 as ScopeSetId,
     originStore: origins,
-    slashReadings: readings,
+    readings,
+    variant,
   });
   let syntax: readonly Syntax[] = read.root.children.filter(
     (node) => node.tag !== "token" || node.kind !== "end-of-file",
@@ -61,7 +64,7 @@ function splitOnce(
     origins,
     allocateSyntaxId: ids.allocate,
   });
-  const misread = new Map<number, SlashReading>();
+  const misread = new Map<number, TokenReading>();
   let cursor = createSyntaxCursor(syntax);
   const parts: string[] = [];
   const tokens: string[] = [];
@@ -73,7 +76,7 @@ function splitOnce(
       tracker: new ResourceTracker(createResourceBudget()),
       allowYield: false,
       allowAwait: true,
-      slashMisread: (slash, reading) => misread.set(slash.span.start, reading),
+      misread: (slash, reading) => misread.set(slash.span.start, reading),
     });
     if (!result.matched) break;
     parts.push(source.slice(result.syntax.span.start, result.syntax.span.end));
@@ -104,15 +107,18 @@ function tokensOf(syntax: Syntax): readonly string[] {
 
 /**
  * Read and split again, with every slash the consumers found read as they
- * found it, until they find none: what the project expansion does.
+ * found it, until they find none: what the project expansion does. These are
+ * not JSX sources, so a `<` said to open an element opens nothing, and the
+ * project expansion ignores it too.
  */
 function split(source: string, category: Category): readonly string[] {
-  let readings: SlashReadings = new Map();
+  let readings: TokenReadings = new Map();
   for (let read = 1; ; read += 1) {
     const { parts, misread } = splitOnce(source, category, readings);
-    if (misread.size === 0) return parts;
+    const found = [...misread].filter(([, reading]) => !angleReading(reading));
+    if (found.length === 0) return parts;
     expect(read, source).toBeLessThan(4);
-    readings = new Map([...readings, ...misread]);
+    readings = new Map([...readings, ...found]);
   }
 }
 
@@ -275,5 +281,29 @@ describe("class field initializers", () => {
     expect(split(source, "classElement")).toEqual(
       typescript(source, "classElement"),
     );
+  });
+});
+
+describe("a bare `<T>` read the other way from the grammar", () => {
+  /**
+   * The reader judges a bare `<T>` at the start of a member to be a
+   * signature's type parameters. Where a statement begins there instead, an
+   * operand begins with it, and TypeScript reads an element there.
+   */
+  test("is an element where an operand begins", () => {
+    const source = "function g() {\n  <b>(note): x</b>;\n}\n";
+    const { misread } = splitOnce(source, "item", new Map(), "jsx");
+    expect([...misread]).toEqual([[source.indexOf("<b>"), "element"]]);
+  });
+
+  test("is not reported where type parameters are written", () => {
+    for (const source of [
+      "const f = <T,>(v: T) => v;\n",
+      "const g: <T>(v: T) => T = (v) => v;\n",
+      "interface I { <T>(v: T): T; }\n",
+    ]) {
+      const { misread } = splitOnce(source, "item", new Map(), "jsx");
+      expect([...misread], source).toEqual([]);
+    }
   });
 });

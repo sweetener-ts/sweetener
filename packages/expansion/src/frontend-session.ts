@@ -1,4 +1,4 @@
-import { CaptureSlashMisreads } from "./capture-slash-misreads.js";
+import { CaptureMisreads } from "./capture-misreads.js";
 import { EnforestationError } from "./enforestation-error.js";
 import {
   expansionCycleCode,
@@ -18,7 +18,7 @@ import {
   type ConsumerFailure,
   type MacroOperatorApplication,
   type MacroOperatorChain,
-  type SlashMisreadListener,
+  type MisreadListener,
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
 import type {
@@ -131,12 +131,12 @@ export interface CreateExpansionFrontendSessionOptions {
   readonly allocateBindingId: () => BindingId;
   readonly allocateInvocationId: () => InvocationId;
   /**
-   * Told of a slash the reader read the other way from the grammar, which
-   * only reading the source again reads as the grammar does (see
-   * `SlashMisreadListener`). What a macro rule's capture finds is told once
-   * its invocation settles on it (see `CaptureSlashMisreads`).
+   * Told of a slash or a `<` the reader read the other way from the grammar,
+   * which only reading the source again reads as the grammar does (see
+   * `MisreadListener`). What a macro rule's capture finds is told once
+   * its invocation settles on it (see `CaptureMisreads`).
    */
-  readonly slashMisread?: SlashMisreadListener | undefined;
+  readonly misread?: MisreadListener | undefined;
 }
 
 /**
@@ -339,7 +339,7 @@ export function createExpansionFrontendSession(
   if (modules.length === 0)
     throw new RangeError("Expansion frontend requires at least one module");
   const expansionStore = new ExpansionEnvironmentStore();
-  const captureMisreads = new CaptureSlashMisreads(options.slashMisread);
+  const captureMisreads = new CaptureMisreads(options.misread);
   const operatorTraces: MacroTraceEvent[] = [];
   /** Operator tokens offered to their rules while an expression was read. */
   const offeredOperatorTokens = new Set<OriginId>();
@@ -821,7 +821,7 @@ export function createExpansionFrontendSession(
             allocateSyntaxId: options.allocateSyntaxId,
             allocateBindingId: options.allocateBindingId,
             allocateInvocationId: options.allocateInvocationId,
-            captureSlashMisreads: captureMisreads,
+            captureMisreads: captureMisreads,
             // An operator expanded here is expanded while the expression
             // holding it is read, and the reading hands back an expression,
             // not the definition context around it: there is nothing following
@@ -1021,7 +1021,7 @@ export function createExpansionFrontendSession(
       cancellation: options.guard.cancellation,
       allowYield: contexts.has("generator"),
       allowAwait: contexts.has("async"),
-      slashMisread: options.slashMisread,
+      misread: options.misread,
     });
   const requiredClass = (
     module: CompileParsedMacrosResult,
@@ -1078,7 +1078,7 @@ export function createExpansionFrontendSession(
           ...base,
           // A rule is tried and may be abandoned for the next one, so what
           // its capture finds waits on the invocation it was tried for.
-          slashMisread: captureMisreads.record,
+          misread: captureMisreads.record,
           stopSet: base.stopSet.union(
             new StopSet(
               (boundary?.stopTokens ?? []).map((raw) => ({
@@ -1792,7 +1792,7 @@ export function createExpansionFrontendSession(
         allocateSyntaxId: options.allocateSyntaxId,
         allocateBindingId: options.allocateBindingId,
         allocateInvocationId: options.allocateInvocationId,
-        captureSlashMisreads: captureMisreads,
+        captureMisreads: captureMisreads,
         admit: () => true,
         diagnosticOrigin: (origin) => {
           const selected = options.origins.selectPrimarySource(origin);

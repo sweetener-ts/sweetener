@@ -1,6 +1,6 @@
 import type {
   LexicalMode,
-  SlashReadings,
+  TokenReadings,
   TokenKind,
   TriviaKind,
 } from "@sweetener/syntax";
@@ -34,7 +34,10 @@ export interface TypeScriptScanResult {
   readonly tokens: readonly TypeScriptScannedToken[];
   readonly errors: readonly TypeScriptScannerError[];
   readonly version: string;
-  /** The offsets of the slash readings given that the scan read no slash at. */
+  /**
+   * The offsets of the readings given that the scan read no token at: no slash
+   * for a slash's reading, no `<` it judged for a `<`'s.
+   */
   readonly unread: readonly number[];
 }
 
@@ -218,14 +221,14 @@ function nextLookaheadToken(
   lookahead: ts.Scanner,
   templates: TemplateSubstitutions,
   regularExpressionAllowed: boolean,
-  slashes: SlashReadings,
+  readings: TokenReadings,
 ): ts.SyntaxKind {
   let kind = lookahead.scan();
   if (
     (kind === ts.SyntaxKind.SlashToken ||
       kind === ts.SyntaxKind.SlashEqualsToken) &&
     readsRegularExpression(
-      slashes,
+      readings,
       lookahead.getTokenStart(),
       regularExpressionAllowed,
     )
@@ -251,14 +254,14 @@ function nextLookaheadToken(
 
 /**
  * Whether the slash starting at `start` begins a regular expression: as
- * `slashes` says where it says, and otherwise as the token before it allows.
+ * `readings` says where it says, and otherwise as the token before it allows.
  */
 function readsRegularExpression(
-  slashes: SlashReadings,
+  readings: TokenReadings,
   start: number,
   allowed: boolean,
 ): boolean {
-  const reading = slashes.get(start);
+  const reading = readings.get(start);
   return reading === undefined ? allowed : reading === "regular-expression";
 }
 
@@ -314,17 +317,17 @@ function standsInSignatureParameters(
  * Whether the `<T>` the lookahead has just read is the type parameter list of
  * a function type, `<T>(v: T) => T`, or of a call or construct signature,
  * `<T>(v: T): T`, rather than a JSX opening tag. An element with children can
- * have a `(` next too -- `<div>(text)</div>` -- so what follows the
- * parentheses is what tells them apart.
+ * have a `(` next too -- `<div>(text)</div>` -- so this is a judgement, made
+ * from what follows, and the enforester corrects it where the grammar reads
+ * an element (see `AngleReading`).
  *
- * TypeScript decides this from the parser's position, knowing whether a type
- * or an expression is expected. A token-level scanner does not know, and
- * after `:` or `=` either one may begin. An arrow after the parentheses is
- * read as a function type wherever it stands, as it always has been. A `:` is
- * read as a signature's only where a member of an interface or an object type
- * begins (`memberStart`, from `beginsMember`): an element's text says
- * `(note): see below` as readily as a signature says `(v: T): T`, and an
- * element is not written at the start of a member.
+ * Where a member of an interface or an object type begins (`memberStart`,
+ * from `beginsMember`) a signature is judged wherever the parentheses read as
+ * a type's, whatever follows them -- `<T>(v: T);` returns what it is not
+ * told. An element is not written there but as a statement of its own,
+ * which the enforester reads as one. Elsewhere only a function type is
+ * judged, by the arrow after the parentheses, since an element's text says
+ * `(note): see below` as readily as a signature says `(v: T): T`.
  *
  * Parameters of a type hold no expression -- no initializer, so no regular
  * expression and no element -- so the walk reads them as types and stops at
@@ -334,26 +337,26 @@ function standsInSignatureParameters(
 function signatureFollows(
   lookahead: ts.Scanner,
   templates: TemplateSubstitutions,
-  slashes: SlashReadings,
+  readings: TokenReadings,
   memberStart: boolean,
 ): boolean {
   if (
-    nextLookaheadToken(lookahead, templates, false, slashes) !==
+    nextLookaheadToken(lookahead, templates, false, readings) !==
     ts.SyntaxKind.OpenParenToken
   )
     return false;
   let depth = 1;
   while (depth > 0) {
-    const kind = nextLookaheadToken(lookahead, templates, false, slashes);
+    const kind = nextLookaheadToken(lookahead, templates, false, readings);
     if (!standsInSignatureParameters(kind, lookahead.isUnterminated()))
       return false;
     if (kind === ts.SyntaxKind.OpenParenToken) depth += 1;
     else if (kind === ts.SyntaxKind.CloseParenToken) depth -= 1;
   }
-  const after = nextLookaheadToken(lookahead, templates, false, slashes);
   return (
-    after === ts.SyntaxKind.EqualsGreaterThanToken ||
-    (memberStart && after === ts.SyntaxKind.ColonToken)
+    memberStart ||
+    nextLookaheadToken(lookahead, templates, false, readings) ===
+      ts.SyntaxKind.EqualsGreaterThanToken
   );
 }
 
@@ -382,7 +385,7 @@ function looksLikeJsxStart(
   lookahead: ts.Scanner,
   source: string,
   start: number,
-  slashes: SlashReadings,
+  readings: TokenReadings,
   memberStart: boolean,
 ): boolean {
   if (source.charCodeAt(start + 1) === 0x3e /* > */) return true;
@@ -392,15 +395,15 @@ function looksLikeJsxStart(
   lookahead.setText(source, nameStart);
   const templates: TemplateSubstitutions = [];
   if (
-    nextLookaheadToken(lookahead, templates, false, slashes) ===
+    nextLookaheadToken(lookahead, templates, false, readings) ===
     ts.SyntaxKind.ConstKeyword
   )
-    nextLookaheadToken(lookahead, templates, false, slashes);
-  const third = nextLookaheadToken(lookahead, templates, false, slashes);
+    nextLookaheadToken(lookahead, templates, false, readings);
+  const third = nextLookaheadToken(lookahead, templates, false, readings);
   if (third === ts.SyntaxKind.CommaToken || third === ts.SyntaxKind.EqualsToken)
     return false;
   if (third === ts.SyntaxKind.ExtendsKeyword) {
-    const fourth = nextLookaheadToken(lookahead, templates, false, slashes);
+    const fourth = nextLookaheadToken(lookahead, templates, false, readings);
     return (
       fourth === ts.SyntaxKind.EqualsToken ||
       fourth === ts.SyntaxKind.GreaterThanToken ||
@@ -408,7 +411,7 @@ function looksLikeJsxStart(
     );
   }
   if (third === ts.SyntaxKind.GreaterThanToken)
-    return !signatureFollows(lookahead, templates, slashes, memberStart);
+    return !signatureFollows(lookahead, templates, readings, memberStart);
   return true;
 }
 
@@ -530,7 +533,7 @@ const opens = new Map<ts.SyntaxKind, ts.SyntaxKind>([
  * sweet.js reader's lookbehind, as far as the groups alone can tell it. A
  * block written on its own, or a function's or a class's body, is a
  * statement's end or an operand's by where the declaration stands, which is
- * the enforester's to say (see `SlashReadings`).
+ * the enforester's to say (see `TokenReadings`).
  *
  * The groups are matched as the reader matches them: a closer closes the
  * nearest group it can, and every group still open inside that one with it.
@@ -675,7 +678,7 @@ export function scanWithSupportedTypeScript(
   source: string,
   variant: ScannerLanguageVariant,
   beforeToken: () => void = () => {},
-  slashes: SlashReadings = new Map(),
+  readings: TokenReadings = new Map(),
 ): TypeScriptScanResult {
   assertSupportedTypeScriptVersion(ts.version);
   const errors: TypeScriptScannerError[] = [];
@@ -743,8 +746,28 @@ export function scanWithSupportedTypeScript(
    * Only `beginsMember` asks, and only which one is innermost.
    */
   const openGroups: ts.SyntaxKind[] = [];
-  /** The offsets of `slashes` the scan has read a slash at. */
+  /** The offsets of `readings` the scan has read a slash or a `<` at. */
   const read = new Set<number>();
+  /**
+   * Whether the `<` at `start`, standing where an expression may begin,
+   * opens an element: as `readings` says where it says, which is where the
+   * enforester found the judgement below wrong, and otherwise as the tokens
+   * around it say (`looksLikeJsxStart`).
+   */
+  const opensElement = (start: number): boolean => {
+    const reading = readings.get(start);
+    if (reading === "element" || reading === "type-parameters") {
+      read.add(start);
+      return reading === "element";
+    }
+    return looksLikeJsxStart(
+      lookahead,
+      source,
+      start,
+      readings,
+      beginsMember(previousSignificantKind, openGroups.at(-1)),
+    );
+  };
   while (true) {
     beforeToken();
     const scanStart = scanner.getTextPos();
@@ -802,10 +825,10 @@ export function scanWithSupportedTypeScript(
           kind === ts.SyntaxKind.SlashEqualsToken)
       ) {
         const start = scanner.getTokenStart();
-        if (slashes.has(start)) read.add(start);
+        if (readings.has(start)) read.add(start);
         if (
           readsRegularExpression(
-            slashes,
+            readings,
             start,
             judgement.regularExpressionAllowed,
           )
@@ -846,13 +869,7 @@ export function scanWithSupportedTypeScript(
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
       judgement.regularExpressionAllowed &&
-      looksLikeJsxStart(
-        lookahead,
-        source,
-        scanner.getTokenStart(),
-        slashes,
-        beginsMember(previousSignificantKind, openGroups.at(-1)),
-      )
+      opensElement(scanner.getTokenStart())
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
       jsxMode = "tag";
@@ -1010,7 +1027,7 @@ export function scanWithSupportedTypeScript(
     errors: Object.freeze(errors),
     version: ts.version,
     unread: Object.freeze(
-      [...slashes.keys()].filter((offset) => !read.has(offset)),
+      [...readings.keys()].filter((offset) => !read.has(offset)),
     ),
   });
 }

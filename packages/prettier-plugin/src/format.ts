@@ -5,7 +5,7 @@ import {
 import {
   readSyntax,
   regularExpressionEnd,
-  typescriptSlashes,
+  typescriptReadings,
 } from "@sweetener/reader";
 import type { ScopeSetId, SourceId } from "@sweetener/shared";
 import {
@@ -329,6 +329,30 @@ function possibleRegularExpressions(
 }
 
 /**
+ * Whether a `<` written as a bare `<T>` -- a name, or `const` and a name,
+ * between two angles -- stands among `tokens`.
+ *
+ * In a JSX file that is the one `<` the reader judges by what follows it,
+ * telling the element `<b>(v) => x</b>` from the function type
+ * `<T>(v: T) => T`, and only the parser knows which is written. So where one
+ * stands the source is read with TypeScript's own readings of its `<`s too.
+ */
+function bareAngleBrackets(tokens: readonly TokenSyntax[]): boolean {
+  for (let index = 0; index + 2 < tokens.length; index += 1) {
+    if (tokens[index]!.raw !== "<") continue;
+    const name = tokens[index + 1]!.raw === "const" ? index + 2 : index + 1;
+    const close = tokens[name + 1];
+    if (
+      (tokens[name]!.kind === "identifier" ||
+        tokens[name]!.kind === "jsx-identifier") &&
+      close?.raw === ">"
+    )
+      return true;
+  }
+  return false;
+}
+
+/**
  * `spans` joined where they overlap, in source order. Two slashes may each
  * begin an expression over the other: in `a / b / c` the first ends at the
  * second, and the second reaches past it.
@@ -548,15 +572,16 @@ function flatTokens(syntax: Syntax): readonly TokenSyntax[] {
 
 /**
  * `source` read as the formatter lays it out, and the statements in it
- * TypeScript's parser could not read (see `TypeScriptSlashes.unparsed`).
+ * TypeScript's parser could not read (see `TypeScriptReadings.unparsed`).
  *
  * A slash the reader judged a division may begin a regular expression, and
- * one it judged a regular expression may divide. The expansion has the
- * enforester to say which; a formatter has no enforester, so wherever a
- * slash may begin a regular expression it asks TypeScript's parser, and reads
- * each slash as the parser does where the parser read the statement holding
- * it. That also reads `if (c) /(/.test(s)`, where the reader's judgement
- * leaves a bracket unbalanced.
+ * one it judged a regular expression may divide; in a JSX file a bare `<T>`
+ * the reader judged a type parameter list may open an element, and the other
+ * way round. The expansion has the enforester to say which; a formatter has
+ * no enforester, so wherever a slash may begin a regular expression or a bare
+ * `<T>` stands it asks TypeScript's parser, and reads each as the parser does
+ * where the parser read the statement holding it. That also reads `if (c)
+ * /(/.test(s)`, where the reader's judgement leaves a bracket unbalanced.
  */
 function readForFormatting(
   source: string,
@@ -566,8 +591,9 @@ function readForFormatting(
   const initial = readSyntax(source, { sourceId, scopes, variant });
   const typescript =
     initial.diagnostics.length > 0 ||
-    possibleRegularExpressions(source, initial.root).length > 0
-      ? typescriptSlashes(
+    possibleRegularExpressions(source, initial.root).length > 0 ||
+    (variant === "jsx" && bareAngleBrackets(flatTokens(initial.root)))
+      ? typescriptReadings(
           withoutCompileTimeClauses(source, initial.root),
           variant,
           macroUses(initial.root),
@@ -580,7 +606,7 @@ function readForFormatting(
           sourceId,
           scopes,
           variant,
-          slashReadings: typescript.readings,
+          readings: typescript.readings,
         });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];

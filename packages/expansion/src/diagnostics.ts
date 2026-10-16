@@ -35,6 +35,11 @@ function slashReadingName(reading: unknown): string {
   return reading === "division" ? "a division" : "a regular expression";
 }
 
+/** Whether a reading is a `<`'s rather than a slash's. */
+function angleReadingArgument(reading: unknown): boolean {
+  return reading === "element" || reading === "type-parameters";
+}
+
 /**
  * The indefinite article for a space's name. The spaces a macro can be
  * declared for include `expr` and `item`, and "a expr is read" is not a
@@ -61,9 +66,11 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "A slash written once is read once, as a regular expression or as a division. A macro can put what one invocation captured in more than one place, and where the grammar reads a captured slash one way in one place and the other way in another, and reading it either way changes the tokens after it, no reading of the source serves both.",
-    format: () =>
-      "This slash is read as a regular expression in one place a macro puts it and as a division in another, and the tokens after it are grouped differently each way. Put the regular expression or the division in parentheses where it is written, so that it reads the same in both.",
+      "A slash written once is read once, as a regular expression or as a division, and in a JSX file a bare `<T>` is read once, as an element or as type parameters. A macro can put what one invocation captured in more than one place, and where the grammar reads a captured token one way in one place and the other way in another, and reading it either way changes the tokens after it, no reading of the source serves both.",
+    format: (arguments_) =>
+      angleReadingArgument(arguments_[0])
+        ? "This `<` opens an element in one place a macro puts it and type parameters in another, and the tokens after it are grouped differently each way. Write `<T,>` for type parameters, or put the element's text in braces, where it is written, so that it reads the same in both."
+        : "This slash is read as a regular expression in one place a macro puts it and as a division in another, and the tokens after it are grouped differently each way. Put the regular expression or the division in parentheses where it is written, so that it reads the same in both.",
   },
   {
     code: unsettledSlashCode,
@@ -71,9 +78,11 @@ export const expansionDiagnosticRegistry = new DiagnosticRegistry([
     stage: "expansion",
     severity: "error",
     documentation:
-      "Where the enforester finds a slash read the other way from the grammar, and reading it so changes more than the tokens of one expression, the source is read again with the slash read as the grammar reads it and expanded again. That ends once a read agrees with what the enforester finds, which is ordinarily after one read again; the number of reads is bounded rather than trusted, and the expansion of the last read is the one reported, with this at a slash the enforester still found read the other way.",
+      "Where the enforester finds a slash, or in a JSX file a bare `<T>`, read the other way from the grammar, and reading it so changes more than the tokens of one expression, the source is read again with the token read as the grammar reads it and expanded again. That ends once a read agrees with what the enforester finds, which is ordinarily after one read again; the number of reads is bounded rather than trusted, and the expansion of the last read is the one reported, with this at a token the enforester still found read the other way.",
     format: (arguments_) =>
-      `Sweetener read this file ${String(arguments_[1] ?? "several")} times without settling whether this slash begins a regular expression or divides: the last read found it should be ${slashReadingName(arguments_[0])}. Put the regular expression or the division in parentheses, which reads the same either way.`,
+      angleReadingArgument(arguments_[0])
+        ? `Sweetener read this file ${String(arguments_[1] ?? "several")} times without settling whether this \`<\` opens an element or type parameters: the last read found it should be ${arguments_[0] === "element" ? "an element" : "type parameters"}. Write \`<T,>\` for type parameters, or put the element's text in braces, which reads the same either way.`
+        : `Sweetener read this file ${String(arguments_[1] ?? "several")} times without settling whether this slash begins a regular expression or divides: the last read found it should be ${slashReadingName(arguments_[0])}. Put the regular expression or the division in parentheses, which reads the same either way.`,
   },
   {
     code: foldPositionCode,

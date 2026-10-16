@@ -52,12 +52,14 @@ import {
   type SyntaxId,
 } from "@sweetener/shared";
 import {
+  angleReading,
   createGroup,
   createSyntaxSequence,
   createToken,
   OriginStore,
   type SlashReading,
-  type SlashReadings,
+  type TokenReading,
+  type TokenReadings,
   type Syntax,
   type SyntaxSequence,
   type TokenSyntax,
@@ -66,11 +68,11 @@ import {
 } from "@sweetener/syntax";
 import {
   askedReadings,
-  nextSlashReadings,
-  settleSlashReadings,
+  nextReadings,
+  settleReadings,
   writtenSource,
-  type SlashAttempt,
-} from "./slash-settling.js";
+  type ReadAttempt,
+} from "./reading-settling.js";
 import {
   resolveSourceMacroImports,
   resolveMacroProject,
@@ -123,7 +125,7 @@ interface ParsedFile {
   readonly sourceText: string;
   readonly root: RootSyntax;
   /** How the read that `root` is read the slashes it was told how to. */
-  readonly slashReadings: SlashReadings;
+  readonly readings: TokenReadings;
   readonly parsed: ParseMacroDefinitionsResult;
   readonly imports: ReturnType<typeof parseCompileTimeSyntaxImports>;
   readonly compiled: CompileParsedMacrosResult;
@@ -862,7 +864,7 @@ export class DefaultProjectExpansionProvider
    * The reader judges a slash from the token before it, and where the grammar
    * says otherwise the enforester reads it as the grammar does: in place,
    * where only the tokens of one expression change, and by reading the source
-   * again where more does (see `SlashReadings`). A file read again is expanded
+   * again where more does (see `TokenReadings`). A file read again is expanded
    * again, on its own where nothing else was expanded from what it read. A
    * file that defines macros, or that another file reads macros from, is read
    * again only with the whole project, which is then expanded again; nothing
@@ -874,9 +876,9 @@ export class DefaultProjectExpansionProvider
    */
   expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
     const recorder = new InputRecorder(this.#fileSystem.system);
-    return settleSlashReadings<
+    return settleReadings<
       DefaultProjectExpansionOutput,
-      ReadonlyMap<string, SlashReadings>
+      ReadonlyMap<string, TokenReadings>
     >(
       new Map(),
       (readings) =>
@@ -891,12 +893,12 @@ export class DefaultProjectExpansionProvider
   #expandProjectReading(
     project: LoadedSweetProject,
     recorder: InputRecorder,
-    readings: ReadonlyMap<string, SlashReadings>,
+    readings: ReadonlyMap<string, TokenReadings>,
     final: boolean,
     projectReads: number,
-  ): SlashAttempt<
+  ): ReadAttempt<
     DefaultProjectExpansionOutput,
-    ReadonlyMap<string, SlashReadings>
+    ReadonlyMap<string, TokenReadings>
   > {
     this.#inspections.clear();
     const origins = new OriginStore();
@@ -946,21 +948,21 @@ export class DefaultProjectExpansionProvider
       ...module.diagnostics,
       ...(moduleDiagnostics.get(module.fileName) ?? []),
     ];
-    /** One source, read with `slashReadings`, and the macros it defines. */
+    /** One source, read with `readings`, and the macros it defines. */
     const readFile = (
       fileName: string,
       kind: SourceKind,
       sourceId: SourceId,
       sourceText: string,
       definitionScopes: ScopeSetId,
-      slashReadings: SlashReadings,
+      readings: TokenReadings,
     ): ParsedFile => {
       const read = readSyntax(sourceText, {
         sourceId,
         scopes: definitionScopes,
         originStore: origins,
         variant: kind.variant,
-        slashReadings,
+        readings,
       });
       const parsed = parseMacroDefinitions(read.root, { sourceId });
       const imports = parseCompileTimeSyntaxImports(read.root, { sourceId });
@@ -979,7 +981,7 @@ export class DefaultProjectExpansionProvider
         sourceId,
         sourceText,
         root: read.root,
-        slashReadings: read.slashReadings,
+        readings: read.readings,
         parsed,
         imports,
         compiled,
@@ -1464,7 +1466,7 @@ export class DefaultProjectExpansionProvider
       }
       return Object.freeze([...consulted]);
     };
-    /** Where a slash token was read, by the policy `policy` names. */
+    /** Where a slash or a `<` was read, by the policy `policy` names. */
     const slashOrigin = (
       slash: TokenSyntax,
       policy: "invocation" | "definition",
@@ -1505,10 +1507,10 @@ export class DefaultProjectExpansionProvider
      * Expands one of the project's files as `file` reads it, holding what the
      * expansion says until it is kept.
      *
-     * A slash in the file's own text that the enforester found read the other
-     * way, where reading it so changes more than the tokens of one expression,
-     * asks for the file to be read again with the slash read as the enforester
-     * found it. Unless this is the last read allowed, an expansion that found
+     * A slash or a `<` in the file's own text that the enforester found read
+     * the other way, where reading it so changes more than the tokens of one
+     * expression, asks for the file to be read again with the token read as
+     * the enforester found it. Unless this is the last read allowed, an expansion that found
      * one is not printed, and the readings to read the file with next are
      * answered instead: nothing from it is kept.
      */
@@ -1516,12 +1518,18 @@ export class DefaultProjectExpansionProvider
       file: ParsedFile,
       final: boolean,
       reads: number,
-    ): SlashAttempt<undefined, SlashReadings> => {
+    ): ReadAttempt<undefined, TokenReadings> => {
       const held: Diagnostic[] = [];
-      /** The slashes of the file's text found read the other way, by offset. */
-      const found = new Map<number, SlashReading>();
+      /**
+       * The slashes and `<`s of the file's text found read the other way, by
+       * offset.
+       */
+      const found = new Map<number, TokenReading>();
       /** Those found read the other way both ways, where they were copied. */
-      const ambiguous = new Map<number, TokenSyntax>();
+      const ambiguous = new Map<
+        number,
+        { readonly token: TokenSyntax; readonly reading: TokenReading }
+      >();
       /** The template slashes reported, by where each use writes one. */
       const templateSlashes = new Set<string>();
       const resolvedGraph = resolveMacroProject({
@@ -1720,22 +1728,33 @@ export class DefaultProjectExpansionProvider
         allocateSyntaxId: syntaxIds.allocate,
         allocateBindingId: bindingIds.allocate,
         allocateInvocationId: invocationIds.allocate,
-        slashMisread: (slash, reading) => {
-          const written = writtenSource(origins, slash.origin);
-          if (written?.sourceId !== file.sourceId) {
+        misread: (token, reading) => {
+          const written = writtenSource(origins, token.origin);
+          if (angleReading(reading)) {
+            // A `<` read where JSX is not has no element to open. One a
+            // template wrote was read where the template is written, and the
+            // printer spells what it is for the file it is printed into --
+            // `<T,>` for a generic arrow -- so there is no source to read
+            // again with it, and nothing to report.
+            if (
+              written?.sourceId !== file.sourceId ||
+              file.kind.variant !== "jsx"
+            )
+              return;
+          } else if (written?.sourceId !== file.sourceId) {
             // A replacement may be read more than once before the expansion
             // settles on a reading of it, and each finds the slash again.
-            const key = `${String(slash.origin)}|${reading}`;
+            const key = `${String(token.origin)}|${reading}`;
             if (!templateSlashes.has(key)) {
               templateSlashes.add(key);
-              held.push(templateSlashDiagnostic(slash, reading));
+              held.push(templateSlashDiagnostic(token, reading));
             }
             return;
           }
           const offset = written.span.start;
           const before = found.get(offset);
           if (before !== undefined && before !== reading)
-            ambiguous.set(offset, slash);
+            ambiguous.set(offset, { token, reading });
           else found.set(offset, reading);
         },
       });
@@ -1751,18 +1770,19 @@ export class DefaultProjectExpansionProvider
           : session.expand(runtime, "item");
       held.push(...result.diagnostics);
       for (const offset of ambiguous.keys()) found.delete(offset);
-      const reread = nextSlashReadings(file.slashReadings, found);
+      const reread = nextReadings(file.readings, found);
       if (reread !== undefined && !final)
         return { kind: "reread", readings: reread } as const;
-      for (const slash of ambiguous.values())
+      for (const { token, reading } of ambiguous.values())
         held.push(
           expansionDiagnosticRegistry.create(ambiguousSlashCode, {
-            primaryOrigin: slashOrigin(slash, "invocation"),
+            primaryOrigin: slashOrigin(token, "invocation"),
+            messageArguments: [reading],
           }),
         );
       if (reread !== undefined) {
         const [offset, reading] = [...reread].find(
-          ([at, value]) => file.slashReadings.get(at) !== value,
+          ([at, value]) => file.readings.get(at) !== value,
         )!;
         held.push(
           expansionDiagnosticRegistry.create(unsettledSlashCode, {
@@ -2024,13 +2044,13 @@ export class DefaultProjectExpansionProvider
       return !readFrom.has(file.sourceId);
     };
     /**
-     * `file` read again with `slashReadings`, in its place in the project;
+     * `file` read again with `readings`, in its place in the project;
      * undefined where the read reads the file's macros or its imports for
      * syntax differently, which only reading the whole project again serves.
      */
     const readAgain = (
       file: ParsedFile,
-      slashReadings: SlashReadings,
+      readings: TokenReadings,
     ): ParsedFile | undefined => {
       const again = readFile(
         file.fileName,
@@ -2038,7 +2058,7 @@ export class DefaultProjectExpansionProvider
         file.sourceId,
         file.sourceText,
         file.root.scopes,
-        slashReadings,
+        readings,
       );
       if (
         again.parsed.definitions.length > 0 ||
@@ -2063,22 +2083,22 @@ export class DefaultProjectExpansionProvider
     let rereadProject = false;
     for (const projectFile of projectFiles) {
       let file = projectFile;
-      settleSlashReadings<undefined, SlashReadings>(
-        file.slashReadings,
+      settleReadings<undefined, TokenReadings>(
+        file.readings,
         askedReadings,
-        (slashReadings, last, fileReads) => {
+        (readings, last, fileReads) => {
           const alone = readAlone(file);
-          if (slashReadings !== file.slashReadings) {
-            const again = alone ? readAgain(file, slashReadings) : undefined;
+          if (readings !== file.readings) {
+            const again = alone ? readAgain(file, readings) : undefined;
             if (again === undefined) {
               // On the project's last read the file settles as it was read,
               // and says what it still found.
               if (final) return expandFile(file, true, projectReads);
-              passReadings.set(file.fileName, slashReadings);
+              passReadings.set(file.fileName, readings);
               rereadProject = true;
               return { kind: "settled", settled: undefined };
             }
-            passReadings.set(file.fileName, again.slashReadings);
+            passReadings.set(file.fileName, again.readings);
             file = again;
           }
           return alone

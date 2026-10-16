@@ -1,8 +1,8 @@
 import {
   createSpan,
-  type SlashReading,
-  type SlashReadings,
   type Span,
+  type TokenReading,
+  type TokenReadings,
 } from "@sweetener/syntax";
 import * as ts from "typescript";
 import { scannerTokens } from "./scanner/scan.js";
@@ -33,13 +33,14 @@ export function divisionTokens(
   return scanned.errors.length === 0 ? scannerTokens(scanned) : undefined;
 }
 
-/** How TypeScript's parser reads the slashes of a source; see below. */
-export interface TypeScriptSlashes {
+/** How TypeScript's parser reads the slashes and `<`s of a source; see below. */
+export interface TypeScriptReadings {
   /**
-   * How TypeScript's parser reads the slashes the reader reads the other way,
-   * in the statements it parsed without error.
+   * How TypeScript's parser reads the slashes, and in a JSX file the `<`s,
+   * the reader reads the other way, in the statements it parsed without
+   * error.
    */
-  readonly readings: SlashReadings;
+  readonly readings: TokenReadings;
   /**
    * Where TypeScript did not parse the source without error: each line it
    * reported an error on, and each statement or class member holding one. A
@@ -58,21 +59,24 @@ export interface TypeScriptSlashes {
 }
 
 /**
- * How TypeScript's own parser reads each slash of `source`, for a reader that
- * has no enforester to ask: the formatter.
+ * How TypeScript's own parser reads each slash of `source`, and each `<` of a
+ * JSX one, for a reader that has no enforester to ask: the formatter.
  *
  * The parser rescans a slash as a regular expression where it expects an
  * operand and leaves it a division where it expects an operator, so the
  * literals and the division operators in the tree it builds are where it read
- * each. Only where it parsed the statement holding the slash is that the
- * grammar's answer; elsewhere the reader's own judgement stands. The answer
- * costs a parse of the whole source.
+ * each. It opens an element at a `<` where it reads an expression and a type
+ * parameter list where it reads a type, so the elements and the type
+ * parameter lists in the tree are where it read each `<`. Only where it parsed
+ * the statement holding the token is that the grammar's answer; elsewhere the
+ * reader's own judgement stands. The answer costs a parse of the whole
+ * source.
  */
-export function typescriptSlashes(
+export function typescriptReadings(
   source: string,
   variant: ScannerLanguageVariant,
   macroUses: readonly number[] = [],
-): TypeScriptSlashes {
+): TypeScriptReadings {
   const fileName = variant === "jsx" ? "source.tsx" : "source.ts";
   const file = ts.createSourceFile(
     fileName,
@@ -81,7 +85,7 @@ export function typescriptSlashes(
     true,
     variant === "jsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
-  const parsed = new Map<number, SlashReading>();
+  const parsed = new Map<number, TokenReading>();
   const errors = syntacticErrorPositions(file);
   const unparsed: Span[] = errors.map((at) => {
     const { line } = file.getLineAndCharacterOfPosition(at);
@@ -120,6 +124,16 @@ export function typescriptSlashes(
         node.operatorToken.kind === ts.SyntaxKind.SlashEqualsToken)
     )
       parsed.set(node.operatorToken.getStart(file), "division");
+    if (variant === "jsx") {
+      if (
+        ts.isJsxOpeningElement(node) ||
+        ts.isJsxSelfClosingElement(node) ||
+        ts.isJsxOpeningFragment(node)
+      )
+        parsed.set(node.getStart(file), "element");
+      const angle = typeParametersOpening(node, file);
+      if (angle !== undefined) parsed.set(angle, "type-parameters");
+    }
     if (
       (ts.isStatement(node) || ts.isClassElement(node)) &&
       errors.some((at) => at >= node.getStart(file) && at < node.end)
@@ -140,7 +154,7 @@ export function typescriptSlashes(
   // Read again until the read agrees with the parser where it parsed. Each
   // time round settles at least one more slash, and a reading taken never
   // changes, so this ends; it is usually once.
-  let readings = new Map<number, SlashReading>();
+  let readings = new Map<number, TokenReading>();
   for (;;) {
     let changed = false;
     for (const token of scanWithSupportedTypeScript(
@@ -156,7 +170,11 @@ export function typescriptSlashes(
           ? "regular-expression"
           : token.raw === "/" || token.raw === "/="
             ? "division"
-            : undefined;
+            : token.raw === "<"
+              ? token.lexicalMode === "jsx-tag"
+                ? "element"
+                : "type-parameters"
+              : undefined;
       if (read === undefined || read === reading || readings.has(token.start))
         continue;
       readings = new Map([...readings, [token.start, reading]]);
@@ -164,6 +182,30 @@ export function typescriptSlashes(
     }
     if (!changed) return Object.freeze({ readings, unparsed });
   }
+}
+
+/**
+ * The offset of the `<` opening the type parameters of `node`, where `node`
+ * is one whose `<` the reader judges -- a function or constructor type, a
+ * call or construct signature, or an arrow function -- and has them.
+ */
+function typeParametersOpening(
+  node: ts.Node,
+  file: ts.SourceFile,
+): number | undefined {
+  if (
+    !ts.isFunctionTypeNode(node) &&
+    !ts.isConstructorTypeNode(node) &&
+    !ts.isCallSignatureDeclaration(node) &&
+    !ts.isConstructSignatureDeclaration(node) &&
+    !ts.isArrowFunction(node)
+  )
+    return undefined;
+  if (node.typeParameters === undefined) return undefined;
+  return node
+    .getChildren(file)
+    .find((child) => child.kind === ts.SyntaxKind.LessThanToken)
+    ?.getStart(file);
 }
 
 /** Whether `node` holds a list of statements or of class members. */

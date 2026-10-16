@@ -1,12 +1,12 @@
-import type { SlashReadings } from "@sweetener/syntax";
+import type { TokenReadings } from "@sweetener/syntax";
 import { describe, expect, test } from "vitest";
 import {
   askedReadings,
-  nextSlashReadings,
-  settleSlashReadings,
-  slashReadLimit,
-  type SlashAttempt,
-} from "../src/slash-settling.js";
+  nextReadings,
+  settleReadings,
+  readLimit,
+  type ReadAttempt,
+} from "../src/reading-settling.js";
 
 /**
  * A source is read again for as long as the enforester finds slashes read the
@@ -16,13 +16,13 @@ import {
  */
 describe("settling a source's slash readings", () => {
   test("reads again with what each read found, until a read settles", () => {
-    const seen: SlashReadings[] = [];
-    const settled = settleSlashReadings<string, SlashReadings>(
+    const seen: TokenReadings[] = [];
+    const settled = settleReadings<string, TokenReadings>(
       new Map(),
       askedReadings,
-      (readings): SlashAttempt<string, SlashReadings> => {
+      (readings): ReadAttempt<string, TokenReadings> => {
         seen.push(readings);
-        const next = nextSlashReadings(
+        const next = nextReadings(
           readings,
           new Map([[seen.length * 10, "regular-expression"]]),
         );
@@ -44,12 +44,12 @@ describe("settling a source's slash readings", () => {
   // more slash with each read. None of those reads is the last.
   test("reads again for as long as each read settles a slash", () => {
     const finals: boolean[] = [];
-    const settled = settleSlashReadings<number, SlashReadings>(
+    const settled = settleReadings<number, TokenReadings>(
       new Map(),
       askedReadings,
       (readings, final, reads) => {
         finals.push(final);
-        return readings.size === 5 * slashReadLimit
+        return readings.size === 5 * readLimit
           ? { kind: "settled", settled: reads }
           : {
               kind: "reread",
@@ -60,17 +60,17 @@ describe("settling a source's slash readings", () => {
             };
       },
     );
-    expect(settled).toBe(5 * slashReadLimit + 1);
+    expect(settled).toBe(5 * readLimit + 1);
     expect(finals.every((final) => !final)).toBe(true);
   });
 
   test("tells a read it is the last after reads that ask only again", () => {
     const finals: boolean[] = [];
-    const flip: SlashReadings[] = [
+    const flip: TokenReadings[] = [
       new Map([[4, "regular-expression"]]),
       new Map([[4, "division"]]),
     ];
-    const settled = settleSlashReadings<string, SlashReadings>(
+    const settled = settleReadings<string, TokenReadings>(
       new Map(),
       askedReadings,
       (readings, final) => {
@@ -86,14 +86,14 @@ describe("settling a source's slash readings", () => {
     );
     expect(settled).toBe("reported");
     // The first two reads each ask for a reading no read asked for before.
-    expect(finals).toHaveLength(slashReadLimit + 2);
+    expect(finals).toHaveLength(readLimit + 2);
     expect(finals.slice(0, -1).every((final) => !final)).toBe(true);
     expect(finals.at(-1)).toBe(true);
   });
 
   test("refuses a last read that asks to be read again", () => {
     expect(() =>
-      settleSlashReadings<string, SlashReadings>(
+      settleReadings<string, TokenReadings>(
         new Map(),
         askedReadings,
         (readings) => ({ kind: "reread", readings }),
@@ -103,10 +103,10 @@ describe("settling a source's slash readings", () => {
   });
 
   test("finds nothing to read again in what the readings already say", () => {
-    const readings: SlashReadings = new Map([[4, "regular-expression"]]);
-    expect(nextSlashReadings(readings, readings)).toBeUndefined();
+    const readings: TokenReadings = new Map([[4, "regular-expression"]]);
+    expect(nextReadings(readings, readings)).toBeUndefined();
     expect([
-      ...nextSlashReadings(readings, new Map([[4, "division"]]))!,
+      ...nextReadings(readings, new Map([[4, "division"]]))!,
     ]).toEqual([[4, "division"]]);
   });
 });

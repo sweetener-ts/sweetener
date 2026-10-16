@@ -951,6 +951,25 @@ function arrowChildren(
   return [...raw.slice(0, arrow.bodyStart), attempt.syntax];
 }
 
+/**
+ * The `<` of a bare type parameter list at the cursor -- a name, or `const`
+ * and a name, between two angles -- or undefined where none stands there.
+ */
+function bareTypeParameters(cursor: SyntaxCursor): TokenSyntax | undefined {
+  const angle = cursor.peek();
+  if (angle?.tag !== "token" || angle.raw !== "<") return undefined;
+  const modifier = cursor.peek(1);
+  const name = modifier?.tag === "token" && modifier.raw === "const" ? 2 : 1;
+  const named = cursor.peek(name);
+  const close = cursor.peek(name + 1);
+  return named?.tag === "token" &&
+    isIdentifierToken(named) &&
+    close?.tag === "token" &&
+    close.raw === ">"
+    ? angle
+    : undefined;
+}
+
 class PrimaryExpressionConsumer implements SyntaxConsumer {
   constructor(readonly options: PrimaryExpressionConsumerOptions) {
     Object.freeze(this);
@@ -958,6 +977,14 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
 
   consume(cursor: SyntaxCursor, context: ConsumerContext): ConsumerAttempt {
     const start = cursor.index;
+    // A bare `<T>` the reader left standing as tokens where an operand
+    // begins opens an element where JSX is read: TypeScript reads type
+    // parameters there only after `<T,`, `<T =` or `<T extends U`. The reader
+    // took it for a function type's from what follows it -- `<b>(v) => x</b>`
+    // reads like `<T>(v: T) => T` -- and read the element's text as code, so
+    // the source is read again with the `<` opening the element.
+    const angle = bareTypeParameters(cursor);
+    if (angle !== undefined) context.misread?.(angle, "element");
     const protectedExpression = cursor.peek();
     if (
       protectedExpression?.tag === "protected" &&
@@ -1046,7 +1073,7 @@ class PrimaryExpressionConsumer implements SyntaxConsumer {
     ) {
       const read = regularExpressionAt(cursor, this.options);
       if (read?.kind === "reread")
-        context.slashMisread?.(slash, "regular-expression");
+        context.misread?.(slash, "regular-expression");
       else regularExpression = read;
     }
     if (

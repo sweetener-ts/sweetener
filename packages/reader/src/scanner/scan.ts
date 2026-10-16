@@ -89,7 +89,7 @@ export function scanTypeScript(
   options: ScanOptions,
 ): ScanResult {
   const tracker = new ResourceTracker(options.budget ?? defaultResourceBudget);
-  const slashReadings = options.slashReadings ?? new Map();
+  const readings = options.readings ?? new Map();
   const scanned = scanWithSupportedTypeScript(
     source,
     options.variant ?? "standard",
@@ -97,7 +97,7 @@ export function scanTypeScript(
       (options.cancellation ?? neverCancelled).throwIfCancellationRequested();
       tracker.chargeInputTokens();
     },
-    slashReadings,
+    readings,
   );
   const unread = new Set(scanned.unread);
   return Object.freeze({
@@ -114,8 +114,8 @@ export function scanTypeScript(
         }),
       ),
     ),
-    slashReadings: new Map(
-      [...slashReadings].filter(([offset]) => !unread.has(offset)),
+    readings: new Map(
+      [...readings].filter(([offset]) => !unread.has(offset)),
     ),
     typescriptVersion: scanned.version,
   });

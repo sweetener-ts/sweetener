@@ -21,7 +21,7 @@ import {
   OriginStore,
   type DelimiterKind,
   type RootSyntax,
-  type SlashReadings,
+  type TokenReadings,
   type Syntax,
   type TokenSyntax,
 } from "@sweetener/syntax";
@@ -39,10 +39,10 @@ export interface ReadSyntaxOptions {
   readonly scopes: ScopeSetId;
   readonly variant?: ScannerLanguageVariant;
   /**
-   * How the slashes at given offsets are read, as the enforester found them
-   * in an earlier read of the same text; see `SlashReadings`.
+   * How the slashes and `<`s at given offsets are read, as the enforester
+   * found them in an earlier read of the same text; see `TokenReadings`.
    */
-  readonly slashReadings?: SlashReadings;
+  readonly readings?: TokenReadings;
   readonly originStore?: OriginStore;
   readonly cancellation?: CancellationToken;
   readonly budget?: ResourceBudget;
@@ -52,8 +52,8 @@ export interface ReadSyntaxResult {
   readonly root: RootSyntax;
   readonly diagnostics: readonly Diagnostic[];
   readonly origins: OriginStore;
-  /** The slash readings the read applied; see `ScanResult.slashReadings`. */
-  readonly slashReadings: SlashReadings;
+  /** The readings the read applied; see `ScanResult.readings`. */
+  readonly readings: TokenReadings;
   readonly typescriptVersion: string;
 }
 
@@ -369,7 +369,7 @@ export function readSyntax(
     root,
     diagnostics: Object.freeze(diagnostics),
     origins,
-    slashReadings: scanned.slashReadings,
+    readings: scanned.readings,
     typescriptVersion: scanned.typescriptVersion,
   });
 }

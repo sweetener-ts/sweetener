@@ -1,38 +1,38 @@
 import type { OriginId } from "@sweetener/shared";
 import type {
   OriginStore,
-  SlashReading,
-  SlashReadings,
+  TokenReading,
+  TokenReadings,
   SourceOrigin,
 } from "@sweetener/syntax";
 
 /**
- * How many reads in a row may settle no slash that no read before them
+ * How many reads in a row may settle no token that no read before them
  * settled, before the last of them reports what it still finds.
  *
- * The enforester finds a slash read the other way from the grammar wherever
- * it reaches one, and a source is read again with every slash it found read
- * as it found it. Its finding at a slash depends on what was read in front of
- * it, which the readings of the slashes there settle, so the reads come to
- * agree with the enforester. A read that asks for a reading no read asked for
- * before has made progress, and there are only two readings of each slash in
- * a source, so reads that make progress end by themselves however many a
- * source needs: a regular expression holding a bracket hides the next one from
- * the enforester until it is read as one, so a source of many such needs a
- * read for each. A read that asks only for readings asked for before goes
- * round where an earlier one went -- a finding made in syntax that a later
- * reading took apart, or a macro's rule that decides by what is written after
- * the slash -- and only those reads are counted against this.
+ * The enforester finds a slash or a `<` read the other way from the grammar
+ * wherever it reaches one, and a source is read again with every token it
+ * found read as it found it. Its finding at a token depends on what was read
+ * in front of it, which the readings of the tokens there settle, so the reads
+ * come to agree with the enforester. A read that asks for a reading no read
+ * asked for before has made progress, and there are only two readings of each
+ * token in a source, so reads that make progress end by themselves however
+ * many a source needs: a regular expression holding a bracket hides the next
+ * one from the enforester until it is read as one, so a source of many such
+ * needs a read for each. A read that asks only for readings asked for before
+ * goes round where an earlier one went -- a finding made in syntax that a
+ * later reading took apart, or a macro's rule that decides by what is written
+ * after the token -- and only those reads are counted against this.
  */
-export const slashReadLimit = 8;
+export const readLimit = 8;
 
-/** What reading a source with given slash readings came to. */
-export type SlashAttempt<Settled, Readings> =
+/** What reading a source with given readings came to. */
+export type ReadAttempt<Settled, Readings> =
   | { readonly kind: "settled"; readonly settled: Settled }
   | { readonly kind: "reread"; readonly readings: Readings };
 
 /**
- * Reads a source, by `attempt`, until its slashes settle: from `readings`,
+ * Reads a source, by `attempt`, until its readings settle: from `readings`,
  * and then with each set of readings an attempt asks to be read with.
  * `asked` names each reading a set holds, so that a read asking for one no
  * read asked for before is told from one that only asks again; after `limit`
@@ -40,15 +40,15 @@ export type SlashAttempt<Settled, Readings> =
  * settles with whatever it found. Each attempt is told how many reads it
  * makes, itself included.
  */
-export function settleSlashReadings<Settled, Readings>(
+export function settleReadings<Settled, Readings>(
   readings: Readings,
   asked: (readings: Readings) => Iterable<string>,
   attempt: (
     readings: Readings,
     final: boolean,
     reads: number,
-  ) => SlashAttempt<Settled, Readings>,
-  limit: number = slashReadLimit,
+  ) => ReadAttempt<Settled, Readings>,
+  limit: number = readLimit,
 ): Settled {
   const seen = new Set(asked(readings));
   let current = readings;
@@ -73,8 +73,8 @@ export function settleSlashReadings<Settled, Readings>(
   }
 }
 
-/** Names each reading of one source's `readings`, for `settleSlashReadings`. */
-export function askedReadings(readings: SlashReadings): Iterable<string> {
+/** Names each reading of one source's `readings`, for `settleReadings`. */
+export function askedReadings(readings: TokenReadings): Iterable<string> {
   return [...readings].map(
     ([offset, reading]) => `${String(offset)} ${reading}`,
   );
@@ -82,20 +82,20 @@ export function askedReadings(readings: SlashReadings): Iterable<string> {
 
 /**
  * The readings to read a source with next, `readings` being what it was read
- * with and `found` how the enforester found the slashes it read the other way
+ * with and `found` how the enforester found the tokens it read the other way
  * should read; undefined where it found nothing the readings do not already
- * say. A finding about a slash given a reading replaces it: that reading was
- * found in syntax read before the slashes in front of it were settled.
+ * say. A finding about a token given a reading replaces it: that reading was
+ * found in syntax read before the tokens in front of it were settled.
  */
-export function nextSlashReadings(
-  readings: SlashReadings,
-  found: SlashReadings,
-): SlashReadings | undefined {
+export function nextReadings(
+  readings: TokenReadings,
+  found: TokenReadings,
+): TokenReadings | undefined {
   const changed = [...found].filter(
     ([offset, reading]) => readings.get(offset) !== reading,
   );
   if (changed.length === 0) return undefined;
-  const next = new Map<number, SlashReading>(readings);
+  const next = new Map<number, TokenReading>(readings);
   for (const [offset, reading] of changed) next.set(offset, reading);
   return next;
 }

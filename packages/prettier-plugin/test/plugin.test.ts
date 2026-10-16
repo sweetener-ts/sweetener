@@ -50,6 +50,22 @@ if (!($condition)) $body
     expect(formatSweetener(source, { filepath: "view.stsx" })).toBe(source);
   });
 
+  /**
+   * A bare `<T>` at the start of a member is judged a signature's type
+   * parameters, which is what it is in an interface and not what it is as a
+   * statement. TypeScript's parser says which, so an element's text is left
+   * as it is written and a signature with no return type is laid out as one.
+   */
+  test("reads a bare `<T>` as TypeScript does", () => {
+    const element = "function g() {\n  <b>(note):   x</b>;\n}\n";
+    expect(formatSweetener(element, { filepath: "view.stsx" })).toBe(element);
+    expect(
+      formatSweetener("interface I {\n  <T>(v:   T);\n}\n", {
+        filepath: "view.stsx",
+      }),
+    ).toBe("interface I {\n  <T>(v: T);\n}\n");
+  });
+
   test("does not indent otherwise blank lines", () => {
     const source = `export syntax class Example {
   fields {

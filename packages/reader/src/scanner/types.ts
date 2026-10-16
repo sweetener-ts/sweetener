@@ -6,7 +6,7 @@ import type {
 } from "@sweetener/shared";
 import type {
   LexicalMode,
-  SlashReadings,
+  TokenReadings,
   Span,
   TokenKind,
   Trivia,
@@ -30,8 +30,8 @@ export interface ScannerToken {
 export interface ScanOptions {
   readonly sourceId: SourceId;
   readonly variant?: ScannerLanguageVariant;
-  /** How the slashes at given offsets are read; see `SlashReadings`. */
-  readonly slashReadings?: SlashReadings;
+  /** How the slashes and `<`s at given offsets are read; see `TokenReadings`. */
+  readonly readings?: TokenReadings;
   readonly cancellation?: CancellationToken;
   readonly budget?: ResourceBudget;
 }
@@ -40,11 +40,12 @@ export interface ScanResult {
   readonly tokens: readonly ScannerToken[];
   readonly diagnostics: readonly Diagnostic[];
   /**
-   * The slash readings the scan was given that it read a slash at. One it
-   * read none at was found in an earlier read of the text, at a slash that a
+   * The readings the scan was given that it read their token at. One it read
+   * none at was found in an earlier read of the text, at a slash that a
    * reading in front of it has since taken inside a regular expression or
-   * split out of one; it no longer applies, and is not in this.
+   * split out of one, or at a `<` that has since been read into an element's
+   * text; it no longer applies, and is not in this.
    */
-  readonly slashReadings: SlashReadings;
+  readonly readings: TokenReadings;
   readonly typescriptVersion: string;
 }
