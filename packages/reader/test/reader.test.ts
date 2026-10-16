@@ -5,6 +5,7 @@ import {
   type ScopeSetId,
   type SourceId,
 } from "@sweetener/shared";
+import type { Syntax } from "@sweetener/syntax";
 import { describe, expect, it } from "vitest";
 import { printLossless, readSyntax } from "../src/index.js";
 
@@ -438,7 +439,7 @@ describe("delimiter reader", () => {
     expect(printLossless(jsx.root)).toBe("<View>content");
   });
 
-  it("enforces input-token and nesting budgets", () => {
+  it("enforces the input-token budget", () => {
     expect(() =>
       readSyntax("a b", {
         sourceId,
@@ -446,9 +447,36 @@ describe("delimiter reader", () => {
         budget: createResourceBudget({ maxInputTokens: 3 }),
       }),
     ).toThrow(ResourceLimitError);
-    expect(() => readSyntax("(".repeat(1_025), { sourceId, scopes })).toThrow(
-      /nesting-depth/,
-    );
+  });
+
+  it("reads delimiters nested deeper than the nesting budget as tokens", () => {
+    const depth = (syntax: Syntax): number => {
+      let deepest = 0;
+      const pending: { readonly node: Syntax; readonly at: number }[] = [
+        { node: syntax, at: 0 },
+      ];
+      for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+        deepest = Math.max(deepest, next.at);
+        if (next.node.tag === "group" || next.node.tag === "root")
+          for (const child of next.node.children)
+            pending.push({
+              node: child,
+              at: next.node.tag === "group" ? next.at + 1 : next.at,
+            });
+      }
+      return deepest;
+    };
+    const within = "(".repeat(1_024) + "a" + ")".repeat(1_024);
+    const read = readSyntax(within, { sourceId, scopes });
+    expect(read.diagnostics).toEqual([]);
+    expect(depth(read.root)).toBe(1_024);
+
+    const source = "[".repeat(1_100) + "a" + "]".repeat(1_100) + " b";
+    const deeper = readSyntax(source, { sourceId, scopes });
+    expect(deeper.diagnostics.map(({ code }) => code)).toEqual(["SWR1004"]);
+    expect(deeper.diagnostics[0]?.primaryOrigin.start).toBe(1_024);
+    expect(depth(deeper.root)).toBe(1_024);
+    expect(printLossless(deeper.root)).toBe(source);
   });
 
   it("honors cancellation and deadline checks", () => {

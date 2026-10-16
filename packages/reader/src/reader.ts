@@ -2,6 +2,7 @@ import {
   createIdAllocator,
   defaultResourceBudget,
   neverCancelled,
+  ResourceLimitError,
   ResourceTracker,
   type CancellationToken,
   type Diagnostic,
@@ -26,6 +27,7 @@ import {
 } from "@sweetener/syntax";
 import {
   missingCloserCode,
+  nestingLimitCode,
   readerDiagnosticRegistry,
   unexpectedCloserCode,
 } from "./scanner/diagnostics.js";
@@ -68,6 +70,12 @@ interface GroupFrame {
    * nested element and the tag never closed.
    */
   jsxTypeArguments: number;
+  /**
+   * Whether the frame opens deeper than the nesting limit allows. Its
+   * delimiters are read as the tokens they are rather than as a group, and
+   * what it holds stands in the frame around it, whose children these are.
+   */
+  readonly flat?: true;
 }
 
 const ordinaryOpen = new Map<string, DelimiterKind>([
@@ -99,15 +107,42 @@ export function readSyntax(
   const rootChildren: Syntax[] = [];
   const stack: GroupFrame[] = [];
 
+  /**
+   * Opens `frame`. One deeper than the nesting limit allows is read flat:
+   * every tree read from a file is then as deep as the limit at most, which is
+   * what lets everything that reads one recurse into it, and what nests deeper
+   * is reported where it begins rather than ending the read.
+   */
   const pushFrame = (frame: GroupFrame): void => {
     cancellation.throwIfCancellationRequested();
+    try {
     nesting.enterNesting();
+    } catch (error) {
+      if (!(error instanceof ResourceLimitError)) throw error;
+      const enclosing = stack.at(-1);
+      const children = enclosing?.children ?? rootChildren;
+      if (enclosing?.flat !== true)
+        diagnostics.push(
+          readerDiagnosticRegistry.create(nestingLimitCode, {
+            primaryOrigin: {
+              sourceId: options.sourceId,
+              start: frame.open.span.start,
+              end: frame.open.span.end,
+              originId: frame.open.origin,
+            },
+            messageArguments: [error.limit],
+          }),
+        );
+      children.push(frame.open);
+      stack.push({ ...frame, children, flat: true });
+      return;
+    }
     stack.push(frame);
   };
 
   const popFrame = (): GroupFrame | undefined => {
     const frame = stack.pop();
-    if (frame !== undefined) nesting.leaveNesting();
+    if (frame !== undefined && frame.flat !== true) nesting.leaveNesting();
     return frame;
   };
 
@@ -135,6 +170,10 @@ export function readSyntax(
     frame: GroupFrame,
     close: TokenSyntax | ReturnType<typeof createMissingToken>,
   ): void => {
+    if (frame.flat === true) {
+      if (close.tag === "token") frame.children.push(close);
+      return;
+    }
     const end = close.span.end;
     append(
       createGroup({

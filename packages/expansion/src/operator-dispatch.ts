@@ -1,5 +1,7 @@
 import type {
+  MacroOperatorApplication,
   MacroOperatorCandidate,
+  MacroOperatorChain,
   MacroOperatorExpansionInput,
   MacroOperatorResolver,
   PrattFixity,
@@ -14,6 +16,7 @@ import type {
 import {
   createSyntaxSequence,
   type ProtectedSyntax,
+  type Syntax,
   type SyntaxCategory,
   type SyntaxCursor,
   type SyntaxSequence,
@@ -44,7 +47,22 @@ export interface CreateLexicalOperatorResolverOptions {
     readonly macro: CompiledMacroBinding;
     readonly operator: OperatorBinding;
     readonly input: MacroOperatorExpansionInput;
+    /** The operands of `input` an earlier expansion of its chain built. */
+    readonly built: ReadonlySet<Syntax>;
   }) => ProtectedSyntax;
+  /**
+   * Expands a chain of infix operators as one expression, applying each with
+   * `apply`. Without it, each is expanded on its own.
+   */
+  readonly expandChain?:
+    | ((
+        chain: MacroOperatorChain,
+        apply: (
+          application: MacroOperatorApplication,
+          built: ReadonlySet<Syntax>,
+        ) => ProtectedSyntax,
+      ) => ProtectedSyntax)
+    | undefined;
 }
 
 export interface RegisterImportedOperatorResult {
@@ -111,30 +129,43 @@ export interface OperatorGroupingTrace {
   readonly resultOrigin: OriginId;
 }
 
-/** Reconstructs matcher input while preserving the already parsed left extent. */
+/** Shared, so an invocation of no chain allocates nothing for it. */
+const noOperands: ReadonlySet<Syntax> = new Set();
+
+/**
+ * Reconstructs matcher input while preserving the already parsed left extent.
+ * An operand an earlier expansion of the operator's chain built stands as the
+ * one node it was built as, which is what the expansion holds it as.
+ */
 export function operatorInvocationSyntax(
   input: MacroOperatorExpansionInput,
   fixity: PrattFixity,
   flattenLeft = false,
+  built: ReadonlySet<Syntax> = noOperands,
 ): SyntaxSequence {
+  const operand = (side: ProtectedSyntax, flatten: boolean) =>
+    flatten && !built.has(side) ? side.children : [side];
   if (fixity === "prefix") {
     if (input.right === undefined)
       throw new TypeError("Prefix operator expansion requires a right operand");
-    return createSyntaxSequence([...input.operator, ...input.right.children]);
+    return createSyntaxSequence([
+      ...input.operator,
+      ...operand(input.right, true),
+    ]);
   }
   if (input.left === undefined)
     throw new TypeError(`${fixity} operator expansion requires a left operand`);
   if (fixity === "postfix")
     return createSyntaxSequence([
-      ...(flattenLeft ? input.left.children : [input.left]),
+      ...operand(input.left, flattenLeft),
       ...input.operator,
     ]);
   if (input.right === undefined)
     throw new TypeError("Infix operator expansion requires a right operand");
   return createSyntaxSequence([
-    ...(flattenLeft ? input.left.children : [input.left]),
+    ...operand(input.left, flattenLeft),
     ...input.operator,
-    ...input.right.children,
+    ...operand(input.right, true),
   ]);
 }
 
@@ -174,6 +205,40 @@ export function createLexicalOperatorResolver(
       operator.phase === options.phase &&
       operator.category === options.category,
   );
+  /** The macro and the binding each candidate this resolver offered stands for. */
+  const offered = new WeakMap<
+    MacroOperatorCandidate,
+    {
+      readonly macro: CompiledMacroBinding;
+      readonly operator: OperatorBinding;
+    }
+  >();
+  /** Expands one operator, with the operands of its chain built before it. */
+  const expandOperator = (
+    macro: CompiledMacroBinding,
+    operator: OperatorBinding,
+    input: MacroOperatorExpansionInput,
+    built: ReadonlySet<Syntax>,
+  ): ProtectedSyntax => {
+    const result = options.expand({ macro, operator, input, built });
+    options.onGroup?.(
+      Object.freeze({
+        binding: operator.binding,
+        spelling: operator.spelling,
+        fixity: operator.fixity,
+        precedence: operator.precedence,
+        associativity: operator.associativity,
+        leftOrigin: input.left?.origin,
+        operatorOrigins: Object.freeze(
+          input.operator.map(({ origin }) => origin),
+        ),
+        rightOrigin: input.right?.origin,
+        resultOrigin: result.origin,
+      }),
+    );
+    return result;
+  };
+  const { expandChain } = options;
   return (cursor, fixity) => {
     const matches = candidates.flatMap((operator) => {
       if (operator.fixity !== fixity) return [];
@@ -226,30 +291,32 @@ export function createLexicalOperatorResolver(
       shadowsCore: options.shadowsCore?.(selected.operator) ?? false,
       literalRightOperands: selected.operator.literalRightOperands,
       arrowOperand: selected.operator.arrowOperand,
-      expand: (input: MacroOperatorExpansionInput) => {
-        const result = options.expand({
-          macro,
-          operator: selected.operator,
-          input,
-        });
-        options.onGroup?.(
-          Object.freeze({
-            binding: selected.operator.binding,
-            spelling: selected.operator.spelling,
-            fixity: selected.operator.fixity,
-            precedence: selected.operator.precedence,
-            associativity: selected.operator.associativity,
-            leftOrigin: input.left?.origin,
-            operatorOrigins: Object.freeze(
-              input.operator.map(({ origin }) => origin),
-            ),
-            rightOrigin: input.right?.origin,
-            resultOrigin: result.origin,
-          }),
-        );
-        return result;
-      },
+      expand: (input: MacroOperatorExpansionInput) =>
+        expandOperator(macro, selected.operator, input, new Set()),
+      expandChain:
+        expandChain === undefined
+          ? undefined
+          : (chain: MacroOperatorChain) =>
+              expandChain(chain, (application, built) => {
+                const step = offered.get(application.step.macro);
+                if (step === undefined)
+                  throw new TypeError(
+                    "A chain held an operator this resolver did not offer",
+                  );
+                return expandOperator(
+                  step.macro,
+                  step.operator,
+                  {
+                    operator: application.step.operator,
+                    left: application.left,
+                    right: application.right,
+                    context: chain.context,
+                  },
+                  built,
+                );
+              }),
     });
+    offered.set(candidate, { macro, operator: selected.operator });
     return candidate;
   };
 }

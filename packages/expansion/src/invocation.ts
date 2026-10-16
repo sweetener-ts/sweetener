@@ -182,6 +182,21 @@ export interface InvokeMacroOptions {
   readonly followingScope: ApplyBindingContractsOptions["followingScope"];
   readonly extractBindings?: ApplyBindingContractsOptions["extractBindings"];
   readonly admit: (request: BoundaryAdmissionRequest) => boolean;
+  /**
+   * The operands this invocation holds as built, rather than copying them
+   * into its replacement: what the expansions before it in a chain of
+   * operators built. See `InstantiateTemplateOptions.held`.
+   */
+  readonly held?: ReadonlySet<Syntax> | undefined;
+  /**
+   * Where the invocation is written, where its input does not begin there:
+   * the token of an operator, whose input begins with its left operand. What
+   * the template introduces is introduced there, and what goes wrong in the
+   * invocation is reported there. The left operand of an operator in a chain
+   * is what the operator before it built, and introducing at it introduced at
+   * every step before it in turn.
+   */
+  readonly invokedAt?: Syntax | undefined;
   readonly expandReplacement: (
     request: ExpandReplacementRequest,
   ) => ProtectedSyntax;
@@ -335,11 +350,48 @@ interface RuleFindings {
   through: number | undefined;
 }
 
+/**
+ * `invokeMacro`'s invocation as it suspends: where the selected rule's
+ * replacement is to be expanded, it yields the request and is resumed with the
+ * expansion, so whatever walks the replacement can walk it without recursing.
+ */
+export type MacroInvocation = Generator<
+  ExpandReplacementRequest,
+  MacroInvocationResult,
+  ProtectedSyntax
+>;
+
+/** Expands one macro invocation, expanding its replacement as it asks. */
 export function invokeMacro(
   options: InvokeMacroOptions,
 ): MacroInvocationResult {
+  const invocation = invokeMacroStepwise(options);
+  let step = invocation.next();
+  while (!step.done) {
+    let expanded: ProtectedSyntax;
+    try {
+      expanded = options.expandReplacement(step.value);
+    } catch (error) {
+      step = invocation.throw(error);
+      continue;
+    }
+    step = invocation.next(expanded);
+  }
+  return step.value;
+}
+
+/**
+ * Expands one macro invocation, handing the selected rule's replacement out to
+ * be walked and resuming with what the walk expanded it to. The slashes its
+ * rules found read the other way are settled when it finishes, after its
+ * replacement's own invocations have settled theirs.
+ */
+export function* invokeMacroStepwise(
+  options: Omit<InvokeMacroOptions, "expandReplacement">,
+): MacroInvocation {
   const misreads = options.captureSlashMisreads;
-  if (misreads === undefined) return invokeMacroRules(options, undefined);
+  if (misreads === undefined)
+    return yield* invokeMacroRules(options, undefined);
   const start = misreads.open();
   const findings: RuleFindings = {
     starts: [],
@@ -348,7 +400,7 @@ export function invokeMacro(
   };
   let result: MacroInvocationResult | undefined;
   try {
-    result = invokeMacroRules(options, findings);
+    result = yield* invokeMacroRules(options, findings);
     return result;
   } finally {
     // An invocation a rule read, as written, keeps nothing its rules found
@@ -391,10 +443,10 @@ function closestFindings(
     );
 }
 
-function invokeMacroRules(
-  options: InvokeMacroOptions,
+function* invokeMacroRules(
+  options: Omit<InvokeMacroOptions, "expandReplacement">,
   findings: RuleFindings | undefined,
-): MacroInvocationResult {
+): MacroInvocation {
   validateMacro(options.macro, options.category);
   validateCoreInterception(
     options.coreInterception,
@@ -420,6 +472,7 @@ function invokeMacroRules(
   if (invocationHead === undefined) {
     throw new RangeError("Cannot invoke a macro at end of input");
   }
+  const invokedAt = options.invokedAt ?? invocationHead;
   const invocationId = options.allocateInvocationId();
   const attempts: RuleAttemptTrace[] = [];
   const failures: MatchFailure[] = [];
@@ -504,7 +557,7 @@ function invokeMacroRules(
           options.cursor.peek()?.span.start ??
           0,
         cursor: matched.cursor.identity,
-        at: matched.cursor.peek()?.origin ?? invocationHead.origin,
+        at: matched.cursor.peek()?.origin ?? invokedAt.origin,
         specificity: 7,
         expectations: Object.freeze([
           Object.freeze({
@@ -545,7 +598,7 @@ function invokeMacroRules(
           consumed.at(consumed.length - 1)?.span.end ??
           0,
         cursor: matched.cursor.identity,
-        at: matched.cursor.peek()?.origin ?? invocationHead.origin,
+        at: matched.cursor.peek()?.origin ?? invokedAt.origin,
         specificity: 8,
         expectations: Object.freeze([
           Object.freeze({
@@ -595,7 +648,8 @@ function invokeMacroRules(
       input: consumed.toArray(),
       environmentEpoch: options.environmentEpoch,
     });
-    return options.guard.run(fingerprint, () => {
+    options.guard.enter(fingerprint);
+    try {
       attempts.push(
         Object.freeze({
           rule: rule.rule,
@@ -625,12 +679,12 @@ function invokeMacroRules(
         scopeStore: options.scopeStore,
         origins: options.origins,
         invocationScopes,
-        invocationOrigin: invocationHead.origin,
+        invocationOrigin: invokedAt.origin,
         definitionScopes: options.macro.definitionScopes,
         callsiteScopes: invocationHead.scopes,
         anchor: {
-          start: invocationHead.span.start,
-          end: invocationHead.span.start,
+          start: invokedAt.span.start,
+          end: invokedAt.span.start,
         },
         allocateSyntaxId: options.allocateSyntaxId,
         allocateBindingId: options.allocateBindingId,
@@ -638,10 +692,11 @@ function invokeMacroRules(
         tracker: options.tracker,
         cancellation,
         category: options.category,
+        held: options.held,
       });
       let expanded;
       try {
-        expanded = options.expandReplacement({
+        expanded = yield {
           syntax: instantiated.syntax,
           category: options.category,
           phase: options.phase,
@@ -649,7 +704,7 @@ function invokeMacroRules(
           invocationId,
           followingScopes: contracts.followingScopes,
           environment: contracts.environment,
-        });
+        };
       } catch (error) {
         // The rule's template did not produce one node of the category this
         // macro declares -- two statements where an expression was wanted, or
@@ -658,6 +713,7 @@ function invokeMacroRules(
         // thrown, which would abandon the expansion of every file in the
         // project and name neither the macro nor where it was written.
         if (!(error instanceof EnforestationError)) throw error;
+        cancellation.throwIfCancellationRequested();
         return Object.freeze({
           expanded: false as const,
           cursor: options.cursor.fork(),
@@ -665,7 +721,7 @@ function invokeMacroRules(
           diagnostic: expansionDiagnosticRegistry.create(
             uncategorizedExpansionCode,
             {
-              primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
+              primaryOrigin: options.diagnosticOrigin(invokedAt.origin),
               messageArguments: [
                 options.macro.binding.spelling,
                 error.category,
@@ -685,7 +741,7 @@ function invokeMacroRules(
             binding: options.macro.binding.id,
             category: options.category,
             phase: options.phase,
-            invocationOrigin: invocationHead.origin,
+            invocationOrigin: invokedAt.origin,
             attemptedRules: Object.freeze(attempts),
             selectedRule: rule.rule,
             captures: Object.freeze([]),
@@ -709,7 +765,7 @@ function invokeMacroRules(
         binding: options.macro.binding.id,
         category: options.category,
         phase: options.phase,
-        invocationOrigin: invocationHead.origin,
+        invocationOrigin: invokedAt.origin,
         attemptedRules: Object.freeze(attempts),
         selectedRule: rule.rule,
         captures: captureSummaries(rule.matcher, contracts.captures),
@@ -733,6 +789,7 @@ function invokeMacroRules(
         cache: "miss",
         coreInterception: options.coreInterception,
       });
+      cancellation.throwIfCancellationRequested();
       return Object.freeze({
         expanded: true,
         syntax: expanded,
@@ -743,7 +800,9 @@ function invokeMacroRules(
         freshBindings: instantiated.freshBindings,
         trace,
       });
-    });
+    } finally {
+      options.guard.leave(fingerprint);
+    }
   }
 
   if (findings !== undefined)
@@ -774,7 +833,7 @@ function invokeMacroRules(
     binding: options.macro.binding.id,
     category: options.category,
     phase: options.phase,
-    invocationOrigin: invocationHead.origin,
+    invocationOrigin: invokedAt.origin,
     attemptedRules: Object.freeze(attempts),
     selectedRule: undefined,
     captures: Object.freeze([]),
@@ -836,20 +895,18 @@ function invokeMacroRules(
     // a `=` written for `==` deep in a clause, reported at the macro's name,
     // would say only that something in the whole invocation is wrong.
     diagnostic: expansionDiagnosticRegistry.create(noMatchingMacroRuleCode, {
-      primaryOrigin: options.diagnosticOrigin(
-        failure?.at ?? invocationHead.origin,
-      ),
+      primaryOrigin: options.diagnosticOrigin(failure?.at ?? invokedAt.origin),
       messageArguments: [
         options.macro.binding.spelling,
         expected ?? `${String(attempts.length)} rule attempt(s)`,
       ],
       relatedOrigins: [
-        ...(failure?.at === undefined || failure.at === invocationHead.origin
+        ...(failure?.at === undefined || failure.at === invokedAt.origin
           ? []
           : [
               {
                 message: `In this use of ${options.macro.binding.spelling}`,
-                origin: options.diagnosticOrigin(invocationHead.origin),
+                origin: options.diagnosticOrigin(invokedAt.origin),
               },
             ]),
         ...(failure === undefined
