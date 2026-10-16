@@ -405,6 +405,32 @@ describe("statement and item consumers", () => {
     },
   );
 
+  test.each([
+    "#core(twice).length;",
+    "#core(twice)(5);",
+    "#core(values)[0];",
+    "#core(total) + 1;",
+    "#core(value)!;",
+  ])(
+    "reads a `#core` form that heads an expression as that expression's statement: %s",
+    (source) => {
+      const { result } = parse(`${source}\nconst after = 1;`, "stmt");
+      expect(result.matched).toBe(true);
+      if (!result.matched) throw new Error("expected a statement");
+      expect(printLosslessSequence(result.syntax.children)).toBe(source);
+      expect(result.cursor.atEnd).toBe(false);
+    },
+  );
+
+  test("reads a `#core` form as a unit where a line break stands before a postfix `!`", () => {
+    const { result } = parse("#core(const first = 1)\n!flag;", "stmt");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a core form");
+    expect(printLosslessSequence(result.syntax.children)).toBe(
+      "#core(const first = 1)",
+    );
+  });
+
   test("dispatches category-specific macro heads before built-in syntax", () => {
     const resolver: StatementItemMacroResolver = (category, cursor) => {
       const head = cursor.peek();

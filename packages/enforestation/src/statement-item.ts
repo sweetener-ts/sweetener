@@ -698,17 +698,105 @@ function parenthesisGroup(syntax: Syntax | undefined): boolean {
  * is read as that unit, as it stands, for the walk to open. Read as anything
  * else, `#core(const first = 1)` was a call whose argument list held a
  * declaration, and the replacement it stood in did not read at all.
+ *
+ * Where what follows carries on an expression it heads, the directive is
+ * that expression's head and the statement is read as any other is.
  */
 function coreFormWidth(cursor: SyntaxCursor): number | undefined {
-  if (token(cursor.peek(), "#core") && parenthesisGroup(cursor.peek(1)))
-    return 2;
-  if (
-    token(cursor.peek(), "#") &&
-    token(cursor.peek(1), "core") &&
-    parenthesisGroup(cursor.peek(2))
-  )
-    return 3;
-  return undefined;
+  const width =
+    token(cursor.peek(), "#core") && parenthesisGroup(cursor.peek(1))
+      ? 2
+      : token(cursor.peek(), "#") &&
+          token(cursor.peek(1), "core") &&
+          parenthesisGroup(cursor.peek(2))
+        ? 3
+        : undefined;
+  if (width === undefined || continuesExpression(cursor.peek(width)))
+    return undefined;
+  return width;
+}
+
+/**
+ * Tokens that go on with the expression in front of them wherever they are
+ * written, a line break before them included.
+ */
+const continuingOperators: ReadonlySet<string> = new Set([
+  ".",
+  "?.",
+  ",",
+  "=",
+  "+=",
+  "-=",
+  "*=",
+  "/=",
+  "%=",
+  "**=",
+  "<<=",
+  ">>=",
+  ">>>=",
+  "&=",
+  "|=",
+  "^=",
+  "&&=",
+  "||=",
+  "??=",
+  "?",
+  ":",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "**",
+  "<",
+  ">",
+  "<=",
+  ">=",
+  "<<",
+  ">>",
+  ">>>",
+  "==",
+  "!=",
+  "===",
+  "!==",
+  "&",
+  "|",
+  "^",
+  "&&",
+  "||",
+  "??",
+  "instanceof",
+  "in",
+]);
+
+/**
+ * Tokens that go on with the expression in front of them only on its line:
+ * a line break before a postfix operator, `as` or `satisfies` ends the
+ * statement there.
+ */
+const sameLineOperators: ReadonlySet<string> = new Set([
+  "!",
+  "++",
+  "--",
+  "as",
+  "satisfies",
+]);
+
+/**
+ * Whether `next` carries on the expression a `#core(…)` written before it
+ * heads -- a member access, a call, an index, a template, an operator -- so
+ * that the directive marks only the head of that expression, as spec 04 says
+ * it does, rather than a whole statement: `#core(twice).length;`.
+ */
+function continuesExpression(next: Syntax | undefined): boolean {
+  if (next === undefined) return false;
+  if (next.tag === "group")
+    return next.delimiter === "parenthesis" || next.delimiter === "bracket";
+  if (next.tag !== "token") return false;
+  if (next.kind === "no-substitution-template" || next.kind === "template-head")
+    return true;
+  if (continuingOperators.has(next.raw)) return true;
+  return sameLineOperators.has(next.raw) && !leadingLineBreak(next);
 }
 
 /** The `#core(…)` at the cursor, read as one unit of `category`. */
