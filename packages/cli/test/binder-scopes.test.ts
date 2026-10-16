@@ -169,6 +169,20 @@ const boundaries: readonly Boundary[] = [
     outside: ["(2 + 2)"],
   },
   {
+    name: "a function expression's name, in an array",
+    source:
+      "export const r = [function twice(): number { return 0; }, twice(2)];",
+    inside: ["function twice(): number"],
+    outside: ["(2 + 2)"],
+  },
+  {
+    name: "a function expression's name, in an argument list",
+    source:
+      "declare function g(...a: unknown[]): void;\ng(function twice(): number { return 0; }, twice(2));",
+    inside: ["function twice(): number"],
+    outside: ["(2 + 2)"],
+  },
+  {
     name: "a class expression's name",
     source:
       "export const C = class twice { static self(): unknown { return twice.name; } };\nexport const after = twice(2);",
@@ -211,6 +225,20 @@ const boundaries: readonly Boundary[] = [
     outside: ["(2 + 2)"],
   },
   {
+    name: "a function declared under a line that has no semicolon",
+    source:
+      "declare function g(): void;\ng()\nfunction twice(v: number): number { return v }\nexport const after = twice(1)",
+    inside: ["after = twice(1)"],
+    outside: [],
+  },
+  {
+    name: "a function declared under a declaration that has no semicolon",
+    source:
+      "const k = 1\nfunction twice(v: number): number { return v + k }\nexport const after = twice(1)",
+    inside: ["after = twice(1)"],
+    outside: [],
+  },
+  {
     name: "a block's function",
     source:
       "{ function twice(v: number): number { return v; } void twice(1); }\nexport const after = twice(2);",
@@ -231,6 +259,12 @@ const boundaries: readonly Boundary[] = [
     outside: ["readonly number[]"],
   },
   {
+    name: "a type alias's type parameter, with no semicolon",
+    source: "export type P<boxed> = boxed[]\nexport type After = boxed",
+    inside: ["P<boxed> = boxed[]"],
+    outside: ["readonly number[]"],
+  },
+  {
     name: "a class's type parameter",
     source: "export class C<boxed> { v!: boxed; }\nexport type After = boxed;",
     inside: ["C<boxed> { v!: boxed; }"],
@@ -240,6 +274,12 @@ const boundaries: readonly Boundary[] = [
     name: "a method signature's type parameter in a type literal",
     source: "export type L = { m<boxed>(v: boxed): boxed; n: boxed };",
     inside: ["m<boxed>(v: boxed): boxed;"],
+    outside: ["readonly number[]"],
+  },
+  {
+    name: "a method signature's type parameter in an interface, with no semicolons",
+    source: "export interface I {\n  m<boxed>(v: boxed): boxed\n  n: boxed\n}",
+    inside: ["m<boxed>(v: boxed): boxed"],
     outside: ["readonly number[]"],
   },
   {

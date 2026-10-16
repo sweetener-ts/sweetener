@@ -1618,10 +1618,17 @@ export function expandMacroSyntax(
   const declarationModifiers = new Set(["async", "declare", "abstract"]);
 
   /**
-   * Whether the `function` or `class` at `at` in `nodes` declares its name in
-   * the block it is written in, rather than being an expression whose name is
-   * bound inside it alone. A declaration stands where a statement begins,
-   * past its modifiers and an `export` or `export default`.
+   * Whether the `function` or `class` at `at` in `nodes`, a run of
+   * statements, declares its name in the block it is written in, rather than
+   * being an expression whose name is bound inside it alone. A declaration
+   * stands where a statement begins, past its modifiers and an `export` or
+   * `export default`.
+   *
+   * The reader says where a statement begins: a run it read is made of the
+   * statements themselves, and one of them begins with its first node. The
+   * runs it leaves as tokens -- a block holding a statement operator, which
+   * must reach the operator unread, and syntax it cannot read at all -- have
+   * only what was read in them and the terminators written in them to say.
    */
   const declaresAt = (nodes: readonly Syntax[], at: number): boolean => {
     let before = at - 1;
@@ -1805,6 +1812,13 @@ export function expandMacroSyntax(
     nodes: readonly Syntax[],
     into: CollectedBindings,
     category: SyntaxCategory,
+    // Whether `nodes` is a run of statements or items, which is where a
+    // declaration can stand. The inside of an argument list or an array
+    // literal is walked in the category of the statement around it, and
+    // its first node is an expression all the same: read as the start of a
+    // statement, `[function twice() {}, twice(2)]` bound the function's name
+    // across the whole array.
+    statements: boolean,
   ): void => {
     const run = runOf(nodes);
     // A run of types or of type members applies type arguments to nothing
@@ -1905,17 +1919,16 @@ export function expandMacroSyntax(
         continue;
       }
       if (node.tag !== "token") continue;
-      const imported = declaration(nodes, at, into);
+      const imported = statements ? declaration(nodes, at, into) : undefined;
       if (imported !== undefined) {
         at = imported;
         continue;
       }
       const named = namedDeclarations.get(node.raw);
-      if (named !== undefined) {
+      const expression = node.raw === "function" || node.raw === "class";
+      if (named !== undefined && (statements || expression)) {
         const name = nodes[at + 1];
-        const declared =
-          (node.raw !== "function" && node.raw !== "class") ||
-          declaresAt(nodes, at);
+        const declared = statements && (!expression || declaresAt(nodes, at));
         const extent: Extent = declared
           ? { from: at, to: declarationEnd(nodes, at) }
           : { from: at, to: closureEndAt(nodes, at)?.end ?? nodes.length };
@@ -1969,13 +1982,18 @@ export function expandMacroSyntax(
     }
   };
 
-  /** What the run `sequence`, walked as `category`, binds. */
+  /**
+   * What the run `sequence`, walked as `category`, binds; `statements` says
+   * whether it is a run of statements or items.
+   */
   const regionBindings = (
     sequence: SyntaxSequence,
     category: SyntaxCategory,
+    statements: boolean,
   ): CollectedBindings => {
     const into = collecting();
-    if (extractBinders !== undefined) collectRegion(sequence, into, category);
+    if (extractBinders !== undefined)
+      collectRegion(sequence, into, category, statements);
     return into;
   };
 
@@ -3451,8 +3469,11 @@ export function expandMacroSyntax(
       contexts = withinOpenArrow(next);
     };
     let input = initialInput;
+    /** Whether a run of statements is what is being walked. */
+    const statementRun =
+      !groupInterior && (category === "stmt" || category === "item");
     const region: Region = {
-      bindings: regionBindings(initialInput, category),
+      bindings: regionBindings(initialInput, category, statementRun),
       at: 0,
       declared: collecting(),
       hoisted: collecting(),
@@ -3651,9 +3672,6 @@ export function expandMacroSyntax(
       (category === "expr" || expressionRegion
         ? typeFollowsInExpression(output)
         : typePositionHere());
-    /** Whether a run of statements is what is being walked. */
-    const statementRun =
-      !groupInterior && (category === "stmt" || category === "item");
     /**
      * Whether the `:` written just before `end` in the syntax walked so far
      * labels a statement rather than opening a type. The two are spelled
@@ -5100,21 +5118,31 @@ export function expandMacroSyntax(
                   syntax: createSyntaxSequence(remaining),
                 };
               }
-              // Give a statement replacement its interior categories before it
-              // is walked, so that a macro spliced into an expression position
-              // inside it is recognized as an expression. A replacement that
-              // does not yet parse as a statement list — because it still holds
-              // an unexpanded invocation the parser cannot place — is walked raw
-              // exactly as before.
-              const preEnforested =
-                request.category === "stmt" &&
-                !holdsStatementOperator(request.syntax)
+              // Give a statement or item replacement its interior categories
+              // before it is walked, so that a macro spliced into an
+              // expression position inside it is recognized as an expression,
+              // and so that where each of its statements begins and ends is
+              // the reader's answer. Walked as tokens, a `tt` replay of
+              // `g()` and a `function twice` on the line under it read the
+              // function as an expression, for want of a `;` between them. A
+              // replacement that does not yet parse as a statement list --
+              // because it still holds an unexpanded invocation the parser
+              // cannot place -- is walked raw exactly as before.
+              const preEnforested = holdsStatementOperator(request.syntax)
+                ? undefined
+                : request.category === "stmt"
                   ? options.enforestStatements?.({
                       syntax: request.syntax,
                       contexts,
                       lexicalModule: macroModule,
                     })
-                  : undefined;
+                  : request.category === "item"
+                    ? options.enforestItems?.({
+                        syntax: request.syntax,
+                        contexts,
+                        lexicalModule: macroModule,
+                      })
+                    : undefined;
               const nested = visit(
                 createSyntaxSequence(preEnforested ?? request.syntax),
                 request.environment,
