@@ -4,7 +4,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import {
@@ -195,12 +202,30 @@ const git = (arguments_) =>
     cwd: repositoryRoot,
     encoding: "utf8",
   }).trim();
+/**
+ * The command that wrote the report, as it would be typed at the repository's
+ * root: the runner by its path in the repository, and every path argument
+ * relative to the root. A report is committed as a baseline, and the absolute
+ * paths of the machine that ran it -- its home directory, a scratch directory
+ * the report was written to before it was copied in -- say nothing anyone
+ * else can use. A path outside the repository is named by its last part.
+ */
+function recordedCommand() {
+  const asTyped = (argument) => {
+    if (!isAbsolute(argument)) return argument;
+    const within = relative(repositoryRoot, argument);
+    return within.startsWith("..") || isAbsolute(within)
+      ? basename(argument)
+      : within;
+  };
+  return ["node", ...process.argv.slice(1).map(asTyped)].join(" ");
+}
 const report = Object.freeze({
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   commit: git(["rev-parse", "--short", "HEAD"]),
   dirty: git(["status", "--porcelain"]).length > 0,
-  command: process.argv.join(" "),
+  command: recordedCommand(),
   environment: benchmarkEnvironment(ts.version),
   results: Object.freeze(results),
 });

@@ -3,7 +3,7 @@
   "generatedAt": "2026-10-16T20:23:50.509Z",
   "commit": "d0d36e6",
   "dirty": false,
-  "command": "/private/tmp/claude-501/-Users-jimmyhmiller-Documents-Code-projects-sweetener--worktrees-pr-34-revised/9f8aa070-bc20-4d9e-8afa-1bbdfe878538/scratchpad/n/bin/node /Users/jimmyhmiller/Documents/Code/projects/sweetener/.worktrees/fix-34/scripts/run-benchmarks.mjs --output /private/tmp/claude-501/-Users-jimmyhmiller-Documents-Code-projects-sweetener--worktrees-pr-34-revised/9f8aa070-bc20-4d9e-8afa-1bbdfe878538/scratchpad/node24.json",
+  "command": "node scripts/run-benchmarks.mjs --output node24.json",
   "environment": {
     "platform": "darwin",
     "release": "25.5.0",
