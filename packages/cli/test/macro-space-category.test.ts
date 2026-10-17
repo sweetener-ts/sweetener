@@ -151,6 +151,19 @@ describe("a macro written where another space is read", () => {
     );
   });
 
+  test.each([
+    ["an array's element", "export const value = [1, mkType];"],
+    ["an arrow's body", "export const value = (v: number) => mkType;"],
+    ["a bitwise or's operand", "export const value = 1 | mkType;"],
+  ])("a type macro as %s", (_, source) => {
+    // Each of these tokens stands before a type as well as before an
+    // operand, and the type macro was looked up after it and expanded:
+    // `[1, string]`, an expression naming a type.
+    expect(report(source)).toBe(
+      "TS4013: Macro mkType is declared type and cannot be written where an expr is read. Declare it expr to use it here.",
+    );
+  });
+
   test("a type macro as a statement", () => {
     expect(report("export function f(): void { mkType; }")).toBe(
       "TS4013: Macro mkType is declared type and cannot be written where an expr is read. Declare it expr to use it here.",

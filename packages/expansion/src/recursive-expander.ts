@@ -1244,6 +1244,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    */
   const namedBefore = new Set([":", ",", ";", ".", "?."]);
 
+  /** Tokens a type follows that an operand of an expression follows as well. */
+  const operandAlsoFollows = new Set([",", "?", ":", "|", "&", "=>"]);
+
   /** The words of `expressionRegionEnds` that are names but where they declare. */
   const contextualDeclaringWords = new Set(["type", "namespace", "declare"]);
 
@@ -4840,6 +4843,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     holdsStatementOperator,
     initializerFollows,
     operandBraceFollows,
+    operandAlsoFollows,
+    typeArgumentsOpen,
     lastTokenOf,
     liftFrames,
     liftedDeclaration,
@@ -5118,6 +5123,8 @@ function* walk(
     holdsStatementOperator,
     initializerFollows,
     operandBraceFollows,
+    operandAlsoFollows,
+    typeArgumentsOpen,
     lastTokenOf,
     liftFrames,
     methodNamePrefixes,
@@ -5225,8 +5232,7 @@ function* walk(
    * asked and one run serves the whole walk.
    */
   /** Whether the run is a member list, or one member, where no statement stands. */
-  const memberRun =
-    classBody || objectMember || category === "classElement";
+  const memberRun = classBody || objectMember || category === "classElement";
   const walkedRun: SyntaxRun = {
     ...runOf(output),
     statements: statementRun,
@@ -5540,6 +5546,24 @@ function* walk(
    */
   const typePositionHere = (): boolean =>
     !labelColonEnds(output.length) && typePositionFollows(output);
+  /**
+   * Whether a type may be written at the position about to be walked, where
+   * that is not certain: after the tokens a type follows. In an expression a
+   * `,`, `?`, `:`, `|`, `&` or `=>` stands before an operand as readily, and
+   * before a type only inside angle brackets left open -- type parameters or
+   * arguments; read as a type position there too, `[1, mkOne]` looked a type
+   * macro up and printed `[1, number]`.
+   */
+  const typeMayFollowHere = (): boolean => {
+    if (!typePositionHere()) return false;
+    if (category !== "expr") return true;
+    const previous = output.at(-1);
+    return !(
+      previous?.tag === "token" &&
+      operandAlsoFollows.has(previous.raw) &&
+      !typeArgumentsOpen(output, output.length)
+    );
+  };
   /**
    * Notes what the node at `index` stands in before it is walked: the
    * regions, arrows and contexts that what was walked before it opens or
@@ -6019,10 +6043,15 @@ function* walk(
     // the position is not certainly a type, a type macro is still looked up
     // after the tokens a type can follow: finding one there costs nothing,
     // and a name that is one is a type wherever it was written.
+    //
+    // In an expression those tokens -- `,`, `?`, `|`, `=>`, `:` -- come before
+    // an operand, and a type stands only where `typeFollows` reads one: after
+    // `as` or `satisfies`, inside type arguments, in a return type. Looked up
+    // after them there too, `[1, mkOne]` printed `[1, number]`.
     if (
       resolvedMacro === undefined &&
       node.tag === "token" &&
-      (readsType ? !namesSomethingElse : inTypeRegion() || typePositionHere())
+      (readsType ? !namesSomethingElse : inTypeRegion() || typeMayFollowHere())
     ) {
       resolvedMacro = resolveSpelling(
         node.raw,
@@ -6144,7 +6173,7 @@ function* walk(
       // certainly one -- a `,` separates arguments as well as type
       // arguments. Naming the space would name the wrong one, so a name
       // that resolved nowhere is left to TypeScript here.
-      if (inTypeRegion() || typePositionHere()) return undefined;
+      if (inTypeRegion() || typeMayFollowHere()) return undefined;
       // An expression region is opened by `=>` among others, and a function
       // type's arrow is spelled the same way, so it says only that an
       // expression may be being written. A space is named where one
