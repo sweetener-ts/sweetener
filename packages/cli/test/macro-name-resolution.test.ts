@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import * as ts from "typescript";
 import { describe, expect, test } from "vitest";
-import { runConfiguredProjectCommand } from "../src/index.js";
+import {
+  createDefaultProjectExpansionProvider,
+  runConfiguredProjectCommand,
+} from "../src/index.js";
 
 /**
  * Two sentences expansion writes about a name it left standing, and the side
@@ -510,5 +513,54 @@ describe("a macro name a template wrote", () => {
     });
     expect(reports).toEqual([]);
     expect(exitCode).toBe(0);
+  });
+});
+
+describe("a sentence about a file the expansion read through its own system", () => {
+  test("is said, where the command reads the file differently", () => {
+    // The expansion reads through the provider's system, which sees a
+    // directive the disk does not. Which sources the command hands to
+    // TypeScript was read from the disk again, missed the file, and the
+    // command threw over the sentence held about it.
+    const directory = mkdtempSync(join(tmpdir(), "sweet-held-system-"));
+    writeFileSync(
+      join(directory, "macros.sts"),
+      "export syntax query:expr {\n  rule { query($value:expr) } => { [$value] }\n}\n",
+    );
+    const main = join(directory, "main.ts");
+    writeFileSync(main, "export const x = 1;\n");
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+        },
+        sweet: { macroExtensions: [".sts"] },
+        files: ["macros.sts", "main.ts"],
+      }),
+    );
+    const directive =
+      '"use sweetener";\nimport { query } from "./macros.sts" for syntax;\nexport const held = query;\n';
+    const system: ts.System = {
+      ...ts.sys,
+      readFile: (path, encoding) =>
+        path === main ? directive : ts.sys.readFile(path, encoding),
+    };
+    const result = runConfiguredProjectCommand({
+      command: "check",
+      configPath: join(directory, "tsconfig.json"),
+      expansionProvider: createDefaultProjectExpansionProvider({ system }),
+      writeThrough: false,
+    });
+    expect(
+      result.diagnostics.map(({ code, messageText }) => [
+        code,
+        ts.flattenDiagnosticMessageText(messageText, "\n").slice(0, 32),
+      ]),
+    ).toContainEqual([4024, "Macro query is written here as a"]);
   });
 });

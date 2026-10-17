@@ -27,7 +27,7 @@ import { createDefaultProjectExpansionProvider } from "./default-expansion-provi
 import { sweetenerDiagnosticSource } from "./describe-diagnostics.js";
 import type { ExpansionInput } from "./expansion-inputs.js";
 import type { ExpansionInspectionProvider } from "./expansion-tools.js";
-import { selectSweetSources } from "./source-kind.js";
+import { classifySource } from "./source-kind.js";
 import {
   explainUnresolvedNames,
   warnAboutHeldNames,
@@ -536,17 +536,27 @@ export function runConfiguredProjectCommand(options: {
   // Map each opted-in source to the virtual file the expander produced for it.
   // A macro-extension source is renamed (`a.sts` -> `a.ts`); a source that
   // opted in with a directive keeps its name, and its virtual file shadows it.
+  //
+  // Read from what the expansion produced, not from the disk again. Whether a
+  // file opted in with a directive is what its text said when the expansion
+  // read it -- through its own file system, which need not be this process's
+  // -- and the expansion produced a virtual file under the source's own name
+  // exactly when it did. Read again here, a file edited in between, or read
+  // through another system, was not found among the sources the expansion
+  // held a sentence about.
   const virtualNames = new Set(virtualFiles.map(({ fileName }) => fileName));
   const virtualBySource = new Map(
-    selectSweetSources({
-      fileNames: project.typescript.fileNames,
-      macroExtensions: project.sweet.macroExtensions,
-      readSource: (fileName) => ts.sys.readFile(fileName),
-    }).flatMap(({ fileName, kind }) =>
-      virtualNames.has(kind.virtualFileName)
-        ? [[fileName, kind.virtualFileName] as const]
-        : [],
-    ),
+    project.typescript.fileNames.flatMap((fileName) => {
+      const byExtension = classifySource({
+        fileName: resolve(fileName),
+        macroExtensions: project.sweet.macroExtensions,
+        // Only an extension is asked about: a directive is the expansion's
+        // to have read.
+        readSource: () => undefined,
+      });
+      const virtual = byExtension?.virtualFileName ?? resolve(fileName);
+      return virtualNames.has(virtual) ? [[fileName, virtual] as const] : [];
+    }),
   );
   const rootNames = project.typescript.fileNames.map(
     (fileName) => virtualBySource.get(fileName) ?? fileName,
