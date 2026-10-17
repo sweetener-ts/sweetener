@@ -36,6 +36,8 @@ export syntax log:stmt {
 export syntax ret:stmt { rule { ret $k:tt; } => { $k / 2 /g; } }
 
 export syntax pick:stmt { rule { pick $k:tt; } => { $k / (g) / 2; } }
+
+export syntax one:stmt { rule { one { $($t:tt)* } } => { x $($t)*; } }
 `;
 
 interface Expansion {
@@ -48,7 +50,7 @@ function expand(source: string, macroModule = macros): Expansion {
   writeFileSync(join(directory, "macros.sts"), macroModule);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { unless, twice, keep, log, ret, pick } from "./macros.sts" for syntax;\n` +
+    `import { unless, twice, keep, log, ret, pick, one } from "./macros.sts" for syntax;\n` +
       `declare function run(): void;\n${source}\n`,
   );
   writeFileSync(
@@ -291,5 +293,38 @@ describe("a class field's initializer", () => {
     );
     expect(messages).toEqual([]);
     expect(text).toContain("x = a as string\n  [k] = 1;");
+  });
+});
+
+describe("reading a file again until its slashes settle", () => {
+  test("reads as many regular expressions as each hide the next", () => {
+    // Each regular expression holds a backquote, which read as a division
+    // opens a template that hides the next slash from the enforester: a read
+    // settles one. The reader leaves out a reading whose slash an earlier
+    // misreading hid, and the next read built from what it read asked for
+    // those again, which counted as settling nothing new: past nine the file
+    // was given up on.
+    const lines = Array.from(
+      { length: 16 },
+      () => "  unless(c) /`/.test(s);\n",
+    ).join("");
+    const { text, messages } = expand(
+      `export function f(c: boolean, s: string) {\n${lines}}\n`,
+    );
+    expect(messages).toEqual([]);
+    expect(text.split("if (!(c)) /`/.test(s);")).toHaveLength(17);
+  });
+
+  test("reports a slash read both ways where each read reads it once", () => {
+    // Copied after a name, the slash divides; read so in the file, the
+    // backquote after it opens a template that the macro's use no longer
+    // reads past, and the slash begins a regular expression again.
+    const { messages } = expand(
+      "declare const x: number;\none { /`/ 2 }\nexport const q = `x`;\n",
+    );
+    expect(messages.join("\n")).toContain(
+      "is read as a regular expression in one place a macro puts it and as a division in another",
+    );
+    expect(messages.join("\n")).not.toContain("without settling");
   });
 });

@@ -118,6 +118,12 @@ import type {
 } from "./project-command.js";
 import { warnAboutHeldNames } from "./unresolved-names.js";
 
+/**
+ * Every reading each file of a project has been asked to be read with, by
+ * file name and offset, across the reads of one expansion.
+ */
+type ReadingHistory = Map<string, Map<number, Set<TokenReading>>>;
+
 interface ParsedFile {
   readonly fileName: string;
   readonly kind: SourceKind;
@@ -879,6 +885,7 @@ export class DefaultProjectExpansionProvider
    */
   expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
     const recorder = new InputRecorder(this.#fileSystem.system);
+    const history: ReadingHistory = new Map();
     return settleReadings<
       DefaultProjectExpansionOutput,
       ReadonlyMap<string, TokenReadings>
@@ -889,7 +896,14 @@ export class DefaultProjectExpansionProvider
           [...askedReadings(file)].map((reading) => `${fileName} ${reading}`),
         ),
       (readings, final, reads) =>
-        this.#expandProjectReading(project, recorder, readings, final, reads),
+        this.#expandProjectReading(
+          project,
+          recorder,
+          readings,
+          final,
+          reads,
+          history,
+        ),
     );
   }
 
@@ -899,6 +913,7 @@ export class DefaultProjectExpansionProvider
     readings: ReadonlyMap<string, TokenReadings>,
     final: boolean,
     projectReads: number,
+    history: ReadingHistory,
   ): ReadAttempt<
     DefaultProjectExpansionOutput,
     ReadonlyMap<string, TokenReadings>
@@ -1526,6 +1541,14 @@ export class DefaultProjectExpansionProvider
       file: ParsedFile,
       final: boolean,
       reads: number,
+      // What the file was asked to be read with. The reader reads only the
+      // readings it stood at a token for -- one an earlier misreading hid it
+      // has no token -- and the next read built from what it read asked for
+      // the hidden ones again, which counted as settling nothing new.
+      asked: TokenReadings = file.readings,
+      // Every reading the file has been asked to be read with, this pass and
+      // the ones before it.
+      askedBefore: ReadonlyMap<number, ReadonlySet<TokenReading>> = new Map(),
     ): ReadAttempt<undefined, TokenReadings> => {
       const held: Diagnostic[] = [];
       /**
@@ -1539,6 +1562,8 @@ export class DefaultProjectExpansionProvider
        * Takes a finding about the token at `offset` of the file's own text.
        * One found read both ways is ambiguous, and settles neither way.
        */
+      /** The token each finding in `found` is about. */
+      const foundTokens = new Map<number, TokenSyntax>();
       const record = (
         offset: number,
         token: TokenSyntax,
@@ -1547,7 +1572,10 @@ export class DefaultProjectExpansionProvider
         const before = found.get(offset);
         if (before !== undefined && before !== reading)
           ambiguous.set(offset, token);
-        else found.set(offset, reading);
+        else {
+          found.set(offset, reading);
+          foundTokens.set(offset, token);
+        }
       };
       /** The template slashes reported, by where each use writes one. */
       const templateSlashes = new Set<string>();
@@ -1812,8 +1840,21 @@ export class DefaultProjectExpansionProvider
             }
           : session.expand(runtime, "item");
       held.push(...result.diagnostics);
+      // A token found to read the way an earlier read was asked to read it,
+      // and asked another way since, is read both ways by what reads it --
+      // once in each of two reads rather than twice in one -- and settles
+      // neither way: read again, it went back and forth to the read limit.
+      for (const [offset, reading] of found) {
+        const was = asked.get(offset);
+        if (
+          was !== undefined &&
+          was !== reading &&
+          askedBefore.get(offset)?.has(reading) === true
+        )
+          ambiguous.set(offset, foundTokens.get(offset)!);
+      }
       for (const offset of ambiguous.keys()) found.delete(offset);
-      const reread = nextReadings(file.readings, found);
+      const reread = nextReadings(asked, found);
       if (reread !== undefined && !final)
         return { kind: "reread", readings: reread } as const;
       // Only a slash is read two ways: a `<` is only ever found to open an
@@ -1826,7 +1867,7 @@ export class DefaultProjectExpansionProvider
         );
       if (reread !== undefined) {
         const [offset, reading] = [...reread].find(
-          ([at, value]) => file.readings.get(at) !== value,
+          ([at, value]) => asked.get(at) !== value,
         )!;
         held.push(
           expansionDiagnosticRegistry.create(unsettledSlashCode, {
@@ -2127,27 +2168,51 @@ export class DefaultProjectExpansionProvider
     let rereadProject = false;
     for (const projectFile of projectFiles) {
       let file = projectFile;
+      // What the project asked the file to be read with, which the reader
+      // read only where it stood at a token for each.
+      const asked = readings.get(projectFile.fileName) ?? projectFile.readings;
+      let askedBefore = history.get(projectFile.fileName);
+      if (askedBefore === undefined) {
+        askedBefore = new Map();
+        history.set(projectFile.fileName, askedBefore);
+      }
+      const fileHistory = askedBefore;
       settleReadings<undefined, TokenReadings>(
-        file.readings,
+        asked,
         askedReadings,
-        (readings, last, fileReads) => {
+        (fileReadings, last, fileReads) => {
+          for (const [offset, reading] of fileReadings) {
+            let readingsAt = fileHistory.get(offset);
+            if (readingsAt === undefined) {
+              readingsAt = new Set();
+              fileHistory.set(offset, readingsAt);
+            }
+            readingsAt.add(reading);
+          }
           const alone = readAlone(file);
-          if (readings !== file.readings) {
-            const again = alone ? readAgain(file, readings) : undefined;
+          if (fileReadings !== asked) {
+            const again = alone ? readAgain(file, fileReadings) : undefined;
             if (again === undefined) {
               // On the project's last read the file settles as it was read,
               // and says what it still found.
-              if (final) return expandFile(file, true, projectReads);
-              passReadings.set(file.fileName, readings);
+              if (final)
+                return expandFile(
+                  file,
+                  true,
+                  projectReads,
+                  fileReadings,
+                  fileHistory,
+                );
+              passReadings.set(file.fileName, fileReadings);
               rereadProject = true;
               return { kind: "settled", settled: undefined };
             }
-            passReadings.set(file.fileName, again.readings);
+            passReadings.set(file.fileName, fileReadings);
             file = again;
           }
           return alone
-            ? expandFile(file, last, fileReads)
-            : expandFile(file, final, projectReads);
+            ? expandFile(file, last, fileReads, fileReadings, fileHistory)
+            : expandFile(file, final, projectReads, fileReadings, fileHistory);
         },
       );
     }

@@ -400,8 +400,9 @@ A slash a template writes is read for each use, from that use's tokens. Where
 one use needs it read the other way and that regroups the template, the use
 reports `SWR4026` at the template's slash, with the use related; a template is
 never read again for one use. A slash written once that a macro puts in two
-places needing different readings, both regrouping, reports `SWR4027`. Reading
-again is bounded: a source read eight times without settling reports
+places needing different readings, both regrouping, reports `SWR4027` --
+found both ways in one read, or found again the way an earlier read already
+read it, after reading it the other way. Reading again is bounded: a source read eight times without settling reports
 `SWR4028` at a slash still read the other way, and the last read's expansion
 stands.
 
