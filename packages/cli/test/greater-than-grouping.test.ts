@@ -14,6 +14,12 @@ import { runConfiguredProjectCommand } from "../src/index.js";
  * and printed `a >= b && c`, which is `(a >= b) && c`. A `<` comparison or a
  * shift in front of a `>` reads as type arguments: `(x < y) > (z)` printed
  * bare is the call `x<y>(z)`, which type-checks.
+ *
+ * Where the `>` stands inside what the `<` compares with, or after it in a
+ * list -- `x < (y > (z))`, `[x < y, y > (z)]` -- no parentheses part them:
+ * TypeScript reads types on from the `<` and recovers into the call. What
+ * follows the `<` is printed `((void 0, …))` there, the same value read in
+ * the same order, which TypeScript's reading of types cannot reach past.
  */
 
 const macros = `
@@ -27,7 +33,7 @@ export syntax lt:expr { rule { lt($a:expr, $b:expr) } => { $a < $b } }
 export syntax gt:expr { rule { gt($a:expr, $b:expr) } => { $a > $b } }
 `;
 
-function printed(expression: string): string {
+function printed(expression: string, expectedCalls = 0): string {
   const directory = mkdtempSync(join(tmpdir(), "sweet-greater-than-"));
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
@@ -69,7 +75,7 @@ function printed(expression: string): string {
     ts.forEachChild(node, visit);
   };
   visit(file);
-  expect(calls, line).toBe(0);
+  expect(calls, line).toBe(expectedCalls);
   return line.replace("export const r = ", "").replace(/;$/u, "");
 }
 
@@ -88,4 +94,24 @@ test.each([
   ["gt(shl(x, (y)), (z))", "(x << (y)) >(z)"],
 ])("keeps %s from reading as type arguments", (expression, expected) => {
   expect(printed(expression)).toBe(expected);
+});
+
+test.each([
+  ["lt(x, gt(y, (z)))", "x < ((void 0, y >(z)))"],
+  ["shl(x, gt(y, (z)))", "x << ((void 0, y >(z)))"],
+  ["[lt(x, y), gt(y, (z))]", "[x < ((void 0, y)), y >(z)]"],
+])("parts %s, which no parentheses keep from type arguments", (expression, expected) => {
+  expect(printed(expression)).toBe(expected);
+});
+
+test.each([
+  ["lt(x, gt(y, z))", "x < (y > z)"],
+  ["[lt(x, y), gt(y, z)]", "[x < y, y > z]"],
+])("leaves %s, which reads as written, as it is", (expression, expected) => {
+  expect(printed(expression)).toBe(expected);
+});
+
+test("leaves the call an author wrote with the same tokens as written", () => {
+  // TypeScript reads `x<y, y>(z)` here, and so does the author's source.
+  expect(printed("[x < y, y > (z)]", 1)).toBe("[x < y, y > (z)]");
 });

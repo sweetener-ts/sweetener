@@ -92,6 +92,10 @@ import {
 import { sweetenerDiagnosticSource } from "./describe-diagnostics.js";
 import { planHygienicRenames } from "./hygienic-renaming.js";
 import {
+  lessThanOperators,
+  misreadLessThans,
+} from "./type-argument-misreads.js";
+import {
   diskFileSystem,
   InputRecorder,
   suppliedFileSystem,
@@ -1951,6 +1955,7 @@ export class DefaultProjectExpansionProvider
       ) => generatedOrigin(origins, syntax.origin);
       const printWith = (
         names: readonly NameRewrite[],
+        partedTypeArguments?: ReadonlySet<SyntaxId>,
       ): PrintedExpandedFile<typeof result.traces> =>
         printExpandedFile({
           syntax: printableSyntax,
@@ -1962,6 +1967,7 @@ export class DefaultProjectExpansionProvider
             nameFor: () => undefined,
           },
           groupProtectedExpression,
+          partedTypeArguments,
         });
       // Renaming needs to know which identifiers are binders, which is a
       // question about the printed program's grammar. Print once to ask
@@ -1996,10 +2002,38 @@ export class DefaultProjectExpansionProvider
           !aliasedSyntax.has(rewrite.syntax) &&
           rewrite.replacement !== rawSpelling.get(rewrite.syntax),
       );
-      const generated =
+      const named =
         hygieneRewrites.length === 0
           ? aliased
           : printWith([...rewrites, ...hygieneRewrites]);
+      // A `<` an expansion compares or shifts with may be read by TypeScript
+      // as opening type arguments, which only its parser can say; where it
+      // is, what follows the `<` is printed so that it cannot be.
+      const comparisons = lessThanOperators(printableSyntax, (expression) =>
+        generatedOrigin(origins, expression.origin),
+      );
+      const misread = misreadLessThans(
+        named.text,
+        file.kind.virtualFileName,
+        named.tokenSpans,
+        comparisons,
+      );
+      const generated =
+        misread.size === 0
+          ? named
+          : printWith([...rewrites, ...hygieneRewrites], misread);
+      if (
+        misread.size > 0 &&
+        misreadLessThans(
+          generated.text,
+          file.kind.virtualFileName,
+          generated.tokenSpans,
+          comparisons,
+        ).size > 0
+      )
+        throw new Error(
+          `Printing ${file.kind.virtualFileName} left a comparison TypeScript reads as type arguments, however it was parted`,
+        );
       const macroNames = new Map(
         modules.flatMap(({ macros }) =>
           macros.map(({ binding }) => [binding.id, binding.spelling] as const),

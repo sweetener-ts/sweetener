@@ -81,6 +81,18 @@ export interface PrintExpandedFileOptions<Trace> {
   readonly groupProtectedExpression?:
     | ((syntax: Extract<Syntax, { readonly tag: "protected" }>) => boolean)
     | undefined;
+  /**
+   * The `<` and `<<` operators TypeScript reads as opening type arguments
+   * where they compare or shift, each the operator of the expression it
+   * stands in: an expansion that builds `x < (y > (z))`, or `[x < y, y >
+   * (z)]`, is printed in tokens TypeScript reads as the call `x<…>(z)`.
+   * What follows such an operator is printed `((void 0, …))`, the same
+   * value, read in the same order, which TypeScript's reading of type
+   * arguments cannot reach past. Only TypeScript's parser says where it
+   * reads them, so whoever prints asks it (see the compiler's expansion
+   * provider).
+   */
+  readonly partedTypeArguments?: ReadonlySet<SyntaxId> | undefined;
 }
 
 type PrintItem =
@@ -2058,10 +2070,19 @@ export function printExpandedFile<Trace>(
         pendingOpens.push({ text: item.text, origin: item.origin });
         continue;
       }
+      // Parentheses opened before printed text, rather than before a token,
+      // are spaced from what precedes them as a token's would be.
+      if (pendingOpens.length > 0 && lastPrinted !== undefined)
+        emit(
+          seamSpace(lastPrinted, "(", seamContext()),
+          item.origin,
+          "grouping",
+        );
       flushOpens();
       // A word the printer writes stands apart from what it follows; a bracket
       // holds to it.
-      if (wordCharacter(item.text[0])) emit(" ", item.origin, "grouping");
+      if (wordCharacter(item.text[0]) && lastPrinted !== "(")
+        emit(" ", item.origin, "grouping");
       emit(item.text, item.origin, "grouping");
       trackBrackets(item.text, "");
       markPrinted(item.text);
@@ -2198,15 +2219,35 @@ export function printExpandedFile<Trace>(
         // A statement holds what it is made of whole, and so do the
         // parentheses printed around an operand; anything else is held by
         // what stands around it.
-        pushChildren(
-          item.children,
-          undefined,
+        const held =
           group || item.category === "stmt" || item.category === "item"
             ? edges
-            : surroundingsOf.get(item),
-          false,
-          withoutIn.has(item),
+            : surroundingsOf.get(item);
+        const parted = item.children.findIndex(
+          (child) =>
+            child.tag === "token" &&
+            options.partedTypeArguments?.has(child.id) === true,
         );
+        if (parted < 0)
+          pushChildren(item.children, undefined, held, false, withoutIn.has(item));
+        else {
+          // `x < ((void 0, R))`, pushed last piece first.
+          const written = (text: string): PrintItem => ({
+            text,
+            origin: item.origin,
+            grouping: true,
+          });
+          pending.push(written(")"), written(")"));
+          pushChildren(item.children.slice(parted + 1), undefined, edges);
+          pending.push(written("void 0,"), written("("), written("("));
+          pushChildren(
+            item.children.slice(0, parted + 1),
+            undefined,
+            held,
+            false,
+            withoutIn.has(item),
+          );
+        }
         if (group)
           pending.push({ text: "(", origin: item.origin, grouping: true });
         break;
