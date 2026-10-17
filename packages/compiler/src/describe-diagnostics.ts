@@ -17,6 +17,19 @@ export function describeDiagnostics(
   return diagnostics.map(describeDiagnostic).join("\n");
 }
 
+/**
+ * Says which tool a diagnostic is Sweetener's own. Its codes are numbered
+ * apart from TypeScript's only by the prefix they are written with -- SWR4001
+ * is no rule matching a macro's use, TS4001 something else entirely -- so a
+ * diagnostic that carries one says so.
+ */
+export const sweetenerDiagnosticSource = "sweetener";
+
+/** A diagnostic's code as it is written: `SWR4001` or `TS2304`. */
+export function diagnosticCode(diagnostic: ts.Diagnostic): string {
+  return `${diagnostic.source === sweetenerDiagnosticSource ? "SWR" : "TS"}${String(diagnostic.code)}`;
+}
+
 function describeDiagnostic(diagnostic: ts.Diagnostic): string {
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
   // A warning printed beside an error, on the same stream, has to say which it
@@ -25,7 +38,7 @@ function describeDiagnostic(diagnostic: ts.Diagnostic): string {
   const severity =
     diagnostic.category === ts.DiagnosticCategory.Warning ? "warning " : "";
   const code =
-    diagnostic.code === undefined ? "" : `TS${String(diagnostic.code)}: `;
+    diagnostic.code === undefined ? "" : `${diagnosticCode(diagnostic)}: `;
   const head = `${severity}${code}${message}`;
   const at = position(diagnostic.file, diagnostic.start);
   const lines = [at === undefined ? head : `${at} ${head}`];

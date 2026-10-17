@@ -24,6 +24,7 @@ import {
   type SweetConfigurationProblem,
 } from "./configuration.js";
 import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
+import { sweetenerDiagnosticSource } from "./describe-diagnostics.js";
 import type { ExpansionInput } from "./expansion-inputs.js";
 import type { ExpansionInspectionProvider } from "./expansion-tools.js";
 import { selectSweetSources } from "./source-kind.js";
@@ -82,11 +83,12 @@ function configurationDiagnostic(
 ): ts.Diagnostic {
   return Object.freeze({
     category: ts.DiagnosticCategory.Error,
-    code: 6101,
+    code: Number(problem.code.slice(3)),
+    source: sweetenerDiagnosticSource,
     file: undefined,
     start: undefined,
     length: undefined,
-    messageText: `${problem.code} ${problem.path} ${problem.message}`,
+    messageText: `${problem.path} ${problem.message}`,
   });
 }
 
@@ -489,10 +491,11 @@ export function runConfiguredProjectCommand(options: {
         Object.freeze({
           category: ts.DiagnosticCategory.Error,
           code: 6201,
+          source: sweetenerDiagnosticSource,
           file: undefined,
           start: undefined,
           length: undefined,
-          messageText: `SWR6201: Project expansion failed: ${error instanceof Error ? error.message : String(error)}`,
+          messageText: `Project expansion failed: ${error instanceof Error ? error.message : String(error)}`,
         }),
       ]),
       outputs: new Map(),

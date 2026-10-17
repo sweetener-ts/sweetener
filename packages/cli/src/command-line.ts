@@ -20,7 +20,10 @@ import {
   sourceOffset,
   type ExpansionInspectionProvider,
 } from "./expansion-tools.js";
-import { createDefaultProjectExpansionProvider } from "./default-expansion-provider.js";
+import {
+  createDefaultProjectExpansionProvider,
+  diagnosticCode,
+} from "./default-expansion-provider.js";
 import { loadSweetProject } from "./configuration.js";
 import { emitStandalone } from "./standalone-emit.js";
 import { guideFileName, guidePath, readGuide } from "./guide.js";
@@ -204,10 +207,11 @@ function renderDiagnostic(diagnostic: ts.Diagnostic): string {
   // line says which it is. Errors keep the spelling they have always had.
   const severity =
     diagnostic.category === ts.DiagnosticCategory.Warning ? "warning " : "";
+  const code = diagnosticCode(diagnostic);
   const head =
     diagnostic.file === undefined || diagnostic.start === undefined
-      ? `${severity}TS${String(diagnostic.code)}: ${message}`
-      : `${at(diagnostic.file, diagnostic.start)} ${severity}TS${String(diagnostic.code)}: ${message}`;
+      ? `${severity}${code}: ${message}`
+      : `${at(diagnostic.file, diagnostic.start)} ${severity}${code}: ${message}`;
   // A diagnostic that points somewhere else as well — the rule that wanted
   // different syntax, the binding already holding a name — is most of the
   // answer, and printing only the first line threw that away.

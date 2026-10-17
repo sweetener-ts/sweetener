@@ -134,8 +134,8 @@ test("says what it holds about a name before the module throws over it", async (
     (error: { readonly stderr: string }) => error,
   );
   expect(failure?.stderr).toContain("ReferenceError: query is not defined");
-  expect(failure?.stderr).toContain("warning TS4024");
-  expect(failure?.stderr.indexOf("warning TS4024")).toBeLessThan(
+  expect(failure?.stderr).toContain("warning SWR4024");
+  expect(failure?.stderr.indexOf("warning SWR4024")).toBeLessThan(
     failure?.stderr.indexOf("ReferenceError") ?? 0,
   );
 });

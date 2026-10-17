@@ -206,7 +206,7 @@ describe("a warning about an expansion", () => {
       }).exitCode,
     ).toBe(0);
     expect(stdout.join("")).toContain("y?.<A>");
-    expect(stderr.join("")).toContain("warning TS4025");
+    expect(stderr.join("")).toContain("warning SWR4025");
   });
 
   test("does not stop a standalone emit writing the file", () => {
@@ -223,7 +223,7 @@ describe("a warning about an expansion", () => {
         },
       }).exitCode,
     ).toBe(0);
-    expect(stderr.join("")).toContain("warning TS4025");
+    expect(stderr.join("")).toContain("warning SWR4025");
     expect(stdout.join("")).toContain("emit: success");
     const written = readdirSync(out);
     expect(written).toHaveLength(1);

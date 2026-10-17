@@ -66,14 +66,7 @@ export function createSweetenerHooks(
         mode: "development",
       });
       if (expanded.diagnostics.length > 0)
-        throw new Error(
-          expanded.diagnostics
-            .map(
-              ({ code, messageText }) =>
-                `SWR${String(code)} ${ts.flattenDiagnosticMessageText(messageText, "\n")}`,
-            )
-            .join("\n"),
-        );
+        throw new Error(describeDiagnostics(expanded.diagnostics));
       // Nothing on this path resolves names, so a sentence expansion holds
       // about a name it left standing is said here or nowhere. It does not
       // refuse the module: see `SweetenerTransformResult.warnings`. Written

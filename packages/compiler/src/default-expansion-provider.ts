@@ -88,6 +88,7 @@ import {
   type MacroModuleSource,
   type VirtualTypeScriptFile,
 } from "@sweetener/typescript-host";
+import { sweetenerDiagnosticSource } from "./describe-diagnostics.js";
 import { planHygienicRenames } from "./hygienic-renaming.js";
 import {
   diskFileSystem,
@@ -267,6 +268,7 @@ function asTypeScriptDiagnostic(
           ? ts.DiagnosticCategory.Warning
           : ts.DiagnosticCategory.Message,
     code: Number(diagnostic.code.slice(3)),
+    source: sweetenerDiagnosticSource,
     file,
     start: diagnostic.primaryOrigin.start,
     length: Math.max(

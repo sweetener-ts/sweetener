@@ -162,7 +162,7 @@ test("says what it holds about a name through Parcel's logger, cached or not", a
     return warnings;
   };
   const first = await warningsOfBuild();
-  expect(first.join("\n")).toContain("warning TS4024");
+  expect(first.join("\n")).toContain("warning SWR4024");
   const cached = await warningsOfBuild();
-  expect(cached.join("\n")).toContain("warning TS4024");
+  expect(cached.join("\n")).toContain("warning SWR4024");
 });

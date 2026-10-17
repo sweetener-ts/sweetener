@@ -43,6 +43,6 @@ test("says what it holds about a name before the module is handed back", () => {
   );
   expect(vi.mocked(writeSync)).toHaveBeenCalledWith(
     2,
-    expect.stringContaining("warning TS4024"),
+    expect.stringContaining("warning SWR4024"),
   );
 });

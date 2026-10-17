@@ -243,7 +243,7 @@ test("emit says what it knows about a name left standing and still writes", () =
     },
   });
   expect(stderr.join("")).toContain(
-    "warning TS4024: Macro duplicate is written here as a name on its own",
+    "warning SWR4024: Macro duplicate is written here as a name on its own",
   );
   expect(stdout.join("")).toContain("emit: success");
   expect(result.exitCode).toBe(0);
@@ -285,7 +285,7 @@ test("expand says what it knows about a name left standing", () => {
     },
   });
   expect(stderr.join("")).toContain(
-    "warning TS4024: Macro duplicate is written here as a name on its own",
+    "warning SWR4024: Macro duplicate is written here as a name on its own",
   );
   expect(stdout.join("")).toContain("held = duplicate");
   expect(result.exitCode).toBe(0);
