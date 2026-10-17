@@ -1,6 +1,7 @@
 import type { OriginId, SyntaxId } from "@sweetener/shared";
 import {
   angleWidth,
+  greaterThanTokenWidth,
   assignmentPrecedence,
   commaPrecedence,
   coreExpressionOperators,
@@ -811,10 +812,70 @@ interface Surroundings {
   readonly beforeThat: Neighbour;
   readonly after: Neighbour;
   /**
+   * The operator of the `>` family -- `>=`, `>>`, `>>>=` -- that the tokens
+   * ending at `before`, or beginning at `after`, spell together, where they
+   * spell one longer than the one token. The scanner leaves each of them as
+   * single-character tokens, and read one token at a time `a >= b` was held
+   * against an `=`: as loosely as an assignment holds.
+   */
+  readonly operatorBefore?: string | undefined;
+  readonly operatorAfter?: string | undefined;
+  /**
    * Whether `before` stands in a `for` header that iterates, where an `in`
    * or an `of` heads what is iterated rather than comparing.
    */
   readonly iterates: boolean;
+}
+
+/**
+ * The operator of the `>` family the tokens of `children` spell when it
+ * ends at `end` and is written with more than one token, if they do.
+ */
+function greaterThanEndingAt(
+  children: readonly Syntax[],
+  end: number,
+): string | undefined {
+  for (let start = Math.max(0, end - 3); start < end; start += 1) {
+    const width = greaterThanTokenWidth((offset) => children[start + offset]);
+    if (width > 1 && start + width - 1 === end)
+      return spellingOf(children, start, width);
+  }
+  return undefined;
+}
+
+/**
+ * The operator of the `>` family the tokens of `children` spell when it
+ * begins at `start` and is written with more than one token, if they do.
+ */
+function greaterThanStartingAt(
+  children: readonly Syntax[],
+  start: number,
+): string | undefined {
+  const width = greaterThanTokenWidth((offset) => children[start + offset]);
+  return width > 1 ? spellingOf(children, start, width) : undefined;
+}
+
+function spellingOf(
+  children: readonly Syntax[],
+  start: number,
+  width: number,
+): string {
+  let spelling = "";
+  for (let at = start; at < start + width; at += 1)
+    spelling += (children[at] as TokenSyntax).raw;
+  return spelling;
+}
+
+/**
+ * Whether `expression` compares with a `<` at its top level, which a `>`
+ * after it would close: TypeScript reads `x < y > (z)` as `x<y>(z)`, a call
+ * with type arguments, and a `<<` the same way once it rescans it.
+ */
+function comparesWithLessThan(expression: ProtectedSyntax): boolean {
+  return expression.children.some(
+    (child) =>
+      child.tag === "token" && (child.raw === "<" || child.raw === "<<"),
+  );
 }
 
 const edges: Surroundings = Object.freeze({
@@ -918,7 +979,7 @@ function heldAfter(surroundings: Surroundings): number | undefined {
   const { before, beforeThat, iterates } = surroundings;
   if (before === "edge" || templateSeam(before)) return 0;
   if (before?.tag !== "token") return undefined;
-  const spelling = before.raw;
+  const spelling = surroundings.operatorBefore ?? before.raw;
   switch (spelling) {
     case ";":
       return 0;
@@ -1012,7 +1073,7 @@ function heldBefore(
       ? 0
       : undefined;
   if (after.tag !== "token") return undefined;
-  const spelling = after.raw;
+  const spelling = surroundings.operatorAfter ?? after.raw;
   switch (spelling) {
     case ";":
       return 0;
@@ -1054,6 +1115,9 @@ function heldBefore(
   if (endsInType(expression)) return typeContinuedBy(spelling) ? undefined : 0;
   if (spelling === "**")
     return unaryExpression(expression) ? undefined : infix.precedence + 1;
+  // However tightly it binds, a `<` comparison or a shift in front of a `>`
+  // is read as type arguments: only parentheses part them.
+  if (spelling === ">" && comparesWithLessThan(expression)) return Infinity;
   return infix.associativity === "left"
     ? infix.precedence
     : infix.precedence + 1;
@@ -1352,6 +1416,14 @@ export function printExpandedFile<Trace>(
           // The base of `**` is an update expression, so a unary operand
           // keeps its parentheses: `(-2) ** 2`.
           if (after === "**" && unaryExpression(inner)) return;
+          // A `<` comparison in front of a `>` reads as type arguments:
+          // `(x < y) > (z)` printed bare is the call `x<y>(z)`.
+          if (
+            after === ">" &&
+            inner !== undefined &&
+            comparesWithLessThan(inner)
+          )
+            return;
           // A type runs on over `|`, `&` and a `<` written after it, so `x as
           // T | y` asserts the union: an assertion keeps its parentheses in
           // front of any of them. In front of anything else it holds,
@@ -1523,6 +1595,14 @@ export function printExpandedFile<Trace>(
                 ? outside?.before
                 : outside?.beforeThat,
           after: next ?? outside?.after,
+          operatorBefore:
+            index > 0
+              ? greaterThanEndingAt(children, index - 1)
+              : outside?.operatorBefore,
+          operatorAfter:
+            next === undefined
+              ? outside?.operatorAfter
+              : greaterThanStartingAt(children, index + 1),
           iterates: index > 0 ? forInOf : (outside?.iterates ?? false),
         });
         if (index < firstSemicolon) withoutIn.add(child);
