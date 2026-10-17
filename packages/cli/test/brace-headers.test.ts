@@ -199,3 +199,44 @@ describe("a shorthand property", () => {
     expect(text).toContain("{ k, x: 99 }");
   });
 });
+
+describe("a brace where an operand begins in a block walked as tokens", () => {
+  test("is an object literal after `return`", () => {
+    const { text, messages } = expand(
+      "export function f() { one <- 1; return { a: one, x() { return 2; } }; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("{ a: one, x() { return 2; } }");
+  });
+
+  test("keeps a shorthand's name as its key", () => {
+    const { text, messages } = expand(
+      "export function f() { one <- 1; return { x, one }; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("{ x: 99, one }");
+  });
+
+  test("holds a method whose body opens on the next line", () => {
+    const { text, messages } = expand(
+      "export function f() {\n  one <- 1;\n  return {\n    m(x: number)\n    {\n      return x + one;\n    }\n  };\n}",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("m(x: number) { return x + one; }");
+  });
+
+  test("is an object literal after an operator", () => {
+    const { text, messages } = expand(
+      "export function f(c: boolean) { one <- 1; return c ? { x } : { k: one }; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("c ? { x: 99 } : { k: one }");
+  });
+
+  test("is a block on the line under a `return`", () => {
+    const { text } = expand(
+      "export function f() { one <- 1; return\n{ use(x, one); } }",
+    );
+    expect(text).toContain("{ use(99, one); }");
+  });
+});

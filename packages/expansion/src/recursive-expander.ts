@@ -1103,6 +1103,78 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * initializer — even when the syntax around it is being walked as something
    * else.
    */
+  /**
+   * The tokens after which a brace begins an operand: the words that take one
+   * and the operators. `=` is `initializerFollows`'s, `=>` opens a function's
+   * body, and `<`, `>` and `:` stand in types and labels as often.
+   */
+  const operandBraceAfter = new Set([
+    "return",
+    "throw",
+    "yield",
+    "await",
+    "void",
+    "typeof",
+    "delete",
+    "in",
+    "of",
+    "instanceof",
+    "?",
+    "??",
+    "||",
+    "&&",
+    "!",
+    "~",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "**",
+    "==",
+    "===",
+    "!=",
+    "!==",
+    "<=",
+    "&",
+    "|",
+    "^",
+    "<<",
+    "+=",
+    "-=",
+    "*=",
+    "/=",
+    "%=",
+    "**=",
+    "&&=",
+    "||=",
+    "??=",
+    "&=",
+    "|=",
+    "^=",
+    "<<=",
+    ",",
+  ]);
+
+  /**
+   * Whether `brace`, written after `preceding`, begins an operand -- an
+   * object literal -- wherever the walk stands: `return { a: 1 }` in a block
+   * walked as tokens. A `return` or a `yield` with a line break before the
+   * brace ends where TypeScript inserts a `;`, and the brace is a block.
+   */
+  const operandBraceFollows = (
+    preceding: readonly Syntax[],
+    brace: Syntax,
+  ): boolean => {
+    const previous = preceding.at(-1);
+    if (previous?.tag !== "token" || !operandBraceAfter.has(previous.raw))
+      return false;
+    return !(
+      (previous.raw === "return" || previous.raw === "yield") &&
+      leadingLineBreak(brace)
+    );
+  };
+
   const initializerFollows = (preceding: readonly Syntax[]): boolean => {
     const previous = preceding.at(-1);
     return (
@@ -4616,6 +4688,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     generatedDefinitionTraces,
     holdsStatementOperator,
     initializerFollows,
+    operandBraceFollows,
     lastTokenOf,
     liftFrames,
     liftedDeclaration,
@@ -4892,6 +4965,7 @@ function* walk(
     generatedDefinitionTraces,
     holdsStatementOperator,
     initializerFollows,
+    operandBraceFollows,
     lastTokenOf,
     liftFrames,
     methodNamePrefixes,
@@ -7354,7 +7428,9 @@ function* walk(
       if (
         node.tag === "group" &&
         node.delimiter === "brace" &&
-        (category === "expr" || initializerFollows(output)) &&
+        (category === "expr" ||
+          initializerFollows(output) ||
+          operandBraceFollows(output, node)) &&
         !typeFollows() &&
         braceOpens(walkedRun, output.length) === "other" &&
         (node.children.some(
