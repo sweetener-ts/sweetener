@@ -264,3 +264,56 @@ describe("template-introduced bindings", () => {
     expect(diagnostics.some(({ code }) => code === 2304)).toBe(false);
   });
 });
+
+describe("a binder a template declares through another macro", () => {
+  test("binds what that macro's contract binds, renamed with them", () => {
+    // The binder reaches `defv` as its capture and keeps `defv`'s use-site
+    // scope, which nothing after the invocation carries. Renamed by the
+    // scopes it was printed with, the declaration was renamed and the names
+    // its contract binds were not, and the call site's `tmp` read them.
+    const { text, diagnostics } = expand(
+      `export syntax defv:item {
+  rule { defv $name:binding = $v:expr; }
+  bind $name in following as recursive value;
+  => { const $name = $v; }
+}
+export syntax mk:item {
+  rule { mk $out:binding; }
+  bind $out in following as recursive value;
+  => { defv tmp = 10; export const $out = tmp + 1; }
+}
+`,
+      `import { defv, mk } from "./macros.sts" for syntax;
+const tmp = 1;
+mk x;
+export const r = [tmp, x];
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain("const tmp_1 = 10;");
+    expect(text).toContain("export const x = tmp_1 + 1;");
+    expect(text).toContain("export const r = [tmp, x];");
+  });
+
+  test("binds the names `#capture` publishes it to", () => {
+    const { text, diagnostics } = expand(
+      `export syntax pub:stmt {
+  rule { pub $name:ident = $v:expr; } => { const #capture($name) = $v; }
+}
+export syntax outer:stmt {
+  rule { outer $e:expr; } => { pub tmp = 10; globalThis.console.log(tmp, $e); }
+}
+`,
+      `import { pub, outer } from "./macros.sts" for syntax;
+export function f() {
+  const tmp = 1;
+  outer tmp;
+  return tmp;
+}
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain("const tmp_1 = 10;");
+    expect(text).toContain("globalThis.console.log(tmp_1, tmp);");
+  });
+});

@@ -23,6 +23,7 @@ import {
   type SyntaxConsumer,
 } from "@sweetener/enforestation";
 import type {
+  Binding,
   BindingEnvironment,
   EnvironmentStore,
   Phase,
@@ -344,6 +345,8 @@ export function createExpansionFrontendSession(
   const expansionStore = new ExpansionEnvironmentStore();
   const captureMisreads = new CaptureMisreads(options.misread);
   const operatorTraces: MacroTraceEvent[] = [];
+  /** What the contracts of operators read alongside the walk declared. */
+  const operatorBindings: Binding[] = [];
   /** Operator tokens offered to their rules while an expression was read. */
   const offeredOperatorTokens = new Set<OriginId>();
   /**
@@ -825,6 +828,9 @@ export function createExpansionFrontendSession(
             allocateBindingId: options.allocateBindingId,
             allocateInvocationId: options.allocateInvocationId,
             captureMisreads: captureMisreads,
+            bindingsDeclared: (bindings) => {
+              operatorBindings.push(...bindings);
+            },
             // An operator expanded here is expanded while the expression
             // holding it is read, and the reading hands back an expression,
             // not the definition context around it: there is nothing following
@@ -1734,6 +1740,7 @@ export function createExpansionFrontendSession(
       category: SyntaxCategory = "item",
     ): ExpandMacroSyntaxResult => {
       operatorTraces.length = 0;
+      operatorBindings.length = 0;
       offeredOperatorTokens.clear();
       refusedOperatorSpans.length = 0;
       operatorDiagnostics.length = 0;
@@ -1880,6 +1887,10 @@ export function createExpansionFrontendSession(
       return Object.freeze({
         ...result,
         traces: Object.freeze([...operatorTraces, ...result.traces]),
+        declaredBindings: Object.freeze([
+          ...operatorBindings,
+          ...result.declaredBindings,
+        ]),
         diagnostics: Object.freeze(uniqueDiagnostics),
         unresolvedNameExplanations: Object.freeze(explanations),
       });

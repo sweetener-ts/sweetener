@@ -47,6 +47,7 @@ import {
   type BindingId,
   type Diagnostic,
   type InvocationId,
+  type OriginId,
   type ScopeSetId,
   type SourceId,
   type SyntaxId,
@@ -1837,6 +1838,7 @@ export class DefaultProjectExpansionProvider
               traces: [],
               diagnostics: [],
               unresolvedNameExplanations: [],
+              declaredBindings: [],
             }
           : session.expand(runtime, "item");
       held.push(...result.diagnostics);
@@ -1965,10 +1967,24 @@ export class DefaultProjectExpansionProvider
       // question about the printed program's grammar. Print once to ask
       // TypeScript, then print again with the hygienic names applied.
       const aliased = printWith(rewrites);
+      // Which scopes a contract's binder binds with, by the token it was
+      // declared at, which the printed binder is a copy of.
+      const contractScopes = new Map<OriginId, ScopeSetId>();
+      for (const binding of result.declaredBindings)
+        contractScopes.set(binding.declaration, binding.scopes);
       const hygiene = planHygienicRenames({
         syntax: printableSyntax,
         scopes,
         phase,
+        declaredScopes: (token) => {
+          for (let at: OriginId | undefined = token.origin; at !== undefined;) {
+            const declared = contractScopes.get(at);
+            if (declared !== undefined) return declared;
+            const origin = origins.get(at);
+            at = origin?.kind === "copied" ? origin.parent : undefined;
+          }
+          return undefined;
+        },
         text: aliased.text,
         tokenSpans: aliased.tokenSpans,
         fileName: file.kind.virtualFileName,

@@ -249,6 +249,12 @@ export interface ExpandMacroSyntaxResult {
    * it cannot resolve the name written there.
    */
   readonly unresolvedNameExplanations: readonly Diagnostic[];
+  /**
+   * The bindings the invocations' binding contracts declared, with the scopes
+   * each binds with, for the renaming that keeps them apart from the call
+   * site's names (see `InvokeMacroOptions.bindingsDeclared`).
+   */
+  readonly declaredBindings: readonly Binding[];
   readonly generatedDefinitionTraces: readonly GeneratedDefinitionsTrace[];
   readonly generatedModules: readonly CompileParsedMacrosResult[];
   readonly expansionEnvironment: ExpansionEnvironment | undefined;
@@ -625,6 +631,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   const traces: MacroTraceEvent[] = [];
   const diagnostics: Diagnostic[] = [];
   const unresolvedNameExplanations: Diagnostic[] = [];
+  const declaredBindings: Binding[] = [];
   /**
    * Hold a sentence about the name `written` for the side that resolves
    * names, or report it, where that side's answer would be about another
@@ -4827,6 +4834,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     typeReferenceStart,
     holdForTypeScript,
     unresolvedNameExplanations,
+    declaredBindings,
     usedParameterizations,
     wearingLayout,
     withAwait,
@@ -5112,6 +5120,7 @@ function* walk(
     withoutLeadingTrivia,
     writtenGroup,
     writtenToken,
+    declaredBindings,
   } = scope;
   let contexts = enclosingContexts;
   /**
@@ -6977,6 +6986,9 @@ function* walk(
       try {
         const invocation = invokeMacroStepwise({
           ...options,
+          bindingsDeclared: (bindings) => {
+            declaredBindings.push(...bindings);
+          },
           macro,
           cursor,
           category: resolvedCategory,
@@ -8220,6 +8232,7 @@ export function expandMacroSyntax(
     offeredOperators,
     traces,
     unresolvedNameExplanations,
+    declaredBindings,
   } = scope;
   // A module is where a `#let` outside any function declares its variable.
   const moduleFrame: LiftFrame | undefined =
@@ -8316,6 +8329,7 @@ export function expandMacroSyntax(
     ),
     diagnostics: Object.freeze(diagnostics),
     unresolvedNameExplanations: Object.freeze(unresolvedNameExplanations),
+    declaredBindings: Object.freeze(declaredBindings),
     generatedDefinitionTraces: Object.freeze(generatedDefinitionTraces),
     generatedModules: Object.freeze(activeModules.slice(1)),
     expansionEnvironment: scope.activeExpansionEnvironment,

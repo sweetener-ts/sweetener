@@ -205,6 +205,15 @@ export interface InvokeMacroOptions {
    * the invocation settles which of them it keeps.
    */
   readonly captureMisreads?: CaptureMisreads | undefined;
+  /**
+   * Told of the bindings an invocation's binding contracts declare, with the
+   * scopes each binds with. The printed program carries each binder with the
+   * scopes the copy into the template gave it -- a name copied through a
+   * macro keeps that macro's use-site scope -- and only these say which
+   * names a contract's binder binds.
+   */
+  readonly bindingsDeclared?:
+    ((bindings: readonly Binding[]) => void) | undefined;
 }
 
 export interface MacroInvocationSuccess {
@@ -790,6 +799,7 @@ function* invokeMacroRules(
         coreInterception: options.coreInterception,
       });
       cancellation.throwIfCancellationRequested();
+      options.bindingsDeclared?.(contracts.bindings);
       return Object.freeze({
         expanded: true,
         syntax: expanded,

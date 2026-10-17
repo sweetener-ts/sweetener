@@ -330,6 +330,16 @@ export interface PlanHygienicRenamesOptions {
   readonly fileName: string;
   /** Names already claimed by generated imports at the top of the file. */
   readonly reservedNames?: readonly string[] | undefined;
+  /**
+   * The scopes a binder was declared with, where a binding contract declared
+   * it. The printed binder carries the scopes the copy into its template gave
+   * it, and a name copied through a macro keeps that macro's use-site scope,
+   * which nothing written after the invocation carries: keyed on those, a
+   * contract's binder bound none of the names the contract binds, and they
+   * stayed spelled as a call site's binding of the same name.
+   */
+  readonly declaredScopes?:
+    ((token: TokenSyntax) => ScopeSetId | undefined) | undefined;
 }
 
 /**
@@ -416,14 +426,20 @@ export function planHygienicRenames(
     for (const token of inSpace) {
       if (roleBySyntax.get(token.id) !== "binder") continue;
       if (!options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
-      const key = `${token.raw} ${String(token.scopes)}`;
+      // A binder binds with the scopes its contract declared it with, or --
+      // as the expander records it -- with the call site's scopes where
+      // `#capture` published it there, and its own scopes otherwise.
+      const scopes =
+        options.declaredScopes?.(token) ??
+        options.scopes.publishedTo(token.scopes);
+      const key = `${token.raw} ${String(scopes)}`;
       if (publicBinderSyntax.has(token.id) || isExported(token)) {
         published.add(key);
         continue;
       }
       classes.set(key, {
         spelling: token.raw,
-        scopes: token.scopes,
+        scopes,
         declaration: token.origin,
       });
     }
