@@ -365,6 +365,12 @@ describe("where the statements around a token say how it reads", () => {
     ["a module's specifier", "import * as x from 'y'\n/[(]/.test(s);"],
     ["a re-export's specifier", "export * from 'a'\n/[(]/.test(s);"],
     ["a side-effect import", "import 'm'\n/[(]/.test(s);"],
+    [
+      "an import's attributes",
+      "import 'm' with { type: 'json' }\n/[(]/.test(s);",
+    ],
+    ["an export's list", "export type { A }\n/[(]/.test(s);"],
+    ["type arguments", "export const x = a<number> / 2;"],
     ["a `break`'s label", "l: for (;;) { break l\n/[(]/.test(s); }"],
   ])("reads a slash after %s as TypeScript does", (_, source) => {
     const { readings, unparsed } = typescriptReadings(source, "standard");

@@ -847,6 +847,13 @@ class SlashJudgement {
    */
   #statementEndsAtLineBreak = false;
   /**
+   * How many groups stood open outside a brace whose close ends the statement
+   * it stands in: an import's attributes, `with { type: "json" }`, and the
+   * list of an export from nowhere, `export type { A }`. Undefined where none
+   * is open.
+   */
+  #closesStatement: number | undefined;
+  /**
    * A declaration whose body has not been read yet: how many groups stood
    * open at its declaring word, where its body is the first brace opened at
    * that depth where no type is written, whether that body holds members
@@ -1285,11 +1292,31 @@ class SlashJudgement {
         (!memberName && declarationModifiers.has(kind) && wordBeginsStatement));
     this.#nextAfterLineEnd =
       statements && !memberName && endsStatementAtLineBreak.has(kind);
+    let closesStatement = false;
+    if (
+      kind === ts.SyntaxKind.OpenBraceToken &&
+      (((this.#previous === ts.SyntaxKind.WithKeyword ||
+        this.#previous === ts.SyntaxKind.AssertKeyword) &&
+        this.#beforePrevious === ts.SyntaxKind.StringLiteral) ||
+        this.#previous === ts.SyntaxKind.ExportKeyword ||
+        (this.#previous === ts.SyntaxKind.TypeKeyword &&
+          this.#beforePrevious === ts.SyntaxKind.ExportKeyword))
+    )
+      this.#closesStatement = depth;
+    else if (
+      kind === ts.SyntaxKind.CloseBraceToken &&
+      this.#closesStatement !== undefined &&
+      this.#open.length <= this.#closesStatement
+    ) {
+      closesStatement = this.#open.length === this.#closesStatement;
+      this.#closesStatement = undefined;
+    }
     this.#statementEndsAtLineBreak =
       statements &&
-      ((kind === ts.SyntaxKind.StringLiteral &&
-        (this.#previous === ts.SyntaxKind.FromKeyword ||
-          this.#previous === ts.SyntaxKind.ImportKeyword)) ||
+      (closesStatement ||
+        (kind === ts.SyntaxKind.StringLiteral &&
+          (this.#previous === ts.SyntaxKind.FromKeyword ||
+            this.#previous === ts.SyntaxKind.ImportKeyword)) ||
         (kind === ts.SyntaxKind.Identifier &&
           !lineBreakBefore &&
           (this.#previous === ts.SyntaxKind.BreakKeyword ||
@@ -1586,8 +1613,29 @@ export function scanWithSupportedTypeScript(
             start,
             judgement.beginsExpression(kind, lineBreakBefore),
           )
-        )
+        ) {
+          const errorsBeforeRescan = errors.length;
+          const slash = kind;
           kind = scanner.reScanSlashToken();
+          // After a `>` the judgement cannot tell type arguments from a
+          // comparison, and a regular expression begun there that does not
+          // end on its line is none: `a<number> / 2` divides. Anywhere else an
+          // operand begins at the slash, and one that does not end is an
+          // unterminated regular expression, reported as one.
+          if (
+            !readings.has(start) &&
+            previousSignificantKind === ts.SyntaxKind.GreaterThanToken &&
+            scanner.isUnterminated()
+          ) {
+            errors.splice(errorsBeforeRescan);
+            scanner.resetTokenState(start);
+            kind = scanner.scan();
+            if (kind !== slash)
+              throw new Error(
+                `Scanning the slash at ${String(start)} again read a ${ts.SyntaxKind[kind]}`,
+              );
+          }
+        }
       }
     }
 
