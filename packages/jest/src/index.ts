@@ -7,6 +7,7 @@ import {
   describeDiagnostics,
   discoverSweetConfig,
   loadSweetProject,
+  type SweetenerSession,
 } from "@sweetener/compiler";
 
 /** The governing config, or nothing when the file has none to find. */
@@ -57,6 +58,15 @@ interface JestTransformOptions {
   readonly transformerConfig: TransformerConfig;
 }
 
+/**
+ * The session a worker expands through. A file's cache key is computed from
+ * the expansion it is then transformed with, and the session keeps that
+ * expansion, so the second ask reads nothing again.
+ */
+let workerSession: SweetenerSession | undefined;
+const sessionFor = (): SweetenerSession =>
+  (workerSession ??= createSweetenerSession());
+
 const transformer = {
   async getCacheKeyAsync(
     sourceText: string,
@@ -79,6 +89,23 @@ const transformer = {
       for (const file of [...project.typescript.fileNames].sort())
         hash.update(readFileSync(file));
     }
+    // A macro module the config does not list -- one an installed or a
+    // workspace package exports -- is read all the same, and so is whatever
+    // it imports; and a module looked for and not found may appear. Each is
+    // an input the key has to change with, and only the expansion knows
+    // them.
+    const expanded = await sessionFor().transform({
+      code: sourceText,
+      filename: sourcePath,
+      configFile: options.transformerConfig.configFile,
+      mode: "test",
+    });
+    for (const file of [...expanded.dependencies].sort()) {
+      hash.update(file);
+      hash.update(readFileSync(file));
+    }
+    for (const missing of [...expanded.missingDependencies].sort())
+      hash.update(missing);
     return hash.digest("hex");
   },
   async processAsync(
@@ -86,44 +113,39 @@ const transformer = {
     sourcePath: string,
     options: JestTransformOptions,
   ): Promise<{ code: string; map?: unknown }> {
-    const session = createSweetenerSession();
-    try {
-      const expanded = await session.transform({
-        code: sourceText,
-        filename: sourcePath,
-        configFile: options.transformerConfig.configFile,
-        mode: "test",
-      });
-      if (expanded.diagnostics.length > 0)
-        throw new Error(describeDiagnostics(expanded.diagnostics));
-      // Nothing on this path resolves names, so a sentence expansion holds
-      // about a name it left standing is said here or nowhere. It does not
-      // fail the file: see `SweetenerTransformResult.warnings`.
-      const warnings =
-        expanded.warnings.length > 0
-          ? [warnWhenLoaded(describeDiagnostics(expanded.warnings))]
-          : [];
-      const babel = await transformAsync(expanded.code, {
-        filename: expanded.virtualFilename,
-        presets: [typescript],
-        plugins: warnings,
-        sourceMaps: true,
-        inputSourceMap: {
-          ...expanded.map,
-          file: expanded.map.file ?? expanded.virtualFilename,
-          sources: [...expanded.map.sources],
-          sourcesContent: (expanded.map.sourcesContent ?? []).map(
-            (content) => content ?? "",
-          ),
-          names: [...expanded.map.names],
-        },
-      });
-      if (babel?.code === undefined || babel.code === null)
-        throw new Error("Babel produced no Jest transform");
-      return { code: babel.code, map: babel.map };
-    } finally {
-      await session.close();
-    }
+    const expanded = await sessionFor().transform({
+      code: sourceText,
+      filename: sourcePath,
+      configFile: options.transformerConfig.configFile,
+      mode: "test",
+    });
+    if (expanded.diagnostics.length > 0)
+      throw new Error(describeDiagnostics(expanded.diagnostics));
+    // Nothing on this path resolves names, so a sentence expansion holds
+    // about a name it left standing is said here or nowhere. It does not
+    // fail the file: see `SweetenerTransformResult.warnings`.
+    const warnings =
+      expanded.warnings.length > 0
+        ? [warnWhenLoaded(describeDiagnostics(expanded.warnings))]
+        : [];
+    const babel = await transformAsync(expanded.code, {
+      filename: expanded.virtualFilename,
+      presets: [typescript],
+      plugins: warnings,
+      sourceMaps: true,
+      inputSourceMap: {
+        ...expanded.map,
+        file: expanded.map.file ?? expanded.virtualFilename,
+        sources: [...expanded.map.sources],
+        sourcesContent: (expanded.map.sourcesContent ?? []).map(
+          (content) => content ?? "",
+        ),
+        names: [...expanded.map.names],
+      },
+    });
+    if (babel?.code === undefined || babel.code === null)
+      throw new Error("Babel produced no Jest transform");
+    return { code: babel.code, map: babel.map };
   },
 };
 

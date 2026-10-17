@@ -113,6 +113,67 @@ test("re-expands after a macro changes, with no configFile given", async () => {
   expect(after).not.toBe(before);
 });
 
+test("re-expands after a macro an installed package exports changes", async () => {
+  // The config lists only the file; the macro module is read from the
+  // package, which no list names.
+  const directory = mkdtempSync(join(tmpdir(), "sweet-jest-package-"));
+  const pkg = join(directory, "node_modules", "@acme", "forms");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({
+      name: "@acme/forms",
+      version: "1.0.0",
+      sweetMacros: "./sweet-macros.json",
+    }),
+  );
+  writeFileSync(
+    join(pkg, "sweet-macros.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      name: "@acme/forms",
+      languageVersion: "1",
+      compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+      entry: "./macros.sts",
+      exports: {
+        packaged: { source: "./forms.sts", category: "expr", phase: 1 },
+      },
+      dependencies: [],
+    }),
+  );
+  writeFileSync(join(pkg, "macros.sts"), 'export const metadata = "x";\n');
+  const rule = (template: string): void =>
+    writeFileSync(
+      join(pkg, "forms.sts"),
+      `export syntax packaged:expr { rule { packaged($value:tt) } => { ${template} } }\n`,
+    );
+  rule("[$value, $value]");
+  const main = join(directory, "main.sts");
+  writeFileSync(
+    main,
+    'import { packaged } from "@acme/forms" for syntax;\nexport const answer = packaged(1);\n',
+  );
+  const configFile = join(directory, "tsconfig.json");
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      files: ["main.sts"],
+    }),
+  );
+  const options = {
+    config: { rootDir: directory },
+    transformerConfig: { configFile },
+  };
+  const source = readFileSync(main, "utf8");
+  const before = await transformer.getCacheKeyAsync(source, main, options);
+  rule("[$value, $value, $value]");
+  const after = await transformer.getCacheKeyAsync(source, main, options);
+  expect(after).not.toBe(before);
+  const { code } = await transformer.processAsync(source, main, options);
+  expect(code).toContain("[1, 1, 1]");
+});
+
 /**
  * Jest has to be able to find this by name.
  *
@@ -228,8 +289,8 @@ test("says what it holds about a name on every run, cached or not", async () => 
   // own summary on stderr.
   const first = await run();
   expect(first.stderr).toMatch(/1 passed/u);
-  expect(first.stdout).toContain("warning TS4024");
+  expect(first.stdout).toContain("warning SWR4024");
   const cached = await run();
   expect(cached.stderr).toMatch(/1 passed/u);
-  expect(cached.stdout).toContain("warning TS4024");
+  expect(cached.stdout).toContain("warning SWR4024");
 });
