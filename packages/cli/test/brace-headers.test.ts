@@ -105,6 +105,17 @@ describe("a word spelled like a declaring keyword", () => {
     expect(text).toContain("o.type + 99 + one");
   });
 
+  test.each(["type", "namespace", "declare"])(
+    "named `%s` in a raw run, before an operator, ends no expression",
+    (word) => {
+      const { text, messages } = expand(
+        `export function f(${word}: number) { one <- 1; return ${word} + x + one; }`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(`${word} + 99 + one`);
+    },
+  );
+
   test("still heads a class expression's body", () => {
     const { text, messages } = expand(
       "export const C = class { m(x: number) { return x; } };",

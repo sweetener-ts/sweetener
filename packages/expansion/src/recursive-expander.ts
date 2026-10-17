@@ -1238,6 +1238,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    */
   const namedBefore = new Set([":", ",", ";", ".", "?."]);
 
+  /** The words of `expressionRegionEnds` that are names but where they declare. */
+  const contextualDeclaringWords = new Set(["type", "namespace", "declare"]);
+
   /**
    * Whether `keyword`, spelled like a declaring keyword, is written as a
    * name: read through a member access, or followed by what follows a name
@@ -1252,6 +1255,16 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     if (before?.tag === "token" && (before.raw === "." || before.raw === "?."))
       return true;
     if (after === undefined) return true;
+    // A contextual keyword declares only before what it declares, on its own
+    // line: `type T`, `namespace N`, `declare const`. Anywhere else it is a
+    // name, whatever operator follows it -- `type + x` adds.
+    if (contextualDeclaringWords.has(keyword.raw))
+      return !(
+        after.tag === "token" &&
+        !leadingLineBreak(after) &&
+        (isIdentifierToken(after) ||
+          (keyword.raw === "declare" && after.kind === "keyword"))
+      );
     if (after.tag === "group")
       return after.delimiter === "parenthesis" && keyword.raw !== "function";
     if (after.tag !== "token") return false;
