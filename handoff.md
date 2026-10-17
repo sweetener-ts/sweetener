@@ -1,8 +1,9 @@
 # Handoff
 
 Written at `2403709` (36 commits since `22a98a5`, 2644 unit tests); brought up
-to date at `a45b9bb`, and again at `6444f0c` after the review of the integrated
-branch (below), where `pnpm check` is green end to end with 3759 unit tests.
+to date at `a45b9bb`, and again after the review of the integrated branch
+(below) and the fixes of what it left open, where `pnpm check` is green end
+to end with 3780 unit tests.
 Everything below is open except "Reviewed", "Decided, not bugs" and the
 closing notes.
 
@@ -137,20 +138,31 @@ printer and formatter, the hosts), each finding reproduced on the branch and on
 
 ## Open bugs
 
-- **A template's free name is captured by a call-site binding.** A template
-  that writes `Math.max($a)`, used where a local is named `Math`, reads the
-  local. Hygiene renames what a template binds, never what the user binds, and
-  a global the template means has no binding the expander can see. Also on
-  `main`.
-- **`x < (y > (z))`** is read as a generic call where TypeScript compares: the
-  same ambiguity TypeScript resolves by trying both, on `main` too.
-- **Reader gaps in third-party sources.** Five of 300 files sampled from
-  `node_modules` (zod's `to-json-schema.ts`, effect's `Function.ts`,
-  `SortedSet.ts`, `internal/redBlackTree.ts`, `internal/stm/tReentrantLock.ts`)
-  have an item reported SWR4025 and passed through. The same on `main`.
-- **A member access after a postfix operator macro** -- `a!!.toFixed()` -- is not
-  read, as `a++.x` is not JavaScript; whether a macro postfix should bind
-  tighter is undecided.
+None known. The four listed here after the review were fixed on 2026-10-17,
+and with them what fixing them showed:
+
+- **A template's free name captured by a caller's local** (`5f9d4c3`). A
+  name a template writes and does not bind never means a local of the
+  function or block its invocation stands in; such a local is renamed. What
+  a module declares at its top is left alone: a template writing `add($a)`
+  where its own module declares no `add` means the one the module using it
+  declares or imports.
+- **`x < (y > (z))` and `[x < y, y > (z)]` read as calls** (`36e7fe1`).
+  TypeScript reads types on from a `<` and recovers into a call, through
+  parentheses and past a comma, so the printed file is parsed where an
+  expansion compares or shifts with a `<`, and what follows each `<` it
+  misreads is printed `((void 0, …))`. A `<` the author wrote is left alone.
+- **Reader gaps in effect and zod** (`37d9406`): an arrow's body ending at a
+  comma among type arguments or at a nested arrow's return type, an arrow's
+  head taking a function type's `=>` among its return type's arguments, and
+  a function type that could not return a generic one. 1,500 sampled
+  third-party files now read whole.
+- **A member access after a postfix operator** (`1a38ce9`): one declared at
+  a left-hand-side expression's precedence (200) or tighter makes one, and
+  what is read off a name is read off it; one that binds as `++` does is
+  refused, saying what to write. An operator declared at a name's
+  precedence (1000) or above could read no operand and is now refused where
+  it is defined.
 
 ## Performance
 
