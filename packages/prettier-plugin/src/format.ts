@@ -685,10 +685,51 @@ function readForFormatting(
     ...(typescript?.readings ?? []),
     ...templateReadings,
   ]);
-  const result =
+  let result =
     readings.size === 0
       ? initial
       : readSyntax(source, { sourceId, scopes, variant, readings });
+  // Where TypeScript's reading is no answer -- a macro's own syntax -- a
+  // slash read as a division may leave a delimiter or a comment unbalanced,
+  // which no macro is ever given: `unless(c) /[(]/.test(s)` divides by a
+  // bracket that never closes. Read as a regular expression it balances, and
+  // that is the one reading the source is well formed in. So a slash there
+  // is read as one where that moves the first error the reader reports past
+  // where it stood, the nearest before the error first; each is tried once.
+  if (result.diagnostics.length > 0) {
+    const unanswered = coveredBy(typescript?.unparsed ?? []);
+    const tried = new Set<number>();
+    for (
+      let failsAt = firstErrorAt(result);
+      failsAt !== undefined;
+      failsAt = firstErrorAt(result)
+    ) {
+      const candidates = possibleRegularExpressions(source, result.root)
+        .map(({ start }) => start)
+        .filter(
+          (start) => start < failsAt && unanswered(start) && !tried.has(start),
+        )
+        .reverse();
+      let settled: typeof result | undefined;
+      for (const start of candidates) {
+        tried.add(start);
+        const attempt = readSyntax(source, {
+          sourceId,
+          scopes,
+          variant,
+          readings: new Map([...readings, [start, "regular-expression"]]),
+        });
+        const at = firstErrorAt(attempt);
+        if (at === undefined || at > failsAt) {
+          readings.set(start, "regular-expression");
+          settled = attempt;
+          break;
+        }
+      }
+      if (settled === undefined) break;
+      result = settled;
+    }
+  }
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];
     throw new SyntaxError(
@@ -700,6 +741,17 @@ function readForFormatting(
     );
   }
   return { root: result.root, unparsed: typescript?.unparsed ?? [] };
+}
+
+/** Where the first error reading a source reported stands, if it reported one. */
+function firstErrorAt(read: {
+  readonly diagnostics: readonly { readonly primaryOrigin: Span }[];
+}): number | undefined {
+  let first: number | undefined;
+  for (const { primaryOrigin } of read.diagnostics)
+    if (first === undefined || primaryOrigin.start < first)
+      first = primaryOrigin.start;
+  return first;
 }
 
 /**

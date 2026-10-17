@@ -191,6 +191,12 @@ wrapped const example = { single: 'quoted' };
       formatSweetener("syntax broken {", { filepath: "bad.sts" }),
     ).toThrow(/malformed source/u);
   });
+
+  test("rejects a bracket no reading of a slash before it balances", () => {
+    expect(() =>
+      formatSweetener("let a = x / [(] + 2;\n", { filepath: "bad.sts" }),
+    ).toThrow(/malformed source/u);
+  });
 });
 
 /**
@@ -296,6 +302,26 @@ describe("slashes the reader judges from what stands before them", () => {
       await format(source, { filepath: "regex.sts", plugins: [plugin] }),
     ).toBe(formatted);
   });
+
+  // TypeScript's reading of a macro's syntax is no answer, and the reader
+  // judges the slash after `unless(c)` a division, by a bracket that never
+  // closes. The file was refused as malformed, though it expands.
+  test.each([
+    ["a delimiter", "unless(c) /[(]/.test(s);\n"],
+    ["a comment's opening", "unless(c) /[/*]/.test(s);\n"],
+  ])(
+    "formats a regular expression holding %s in a macro's syntax",
+    async (_label, line) => {
+      const source = `${importsUnless}${line}run(  1 );\n`;
+      const formatted = `${importsUnless}${line}run( 1 );\n`;
+      expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(
+        formatted,
+      );
+      expect(
+        await format(source, { filepath: "regex.sts", plugins: [plugin] }),
+      ).toBe(formatted);
+    },
+  );
 
   test("formats a source whose regular expression holds a delimiter", async () => {
     const source = "if (c) /(/.test(s);\nrun(  1 );\n";
