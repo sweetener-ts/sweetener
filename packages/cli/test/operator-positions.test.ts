@@ -34,6 +34,10 @@ export operator (!!):expr {
   fixity postfix; precedence 160;
   rule { $a:expr !! } => { force($a) }
 }
+export operator (%%):expr {
+  fixity postfix; precedence 200;
+  rule { $a:expr %% } => { force($a) }
+}
 export operator (<-):stmt {
   fixity infix; associativity none; precedence 10;
   rule { $name:binding <- $source:expr; } => { const $name = $source; }
@@ -50,12 +54,12 @@ const declared =
   "declare const a: number, b: number;\n" +
   "declare const o: { k?: number; j?: number; arr: number[] };\n";
 
-function expand(main: string) {
+function expand(main: string, macroModule = macros) {
   const directory = mkdtempSync(join(tmpdir(), "sweet-operator-positions-"));
-  writeFileSync(join(directory, "macros.sts"), macros);
+  writeFileSync(join(directory, "macros.sts"), macroModule);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { (<+>), (+++), (!!), (<-) } from "./macros.sts" for syntax;\n${declared}${main}\n`,
+    `import { (<+>), (+++), (!!), (%%), (<-) } from "./macros.sts" for syntax;\n${declared}${main}\n`,
   );
   const configPath = join(directory, "tsconfig.json");
   writeFileSync(
@@ -199,4 +203,46 @@ describe("an operator on statements spelled inside an expression", () => {
     expect(messages).toEqual([]);
     expect(text).toBe(source);
   });
+});
+
+/**
+ * A postfix operator declared to bind as a left-hand-side expression does,
+ * or more tightly, makes one, and what is read off a name may be read off
+ * it. One that binds as `++` does makes none, as `a++.x` is none, and the
+ * reader says what to write instead.
+ */
+describe("what is read off a postfix operator", () => {
+  test.each([
+    ["a member", "export const r = a%%.toFixed();", "force(a).toFixed()"],
+    ["a call", "export const r = [a%%.toFixed(2)];", "[force(a).toFixed(2)]"],
+  ])("is %s, after one that binds tightly", (_label, source, expected) => {
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toContain(expected);
+  });
+
+  test("is read off the parentheses around one that binds loosely", () => {
+    const { text, messages } = expand("export const r = (a!!).toFixed();");
+    expect(messages).toEqual([]);
+    expect(text).toContain("(force(a)).toFixed()");
+  });
+
+  test("is reported after one that binds loosely", () => {
+    const { messages } = expand("export const r = a!!.toFixed();");
+    expect(messages.join("\n")).toContain(
+      "parentheses around postfix '!!' and its operand, or a precedence for it of at least 200",
+    );
+  });
+});
+
+test("an operator declared as tight as a name is refused where it is defined", () => {
+  // No operand binds more tightly than a name or a call, and the rule's
+  // operand must bind more tightly than the operator.
+  const { messages } = expand(
+    "export const r = a!!;",
+    macros.replace("fixity postfix; precedence 160;", "fixity postfix; precedence 1000;"),
+  );
+  expect(messages).toContain(
+    "Invalid operator !!: precedence must be below 1000, where a name or a call binds.",
+  );
 });

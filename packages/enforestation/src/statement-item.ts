@@ -21,6 +21,7 @@ import {
   createConsumerFailure,
   type ConsumerAttempt,
   type ConsumerContext,
+  type ConsumerFailure,
   type SyntaxConsumer,
   type MacroExtentResolver,
 } from "./consumer.js";
@@ -899,6 +900,20 @@ function protect(
     category,
     children,
   });
+}
+
+/**
+ * What a declaration that could not read its initializer says it expected:
+ * what the expression reader said, where that is as specific as the
+ * declaration's own word for it -- "parentheses around postfix `!!` ..."
+ * says what to write, where "variable initializer" says only where.
+ */
+function initializerExpectations(
+  failed: ConsumerFailure,
+): readonly string[] {
+  return failed.specificity >= 40 && failed.expectations.length > 0
+    ? failed.expectations
+    : ["variable initializer"];
 }
 
 function failure(
@@ -1836,7 +1851,13 @@ class StatementConsumer implements SyntaxConsumer {
           ),
         });
         if (!expression.matched)
-          return failure("stmt", cursor, start, ["variable initializer"], 40);
+          return failure(
+            "stmt",
+            cursor,
+            start,
+            initializerExpectations(expression.failure),
+            40,
+          );
         children.push(expression.syntax);
         initialized = true;
         continue;
@@ -2143,7 +2164,13 @@ class ItemConsumer implements SyntaxConsumer {
           ),
         });
         if (!expression.matched)
-          return failure("item", cursor, start, ["variable initializer"], 40);
+          return failure(
+            "item",
+            cursor,
+            start,
+            initializerExpectations(expression.failure),
+            40,
+          );
         children.push(expression.syntax);
       }
       if (token(cursor.peek(), ",")) {

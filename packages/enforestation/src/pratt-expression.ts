@@ -5,8 +5,10 @@ import {
   coreExpressionOperators,
   createPrecedence,
   createProtectedSyntax,
+  createSyntaxCursor,
   createSyntaxSequence,
   isIdentifierToken,
+  leftHandSidePrecedence,
   primaryPrecedence,
   sameLineInfix,
   unaryPrecedence,
@@ -934,6 +936,50 @@ function parseAssertedType(
 }
 
 /**
+ * Whether `node`, written directly after an operand, reads a member, an
+ * index or a call off it.
+ */
+function readsOffOperand(node: Syntax | undefined): boolean {
+  if (node === undefined || leadingLineBreak(node)) return false;
+  if (node.tag === "group")
+    return (
+      node.delimiter === "parenthesis" ||
+      node.delimiter === "bracket" ||
+      node.delimiter === "template"
+    );
+  return (
+    node.tag === "token" &&
+    (node.raw === "." ||
+      node.raw === "?." ||
+      node.kind === "no-substitution-template")
+  );
+}
+
+/**
+ * The member accesses, indexes and calls written after `operand`, read off
+ * it as the primary reader reads them off any expression, and `operand` with
+ * them; undefined where none follows. The cursor is carried past what they
+ * take.
+ */
+function readOffPostfix(
+  operand: ProtectedSyntax,
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): Pick<ParsedExpression, "syntax" | "outerPrecedence"> | undefined {
+  const rest = cursor.remainingRange().sequence.slice(cursor.index);
+  const reading = createSyntaxCursor(
+    createSyntaxSequence([operand, ...rest]),
+  );
+  const attempt = context.primary.consume(reading, withOperatorFollows(context));
+  if (!attempt.matched || attempt.cursor.index <= 1) return undefined;
+  cursor.advance(attempt.cursor.index - 1);
+  return {
+    syntax: attempt.syntax as ProtectedSyntax,
+    outerPrecedence: primaryPrecedence,
+  };
+}
+
+/**
  * Whether nothing at the cursor continues the operand before it: the end,
  * a stop, a statement or conditional boundary, or an operator that takes an
  * operand on its left.
@@ -1364,6 +1410,25 @@ function parseOperators(
         mixingFamily: left.mixingFamily,
         primary: false,
       };
+      // An operator that binds as a left-hand-side expression does, or more
+      // tightly, makes one, and a member access, an index or a call may be
+      // read off it as off a name: `a!!.toFixed()` with `!!` declared that
+      // tight. One that binds as `++` does makes none, as `a++.x` is none.
+      if (postfix.precedence >= leftHandSidePrecedence) {
+        const accessed = readOffPostfix(syntax, cursor, context);
+        if (accessed !== undefined) left = { ...left, ...accessed };
+      } else if (
+        postfix.macro !== undefined &&
+        readsOffOperand(cursor.peek())
+      )
+        return fail(
+          cursor,
+          context,
+          [
+            `parentheses around postfix '${postfix.spelling}' and its operand, or a precedence for it of at least ${String(leftHandSidePrecedence)}, before what is read off them`,
+          ],
+          40,
+        );
       continue;
     }
     const infix = resolveOperator(cursor, "infix", context);

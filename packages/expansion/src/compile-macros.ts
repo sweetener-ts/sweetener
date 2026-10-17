@@ -34,7 +34,7 @@ import type {
   ScopeSetId,
   SourceId,
 } from "@sweetener/shared";
-import type { Span } from "@sweetener/syntax";
+import { primaryPrecedence, type Span } from "@sweetener/syntax";
 import type { TokenSyntax } from "@sweetener/syntax";
 import {
   expansionDiagnosticRegistry,
@@ -318,6 +318,11 @@ function lowerOperator(
     problem = "prefix and postfix operators must be nonassociative";
   else if (!Number.isSafeInteger(precedence) || precedence < 1)
     problem = "precedence must be a positive safe integer";
+  // An operator's operands bind more tightly than it does, and nothing binds
+  // more tightly than a name or a call: at that precedence or above no
+  // operand could be read, and every use was left unexpanded.
+  else if (precedence >= primaryPrecedence)
+    problem = `precedence must be below ${String(primaryPrecedence)}, where a name or a call binds`;
   else if (operand !== undefined && operand !== "arrow")
     problem = "operand must be arrow";
   else if (operand !== undefined && fixity !== "infix")
