@@ -496,3 +496,32 @@ export const made: number = cast<number>(raw);`,
     ).toContain("export const own = <number>raw * 2;");
   });
 });
+
+describe("a `#core(…)` that holds a statement", () => {
+  test.each([
+    ["an index", "[helper].forEach((h) => h());"],
+    ["a call", "(helper)();"],
+    ["a template", "`${helper()}`;"],
+  ])(
+    "is a statement of its own before a line that begins with %s",
+    (_, line) => {
+      // A declaration ends where its body closes, so nothing after it carries
+      // it on; read as the head of an expression, the function was written
+      // as a function expression called by the line under it, and the name
+      // the rest of the template used was never declared.
+      const output = expand(
+        `export syntax defn:item {
+           rule { defn $name:ident; } => {
+             #core(function helper() { return 1; })
+             ${line}
+             export const $name = helper();
+           }
+         }`,
+        `import { defn } from "./macros.sts" for syntax;
+defn x;`,
+      );
+      expect(output).toMatch(/^function helper\(\) \{ return 1; \}$/mu);
+      expect(output).toContain("export const x = helper();");
+    },
+  );
+});

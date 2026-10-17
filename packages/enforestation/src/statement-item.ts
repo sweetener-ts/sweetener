@@ -5,6 +5,7 @@ import {
   createSyntaxCursor,
   createSyntaxSequence,
   expressionContinuedBy,
+  isIdentifierToken,
   leadingLineBreak,
   operandExpectedAfter,
   sameLineContinuedBy,
@@ -712,9 +713,87 @@ function coreFormWidth(cursor: SyntaxCursor): number | undefined {
           parenthesisGroup(cursor.peek(2))
         ? 3
         : undefined;
-  if (width === undefined || continuesExpression(cursor.peek(width)))
+  if (width === undefined) return undefined;
+  const form = cursor.peek(width - 1);
+  if (
+    !(form?.tag === "group" && holdsStatement(form.children)) &&
+    continuesExpression(cursor.peek(width))
+  )
     return undefined;
   return width;
+}
+
+/**
+ * The words that begin a statement nothing written after it carries on as an
+ * expression, where a statement begins: a declaration -- `function` and
+ * `class` declare there, as TypeScript reads them -- or a statement of its
+ * own kind.
+ */
+const statementWords = new Set([
+  "function",
+  "class",
+  "const",
+  "var",
+  "enum",
+  "interface",
+  "import",
+  "export",
+  "if",
+  "for",
+  "while",
+  "do",
+  "switch",
+  "try",
+  "return",
+  "throw",
+  "break",
+  "continue",
+  "debugger",
+  "with",
+]);
+
+/**
+ * Words that begin such a statement only before what they declare: `let x`,
+ * `type T`, `async function`, `declare const`, `abstract class`, `namespace
+ * N`, `module M` and `using r`; each is a name elsewhere.
+ */
+const contextualStatementWords = new Map<string, (next: Syntax) => boolean>([
+  [
+    "let",
+    (next) => next.tag === "token" || braceGroup(next) || bracketGroup(next),
+  ],
+  ["type", (next) => named(next)],
+  ["namespace", (next) => named(next)],
+  [
+    "module",
+    (next) =>
+      named(next) || (next.tag === "token" && next.kind === "string-literal"),
+  ],
+  ["using", (next) => named(next)],
+  ["async", (next) => token(next, "function")],
+  ["declare", (next) => next.tag === "token"],
+  ["abstract", (next) => token(next, "class")],
+]);
+
+function named(syntax: Syntax): boolean {
+  return syntax.tag === "token" && isIdentifierToken(syntax);
+}
+
+function bracketGroup(syntax: Syntax | undefined): boolean {
+  return syntax?.tag === "group" && syntax.delimiter === "bracket";
+}
+
+/**
+ * Whether what a `#core(…)` holds is a statement nothing after it carries on:
+ * `#core(function helper() {})` and the `[helper].forEach(run)` under it are
+ * two statements, where `#core(twice)(1)` is one call.
+ */
+function holdsStatement(children: readonly Syntax[]): boolean {
+  const [head, next] = children;
+  if (head?.tag !== "token") return false;
+  if (statementWords.has(head.raw)) return true;
+  const declares = contextualStatementWords.get(head.raw);
+  return declares !== undefined && next !== undefined && declares(next);
 }
 
 /**
