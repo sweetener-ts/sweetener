@@ -176,6 +176,19 @@ describe("an enum body", () => {
     expect(messages).toEqual([]);
     expect(text).toContain("y = x * 2");
   });
+
+  test.each([
+    ["named by a string", "export enum E { 'x' = 1, y = x * 2 }"],
+    ["named by a computed string", "export enum E { ['x'] = 1, y = x * 2 }"],
+    [
+      "declared in another declaration it is merged from",
+      "export enum E { x = 1 }\nexport enum E { y = x * 2 }",
+    ],
+  ])("binds a member %s", (_, source) => {
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toContain("y = x * 2");
+  });
 });
 
 describe("a shorthand property", () => {

@@ -268,6 +268,10 @@ export interface ExpandMacroSyntaxResult {
   readonly namedOrigins: ReadonlySet<Syntax["origin"]>;
 }
 
+/** A string that spells a name, as an enum member may be named: `'K'`. */
+const enumStringName =
+  /^(['"])([\p{ID_Start}_$][\p{ID_Continue}$\u200c\u200d]*)\1$/u;
+
 const itemDispatchPrefixes = new Set([
   "export",
   "default",
@@ -2432,18 +2436,113 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * reads `E.x` in the second initializer. Each member's name is bound in the
    * body, at `body`, so a macro spelled like one is not dispatched there.
    */
-  const bindEnumMembers = (
+  /**
+   * The name an enum member written as `run` declares: a name, a string
+   * spelling one -- `'K' = 1` -- or such a string computed, `['K'] = 1`. A
+   * string that spells no name declares nothing a bare name reads.
+   */
+  const enumMemberName = (
+    run: readonly Syntax[],
+  ): { readonly name: string; readonly scopes: ScopeSetId } | undefined => {
+    let key = run[0];
+    if (
+      key?.tag === "group" &&
+      key.delimiter === "bracket" &&
+      key.children.length === 1
+    )
+      key = key.children[0];
+    if (key?.tag !== "token") return undefined;
+    if (isIdentifierToken(key)) return { name: key.raw, scopes: key.scopes };
+    const quoted = enumStringName.exec(key.raw);
+    return quoted === null
+      ? undefined
+      : { name: quoted[2]!, scopes: key.scopes };
+  };
+  /**
+   * An enum declared in a run: where it stands among the run's nodes, which
+   * is what a binding's extent counts, and the body that lists its members.
+   */
+  interface EnumDeclaration {
+    readonly at: number;
+    readonly body: GroupSyntax;
+    /**
+     * Whether it is written as tokens of the run, rather than an item read
+     * whole: one read whole binds its own members over its body, as the
+     * walk inside it collects them.
+     */
+    readonly asTokens: boolean;
+  }
+  /**
+   * The enum `children` declare from `start` on -- `enum E { ... }`, after
+   * whatever modifiers -- by its name, or undefined where none is declared
+   * there.
+   */
+  const enumDeclaredIn = (
+    children: readonly Syntax[],
+    start: number,
+  ): { readonly name: string; readonly body: GroupSyntax } | undefined => {
+    if (spelling(children[start]) !== "enum") return undefined;
+    if (spelling(children[start - 1]) === ".") return undefined;
+    const name = children[start + 1];
+    const body = children[start + 2];
+    return name?.tag === "token" &&
+      isIdentifierToken(name) &&
+      body?.tag === "group" &&
+      body.delimiter === "brace"
+      ? { name: name.raw, body }
+      : undefined;
+  };
+  /**
+   * Every enum the run `nodes` declares, by name: one written as tokens, or
+   * an item or a statement read whole. Read once for the run.
+   */
+  const enumsIn = (
     nodes: readonly Syntax[],
-    body: number,
+  ): ReadonlyMap<string, readonly EnumDeclaration[]> => {
+    const enums = new Map<string, EnumDeclaration[]>();
+    const add = (name: string, declaration: EnumDeclaration): void => {
+      const list = enums.get(name);
+      if (list === undefined) enums.set(name, [declaration]);
+      else list.push(declaration);
+    };
+    for (let at = 0; at < nodes.length; at += 1) {
+      const node = nodes[at]!;
+      if (node.tag === "protected") {
+        if (node.category !== "item" && node.category !== "stmt") continue;
+        const keyword = node.children.findIndex(
+          (child) => spelling(child) === "enum",
+        );
+        const declared =
+          keyword < 0 ? undefined : enumDeclaredIn(node.children, keyword);
+        if (declared !== undefined)
+          add(declared.name, { at, body: declared.body, asTokens: false });
+        continue;
+      }
+      const declared = enumDeclaredIn(nodes, at);
+      if (declared !== undefined)
+        add(declared.name, { at: at + 2, body: declared.body, asTokens: true });
+    }
+    return enums;
+  };
+  /**
+   * Binds the members each declaration of one enum lists over every one of
+   * them: a member is a bare name in each declaration an enum is merged from,
+   * `enum E { K = 1 }` and the `enum E { B = K }` after it.
+   */
+  const bindEnumMembers = (
+    declarations: readonly EnumDeclaration[],
     into: CollectedBindings,
   ): void => {
-    const brace = nodes[body];
-    if (brace?.tag !== "group" || brace.delimiter !== "brace") return;
-    for (const { run } of commaSeparatedMembers(brace.children, false)) {
-      const name = run[0];
-      if (name?.tag === "token" && isIdentifierToken(name))
-        recordValue(into, name.raw, name.scopes, { from: body, to: body + 1 });
-    }
+    for (const { body } of declarations)
+      for (const { run } of commaSeparatedMembers(body.children, false)) {
+        const member = enumMemberName(run);
+        if (member === undefined) continue;
+        for (const { at } of declarations)
+          recordValue(into, member.name, member.scopes, {
+            from: at,
+            to: at + 1,
+          });
+      }
   };
   const collectRegion = (
     nodes: readonly Syntax[],
@@ -2462,6 +2561,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // written in parentheses, so a `<…>` in front of a parenthesis group there
     // is the type parameter list of a signature or a function type.
     const typesRun = category === "type" || category === "typeMember";
+    // An enum's members are bare names in its body, and in the body of every
+    // declaration it is merged from.
+    for (const declarations of enumsIn(nodes).values())
+      if (declarations.length > 1 || declarations[0]!.asTokens)
+        bindEnumMembers(declarations, into);
     // Where the class member being read begins, in a run of class members. A
     // method declared without a body -- an overload, an abstract method --
     // has no body to say the parenthesis group after its name is its
@@ -2599,7 +2703,6 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
               { from: nameAt + 1, to: extent.to },
               node.raw === "class",
             );
-          if (node.raw === "enum") bindEnumMembers(nodes, nameAt + 1, into);
         } else if (node.raw === "class" && spelling(name) === "<")
           // A class expression may go unnamed and still declare type
           // parameters.
