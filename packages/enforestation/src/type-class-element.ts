@@ -237,6 +237,23 @@ export function consumeBalancedTypeArguments(
   });
 }
 
+/**
+ * Tokens no angle-delimited list of types holds outside a group of its own,
+ * where a `<` that opened one is a comparison after all: `a < b;` and
+ * `a < b && c > d`. Read on to the next `>` instead, a comparison scanned
+ * every statement after it, and a block of many ran out of steps.
+ */
+const typeListEndsBefore = new Set([
+  ";",
+  "&&",
+  "||",
+  "??",
+  "==",
+  "===",
+  "!=",
+  "!==",
+]);
+
 function consumeAngles(
   cursor: SyntaxCursor,
   context: ConsumerContext,
@@ -248,6 +265,7 @@ function consumeAngles(
     const next = cursor.consume()!;
     children.push(next);
     if (!token(next)) continue;
+    if (typeListEndsBefore.has(next.raw)) return false;
     depth += angleWidth(next.raw, "<");
     depth -= angleWidth(next.raw, ">");
     if (depth === 0) return true;

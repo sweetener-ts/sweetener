@@ -148,3 +148,24 @@ export const g = negneg(-x);
       expect(generated).toContain(printed);
   });
 });
+
+describe("many comparisons in one block", () => {
+  test("reads each `<` no further than its statement", () => {
+    // A `<` is a comparison or opens type arguments, and the reader of type
+    // arguments read on to the next `>`: from each comparison through every
+    // statement after it, until a block of them ran out of steps and the
+    // expansion threw.
+    const lines = Array.from(
+      { length: 2_000 },
+      (_, at) => `  const c${String(at)} = v0 < v1;`,
+    ).join("\n");
+    const expanded = createDefaultProjectExpansionProvider().expandProject(
+      loadSweetProject(
+        project(
+          `${declared}export function f() {\n  const base = id(1);\n${lines}\n  return base;\n}\n`,
+        ),
+      ),
+    );
+    expect(expanded.diagnostics).toEqual([]);
+  });
+});
