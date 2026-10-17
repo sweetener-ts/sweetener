@@ -6405,7 +6405,14 @@ function* walk(
       }
     }
     if (
-      resolvedMacro === undefined &&
+      // An infix operator of the statement's own category claims the whole
+      // statement it stands in, an expression macro at its head included:
+      // the operator's rule says what its left operand is, and in `x <- 5;`
+      // that is a binding. Read as the head of an expression instead, the
+      // binder spelled like a macro expanded, and `99 <- 5;` compares. A
+      // statement macro at the head reads its own syntax, operator spelling
+      // and all.
+      (resolvedMacro === undefined || resolvedCategory === "expr") &&
       (category === "item" || category === "stmt") &&
       // A separator ends the segment before it, so no operand begins there.
       // The walk stands on one once the statement it ended has been
@@ -6459,6 +6466,7 @@ function* walk(
           .sort((left, right) => right.width - left.width);
         if (matches.length === 0) continue;
         resolvedMacro = matches[0]!.candidateMacro;
+        resolvedCategory = category;
         resolvedHeadIndex = candidateIndex;
         resolvedSpelling = candidate.raw;
         break;

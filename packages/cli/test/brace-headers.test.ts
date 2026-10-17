@@ -193,6 +193,19 @@ describe("a method named like a control statement's keyword", () => {
   });
 });
 
+describe("a statement operator's binder spelled like a macro", () => {
+  test("is the operator's binder, and binds what follows", () => {
+    // The operator claims the statement it stands in. Read as the head of
+    // an expression, the binder expanded and the statement compared:
+    // `99 <- 5;`.
+    const { text, messages } = expand(
+      "export function f() { x <- 5; return x; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const x = 5; return x;");
+  });
+});
+
 describe("an enum body", () => {
   test("is split only at commas between members", () => {
     const { text, messages } = expand(
