@@ -7278,9 +7278,33 @@ function* walk(
           (result.syntax.category === "expr" ||
             result.syntax.category === "type") &&
           !boundsItself(result.syntax.children, result.syntax.form);
+        // An expression that is a whole statement of the run is an expression
+        // statement, and is kept as one, for the printer to keep what begins
+        // a declaration or a block at its head apart from it: spliced loose,
+        // an object the macro wrote was read as a block -- `{ a: 1, b: 2 };`,
+        // or, with one member, a label -- and a function as a declaration.
+        const after = input[result.cursor.index];
+        const expressionStatement =
+          result.syntax.category === "expr" &&
+          statementStartFollows(output.length) &&
+          (after === undefined ||
+            (after.tag === "token" && after.raw === ";"));
         output.push(
           ...withLeadingTrivia(
-            spliceWhole ? [result.syntax] : result.syntax.children,
+            expressionStatement
+              ? [
+                  createProtectedSyntax({
+                    id: options.allocateSyntaxId(),
+                    span: result.syntax.span,
+                    origin: result.syntax.origin,
+                    scopes: result.syntax.scopes,
+                    category: "stmt",
+                    children: [result.syntax],
+                  }),
+                ]
+              : spliceWhole
+                ? [result.syntax]
+                : result.syntax.children,
             trivia,
           ),
         );

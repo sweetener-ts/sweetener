@@ -579,3 +579,28 @@ export async function w() {
     },
   );
 });
+
+describe("an expression a macro writes as a whole statement of a raw run", () => {
+  test.each([
+    ["an object", "{ a: 1, b: 2 }", "({ a: 1, b: 2 });"],
+    ["an object of one member", "{ a: 1 }", "({ a: 1 });"],
+    ["a function", "function () { return 1; }", "(function () { return 1; });"],
+  ])("keeps %s an expression", (_, template, expected) => {
+    // Spliced loose into the run, what begins a block or a declaration was
+    // read as one: a block, a label, a function declaration with no name.
+    const output = expand(
+      `export syntax made:expr { rule { made } => { ${template} } }
+       export operator (<-):stmt {
+         fixity infix;
+         associativity none;
+         precedence 20;
+         rule { $name:binding <- $source:expr; }
+         bind $name in following as lexical value;
+         => { const $name = $source; }
+       }`,
+      `import { made, (<-) } from "./macros.sts" for syntax;
+export function f() { one <- 1; made; return one; }`,
+    );
+    expect(output).toContain(expected);
+  });
+});
