@@ -1,8 +1,7 @@
 # Handoff
 
 Written at `2403709` (36 commits since `22a98a5`, 2644 unit tests); brought up
-to date at `aa1caec`, where `pnpm check` is green end to end with 3658 unit
-tests. Everything below is open except "Reviewed", "Decided, not bugs" and the
+to date at `a45b9bb`, where `pnpm check` is green end to end. Everything below is open except "Reviewed", "Decided, not bugs" and the
 closing notes.
 
 The session began by deleting a hand-written `declare module "*.sts"` stub and
@@ -24,11 +23,7 @@ Two facts worth keeping in mind while reading the rest:
 
 ## Before shipping
 
-1. **Review `d4882cf`, `dd455b8` and `aa1caec`.** They fix what the review of
-   the round's own fixes found (see "Reviewed"). Every finding's reproduction
-   was run again against them and now behaves, but nobody has reviewed the
-   three commits afresh, as each commit before them was.
-2. **Cut an alpha.** Nothing but our own suites has exercised any of this.
+1. **Cut an alpha.** Nothing but our own suites has exercised any of this.
 
 ## Reviewed
 
@@ -62,9 +57,32 @@ Those fixes were reviewed in turn, with the two former open bugs' (`6a07306`,
 afresh: an element written as an attribute's value without braces, a call
 signature under a member with no `;`, JSX text spelled `(`, a `>` comparison
 after an asserted type, the reader's statement starts outside statement lists,
-and an element a template writes read as a signature. The reader's slash judgement
-was compared with TypeScript's parser over 4,501 files from this repository
-and its dependencies, and agrees everywhere.
+and an element a template writes read as a signature.
+
+Those three were reviewed afresh on 2026-10-17, and what that found is fixed in
+`2376a4e`; an adversarial review of that commit found a label after a block,
+an emoji shifting the formatter's template offsets, and slashes after a module
+specifier, a `break`'s label and an element, all fixed in `a45b9bb`:
+
+- **A `<` reading was gated by the slash judgement.** Where the enforester asked
+  for an element after a declaration the reader missed, the read never followed
+  it, and valid TSX was refused with SWR4028. A `<`'s reading now applies
+  wherever it is given, as a slash's does.
+- **Statement lists.** A function's or a class's body written as an expression
+  was no statement list; a parameter's decorator marked the next class as an
+  expression; after `declare function f(): void` the next declaration was
+  lost; `export default {` was a block; a name after `as T` was a label.
+- **An element after a macro's name** -- `wrap <p>{x}</p>` -- was read as a type
+  assertion, and the rule matched the element's tags and text as code, with no
+  diagnostic. A `<` written where JSX is read is never an assertion now
+  (`ElementReader`); the enforester reports the element.
+- **The formatter** laid out the text of an element a template writes as code
+  where it read like a signature. It asks TypeScript about templates now.
+- **Element chains** misread as signatures were quadratic, as slash chains were.
+
+The reader's judgement was then compared with TypeScript's parser over 7,000
+files -- this repository, its dependencies, and other TSX projects -- and
+agrees on every slash and every element.
 
 ## Open bugs
 
@@ -97,13 +115,17 @@ the session cost; to measure them again, run the suite at `ab7c214` and at the
 commit in question under the same protocol. `pnpm benchmark:check` is **not part
 of `pnpm check`**, so nothing gates on it.
 
-A slash the reader still judges the other way from the grammar costs a read of
-its file. The reader now ends a statement at a declaration's `}`, but where only
-the enforester can see a statement end -- a type annotation's, `let x: T` and
-the `/[(]/.test(s);` under it -- the file is read again with the slash corrected,
-and where each such regular expression holds a bracket it hides the next from the
-enforester, so a chain of them costs a read apiece. The output is right; only the
-cost grows, and `readLimit` counts only reads that settle nothing new.
+A slash or a `<` the reader judges the other way from the grammar costs a read
+of its file, and where each such regular expression holds a bracket it hides the
+next from the enforester, so a chain of them costs a read apiece. The reader now
+follows a statement that ends with a type (`let a: string`, `type T = {}`, an
+overload's return type) and a function's body written as an expression, which
+were the chains measured quadratic: 80 of `type T = {}` and a regular
+expression under it took 386ms and now take 12ms, and 320 elements spelled like
+signatures took 6.7s and now take 15ms. What is left for the enforester is what
+only the grammar can tell -- an initializer that goes on across a line, before a
+typed declarator -- and costs a read where it is written; `readLimit` counts only
+reads that settle nothing new.
 
 Cheap wins identified and not taken:
 
@@ -134,6 +156,10 @@ Cheap wins identified and not taken:
 - **`import`/`export` are refused at statement level.** The statement reader
   reads what TypeScript _accepts_ in a function body; those are never accepted
   there, and TypeScript reports them itself.
+- **`let` and `yield` as names are judged as the keywords.** `let / 2` and, outside
+  a generator, `yield / 2` divide only in sloppy-mode script, never in a module
+  or under `"use strict"`; the reader reads a regular expression there, and the
+  enforester's correction reads the file again where one is written.
 
 ## How this session worked, for whoever picks it up
 
