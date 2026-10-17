@@ -1439,25 +1439,46 @@ export function createExpansionFrontendSession(
     const coreSpellings = new Set(
       coreExpressionOperators.map(({ spelling }) => spelling),
     );
-    const spellings = [
-      ...new Set(
-        modules
-          .flatMap(({ operators }) => operators)
-          .filter(
-            ({ binding, spelling }) =>
-              visible.has(binding) && !coreSpellings.has(spelling),
-          )
-          .map(({ spelling }) => spelling),
-      ),
-    ].sort((left, right) => right.length - left.length);
-    if (spellings.length === 0) return;
+    const visibleOperators = modules
+      .flatMap(({ operators }) => operators)
+      .filter(
+        ({ binding, spelling }) =>
+          visible.has(binding) && !coreSpellings.has(spelling),
+      );
+    const spelledBy = (
+      operators: readonly (typeof visibleOperators)[number][],
+    ): readonly string[] =>
+      [...new Set(operators.map(({ spelling }) => spelling))].sort(
+        (left, right) => right.length - left.length,
+      );
+    // A statement or item operator is invoked from the head of the statement
+    // it stands in, so only where statements are written: inside a
+    // parenthesis, a bracket or an expression already read, its spelling is
+    // the tokens it is spelled with -- `if (a<-1)` compares, with `<-` an
+    // operator on statements. A brace holds statements again wherever it
+    // stands, as an arrow's body does.
+    const anywhere = spelledBy(
+      visibleOperators.filter(({ category }) => category === "expr"),
+    );
+    const amongStatements = spelledBy(visibleOperators);
+    if (amongStatements.length === 0) return;
     const described = (origin: ReturnType<typeof originOfSyntax>) =>
       reportedAlready.some((diagnostic) => mentions(diagnostic, origin));
-    const visitRun = (children: readonly Syntax[]): void => {
+    const holdsStatements = (node: Syntax): boolean =>
+      node.tag === "group"
+        ? node.delimiter === "brace"
+        : node.tag === "protected" &&
+          (node.category === "stmt" || node.category === "item");
+    const visitRun = (
+      children: readonly Syntax[],
+      statements: boolean,
+    ): void => {
+      const spellings = statements ? amongStatements : anywhere;
       for (let at = 0; at < children.length; at += 1) {
         const node = children[at]!;
         if (node.tag !== "token") {
-          if ("children" in node) visitRun(node.children as readonly Syntax[]);
+          if ("children" in node)
+            visitRun(node.children as readonly Syntax[], holdsStatements(node));
           continue;
         }
         const spelling = spellings.find(
@@ -1479,7 +1500,7 @@ export function createExpansionFrontendSession(
         at += width - 1;
       }
     };
-    visitRun(syntax);
+    visitRun(syntax, true);
   };
 
   /**

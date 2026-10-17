@@ -189,3 +189,14 @@ describe("an operator spelled with the tokens of TypeScript's own", () => {
     expect(text).toContain(expected);
   });
 });
+
+describe("an operator on statements spelled inside an expression", () => {
+  test.each([
+    ["an initializer", "export const r = a<-b;"],
+    ["a condition", "export function g() { if (a<-1) return 1; return 0; }"],
+  ])("is the tokens it is spelled with, in %s", (_label, source) => {
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toBe(source);
+  });
+});
