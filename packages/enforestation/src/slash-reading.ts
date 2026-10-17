@@ -43,6 +43,22 @@ export interface Reread {
 
 const reread: Reread = Object.freeze({ kind: "reread" });
 
+/** Whether `node`, peeked at a cursor, is past the syntax it holds. */
+function atEnd(node: Syntax | undefined): node is undefined | TokenSyntax {
+  return (
+    node === undefined || (node.tag === "token" && node.kind === "end-of-file")
+  );
+}
+
+/**
+ * Whether `node` ends in a group the reader never saw close: it read on to
+ * the end of the file inside it.
+ */
+function endsUnclosed(node: Syntax | undefined): boolean {
+  if (node?.tag !== "group") return false;
+  return node.close.tag === "missing" || endsUnclosed(node.children.at(-1));
+}
+
 export interface SlashTokenOptions {
   readonly origins: OriginStore;
   readonly allocateSyntaxId: () => SyntaxId;
@@ -77,11 +93,7 @@ export function regularExpressionAt(
   let tail = "";
   for (let offset = 0; ; offset += 1) {
     const node = cursor.peek(offset);
-    if (
-      node === undefined ||
-      (node.tag === "token" && node.kind === "end-of-file")
-    )
-      break;
+    if (atEnd(node)) break;
     const written = printLossless(node);
     const head = triviaText(firstToken(node)?.leadingTrivia ?? []);
     const after = triviaText(lastToken(node)?.trailingTrivia ?? []);
@@ -103,7 +115,15 @@ export function regularExpressionAt(
     if (lineBreak.test(own)) break;
   }
   const end = regularExpressionEnd(text, 0);
-  if (end === undefined) return undefined;
+  // Where what the cursor holds runs out inside a group the reader never
+  // closed, the rest of the line was read into something this does not see:
+  // `/[/*]/` read as a division opens a bracket and then a comment, which
+  // holds the rest of the file as trivia. Read with the slash beginning a
+  // regular expression, the line may well close.
+  if (end === undefined)
+    return atEnd(cursor.peek(nodes.length)) && endsUnclosed(nodes.at(-1))
+      ? reread
+      : undefined;
   const width = ends.indexOf(end) + 1;
   const run = nodes.slice(0, width);
   const following = nodes[width];

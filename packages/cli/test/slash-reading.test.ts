@@ -170,6 +170,23 @@ describe("a slash the reader judged a division where an operand begins", () => {
     expect(text).toContain("if (!(c)) /[(]/.test(s);");
   });
 
+  test.each([
+    ["to the end of the file", "  unless(c) /[/*]/.test(s);\n"],
+    ["closed later on the line", "  unless(c) /[/*]/.test(s); //*/\n"],
+  ])(
+    "is read again where a capture begins at it and it holds a comment's opening %s",
+    (_label, line) => {
+      // Read as a division, the bracket opens a comment the bracket never
+      // closes past, and the invocation holds only the bracket: the comment
+      // and the rest of the line were nowhere the capture looked.
+      const { text, messages } = expand(
+        `export function f(c: boolean, s: string) {\n${line}}\n`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("if (!(c)) /[/*]/.test(s);");
+    },
+  );
+
   test("is read as a regular expression in a file that defines macros", () => {
     const { text, messages } = expand(
       "export const t = twice(3);\n",
