@@ -317,3 +317,75 @@ export function f() {
     expect(text).toContain("globalThis.console.log(tmp_1, tmp);");
   });
 });
+
+/**
+ * A name a template writes and does not bind is free in it, and never means a
+ * local of the function its invocation stands in. Printed as written, a local
+ * of that spelling captured it, and the expansion read the caller's value with
+ * nothing said; the local is renamed instead.
+ */
+describe("a name a template writes free", () => {
+  const useGlobal = `export syntax useGlobal:expr {
+  rule { useGlobal($e:expr) } => { Math.abs($e) }
+}
+`;
+
+  test("is not captured by a local of the caller's", () => {
+    const { text, diagnostics } = expand(
+      useGlobal,
+      `import { useGlobal } from "./macros.sts" for syntax;
+export function h() {
+  const Math = { abs: (n: number) => n * 1000 };
+  return [useGlobal(-1), Math.abs(2)];
+}
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain("const Math_1 = { abs: (n: number) => n * 1000 };");
+    expect(text).toContain("return [Math.abs(-1), Math_1.abs(2)];");
+  });
+
+  test("is not captured by a parameter, which keeps its own uses", () => {
+    const { text, diagnostics } = expand(
+      useGlobal,
+      `import { useGlobal } from "./macros.sts" for syntax;
+export function h(Math: { abs(n: number): number }) {
+  return useGlobal(Math.abs(-1));
+}
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain(
+      "export function h(Math_1: { abs(n: number): number }) {",
+    );
+    expect(text).toContain("return Math.abs(Math_1.abs(-1));");
+  });
+
+  test("leaves a local no template name meets as written", () => {
+    const { text, diagnostics } = expand(
+      useGlobal,
+      `import { useGlobal } from "./macros.sts" for syntax;
+export function h() { const Math = 1; return Math; }
+export const g = useGlobal(-1);
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain("export function h() { const Math = 1; return Math; }");
+    expect(text).toContain("export const g = Math.abs(-1);");
+  });
+
+  test("still means what the module using it declares at its top", () => {
+    // The template's own module declares no `add`, so it means the one the
+    // module using it declares.
+    const { text, diagnostics } = expand(
+      `export syntax sum:expr { rule { sum($a:expr, $b:expr) } => { add($a, $b) } }\n`,
+      `import { sum } from "./macros.sts" for syntax;
+function add(a: number, b: number) { return a + b; }
+export const s = sum(1, 2);
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain("function add(a: number, b: number)");
+    expect(text).toContain("export const s = add(1, 2);");
+  });
+});

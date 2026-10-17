@@ -33,8 +33,20 @@ type IdentifierRole = "binder" | "property" | "reference";
  */
 type NameNamespace = "value" | "label";
 
+/** Where in the printed text the name a binder declares is in scope. */
+interface Region {
+  readonly start: number;
+  readonly end: number;
+}
+
 interface IdentifierClassification {
   readonly roleByOffset: ReadonlyMap<number, IdentifierRole>;
+  /**
+   * For each binder declared inside a function or a block, the region its
+   * declaration binds the name over. A module's own declarations, at its
+   * top or a namespace's, have none.
+   */
+  readonly regionByOffset: ReadonlyMap<number, Region>;
   readonly namespaceByOffset: ReadonlyMap<number, NameNamespace>;
   readonly shorthandOffsets: ReadonlySet<number>;
   readonly importBindingOffsets: ReadonlySet<number>;
@@ -183,6 +195,59 @@ function roleFor(
   }
 }
 
+/**
+ * The node over which the binder `identifier` declares its name, as
+ * TypeScript scopes it: a parameter over its function, a `let`, a `const`
+ * and a block-level declaration over the block holding it, a `var` over its
+ * function, a function or class expression's own name over itself.
+ */
+function bindingScope(identifier: ts.Identifier): ts.Node | undefined {
+  let declaration: ts.Node | undefined = identifier.parent;
+  while (
+    declaration !== undefined &&
+    (ts.isBindingElement(declaration) ||
+      ts.isObjectBindingPattern(declaration) ||
+      ts.isArrayBindingPattern(declaration))
+  )
+    declaration = declaration.parent;
+  if (declaration === undefined) return undefined;
+  const container = (node: ts.Node | undefined): ts.Node | undefined =>
+    node !== undefined && ts.isCaseClause(node) ? node.parent : node;
+  if (ts.isParameter(declaration) || ts.isTypeParameterDeclaration(declaration))
+    return declaration.parent;
+  if (ts.isVariableDeclaration(declaration)) {
+    const list = declaration.parent;
+    if (ts.isCatchClause(list)) return list;
+    if (!ts.isVariableDeclarationList(list)) return undefined;
+    const holder = list.parent;
+    if ((list.flags & ts.NodeFlags.BlockScoped) !== 0)
+      return ts.isVariableStatement(holder)
+        ? container(holder.parent)
+        : holder;
+    let scope: ts.Node | undefined = holder;
+    while (
+      scope !== undefined &&
+      !ts.isFunctionLike(scope) &&
+      !ts.isSourceFile(scope) &&
+      !ts.isModuleBlock(scope) &&
+      !ts.isClassStaticBlockDeclaration(scope)
+    )
+      scope = scope.parent;
+    return scope;
+  }
+  if (ts.isFunctionExpression(declaration) || ts.isClassExpression(declaration))
+    return declaration;
+  if (ts.isLabeledStatement(declaration)) return declaration;
+  if (
+    ts.isImportClause(declaration) ||
+    ts.isNamespaceImport(declaration) ||
+    ts.isImportSpecifier(declaration) ||
+    ts.isImportEqualsDeclaration(declaration)
+  )
+    return declaration.getSourceFile();
+  return container(declaration.parent);
+}
+
 function hasExportModifier(node: ts.Node): boolean {
   const modifiers = (
     node as { readonly modifiers?: readonly ts.ModifierLike[] }
@@ -226,6 +291,7 @@ function classifyIdentifiers(
   );
   const parameterProperties = parameterPropertyNames(parsed);
   const roleByOffset = new Map<number, IdentifierRole>();
+  const regionByOffset = new Map<number, Region>();
   const namespaceByOffset = new Map<number, NameNamespace>();
   const shorthandOffsets = new Set<number>();
   const importBindingOffsets = new Set<number>();
@@ -236,6 +302,18 @@ function classifyIdentifiers(
       const start = node.getStart(parsed);
       const role = roleFor(node, parameterProperties);
       roleByOffset.set(start, role);
+      if (role === "binder") {
+        const scope = bindingScope(node);
+        if (
+          scope !== undefined &&
+          !ts.isSourceFile(scope) &&
+          !ts.isModuleBlock(scope)
+        )
+          regionByOffset.set(start, {
+            start: scope.getStart(parsed),
+            end: scope.end,
+          });
+      }
       namespaceByOffset.set(start, namespaceFor(node));
       const parent: ts.Node | undefined = node.parent;
       if (
@@ -269,6 +347,7 @@ function classifyIdentifiers(
   }
   return Object.freeze({
     roleByOffset,
+    regionByOffset,
     namespaceByOffset,
     shorthandOffsets,
     importBindingOffsets,
@@ -355,6 +434,9 @@ export interface PlanHygienicRenamesOptions {
  * through the ordinary scope-set rules while call-site identifiers of the same
  * spelling resolve elsewhere and keep their text.
  *
+ * A call-site binder is renamed where a name a template writes free would
+ * otherwise be captured by it (see `planFor`).
+ *
  * A class is only renamed when its spelling is claimed by something else in the
  * file, so untroubled expansions print exactly as they did before.
  */
@@ -373,9 +455,14 @@ export function planHygienicRenames(
   const publicBinderSyntax = new Set<number>();
   const exportSpecifierSyntax = new Set<number>();
   const namespaceBySyntax = new Map<number, NameNamespace>();
+  const regionBySyntax = new Map<number, Region>();
+  const printedAt = new Map<number, number>();
   for (const span of options.tokenSpans) {
+    printedAt.set(span.syntax, span.start);
     const role = classification.roleByOffset.get(span.start);
     if (role !== undefined) roleBySyntax.set(span.syntax, role);
+    const region = classification.regionByOffset.get(span.start);
+    if (region !== undefined) regionBySyntax.set(span.syntax, region);
     const space = classification.namespaceByOffset.get(span.start);
     if (space !== undefined) namespaceBySyntax.set(span.syntax, space);
     if (classification.shorthandOffsets.has(span.start))
@@ -446,6 +533,69 @@ export function planHygienicRenames(
     // One published binder holds the whole class in place; the rest of the
     // class is the same name.
     for (const key of published) classes.delete(key);
+
+    // A name a template writes and does not bind there is free in it, and
+    // never means a local of the function or block its invocation stands
+    // in: `Math.abs($e)` means the global, whatever `Math` the caller
+    // declares around the call. Printed as written, such a local captured
+    // it, so the local is renamed instead, and its own uses with it -- unless
+    // the reference is in its scopes, as a name a contract binds is. What a
+    // module declares at its top is left alone: a template that writes
+    // `add($a)` where its own module declares no `add` means the one the
+    // module using it declares or imports.
+    const introducedClasses = [...classes.values()];
+    const callSiteRegions = new Map<string, Region[]>();
+    const freeBySpelling = new Map<string, TokenSyntax[]>();
+    for (const token of inSpace) {
+      if (roleBySyntax.get(token.id) === "property") continue;
+      if (roleBySyntax.get(token.id) === "binder") continue;
+      if (!options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
+      if (
+        introducedClasses.some(
+          (candidate) =>
+            candidate.spelling === token.raw &&
+            options.scopes.subset(candidate.scopes, token.scopes),
+        )
+      )
+        continue;
+      const spelled = freeBySpelling.get(token.raw);
+      if (spelled === undefined) freeBySpelling.set(token.raw, [token]);
+      else spelled.push(token);
+    }
+    for (const token of inSpace) {
+      const free = freeBySpelling.get(token.raw);
+      if (free === undefined) continue;
+      if (roleBySyntax.get(token.id) !== "binder") continue;
+      if (options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
+      if (publicBinderSyntax.has(token.id) || isExported(token)) continue;
+      const region = regionBySyntax.get(token.id);
+      if (region === undefined) continue;
+      const captures = free.some((reference) => {
+        const at = printedAt.get(reference.id);
+        return (
+          at !== undefined &&
+          at >= region.start &&
+          at < region.end &&
+          !options.scopes.subset(token.scopes, reference.scopes)
+        );
+      });
+      if (!captures) continue;
+      // A binder the call site declares carries the scopes of the code
+      // around it, which an import or a binder of another function may
+      // carry as well, so what it binds is told by where it binds too: its
+      // class is renamed only over the regions its binders scope.
+      const key = `${token.raw} ${String(token.scopes)}`;
+      const regions = callSiteRegions.get(key);
+      if (regions !== undefined) regions.push(region);
+      else {
+        callSiteRegions.set(key, [region]);
+        classes.set(key, {
+          spelling: token.raw,
+          scopes: token.scopes,
+          declaration: token.origin,
+        });
+      }
+    }
     if (classes.size === 0) return undefined;
 
     const environments = new EnvironmentStore();
@@ -486,8 +636,31 @@ export function planHygienicRenames(
       if (!belongsToClass(token)) unavailable.add(token.raw);
     }
 
+    const callSiteClasses = [...callSiteRegions].map(([key, regions]) => ({
+      class: classes.get(key)!,
+      regions,
+    }));
+    /** Whether a token a call-site class would reach stands where it binds. */
+    const withinCallSiteClass = (token: TokenSyntax): boolean => {
+      const reached = callSiteClasses.filter(
+        (candidate) =>
+          candidate.class.spelling === token.raw &&
+          options.scopes.subset(candidate.class.scopes, token.scopes),
+      );
+      if (reached.length === 0) return true;
+      const at = printedAt.get(token.id);
+      return (
+        at !== undefined &&
+        reached.some(({ regions }) =>
+          regions.some((region) => at >= region.start && at < region.end),
+        )
+      );
+    };
+
     const takesPart = (token: TokenSyntax): boolean =>
-      spaceOf(token) === space && roleBySyntax.get(token.id) !== "property";
+      spaceOf(token) === space &&
+      roleBySyntax.get(token.id) !== "property" &&
+      withinCallSiteClass(token);
 
     return createHygienicNamePlan({
       syntax: options.syntax,
