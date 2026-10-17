@@ -930,11 +930,14 @@ export function createExpansionFrontendSession(
     );
   const extentResolver = createMacroExtentResolver({
     resolve: (spelling, category) => resolve(spelling, category),
-    consumeClass: (macro) => {
+    consumeClass: (macro, context) => {
       const consumer = classConsumerByBinding.get(macro.binding.id);
       if (consumer === undefined)
         throw new Error("macro syntax-class consumer is not initialized");
-      return consumer;
+      const contexts = new Set<MacroContext>();
+      if (context.allowAwait) contexts.add("async");
+      if (context.allowYield) contexts.add("generator");
+      return inContexts(consumer, contexts);
     },
     matchesBindingLiteral: options.matchesBindingLiteral,
     ...shared,

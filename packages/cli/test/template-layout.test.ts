@@ -555,3 +555,27 @@ export function g() {
     expect(output).toContain("const c = f;\n  (5) * 2");
   });
 });
+
+describe("a macro whose capture holds `await`", () => {
+  test.each([
+    ["const", "const r = id await a;", "const r = [await a];"],
+    ["let", "let r = id await a;", "let r = [await a];"],
+  ])(
+    "expands in a %s's initializer inside an async function",
+    (_, line, expected) => {
+      // The extent of a macro in an initializer was measured outside the
+      // function's contexts, where `await` reads as nothing; no rule matched,
+      // and the initializer was emitted as written.
+      const output = expand(
+        `export syntax id:expr { rule { id $e:expr } => { [$e] } }`,
+        `import { id } from "./macros.sts" for syntax;
+declare const a: Promise<number>;
+export async function w() {
+  ${line}
+  return r;
+}`,
+      );
+      expect(output).toContain(expected);
+    },
+  );
+});

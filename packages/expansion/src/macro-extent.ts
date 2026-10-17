@@ -23,7 +23,17 @@ export interface CreateMacroExtentResolverOptions {
     category: "expr" | "binding" | "stmt" | "item" | "type" | "typeMember",
     context: ConsumerContext,
   ) => CompiledMacroBinding | undefined;
-  readonly consumeClass: (macro: CompiledMacroBinding) => SyntaxClassConsumer;
+  /**
+   * The consumer of `macro`'s captures, reading where `context` says the
+   * invocation stands: a capture holding `await` or `yield` reads it only
+   * inside an async function or a generator, as the invocation's own match
+   * does. Measured outside them, `const r = id await a;` matched no rule,
+   * and the initializer was read as no macro and left unexpanded.
+   */
+  readonly consumeClass: (
+    macro: CompiledMacroBinding,
+    context: ConsumerContext,
+  ) => SyntaxClassConsumer;
   readonly origins: OriginStore;
   readonly allocateSyntaxId: () => SyntaxId;
   readonly matchesBindingLiteral?:
@@ -222,7 +232,7 @@ export function createMacroExtentResolver(
     ];
     for (const rule of ordered) {
       const matched = executeMatcher(rule.matcher, cursor.fork(), {
-        consumeClass: options.consumeClass(macro),
+        consumeClass: options.consumeClass(macro, context),
         tracker: context.tracker,
         cancellation: context.cancellation,
         environmentEpoch: context.environmentEpoch,
