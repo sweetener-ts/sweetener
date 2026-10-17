@@ -604,3 +604,20 @@ export function f() { one <- 1; made; return one; }`,
     expect(output).toContain(expected);
   });
 });
+
+describe("a member a macro writes under a member typed `void`", () => {
+  test("keeps the line break that ends the member above it", () => {
+    // `void` is a reserved word, which nothing was taken to end at, and the
+    // line break under `m(): void` was dropped: `m(): void readonly at = 1;`.
+    const output = expand(
+      `export syntax held:classElement { rule { held } => { readonly at = 1; } }`,
+      `import { held } from "./macros.sts" for syntax;
+export class C {
+  m(): void {}
+  n(): void
+  held
+}`,
+    );
+    expect(output).toMatch(/n\(\): void\n\s*readonly at = 1;/u);
+  });
+});

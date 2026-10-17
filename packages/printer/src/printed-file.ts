@@ -478,6 +478,11 @@ function seamSpace(left: string, right: string, context: SeamContext): string {
  */
 function mayEndStatement(text: string): boolean {
   if (endsAnOperand.has(text)) return true;
+  // A type ends at `void` as at any name, and a member or a declaration whose
+  // type it ends ends with it: `m(): void` and a member written under it.
+  // Where it is the operator, its operand is read across a line break
+  // whether or not one is kept.
+  if (text === "void") return true;
   if (isReservedWord(text)) return false;
   return /[\p{ID_Continue}$"'`]$/u.test(text);
 }
