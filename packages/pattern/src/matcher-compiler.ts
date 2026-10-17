@@ -119,6 +119,7 @@ export function compileMatcherProgram(
               op: "literal",
               origin: node.origin,
               literal: node.literal,
+              joined: node.joined,
               next: continuation,
             }),
           );

@@ -19,6 +19,8 @@ export type MatcherInstruction =
   | (InstructionBase & {
       readonly op: "literal";
       readonly literal: LiteralKey;
+      /** Whether it is written against what precedes it (`LiteralPattern`). */
+      readonly joined: boolean;
       readonly next: ProgramCounter;
     })
   | (InstructionBase & {

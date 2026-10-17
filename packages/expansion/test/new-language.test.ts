@@ -206,8 +206,8 @@ function createHarness() {
         ...base,
         stopSet: base.stopSet.union(
           new StopSet(
-            (boundary?.stopTokens ?? []).map((raw) => ({
-              kind: "token" as const,
+            (boundary?.stopSpellings ?? []).map((raw) => ({
+              kind: "spelling" as const,
               raw,
             })),
           ),

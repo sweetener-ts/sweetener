@@ -29,6 +29,12 @@ export type LiteralKey = TokenLiteralKey | BindingLiteralKey;
 export interface LiteralPattern extends PatternBase {
   readonly kind: "literal";
   readonly literal: LiteralKey;
+  /**
+   * Whether the literal is written directly after the syntax before it,
+   * with nothing between them: the `+` and the `>` of `<+>`, which with the
+   * `<` spell one operator a capture before them stops at.
+   */
+  readonly joined: boolean;
 }
 
 export interface ClassCallPattern extends PatternBase {
@@ -157,11 +163,12 @@ export function createBindingLiteralKey(
 export function createLiteralPattern(
   origin: OriginId,
   literal: LiteralKey,
+  joined = false,
 ): LiteralPattern {
   if (!Object.isFrozen(literal)) {
     throw new TypeError("Literal key must be immutable");
   }
-  return Object.freeze({ kind: "literal", origin, literal });
+  return Object.freeze({ kind: "literal", origin, literal, joined });
 }
 
 export function createClassCallPattern(

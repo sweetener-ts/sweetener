@@ -185,6 +185,7 @@ function lowerBindingLiterals(
         : createLiteralPattern(
             pattern.origin,
             createBindingLiteralKey(declaration.binding, declaration.alias),
+            pattern.joined,
           );
     }
     case "sequence":

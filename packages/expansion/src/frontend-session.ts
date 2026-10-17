@@ -1094,8 +1094,10 @@ export function createExpansionFrontendSession(
           misread: captureMisreads.record,
           stopSet: base.stopSet.union(
             new StopSet(
-              (boundary?.stopTokens ?? []).map((raw) => ({
-                kind: "token" as const,
+              // An operator the scanner splits across tokens stops only where
+              // they are written together.
+              (boundary?.stopSpellings ?? []).map((raw) => ({
+                kind: "spelling" as const,
                 raw,
               })),
             ),

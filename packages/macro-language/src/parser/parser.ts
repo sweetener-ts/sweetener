@@ -693,6 +693,7 @@ class Parser {
             createLiteralPattern(
               current.origin,
               createTokenLiteralKey(current.kind, current.raw.slice(1)),
+              current.leadingTrivia.length === 0,
             ),
           );
         index += 1;
@@ -781,6 +782,7 @@ class Parser {
       return createLiteralPattern(
         node.origin,
         createTokenLiteralKey(node.kind, node.raw),
+        node.leadingTrivia.length === 0,
       );
     }
     return createSequencePattern(node.origin, []);

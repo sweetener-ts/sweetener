@@ -172,6 +172,19 @@ describe("a chain of a user infix operator", () => {
   });
 });
 
+describe("an operand before an operator the scanner splits", () => {
+  test("goes on past a `<` that does not begin the operator", () => {
+    // The capture before `<+>` stopped at any `<`, and so at the type
+    // arguments of a call, where the rule then looked for `+`.
+    const { text, messages } = expand(
+      "declare function id<T>(value: T): T;\n" +
+        "export const s = id<number>(v0) <+> v1;",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("export const s = (id<number>(v0) + v1);");
+  });
+});
+
 describe("a chain whose expansion nests", () => {
   test.each([
     ["left", "<&>"],

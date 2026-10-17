@@ -77,10 +77,11 @@ function group(children: readonly Syntax[]) {
   });
 }
 
-function literal(raw: string) {
+function literal(raw: string, joined = false) {
   return createLiteralPattern(
     origin,
     createTokenLiteralKey("punctuation", raw),
+    joined,
   );
 }
 
@@ -461,11 +462,37 @@ describe("matcher virtual machine", () => {
     const observed: string[][] = [];
     const result = executeMatcher(program(pattern), input, {
       consumeClass: (classId, cursor, boundary) => {
-        observed.push([...(boundary?.stopTokens ?? [])]);
+        observed.push([...(boundary?.stopSpellings ?? [])]);
         return consumeIdent(classId, cursor);
       },
     });
     expect(result.matched).toBe(true);
     expect(observed).toEqual([["-"]]);
+  });
+
+  it("passes literals written together as one spelling", () => {
+    const pattern = createSequencePattern(origin, [
+      capture(),
+      literal("<"),
+      literal("+", true),
+      literal(">", true),
+      literal(";"),
+    ]);
+    const input = [
+      identifier("value"),
+      token("<"),
+      token("+"),
+      token(">"),
+      token(";"),
+    ];
+    const observed: string[][] = [];
+    const result = executeMatcher(program(pattern), input, {
+      consumeClass: (classId, cursor, boundary) => {
+        observed.push([...(boundary?.stopSpellings ?? [])]);
+        return consumeIdent(classId, cursor);
+      },
+    });
+    expect(result.matched).toBe(true);
+    expect(observed).toEqual([["<+>"]]);
   });
 });

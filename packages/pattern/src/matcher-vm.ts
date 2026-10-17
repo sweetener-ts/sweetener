@@ -47,7 +47,11 @@ export interface SyntaxClassMatch {
 }
 
 export interface SyntaxClassBoundary {
-  readonly stopTokens: readonly string[];
+  /**
+   * Spellings a class stops before, each written as one or more tokens with
+   * nothing between them.
+   */
+  readonly stopSpellings: readonly string[];
 }
 
 export interface SyntaxClassConsumer {
@@ -74,14 +78,29 @@ export interface SyntaxClassConsumer {
     ((classId: SyntaxClassId) => string | undefined) | undefined;
 }
 
+/**
+ * Where a class read before the literal at `next` stops: at the literal, or
+ * at the whole of what the literals written together from there spell. An
+ * operator written `<+>` is three tokens to the scanner, and a capture before
+ * it that stopped at the first stopped at the `<` of `id<number>(a)`.
+ */
 function classBoundary(
   program: MatcherProgram,
   next: ProgramCounter,
 ): SyntaxClassBoundary | undefined {
   const instruction = program.instructions[next];
-  return instruction?.op === "literal" && instruction.literal.kind === "token"
-    ? Object.freeze({ stopTokens: Object.freeze([instruction.literal.raw]) })
-    : undefined;
+  if (instruction?.op !== "literal" || instruction.literal.kind !== "token")
+    return undefined;
+  let spelling = instruction.literal.raw;
+  for (
+    let following = program.instructions[instruction.next];
+    following?.op === "literal" &&
+    following.literal.kind === "token" &&
+    following.joined;
+    following = program.instructions[following.next]
+  )
+    spelling += following.literal.raw;
+  return Object.freeze({ stopSpellings: Object.freeze([spelling]) });
 }
 
 export interface ExecuteMatcherOptions {
