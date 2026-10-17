@@ -122,17 +122,23 @@ async function main() {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
   process.stdout.write(
-    `Unit tests: ${report.passed} passed, ${report.failed} failed, ${report.skipped} skipped across ${report.testFiles} files (${report.durationMs} ms).\n`,
+    `Unit tests: ${report.passed} passed, ${report.failed} failed, ${report.skipped} skipped across ${report.testFiles} files, ${report.failedFiles} of them failed (${report.durationMs} ms).\n`,
   );
 
-  if (raw.numFailedTests > 0) {
-    for (const file of raw.testResults) {
-      for (const assertion of file.assertionResults) {
-        if (assertion.status !== "failed") continue;
-        process.stderr.write(`\n${assertion.fullName}\n`);
-        process.stderr.write(`${assertion.failureMessages.join("\n")}\n`);
-      }
+  for (const file of raw.testResults) {
+    for (const assertion of file.assertionResults) {
+      if (assertion.status !== "failed") continue;
+      process.stderr.write(`\n${assertion.fullName}\n`);
+      process.stderr.write(`${assertion.failureMessages.join("\n")}\n`);
     }
+    // A file that failed with no test failing in it failed to load, or
+    // failed outside every test: named here, or the run fails with nothing
+    // said about where.
+    if (
+      file.status === "failed" &&
+      !file.assertionResults.some(({ status }) => status === "failed")
+    )
+      process.stderr.write(`\n${file.name}\n${file.message ?? ""}\n`);
   }
   if (result.stderr) process.stderr.write(result.stderr);
   process.exitCode = result.status ?? 1;
