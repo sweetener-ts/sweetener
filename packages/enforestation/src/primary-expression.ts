@@ -31,6 +31,7 @@ import {
   type RegularExpressionRead,
 } from "./slash-reading.js";
 import {
+  anglesWidthFrom,
   consumeBalancedTypeArguments,
   typeOperandFollows,
 } from "./type-class-element.js";
@@ -499,9 +500,19 @@ function parenthesizedArrowBodyStart(
   // No bound on how far the return type reaches: the rules below say what
   // ends it, and a count said only that a type of more than sixty-four nodes
   // -- a thirty-three-member union -- was not one.
-  for (;;) {
+  //
+  // A function type among type arguments has a `=>` of its own, which is
+  // not the arrow's: `(): Map<(k: K) => V, never> => …`. Taken as the
+  // arrow's, its body began inside the angles and ended at their comma.
+  let typeArguments = 0;
+  for (;; offset += 1) {
     const node = cursor.peek(offset);
     if (node === undefined) return undefined;
+    if (node.tag === "token") {
+      typeArguments += angleWidth(node.raw, "<");
+      typeArguments = Math.max(0, typeArguments - angleWidth(node.raw, ">"));
+    }
+    if (typeArguments > 0) continue;
     if (node.tag === "token" && node.raw === "=>") {
       return stops &&
         !returnTypeReadsInConsequent((at) => cursor.peek(at), offset)
@@ -518,7 +529,6 @@ function parenthesizedArrowBodyStart(
       return undefined;
     if (node.tag === "token" && (node.raw === ";" || node.raw === "="))
       return undefined;
-    offset += 1;
   }
 }
 
@@ -606,12 +616,105 @@ export function arrowBodyExtent(
         return { end: offset, conditional: false };
     }
     if (node.tag !== "token") continue;
+    // Type arguments and a generic arrow's type parameters hold commas of
+    // their own: `() => make<A, B>(x)` goes on past the comma in the angles.
+    const angles = typeAnglesWidth(nodeAt, offset, offset === from);
+    if (angles !== undefined) {
+      offset += angles - 1;
+      continue;
+    }
     if (node.raw === "?") conditionals += 1;
     else if (node.raw === ":") {
+      // The return type of an arrow the body is, or begins with:
+      // `(a) => (b): B => b`. The body goes on past that arrow's `=>`.
+      const arrow = returnTypeArrow(nodeAt, offset);
+      if (arrow !== undefined) {
+        offset = arrow;
+        continue;
+      }
       if (conditionals === 0) return { end: offset, conditional: true };
       conditionals -= 1;
     } else if (node.raw === "," || node.raw === ";")
       return { end: offset, conditional: false };
+  }
+}
+
+/**
+ * How many nodes the angles opened at `offset` span where they hold types:
+ * a generic arrow's type parameters where an operand begins, and type
+ * arguments after an operand where a call, or what may follow an
+ * instantiation, comes after them. Undefined where the `<` compares.
+ */
+function typeAnglesWidth(
+  nodeAt: (offset: number) => Syntax | undefined,
+  offset: number,
+  first: boolean,
+): number | undefined {
+  const node = nodeAt(offset);
+  if (node?.tag !== "token" || node.raw !== "<") return undefined;
+  const width = anglesWidthFrom((ahead) => nodeAt(offset + ahead));
+  if (width === undefined) return undefined;
+  const previous = nodeAt(offset - 1);
+  const operandBegins =
+    first ||
+    (previous?.tag === "token" &&
+      (previous.kind === "punctuation"
+        ? previous.raw !== "!" && previous.raw !== "++" && previous.raw !== "--"
+        : previous.kind === "keyword" && beginsOperandAfter.has(previous.raw)));
+  if (operandBegins) return width;
+  const following = nodeAt(offset + width);
+  return callFollowsTypeArguments(following) || typeArgumentsFollow(following)
+    ? width
+    : undefined;
+}
+
+/** Words after which an operand begins. */
+const beginsOperandAfter = new Set([
+  "return",
+  "typeof",
+  "void",
+  "await",
+  "yield",
+  "new",
+  "in",
+  "of",
+  "instanceof",
+  "case",
+  "throw",
+  "delete",
+]);
+
+/**
+ * Where the `=>` of the arrow whose return type the `:` at `colon` opens
+ * stands, if it is one: a parameter list stands before the `:`, and a `=>`
+ * follows the type before anything ends it.
+ */
+function returnTypeArrow(
+  nodeAt: (offset: number) => Syntax | undefined,
+  colon: number,
+): number | undefined {
+  const parameters = nodeAt(colon - 1);
+  if (parameters?.tag !== "group" || parameters.delimiter !== "parenthesis")
+    return undefined;
+  for (let offset = colon + 1; ; offset += 1) {
+    const node = nodeAt(offset);
+    if (node === undefined) return undefined;
+    if (node.tag !== "token") continue;
+    if (node.raw === "<") {
+      const width = anglesWidthFrom((ahead) => nodeAt(offset + ahead));
+      if (width === undefined) return undefined;
+      offset += width - 1;
+      continue;
+    }
+    if (node.raw === "=>") return offset;
+    if (
+      node.raw === "," ||
+      node.raw === ";" ||
+      node.raw === "?" ||
+      node.raw === ":" ||
+      node.raw === "="
+    )
+      return undefined;
   }
 }
 

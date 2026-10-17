@@ -285,10 +285,14 @@ export function anglesWidthAt(
   nodes: readonly Syntax[],
   at: number,
 ): number | undefined {
-  const { closed, width } = scanAngles(
-    (offset) => nodes[at + offset],
-    () => undefined,
-  );
+  return anglesWidthFrom((offset) => nodes[at + offset]);
+}
+
+/** `anglesWidthAt`, over the nodes `peek` gives from the `<` on. */
+export function anglesWidthFrom(
+  peek: (offset: number) => Syntax | undefined,
+): number | undefined {
+  const { closed, width } = scanAngles(peek, () => undefined);
   return closed ? width : undefined;
 }
 
@@ -570,13 +574,18 @@ class TypeConsumer implements SyntaxConsumer {
         const previousWord = [...children]
           .reverse()
           .find((item) => token(item));
+        // A generic function type begins a type, follows `new`, and is what
+        // a function type may return: `(a: A) => <B>(b: B) => B`. Stopped at
+        // the `<` there, an annotation of that type was refused.
+        const returned = expectingOperand && token(children.at(-1), "=>");
         if (
           expectingOperand &&
           children.length > 0 &&
-          previousWord?.raw !== "new"
+          previousWord?.raw !== "new" &&
+          !returned
         )
           break;
-        const atStart = children.length === 0;
+        const atStart = children.length === 0 || returned;
         if (!consumeAngles(cursor, context, children)) {
           return failure(
             "type",

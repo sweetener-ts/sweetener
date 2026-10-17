@@ -158,6 +158,25 @@ describe("statement and item consumers", () => {
     expect(printLosslessSequence(result.syntax.children)).toBe(source);
   });
 
+  // Each was read short of its end, the declaration refused, and the module
+  // walked as raw tokens: an arrow's body ended at a comma among type
+  // arguments and at a nested arrow's return type, a return type's function
+  // type lent the arrow its `=>`, and a function type's return type could
+  // not be generic.
+  test.each([
+    "const f = (s) => g<never, number>(s);",
+    "const f = (s): number => g<never, number>(s), h = 1;",
+    "const f = (a) => (b): number => b;",
+    "const f = <A>(a: A) => <B>(b: B): B => b;",
+    "const f = (): Map<(k: K) => V, never> => g;",
+    "let p: (a: number) => <S>(s: S) => S;",
+  ])("reads %s as one declaration", (source) => {
+    const { result } = parse(source, "item");
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected a declaration");
+    expect(result.cursor.atEnd).toBe(true);
+  });
+
   test("consumes a generic-arrow variable item", () => {
     const source =
       'const Some = <T>(value: T): Option<T> => ({ tag: "Some", value });';
