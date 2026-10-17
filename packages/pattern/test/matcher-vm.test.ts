@@ -251,6 +251,59 @@ describe("matcher virtual machine", () => {
     ).toEqual(names);
   });
 
+  /** `$($($item:ident)+)+` followed by `end`, unseparated at both levels. */
+  function nestedUnseparated(): PatternNode {
+    const inner = createRepeatPattern({
+      origin,
+      repetition: 30 as RepetitionId,
+      body: capture(),
+      minimum: 1,
+      depth: 2,
+      cardinalityGroup: 31 as CardinalityGroupId,
+    });
+    const outer = createRepeatPattern({
+      origin,
+      repetition: 32 as RepetitionId,
+      body: inner,
+      minimum: 1,
+      depth: 1,
+      cardinalityGroup: 33 as CardinalityGroupId,
+    });
+    return createSequencePattern(origin, [outer, literal("end")]);
+  }
+
+  it("fails nested repetitions without trying every split of the input", () => {
+    // Every way of grouping forty names into runs fails at the missing
+    // `end`; a failure keyed on how many each run captured stood for one
+    // grouping alone, and every one of them was tried.
+    const names = Array.from({ length: 40 }, (_, at) => identifier(`n${at}`));
+    const result = executeMatcher(
+      program(nestedUnseparated()),
+      [...names, token("wrong")],
+      {
+        consumeClass: consumeIdent,
+        budget: createResourceBudget({ maxMatcherSteps: 100_000 }),
+      },
+    );
+    expect(result.matched).toBe(false);
+  });
+
+  it("still matches nested repetitions greedily, the first split first", () => {
+    const result = match(nestedUnseparated(), [
+      identifier("a"),
+      identifier("b"),
+      identifier("c"),
+      token("end"),
+    ]);
+    expect(result.matched).toBe(true);
+    if (!result.matched) throw new Error("expected match");
+    expect(result.captures.get(captureId)).toMatchObject({
+      kind: "sequence",
+      depth: 2,
+      elements: [{ kind: "sequence", depth: 1, elements: [{}, {}, {}] }],
+    });
+  });
+
   it("materializes empty and nested capture dimensions", () => {
     const inner = createRepeatPattern({
       origin,

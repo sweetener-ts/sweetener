@@ -292,18 +292,36 @@ function cursorOrigin(cursor: SyntaxCursor): OriginId | undefined {
   return cursor.remainingRange().sequence.at(-1)?.origin;
 }
 
-function repetitionShape(frames: readonly RepeatFrame[]): string {
-  return frames
-    .map((frame) => {
-      const lengths = frame.captures
-        .map(
-          (slot) =>
-            `${String(slot)}=${String(frame.accumulated.get(slot)?.length ?? 0)}`,
-        )
-        .join(",");
-      return `${String(frame.repetition)}@${String(frame.count)}[${lengths}]`;
-    })
+/**
+ * What of a state's repetitions and captures decides whether the rest of the
+ * match from it can succeed, for a failure found from one state to stand for
+ * every state that agrees on it: which repetition each frame is, whether it
+ * has met its minimum -- the one thing its count decides, but for a bounded
+ * one, which may not loop past its maximum -- and which slots the iteration
+ * under way has filled, which it commits only once every one of them is.
+ *
+ * What was captured, and how many times, decides what a match returns and
+ * never whether it succeeds. Keyed on those too, a failure stood only for the
+ * one way of splitting the input it was found on, and a pattern of nested
+ * repetitions tried every split of its input: nested `+`s over thirty names
+ * ran out of steps.
+ */
+function outcomeShape(state: ExecutionState): string {
+  const frames = state.repeats
+    .map(
+      (frame) =>
+        `${String(frame.repetition)}@${String(
+          frame.maximum === undefined
+            ? Math.min(frame.count, frame.minimum)
+            : frame.count,
+        )}`,
+    )
     .join("/");
+  const filled = [...state.captures.keys()]
+    .map((slot) => String(slot))
+    .sort()
+    .join(",");
+  return `${frames}[${filled}]`;
 }
 
 export function executeMatcher(
@@ -337,7 +355,18 @@ export function executeMatcher(
       repeats: [],
     },
   ];
-  const failedMemo = new Set<string>();
+  /**
+   * Every configuration a state has reached -- where the program stands,
+   * where the input does, and what of the state decides the outcome
+   * (`outcomeShape`). States are run depth first and the first to accept is
+   * the match, so one reaching a configuration another reached earlier finds
+   * only what that one's run found and failed on: every state its run left
+   * pending was run before this one, and one standing in that run itself
+   * reached the configuration again without reading anything. Marked only
+   * where a state failed, the memo pruned no branch above the failure, and a
+   * pattern of nested repetitions tried every split of its input.
+   */
+  const reached = new Set<string>();
   let memoizedFailureCount = 0;
   let bestFailure:
     | {
@@ -402,12 +431,13 @@ export function executeMatcher(
     while (running) {
       cancellation.throwIfCancellationRequested();
       tracker.chargeMatcherSteps();
-      const memoKey = `${String(state.pc)}|${state.cursor.identity}|${String(environmentEpoch)}|${repetitionShape(state.repeats)}`;
-      if (failedMemo.has(memoKey)) {
+      const memoKey = `${String(state.pc)}|${state.cursor.identity}|${String(environmentEpoch)}|${outcomeShape(state)}`;
+      if (reached.has(memoKey)) {
         memoizedFailureCount += 1;
         running = false;
         continue;
       }
+      reached.add(memoKey);
       const instruction = program.instructions[state.pc];
       if (instruction === undefined) {
         throw new RangeError(`Invalid matcher PC ${String(state.pc)}`);
@@ -415,7 +445,6 @@ export function executeMatcher(
       switch (instruction.op) {
         case "literal":
           if (!tokenMatches(state.cursor.peek(), instruction, options)) {
-            failedMemo.add(memoKey);
             recordFailure(
               state.cursor,
               Object.freeze({ kind: "literal", literal: instruction.literal }),
@@ -438,7 +467,6 @@ export function executeMatcher(
             },
           );
           if (matched === undefined) {
-            failedMemo.add(memoKey);
             const description = options.consumeClass.describeFailure?.(
               instruction.classId,
             );
@@ -490,7 +518,6 @@ export function executeMatcher(
         }
         case "lookahead":
           if (!lookaheadMatches(state.cursor, instruction)) {
-            failedMemo.add(memoKey);
             recordFailure(
               state.cursor,
               Object.freeze({
@@ -517,7 +544,6 @@ export function executeMatcher(
             syntax?.tag !== "group" ||
             syntax.delimiter !== instruction.delimiter
           ) {
-            failedMemo.add(memoKey);
             recordFailure(
               state.cursor,
               Object.freeze({
@@ -548,7 +574,6 @@ export function executeMatcher(
             ? state.cursor.exitGroup()
             : undefined;
           if (frame === undefined || outer === undefined) {
-            failedMemo.add(memoKey);
             recordFailure(
               state.cursor,
               Object.freeze({ kind: "end-of-group" }),
@@ -626,7 +651,6 @@ export function executeMatcher(
             });
           }
           if (!complete) {
-            failedMemo.add(memoKey);
             running = false;
             break;
           }
