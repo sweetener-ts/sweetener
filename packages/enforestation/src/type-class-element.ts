@@ -267,31 +267,65 @@ function consumeAngles(
   context: ConsumerContext,
   children: Syntax[],
 ): boolean {
+  const { closed, width } = scanAngles(
+    (offset) => cursor.peek(offset),
+    () => checkWork(context),
+  );
+  for (let taken = 0; taken < width; taken += 1)
+    children.push(cursor.consume()!);
+  return closed;
+}
+
+/**
+ * How many of `nodes` from `at` the angle-delimited list of types opened
+ * there spans, as `consumeAngles` reads it; undefined where it does not
+ * close. For a reader that has a run of syntax rather than a cursor.
+ */
+export function anglesWidthAt(
+  nodes: readonly Syntax[],
+  at: number,
+): number | undefined {
+  const { closed, width } = scanAngles(
+    (offset) => nodes[at + offset],
+    () => undefined,
+  );
+  return closed ? width : undefined;
+}
+
+/**
+ * The scan `consumeAngles` makes, over the nodes `peek` gives from the `<`
+ * on: whether the list closed, and how many nodes it read, up to and
+ * including the one that closed it or that said it was no list.
+ */
+function scanAngles(
+  peek: (offset: number) => Syntax | undefined,
+  work: () => void,
+): { readonly closed: boolean; readonly width: number } {
   let depth = 0;
   // Conditional types begun with `extends` and not yet given their `?`, and
   // those given one and awaiting their `:`.
   let awaitingQuestion = 0;
   let awaitingColon = 0;
-  while (!cursor.atEnd) {
-    checkWork(context);
-    const next = cursor.consume()!;
-    children.push(next);
+  for (let offset = 0; ; offset += 1) {
+    work();
+    const next = peek(offset);
+    if (next === undefined) return { closed: false, width: offset };
     if (!token(next)) continue;
-    if (typeListEndsBefore.has(next.raw)) return false;
+    const width = offset + 1;
+    if (typeListEndsBefore.has(next.raw)) return { closed: false, width };
     if (next.raw === "extends") awaitingQuestion += 1;
     else if (next.raw === "?" && awaitingQuestion > 0) {
       awaitingQuestion -= 1;
       awaitingColon += 1;
     } else if (next.raw === ":") {
-      if (awaitingColon === 0) return false;
+      if (awaitingColon === 0) return { closed: false, width };
       awaitingColon -= 1;
     }
     depth += angleWidth(next.raw, "<");
     depth -= angleWidth(next.raw, ">");
-    if (depth === 0) return true;
-    if (depth < 0) return false;
+    if (depth === 0) return { closed: true, width };
+    if (depth < 0) return { closed: false, width };
   }
-  return false;
 }
 
 /**

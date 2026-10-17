@@ -13,6 +13,7 @@ import type {
   SyntaxId,
 } from "@sweetener/shared";
 import {
+  angleWidth,
   createProtectedSyntax,
   isIdentifierToken,
   spanEnvelope,
@@ -32,6 +33,11 @@ import {
   type MacroExtentResolver,
   type SyntaxConsumer,
 } from "./consumer.js";
+import {
+  callFollowsTypeArguments,
+  typeArgumentsFollow,
+} from "./primary-expression.js";
+import { anglesWidthAt } from "./type-class-element.js";
 
 export type BindingShape = "identifier" | "array" | "object";
 
@@ -203,14 +209,75 @@ export function parameterBinder(segment: readonly Syntax[]): readonly Syntax[] {
   return segment.slice(offset);
 }
 
-function splitOnComma(syntax: readonly Syntax[]): readonly SyntaxSequence[] {
+/**
+ * `syntax` split at each `,` that separates its elements. A type and a
+ * default hold commas of their own, in type arguments -- `m: Map<K, V>`,
+ * `v = make<A, B>(x)` -- and those separate nothing: split there, the
+ * parameter list or the pattern was no list at all, and nothing in the
+ * declaration holding it was read. `annotated` says whether a `:` begins a
+ * type, as in a parameter list; in a pattern it stands before a property's
+ * target.
+ */
+function splitOnComma(
+  syntax: readonly Syntax[],
+  annotated: boolean,
+): readonly SyntaxSequence[] {
   const segments: Syntax[][] = [[]];
-  for (const item of syntax) {
-    if (token(item, ",")) segments.push([]);
-    else segments.at(-1)!.push(item);
+  let reads: "binder" | "type" | "value" = "binder";
+  for (let at = 0; at < syntax.length; at += 1) {
+    const item = syntax[at]!;
+    if (item.tag === "token" && item.raw === ",") {
+      segments.push([]);
+      reads = "binder";
+      continue;
+    }
+    const segment = segments.at(-1)!;
+    if (reads !== "binder" && token(item) && angleWidth(item.raw, "<") > 0) {
+      const width = anglesWidthAt(syntax, at);
+      if (
+        width !== undefined &&
+        (reads === "type" || anglesHoldTypes(segment, syntax[at + width]))
+      ) {
+        segment.push(...syntax.slice(at, at + width));
+        at += width - 1;
+        continue;
+      }
+    }
+    if (token(item, "=")) reads = "value";
+    else if (annotated && reads === "binder" && token(item, ":"))
+      reads = "type";
+    segment.push(item);
   }
   return Object.freeze(
     segments.map((segment) => createSyntaxSequence(segment)),
+  );
+}
+
+/**
+ * Whether angles that close in a default, after `before` and with
+ * `following` after them, hold types: where an operand begins they are a
+ * generic arrow's type parameters, and after one they are type arguments
+ * where a call, or what may follow an instantiation, comes next -- as
+ * TypeScript reads them. Otherwise they compare: `v = a < b, w = c > d`.
+ */
+function anglesHoldTypes(
+  before: readonly Syntax[],
+  following: Syntax | undefined,
+): boolean {
+  const previous = before.at(-1);
+  const operandEnds =
+    previous !== undefined &&
+    (previous.tag !== "token" ||
+      (previous.kind === "punctuation"
+        ? previous.raw === "!" || previous.raw === "++" || previous.raw === "--"
+        : previous.kind !== "keyword" ||
+          ["this", "super", "null", "true", "false", "undefined"].includes(
+            previous.raw,
+          )));
+  return (
+    !operandEnds ||
+    callFollowsTypeArguments(following) ||
+    typeArgumentsFollow(following)
   );
 }
 
@@ -255,7 +322,7 @@ function parsePattern(
   if (syntax.tag !== "group") return undefined;
   if (syntax.delimiter === "bracket") {
     const names: BindingName[] = [];
-    const segments = splitOnComma(syntax.children);
+    const segments = splitOnComma(syntax.children, false);
     for (const [index, segment] of segments.entries()) {
       if (segment.length === 0) continue;
       let offset = 0;
@@ -288,7 +355,7 @@ function parsePattern(
   }
   if (syntax.delimiter === "brace") {
     const names: BindingName[] = [];
-    const segments = splitOnComma(syntax.children);
+    const segments = splitOnComma(syntax.children, false);
     for (const [index, segment] of segments.entries()) {
       if (segment.length === 0) {
         if (index < segments.length - 1) return undefined;
@@ -559,7 +626,7 @@ export function consumeParameterList(
     return undefined;
   const bindingConsumer = createBindingConsumer(options);
   const parameters: ParameterSkeleton[] = [];
-  const segments = splitOnComma(group.children);
+  const segments = splitOnComma(group.children, true);
   for (const [index, segment] of segments.entries()) {
     if (segment.length === 0) {
       if (group.children.length > 0 && index !== segments.length - 1)

@@ -3482,6 +3482,35 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   };
 
   /**
+   * Where the expression that begins at `from` among comma-separated
+   * `elements` ends: at the next `,` that no type-argument list holds, or at
+   * the end. A default written in a parameter list -- `v = make<A, B>(x)` --
+   * goes on past the commas of its type arguments, as an object literal's
+   * member does (see `anglesOpen`), and ends at the `,` of `v = a < b, w`.
+   */
+  const expressionEnd = (elements: readonly Syntax[], from: number): number => {
+    const value: Syntax[] = [];
+    let typeArguments = 0;
+    for (let at = from; at < elements.length; at += 1) {
+      const child = elements[at]!;
+      if (child.tag === "token" && child.raw === "," && typeArguments === 0)
+        return at;
+      if (
+        typeArguments > 0 ||
+        (child.tag === "token" &&
+          child.raw === "<" &&
+          anglesOpen(elements, at, value, false))
+      )
+        typeArguments = Math.max(
+          0,
+          typeArguments + angles(child, "<") - angles(child, ">"),
+        );
+      value.push(child);
+    }
+    return elements.length;
+  };
+
+  /**
    * The members of an object literal or an enum body, each with the `,` that
    * ends it. Type parameters and type arguments hold commas of their own --
    * `*run(): Generator<number, void, unknown> {`,
@@ -4863,6 +4892,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     angles,
     anglesOpen,
     commaSeparatedMembers,
+    expressionEnd,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -4976,6 +5006,30 @@ function spelledComma(node: Syntax): boolean {
  * `nodes` cut at each node `separates` accepts: the runs between them, each
  * with the separator that ends it, and the last run with none.
  */
+/**
+ * Whether what `export default` exports, written at `at` in `nodes`, is a
+ * declaration rather than an expression: a function, a class, or an
+ * interface, each perhaps behind the modifiers it may carry.
+ */
+function defaultExportDeclares(nodes: readonly Syntax[], at: number): boolean {
+  for (let scan = at; scan < nodes.length; scan += 1) {
+    const node = nodes[scan]!;
+    if (node.tag !== "token") return false;
+    if (
+      node.raw === "function" ||
+      node.raw === "class" ||
+      node.raw === "interface"
+    )
+      return true;
+    // `async function` and `abstract class`; `async` alone is a name, or an
+    // arrow's modifier.
+    if (node.raw !== "async" && node.raw !== "abstract") return false;
+    const next = nodes[scan + 1];
+    if (next?.tag !== "token" || leadingLineBreak(next)) return false;
+  }
+  return false;
+}
+
 function separatedRuns(
   nodes: readonly Syntax[],
   separates: (node: Syntax) => boolean,
@@ -5143,6 +5197,7 @@ function* walk(
     addScopes,
     angles,
     commaSeparatedMembers,
+    expressionEnd,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -5347,10 +5402,12 @@ function* walk(
     syntax: readonly Syntax[],
     /** Whether `syntax` is a whole member, whose head may name it. */
     wholeMember = false,
+    /** The contexts it is read in, where they are not the walk's own. */
+    within: ReadonlySet<MacroContext> = contexts,
   ): WalkRequest => {
     const enforested = options.enforestExpression?.({
       syntax: createSyntaxSequence(syntax),
-      contexts,
+      contexts: within,
       lexicalModule,
     });
     return nestedWalk(
@@ -5361,7 +5418,7 @@ function* walk(
       "expr",
       parentInvocation,
       lexicalModule,
-      contexts,
+      within,
       false,
       recursiveBinding,
       wholeMember,
@@ -6600,6 +6657,58 @@ function* walk(
     region.at = index;
     const node = input[index]!;
     enterPosition(node);
+    // A default in a parameter list or a destructuring pattern is an
+    // expression, and is read as one: an operator macro is dispatched only
+    // where an expression is read, and walked as the binders around it,
+    // `function g(v = a <+> b)` left the operator standing. A `=` among type
+    // arguments is a type parameter's default, which is a type.
+    const previous = output.at(-1);
+    if (
+      category === "binding" &&
+      previous?.tag === "token" &&
+      previous.raw === "=" &&
+      !inTypeRegion() &&
+      !typeArgumentsOpen(output, output.length)
+    ) {
+      const end = expressionEnd(input, index);
+      const value = yield* walkInside(
+        scope,
+        node,
+        expressionWalk(input.slice(index, end)),
+      );
+      currentEnvironment = value.environment;
+      output.push(...value.syntax);
+      index = end;
+      continue;
+    }
+    // What a module exports by default, where it is not a declaration, is an
+    // expression, read whole for the same reason: an import or an export is
+    // read as the tokens it is written with, never as an expression, and
+    // `export default a <+> b;` left the operator standing.
+    if (
+      category === "item" &&
+      previous?.tag === "token" &&
+      previous.raw === "default" &&
+      output.at(-2)?.tag === "token" &&
+      (output.at(-2) as TokenSyntax).raw === "export" &&
+      !defaultExportDeclares(input, index)
+    ) {
+      let end = index;
+      while (
+        end < input.length &&
+        !(input[end]!.tag === "token" && (input[end] as TokenSyntax).raw === ";")
+      )
+        end += 1;
+      const value = yield* walkInside(
+        scope,
+        node,
+        expressionWalk(input.slice(index, end)),
+      );
+      currentEnvironment = value.environment;
+      output.push(...value.syntax);
+      index = end;
+      continue;
+    }
     const coreForm = coreFormAt(node);
     if (coreForm !== undefined) {
       const protectedCapture =
@@ -7681,6 +7790,42 @@ function* walk(
         index += 1;
         continue;
       }
+      // A decorator's arguments are expressions wherever the decorator
+      // stands, and in front of a member nothing else reads them as such: an
+      // operator macro in `@dec(a <+> b)` was left standing. Each is read
+      // whole, up to the `,` after it.
+      if (
+        node.tag === "group" &&
+        node.delimiter === "parenthesis" &&
+        category !== "expr" &&
+        !expressionRegion &&
+        decoratorArgumentsFollow(output)
+      ) {
+        const children: Syntax[] = [];
+        for (let at = 0; at < node.children.length; ) {
+          const end = expressionEnd(node.children, at);
+          if (end > at) {
+            const argument = yield* walkInside(
+              scope,
+              node,
+              expressionWalk(node.children.slice(at, end)),
+            );
+            currentEnvironment = argument.environment;
+            children.push(...argument.syntax);
+          }
+          if (end < node.children.length) children.push(node.children[end]!);
+          at = end + 1;
+        }
+        output.push(
+          createGroup({
+            ...node,
+            id: options.allocateSyntaxId(),
+            children: createSyntaxSequence(children),
+          }),
+        );
+        index += 1;
+        continue;
+      }
       // An enum body holds named members, each of them a name and, where
       // one is written, the value after its `=`. Walked as the items or
       // statements around it, the name stood at the head of one and was
@@ -7779,19 +7924,12 @@ function* walk(
                 children.push(child);
                 continue;
               }
+              // A computed key is an expression, read as one so that an
+              // operator macro in it is dispatched.
               const key = yield* walkInside(
                 scope,
                 child,
-                nestedWalk(
-                  child.children,
-                  currentEnvironment,
-                  "expr",
-                  parentInvocation,
-                  lexicalModule,
-                  contexts,
-                  false,
-                  recursiveBinding,
-                ),
+                expressionWalk(child.children),
               );
               currentEnvironment = key.environment;
               children.push(
@@ -7935,11 +8073,31 @@ function* walk(
         };
         const spelt = (child: Syntax | undefined, raw: string): boolean =>
           child?.tag === "token" && child.raw === raw;
+        // Each entry ends at a `,`, but a default is read whole, so the
+        // commas of its type arguments -- `{ k = make<A, B>(x) }` -- do not
+        // end it. Nothing else a pattern writes holds angles.
+        const entries: {
+          readonly run: readonly Syntax[];
+          readonly separator: Syntax | undefined;
+        }[] = [];
+        let entryStart = 0;
+        for (let at = 0; at < node.children.length; at += 1) {
+          const child = node.children[at]!;
+          if (spelt(child, "=")) at = expressionEnd(node.children, at + 1) - 1;
+          else if (spelt(child, ",")) {
+            entries.push({
+              run: node.children.slice(entryStart, at),
+              separator: child,
+            });
+            entryStart = at + 1;
+          }
+        }
+        entries.push({
+          run: node.children.slice(entryStart),
+          separator: undefined,
+        });
         const children: Syntax[] = [];
-        for (const { run: entry, separator } of separatedRuns(
-          node.children,
-          spelledComma,
-        )) {
+        for (const { run: entry, separator } of entries) {
           let at = 0;
           if (spelt(entry[at], "...")) {
             children.push(entry[at]!);
@@ -7964,7 +8122,7 @@ function* walk(
                   : yield* walkInside(
                       scope,
                       child,
-                      patternWalk(child.children, "expr"),
+                      expressionWalk(child.children, false, patternContexts),
                     );
               if (key !== undefined) currentEnvironment = key.environment;
               children.push(
@@ -7998,7 +8156,7 @@ function* walk(
               const value = yield* walkInside(
                 scope,
                 node,
-                patternWalk(entry.slice(equals + 1), "expr"),
+                expressionWalk(entry.slice(equals + 1), false, patternContexts),
               );
               currentEnvironment = value.environment;
               children.push(...value.syntax);
