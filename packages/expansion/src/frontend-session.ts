@@ -1582,7 +1582,13 @@ export function createExpansionFrontendSession(
         .remainingRange()
         .sequence.slice(cursor.index, attempted.cursor.index);
       const next = attempted.cursor.peek();
+      // A slash the reader read as a division, standing where the reader of
+      // items ended a declaration, begins the next statement: `let a = b
+      // < c, d: string` and the `/[(]/.test(s)` under it. Read as more of
+      // the initializer, it never reached the expression reader that asks
+      // for it to be read again as a regular expression.
       const incompleteVariable =
+        !(next?.tag === "token" && (next.raw === "/" || next.raw === "/=")) &&
         consumed.some(
           (node) =>
             node.tag === "token" && ["const", "let", "var"].includes(node.raw),

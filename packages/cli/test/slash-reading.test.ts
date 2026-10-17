@@ -121,6 +121,30 @@ describe("a slash the reader judged a division where an operand begins", () => {
     expect(text).toContain("if (!(false)) { run(); }");
   });
 
+  test.each([
+    [
+      "after a comparison in an initializer",
+      "declare const b: number, c: number;\nlet a = b < c, d: string\n",
+    ],
+    [
+      "after an initializer that goes on across a line",
+      "declare const b: number, c: number;\nlet a = b\n  + c, d: string\n",
+    ],
+  ])(
+    "is read as a regular expression under a module's declaration %s",
+    (_label, declaration) => {
+      // Only the enforester sees the declaration end at its type, and a
+      // declaration of the module's own was read on to its `;` with the
+      // regular expression in it, where nothing asked to read it again.
+      const { text, messages } = expand(
+        `declare const s: string;\n${declaration}/[(]/.test(s);\nunless(false) { run(); }\n`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain("/[(]/.test(s);");
+      expect(text).toContain("if (!(false)) { run(); }");
+    },
+  );
+
   test("is read as a regular expression where a capture begins at it", () => {
     const { text, messages } = expand(
       "export function f(c: boolean, s: string) {\n" +
