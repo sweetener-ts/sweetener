@@ -1587,7 +1587,17 @@ export function createExpansionFrontendSession(
       // < c, d: string` and the `/[(]/.test(s)` under it. Read as more of
       // the initializer, it never reached the expression reader that asks
       // for it to be read again as a regular expression.
+      // So does a macro the module can invoke, written at the head of a line
+      // where the declaration in front of it has ended: `export const a = f`
+      // and the `obj(3)` under it are two items. Read as more of the
+      // initializer, what `obj` wrote was printed where only an operand
+      // stands, and an object it wrote was read as a block.
+      const macroHeadsLine =
+        next?.tag === "token" &&
+        leadingItemBoundary(next) &&
+        macroSpellingsInScope().has(next.raw);
       const incompleteVariable =
+        !macroHeadsLine &&
         !(next?.tag === "token" && (next.raw === "/" || next.raw === "/=")) &&
         consumed.some(
           (node) =>

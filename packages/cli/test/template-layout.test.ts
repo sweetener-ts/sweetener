@@ -520,8 +520,38 @@ describe("a `#core(…)` that holds a statement", () => {
         `import { defn } from "./macros.sts" for syntax;
 defn x;`,
       );
-      expect(output).toMatch(/^function helper\(\) \{ return 1; \}$/mu);
+      // The `;` a printer writes where the directive's `)` stood ends an
+      // empty statement, as a declaration's `}` already ended its own.
+      expect(output).toMatch(/^function helper\(\) \{ return 1; \};?$/mu);
       expect(output).toContain("export const x = helper();");
     },
   );
+});
+
+describe("an expansion that begins a statement on its own line", () => {
+  test("ends the statement before it where it would carry that one on", () => {
+    // `f` and the macro under it are two statements by automatic semicolon
+    // insertion, which reads the macro's name; what the macro writes in its
+    // place -- a bracket, a parenthesis, an object -- carries `f` on, as an
+    // index, a call or a block after it.
+    const output = expand(
+      `export syntax obj:expr { rule { obj($v:expr) } => { { value: $v } } }
+       export syntax pair:expr { rule { pair($a:expr, $b:expr) } => { [$a, $b] } }
+       export syntax twice:expr { rule { twice($x:expr) } => { ($x) * 2 } }`,
+      `import { obj, pair, twice } from "./macros.sts" for syntax;
+const f = (..._: unknown[]) => 0;
+export const a = f
+obj(3)
+export function g() {
+  const b = f
+  pair(1, 2)
+  const c = f
+  twice(5)
+  return [b, c];
+}`,
+    );
+    expect(output).toContain("export const a = f;\n({ value: 3 })");
+    expect(output).toContain("const b = f;\n  [1, 2]");
+    expect(output).toContain("const c = f;\n  (5) * 2");
+  });
 });

@@ -204,6 +204,14 @@ function prefixTypeAssertion(
   return undefined;
 }
 
+/**
+ * What a statement may begin with that carries the expression before it on,
+ * across a line break: `(` and `[` call and index it, a template tags it, a
+ * sign or a slash is an operator after it, and a `<` compares or opens type
+ * arguments.
+ */
+const carriesExpressionOn = /^[([`+\-/<]/u;
+
 /** Punctuators two adjacent tokens could print as, if nothing parted them. */
 const punctuators: readonly string[] = [
   "++",
@@ -1913,6 +1921,29 @@ export function printExpandedFile<Trace>(
       written !== undefined &&
       previousWritten.sourceId === written.sourceId &&
       previousWritten.end + trivia.length === written.start;
+    // A statement beginning with what carries an expression on -- a `(`, a
+    // `[`, a template, a sign, a slash, a `<` -- is read as part of the one
+    // before it unless a `;` ends that one: `const b = f` and the `[1, 2]` a
+    // macro wrote under it print as an index. The author's line break relied
+    // on automatic semicolon insertion, which only the tokens written either
+    // side of it were written for; where those two stand together as they
+    // were written, it reads as it did. After a `}` the `;` is an empty
+    // statement at worst, and after an object literal's it is the one that
+    // ends the statement.
+    if (
+      !neighbour &&
+      statementStarts.has(token) &&
+      lastPrinted !== undefined &&
+      lastPrinted !== ";" &&
+      lastPrinted !== "{" &&
+      // What prints first: a grouping parenthesis pending before the token.
+      carriesExpressionOn.test(pendingOpens.length > 0 ? "(" : text)
+    )
+      emit(
+        ";",
+        options.origins.synthesized(token.origin, "printer-separator"),
+        "synthesized",
+      );
     const keep =
       lastPrinted === undefined ||
       neighbour ||
