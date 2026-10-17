@@ -1,8 +1,13 @@
 # Handoff
 
 Written at `2403709` (36 commits since `22a98a5`, 2644 unit tests); brought up
-to date at `a45b9bb`, where `pnpm check` is green end to end. Everything below is open except "Reviewed", "Decided, not bugs" and the
+to date at `a45b9bb`, and again at `6444f0c` after the review of the integrated
+branch (below), where `pnpm check` is green end to end with 3759 unit tests.
+Everything below is open except "Reviewed", "Decided, not bugs" and the
 closing notes.
+
+This branch carries no editor integration for Zed: it was taken out of the
+integrated branch, history included.
 
 The session began by deleting a hand-written `declare module "*.sts"` stub and
 turned into a long chain of parser and expander fixes. Five of those were silent
@@ -84,11 +89,68 @@ The reader's judgement was then compared with TypeScript's parser over 7,000
 files -- this repository, its dependencies, and other TSX projects -- and
 agrees on every slash and every element.
 
+The integrated branch -- PRs 31, 33 and 34 with `fix/expression-result-grouping`
+-- was reviewed on 2026-10-17 by area (reader, enforester, expander, hygiene,
+printer and formatter, the hosts), each finding reproduced on the branch and on
+`main` before it was fixed, and fixed in the 37 commits after `fe47046`:
+
+- **Regressions the integration brought.** The printer dropped the parentheses
+  a `>=`, `>>` or `>>>` needed (`e145489`); a reread gave up after nine slashes
+  each hiding the next (`9805c35`); an expression operator binding the names
+  after it crashed (`e54eea5`); `#core(<declaration>)` with a line beginning
+  `(`, `[` or a backquote under it was read as one expression (`2d8f260`); enum
+  members keyed by strings, or merged across declarations, went unbound
+  (`85bcca5`); the reader misread a slash after import attributes, an export
+  list and type arguments (`bb2f7a7`, `d331247`); the Jest transform's cache
+  missed the files an expansion read (`ef1321a`); a brace where an operand
+  begins was read as a block (`14f6c97`).
+- **Crashes.** A run of `<` comparisons scanned to the end of its block and ran
+  out of steps (`03da5da`); nested `+` repetitions in a pattern were
+  exponential (`d6ecef1`); a command threw, ending a watch, over a file the
+  expansion read through a system of its own (`aaf72a9`).
+- **Silent miscompiles.** A name a template declared through another macro was
+  renamed where declared but not where used (`1357d3f`); a type capture at a
+  conditional's `extends` swallowed `? A : B` (`036a55e`); an expansion
+  beginning `(`, `[` or a backquote joined the line before it (`7fda2d4`); a
+  type macro was expanded in an expression after `,`, `?`, `|` or `=>`
+  (`37da348`); `type`, `namespace` and `declare` used as names stopped
+  expansion (`278973d`); methods named `if`, `for`, `while` (`ea63d41`); an
+  operator's binder spelled like a macro (`2cd2724`); a macro capturing `await`
+  in an initializer (`fc76dbe`); an index signature's parameter (`79860d8`); a
+  raw run's expression statement (`a6e87e5`); the line break after a `void`
+  (`7f4f039`).
+- **Diagnostics.** Codes are written `SWR` (`6f4a121`); a slash read both ways
+  across reads is reported as SWR4027 rather than settling nowhere
+  (`9805c35`); an aliased import, a late `@ts-nocheck` (`a6f6776`); a capture
+  before a multi-token operator stopped at its first token (`b782aad`); a
+  `<`...`>` candidate read past a `:` (`ef9b886`); `/[/*]/` under a macro was
+  never read again (`1da9245`).
+- **Operators in ordinary places.** An operator macro in a parameter's or a
+  pattern's default, a computed key, a decorator's arguments or an `export
+  default` was left unexpanded, as was one spelled over TypeScript's own
+  tokens -- `a!!`, `a +++ b`, `id<number> <+> b` -- and a statement operator's
+  spelling inside an expression (`a<-1`) was reported as an error (`91221eb`,
+  `2f18fcf`, `6c5a202`). These were on `main` as well.
+- **The formatter** refused a regular expression holding a bracket in a
+  macro's syntax as malformed (`9a73375`), and it and TypeScript's readings
+  were quadratic in a file's length (`6edef96`).
+
 ## Open bugs
 
-None known. The two listed here last were fixed in `6a07306` and `dd455b8` (the
-class member walk joining `x = a as T` and a `[k]` under it) and in `3c71179`
-and `dd455b8` (a declaration's `}` misjudged as an expression's end).
+- **A template's free name is captured by a call-site binding.** A template
+  that writes `Math.max($a)`, used where a local is named `Math`, reads the
+  local. Hygiene renames what a template binds, never what the user binds, and
+  a global the template means has no binding the expander can see. Also on
+  `main`.
+- **`x < (y > (z))`** is read as a generic call where TypeScript compares: the
+  same ambiguity TypeScript resolves by trying both, on `main` too.
+- **Reader gaps in third-party sources.** Five of 300 files sampled from
+  `node_modules` (zod's `to-json-schema.ts`, effect's `Function.ts`,
+  `SortedSet.ts`, `internal/redBlackTree.ts`, `internal/stm/tReentrantLock.ts`)
+  have an item reported SWR4025 and passed through. The same on `main`.
+- **A member access after a postfix operator macro** -- `a!!.toFixed()` -- is not
+  read, as `a++.x` is not JavaScript; whether a macro postfix should bind
+  tighter is undecided.
 
 ## Performance
 
