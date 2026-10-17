@@ -120,7 +120,12 @@ function checkDirective(text: string | undefined): boolean | undefined {
   return enabled;
 }
 
-const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)\b/iu;
+/**
+ * A `// @ts-check` or `// @ts-nocheck` comment. TypeScript reads a pragma's
+ * name to the first space, so `// @ts-nocheck-later` names another pragma; a
+ * word boundary took it for `@ts-nocheck`.
+ */
+const checkDirectivePattern = /^\/\/\/?\s*@(ts-check|ts-nocheck)(?=\s|$)/iu;
 
 /**
  * Whether TypeScript checks `sourceFile` under `options` -- and so whether a

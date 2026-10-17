@@ -239,6 +239,23 @@ describe("JavaScript macro extensions", () => {
       exitCode: 0,
     },
     {
+      // TypeScript reads a pragma's name to the first space.
+      what: "a pragma that only begins like a directive is none",
+      extension: "sts",
+      macros: heldName.globalMacros,
+      main: `// @ts-nocheck-later\nimport { JSON } from "./macros.sts" for syntax;\nexport const held = JSON;\nexport const made = JSON(1);\n`,
+      expected: [],
+      exitCode: 0,
+    },
+    {
+      what: "an aliased macro is answered under the name it is written as",
+      extension: "sts",
+      macros: heldName.macros,
+      main: `import { duplicate as twice } from "./macros.sts" for syntax;\nexport const held = twice;\n`,
+      expected: [[4024, ts.DiagnosticCategory.Error]],
+      exitCode: 1,
+    },
+    {
       what: "a project TypeScript does not check at all warns rather than falling silent",
       extension: "sts",
       macros: heldName.macros,

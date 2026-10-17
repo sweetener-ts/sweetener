@@ -894,7 +894,15 @@ function* invokeMacroRules(
       ),
       diagnostic: expansionDiagnosticRegistry.create(bareMacroNameCode, {
         primaryOrigin: options.diagnosticOrigin(invocationHead.origin),
-        messageArguments: [options.macro.binding.spelling, options.category],
+        // The name as it is written: imported `as` another, the macro is
+        // written under its local name, which is the one TypeScript says it
+        // cannot find and the sentence is matched against.
+        messageArguments: [
+          invocationHead.tag === "token"
+            ? invocationHead.raw
+            : options.macro.binding.spelling,
+          options.category,
+        ],
       }),
       trace,
     });
