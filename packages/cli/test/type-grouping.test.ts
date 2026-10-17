@@ -33,6 +33,9 @@ export syntax nullable:type {
 export syntax justString:type {
   rule { justString() } => { string }
 }
+export syntax justStringParam:type {
+  rule { justStringParam } => { string }
+}
 export syntax listOfString:type {
   rule { listOfString() } => { Array<string> }
 }
@@ -46,7 +49,7 @@ function expand(source: string): string {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { orNull, nullable, justString, listOfString, voidFn } from "./macros.sts" for syntax;\n${source}\n`,
+    `import { orNull, nullable, justString, justStringParam, listOfString, voidFn } from "./macros.sts" for syntax;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -433,5 +436,22 @@ describe("a type captured where a `?` stands", () => {
     // conditional's branches into the capture and printed a conditional
     // that means something else.
     expect(expand(source)).toContain(expected);
+  });
+});
+
+describe("an index signature's parameter spelled like a type macro", () => {
+  test.each([
+    [
+      "an interface",
+      "export interface I { [justStringParam: string]: number; }",
+    ],
+    [
+      "an object type",
+      "export type M = { [justStringParam: string]: number };",
+    ],
+  ])("is the parameter's name in %s", (_, source) => {
+    // The brackets hold a parameter and its type, and the name binds nothing
+    // outside them; read where a type is, the macro expanded in its place.
+    expect(expand(source)).toContain("[justStringParam: string]: number");
   });
 });

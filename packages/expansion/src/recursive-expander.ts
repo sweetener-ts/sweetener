@@ -2646,6 +2646,21 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
             from: at,
             to: wholeRun.to,
           });
+        // An index signature's brackets hold its parameter and the parameter's
+        // type, `[key: string]`. The parameter names nothing outside them, but
+        // it is a name: read where a type is, a type macro spelled like it
+        // expanded in its place and printed `[number: string]`.
+        if (
+          category === "typeMember" &&
+          node.delimiter === "bracket" &&
+          mappedKey?.tag === "token" &&
+          isIdentifierToken(mappedKey) &&
+          spelling(node.children[1]) === ":"
+        ) {
+          const brackets = { from: at, to: at + 1 };
+          recordValue(into, mappedKey.raw, mappedKey.scopes, brackets);
+          recordType(into, mappedKey.raw, mappedKey.scopes, brackets);
+        }
         if (node.delimiter === "brace") {
           if (statementBlockAt(nodes, run, at)) hoistVars(node.children, into);
           continue;
