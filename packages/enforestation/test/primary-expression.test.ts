@@ -114,6 +114,14 @@ describe("primary and postfix expressions", () => {
     expect(printed(source)).toBe(source);
   });
 
+  test("reads no type arguments across a `:` no conditional type awaits", () => {
+    // TypeScript gives the list up at the `:`, and `v` is compared.
+    expect(printed("v < 1, x: 2, g: v > (2)")).toBe("v");
+    expect(printed("f<A extends B ? Map<C, D> : E, F>(x)")).toBe(
+      "f<A extends B ? Map<C, D> : E, F>(x)",
+    );
+  });
+
   test("stops before caller boundaries without consuming the boundary", () => {
     const stopSet = new StopSet([
       { kind: "token", tokenKind: "punctuation", raw: "." },

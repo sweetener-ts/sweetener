@@ -460,6 +460,38 @@ export function operatorWidthAt(
 interface OpenAngles {
   readonly held: number;
   answer: { readonly until: number; readonly encloses: boolean } | undefined;
+  /**
+   * The conditional types written in it so far, as `ConditionalsOpen`
+   * counts them: a `:` it holds is one of theirs or ends it.
+   */
+  readonly conditionals: ConditionalsOpen;
+}
+
+/**
+ * Conditional types read so far in a list of types: begun with `extends`
+ * and not yet given their `?`, and given one and awaiting their `:`.
+ * Outside a group of its own, a list of types holds a `:` only as one of
+ * theirs.
+ */
+interface ConditionalsOpen {
+  awaitingQuestion: number;
+  awaitingColon: number;
+}
+
+/**
+ * Counts `node` into `open`, and answers whether a list of types can still
+ * hold it: false for a `:` no conditional type awaits.
+ */
+function readConditional(open: ConditionalsOpen, node: TokenSyntax): boolean {
+  if (node.raw === "extends") open.awaitingQuestion += 1;
+  else if (node.raw === "?" && open.awaitingQuestion > 0) {
+    open.awaitingQuestion -= 1;
+    open.awaitingColon += 1;
+  } else if (node.raw === ":") {
+    if (open.awaitingColon === 0) return false;
+    open.awaitingColon -= 1;
+  }
+  return true;
 }
 
 interface SyntaxRun {
@@ -3398,7 +3430,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
    * angles close, a call or a tagged template, or something that cannot go on
    * as a comparison's operand, says they held type arguments --
    * `make<A, B>()`, the return type in `(x): Map<K, V> => x`, the type after
-   * `as`. Anything else is a comparison: `{ low: a < b, high: c > d }`.
+   * `as`. Anything else is a comparison: `{ low: a < b, high: c > d }`,
+   * and a `:` before the angles close that no conditional type awaits says
+   * so before they do: `{ f: v < 1, x, g: v > (2) }`.
    */
   const anglesOpen = (
     members: readonly Syntax[],
@@ -3408,9 +3442,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   ): boolean => {
     if (signature || !endsOperand(member, member.length, true)) return true;
     let depth = 0;
+    const conditionals = { awaitingQuestion: 0, awaitingColon: 0 };
     for (let ahead = at; ahead < members.length; ahead += 1) {
       const node = members[ahead]!;
       if (node.tag !== "token") continue;
+      if (!readConditional(conditionals, node)) return false;
       depth += angles(node, "<") - angles(node, ">");
       if (depth > 0) continue;
       const following = members[ahead + 1];
@@ -5405,11 +5441,22 @@ function* walk(
       while (closes > 0 && openAngles.length > 0) {
         const open = openAngles.pop()!;
         if (open.held > closes)
-          openAngles.push({ held: open.held - closes, answer: open.answer });
+          openAngles.push({
+            held: open.held - closes,
+            answer: open.answer,
+            conditionals: open.conditionals,
+          });
         closes -= Math.min(open.held, closes);
       }
+      const innermost = openAngles.at(-1);
+      if (innermost !== undefined) readConditional(innermost.conditionals, node);
       const opens = angles(node, "<");
-      if (opens > 0) openAngles.push({ held: opens, answer: undefined });
+      if (opens > 0)
+        openAngles.push({
+          held: opens,
+          answer: undefined,
+          conditionals: { awaitingQuestion: 0, awaitingColon: 0 },
+        });
     }
     return openAngles.at(-1);
   };
@@ -5429,19 +5476,28 @@ function* walk(
     // the run each time.
     if (open.answer !== undefined && open.answer.until > at)
       return open.answer.encloses;
-    const answer = readTypeArgumentsAhead(at, open.held);
+    const answer = readTypeArgumentsAhead(at, open.held, open.conditionals);
     open.answer = answer;
     return answer.encloses;
   };
+  /**
+   * Reads on from `at` to where the `<` holding `held` angles open closes.
+   * A `:` that no conditional type awaits ends the candidate before that:
+   * `{ f: v < 1, x, g: v > (2) }` is three properties, and read on to the
+   * `>`, `x` was read as a type argument.
+   */
   const readTypeArgumentsAhead = (
     at: number,
     held: number,
+    behind: ConditionalsOpen,
   ): { readonly until: number; readonly encloses: boolean } => {
     let depth = held;
+    const conditionals = { ...behind };
     for (let forward = at + 1; forward < input.length; forward += 1) {
       const node = input[forward]!;
       if (node.tag !== "token") continue;
-      if (node.raw === ";") return { until: forward, encloses: false };
+      if (node.raw === ";" || !readConditional(conditionals, node))
+        return { until: forward, encloses: false };
       depth += angles(node, "<");
       depth -= angles(node, ">");
       // The candidate has closed, and what stands after it says whether it

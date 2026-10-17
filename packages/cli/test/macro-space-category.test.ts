@@ -352,3 +352,32 @@ describe("a member key spelled like a macro of another space", () => {
     expect(exitCode).toBe(0);
   });
 });
+
+/**
+ * A `<` that a `>` closes further on is TypeScript's question whether type
+ * arguments stand between them, and a `:` before the `>` that no conditional
+ * type awaits answers it: no list of types holds one.
+ */
+describe("a comparison a `:` ends before a `>`", () => {
+  test("leaves a macro after it an expression", () => {
+    const { text, reports } = expand(
+      "declare const v: number;\n" +
+        "export const a = { f: v < 1, mkExpr, g: v > (2) };",
+    );
+    expect(reports).toEqual([]);
+    expect(text).toContain(
+      "export const a = { f: v < 1, mkExpr: 1 + 2, g: v > (2) };",
+    );
+  });
+
+  test("leaves the `:` of a conditional type in its type arguments", () => {
+    const { text, reports } = expand(
+      "declare function mk<A, B>(): Map<A, B>;\n" +
+        "export const a = { m: mk<mkType extends 1 ? Map<1, mkType> : 2, mkType>(), mkExpr };",
+    );
+    expect(reports).toEqual([]);
+    expect(text).toContain(
+      "export const a = { m: mk<string extends 1 ? Map<1, string> : 2, string>(), mkExpr: 1 + 2 };",
+    );
+  });
+});

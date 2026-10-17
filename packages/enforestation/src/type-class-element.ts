@@ -254,18 +254,38 @@ const typeListEndsBefore = new Set([
   "!==",
 ]);
 
+/**
+ * Reads an angle-delimited list of types, to the `>` that closes it.
+ *
+ * Outside a group of its own, such a list holds a `:` only as the one of a
+ * conditional type, after the `extends` and the `?` that begin it, and a `:`
+ * anywhere else ends a comparison's operand: `{ f: v < 1, x, g: v > (2) }`
+ * is three properties, where reading on to the `>` read `x` as a type.
+ */
 function consumeAngles(
   cursor: SyntaxCursor,
   context: ConsumerContext,
   children: Syntax[],
 ): boolean {
   let depth = 0;
+  // Conditional types begun with `extends` and not yet given their `?`, and
+  // those given one and awaiting their `:`.
+  let awaitingQuestion = 0;
+  let awaitingColon = 0;
   while (!cursor.atEnd) {
     checkWork(context);
     const next = cursor.consume()!;
     children.push(next);
     if (!token(next)) continue;
     if (typeListEndsBefore.has(next.raw)) return false;
+    if (next.raw === "extends") awaitingQuestion += 1;
+    else if (next.raw === "?" && awaitingQuestion > 0) {
+      awaitingQuestion -= 1;
+      awaitingColon += 1;
+    } else if (next.raw === ":") {
+      if (awaitingColon === 0) return false;
+      awaitingColon -= 1;
+    }
     depth += angleWidth(next.raw, "<");
     depth -= angleWidth(next.raw, ">");
     if (depth === 0) return true;
