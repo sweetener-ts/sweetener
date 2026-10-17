@@ -307,12 +307,29 @@ describe("slashes the reader judges from what stands before them", () => {
     ).toBe("if (c) /(/.test(s);\nrun(1);\n");
   });
 
+  test.each([
+    [
+      "a statement",
+      "export syntax el:expr {\n  rule { el } => { <b>(note):   x</b> }\n}\n",
+    ],
+    [
+      "only TypeScript's parser reads",
+      "export syntax el:stmt {\n  rule { el } => { let w = a\n+ 1, x: T\n<b>(note):   x</b>; }\n}\n",
+    ],
+  ])(
+    "leaves the text of an element a template writes where %s",
+    (_, source) => {
+      const formatted = formatSweetener(source, { filepath: "view.stsx" });
+      expect(formatted).toContain("<b>(note):   x</b>");
+    },
+  );
+
   test("formats a source where only TypeScript's parser reads the delimiter", () => {
     expect(
-      formatSweetener("let x: T\n/(/.test(s);\nrun(  1 );\n", {
+      formatSweetener("let w = a\n+ 1, x: T\n/(/.test(s);\nrun(  1 );\n", {
         filepath: "regex.sts",
       }),
-    ).toBe("let x: T\n/(/.test(s);\nrun( 1 );\n");
+    ).toBe("let w = a\n+ 1, x: T\n/(/.test(s);\nrun( 1 );\n");
   });
 });
 

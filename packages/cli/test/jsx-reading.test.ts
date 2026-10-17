@@ -21,6 +21,10 @@ const macros = `
 export syntax x:expr { rule { x } => { 99 } }
 
 export syntax gen:expr { rule { gen } => { <T>(v: T) => v } }
+
+export syntax wrap:expr { rule { wrap $e:expr } => { [$e] } }
+
+export syntax num:expr { rule { num $e:expr } => { <number>$e } }
 `;
 
 /**
@@ -59,7 +63,8 @@ function expand(
 ): Expansion {
   const directory = mkdtempSync(join(tmpdir(), "sweet-jsx-reading-"));
   writeFileSync(join(directory, module.name), module.text);
-  const imported = module.text === macros ? "x, gen" : "x, el, mk, mk2, spaced";
+  const imported =
+    module.text === macros ? "x, gen, wrap, num" : "x, el, mk, mk2, spaced";
   writeFileSync(
     join(directory, `main${extension}`),
     `import { ${imported} } from "./${module.name}" for syntax;\n${source}\n`,
@@ -93,6 +98,38 @@ function expand(
     codes: result.diagnostics.map(({ code }) => code),
   };
 }
+
+/**
+ * The reader reads a macro's name as any other name, and a `<` after a name
+ * as a comparison; where the macro's rule reads an operand there, TypeScript
+ * reads an element. Read as a type assertion instead, `<p>optional` matched
+ * the rule, and the element's tags and text were expanded as code.
+ */
+describe("an element written after a macro's name", () => {
+  test.each([
+    ["holding a container", "export const v = wrap <p>{x}</p>;", "<p>{99}</p>"],
+    [
+      "holding text",
+      'export const v = wrap <div className="a">optional x</div>;',
+      '<div className="a">optional x</div>',
+    ],
+    [
+      "spelled like a signature",
+      "export const v = wrap <b>(note): x</b>;",
+      "<b>(note): x</b>",
+    ],
+  ])("is read as an element %s", (_, source, element) => {
+    const { text, codes } = expand(source);
+    expect(codes).toEqual([]);
+    expect(text).toContain(`[ ${element}]`);
+  });
+
+  test("leaves an assertion a `.sts` template writes one", () => {
+    const { text, codes } = expand("export const v = num 1;");
+    expect(codes).toEqual([]);
+    expect(text).toContain("(1 as number)");
+  });
+});
 
 describe("a `<` read the other way from the grammar", () => {
   test.each([

@@ -16,6 +16,7 @@ import {
   StopSet,
   type ConsumerContext,
   type ConsumerFailure,
+  type ElementReader,
   type MacroOperatorApplication,
   type MacroOperatorChain,
   type MisreadListener,
@@ -137,6 +138,8 @@ export interface CreateExpansionFrontendSessionOptions {
    * its invocation settles on it (see `CaptureMisreads`).
    */
   readonly misread?: MisreadListener | undefined;
+  /** Whether a `<` was written where JSX is read (see `ElementReader`). */
+  readonly readsElement?: ElementReader | undefined;
 }
 
 /**
@@ -1022,6 +1025,7 @@ export function createExpansionFrontendSession(
       allowYield: contexts.has("generator"),
       allowAwait: contexts.has("async"),
       misread: options.misread,
+      readsElement: options.readsElement,
     });
   const requiredClass = (
     module: CompileParsedMacrosResult,

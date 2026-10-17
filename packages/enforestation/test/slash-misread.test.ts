@@ -77,6 +77,7 @@ function splitOnce(
       allowYield: false,
       allowAwait: true,
       misread: (slash, reading) => misread.set(slash.span.start, reading),
+      readsElement: variant === "jsx" ? () => true : undefined,
     });
     if (!result.matched) break;
     parts.push(source.slice(result.syntax.span.start, result.syntax.span.end));
@@ -202,9 +203,9 @@ describe("slashes read the other way from the grammar", () => {
   // Read the other way, the slash changes the groups or the tokens after the
   // expression: a bracket or a quote inside, the `=` of a `/=`.
   test.each([
-    ["let x: Foo\n/[(]/.test(s);", 11],
-    ["let x: Foo\n/'/.test(s);", 11],
-    ["let x: Foo\n/a/=b;", 11],
+    ["let w = a\n  + 1, x: Foo\n/[(]/.test(s);", 24],
+    ["let w = a\n  + 1, x: Foo\n/'/.test(s);", 24],
+    ["let w = a\n  + 1, x: Foo\n/a/=b;", 24],
   ])("asks for %j to be read again", (source, offset) => {
     expect(splitOnce(source, "item", new Map()).misread).toEqual(
       new Map([[offset, "regular-expression"]]),
@@ -286,14 +287,35 @@ describe("class field initializers", () => {
 
 describe("a bare `<T>` read the other way from the grammar", () => {
   /**
-   * The reader judges a bare `<T>` at the start of a member to be a
-   * signature's type parameters. Where a statement begins there instead, an
-   * operand begins with it, and TypeScript reads an element there.
+   * The reader judges a `<` after an operand's end to compare. After an
+   * initializer that goes on across a line it reads `, x: T` as an
+   * expression's, where a declarator ends and a statement begins under it,
+   * with an operand: TypeScript reads an element there.
    */
   test("is an element where an operand begins", () => {
-    const source = "function g() {\n  <b>(note): x</b>;\n}\n";
+    const source = "let w = a\n  + 1, x: T\n<b>(note): x</b>;\n";
     const { misread } = splitOnce(source, "item", new Map(), "jsx");
     expect([...misread]).toEqual([[source.indexOf("<b>"), "element"]]);
+  });
+
+  test("is an element, not an assertion, where JSX is read", () => {
+    // The reader judges a `<` after a name to compare; after a macro's name
+    // an operand begins there. Read as an assertion, `<div className="a">`
+    // let a rule read the element's tags and text as code.
+    for (const source of [
+      'let w = a\n  + 1, x: T\n<div className="a">{x}</div>;\n',
+      "let w = a\n  + 1, x: T\n<b>{x}</b>;\n",
+    ]) {
+      const { misread } = splitOnce(source, "item", new Map(), "jsx");
+      expect([...misread], source).toEqual([
+        [source.indexOf("<", source.indexOf("\n")), "element"],
+      ]);
+    }
+  });
+
+  test("is an assertion where JSX is not read", () => {
+    const source = "let w = a\n  + 1, x: T\n<number>y;\n";
+    expect(split(source, "item")).toEqual(typescript(source, "item"));
   });
 
   test("is not reported where type parameters are written", () => {

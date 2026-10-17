@@ -66,6 +66,16 @@ export type MisreadListener = (
   reading: TokenReading,
 ) => void;
 
+/**
+ * Whether a `<` token was written where JSX is read -- in a `.stsx` file, or
+ * a template a `.stsx` file defines -- so that where an operand begins with
+ * it, it opens an element and never a type assertion. A consumer is not told
+ * which file it reads, and tokens written in different files meet in one
+ * expansion: a `.sts` macro's `<A>value` is an assertion wherever it is
+ * used, and printed as one a `.tsx` file reads.
+ */
+export type ElementReader = (angle: TokenSyntax) => boolean;
+
 export interface ConsumerContext {
   readonly category: SyntaxCategory;
   readonly phase: Phase;
@@ -82,6 +92,11 @@ export interface ConsumerContext {
   readonly allowAwait: boolean;
   /** Told of a token read the other way from the grammar, where one is. */
   readonly misread?: MisreadListener | undefined;
+  /**
+   * Whether a `<` was written where JSX is read; undefined where none was,
+   * and every `<` beginning an operand is an assertion's or an arrow's.
+   */
+  readonly readsElement?: ElementReader | undefined;
 }
 
 export interface ConsumeRequest {
@@ -94,6 +109,7 @@ export interface ConsumeRequest {
   readonly allowYield: boolean;
   readonly allowAwait: boolean;
   readonly misread?: MisreadListener | undefined;
+  readonly readsElement?: ElementReader | undefined;
 }
 
 export interface ConsumeSuccess extends ConsumerAttemptSuccess {
@@ -253,6 +269,7 @@ export class ConsumerRegistry {
         allowYield: request.allowYield,
         allowAwait: request.allowAwait,
         misread: request.misread,
+        readsElement: request.readsElement,
       }),
     );
     cancellation.throwIfCancellationRequested();

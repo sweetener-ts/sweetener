@@ -88,18 +88,21 @@ describe("slash readings", () => {
 
   it("reads the rest of the source from the slash on as the reading asks", () => {
     // Read as a division, the `(` inside the expression opened a group that
-    // swallowed what followed it, and the read was reported unbalanced.
-    const source = "let x: T\n/(/.test(s);\nrun();";
+    // swallowed what followed it, and the read was reported unbalanced. The
+    // reader cannot see where an initializer that goes on across a line
+    // ends, and reads `, x: T` as an operand's.
+    const source = "let w = a\n  + 1, x: T\n/(/.test(s);\nrun();";
+    const slash = source.indexOf("/(/");
     expect(readSyntax(source, { sourceId, scopes }).diagnostics).not.toEqual(
       [],
     );
     const read = readSyntax(source, {
       sourceId,
       scopes,
-      readings: new Map([[9, "regular-expression"]]),
+      readings: new Map([[slash, "regular-expression"]]),
     });
     expect(read.diagnostics).toEqual([]);
-    expect([...read.readings]).toEqual([[9, "regular-expression"]]);
+    expect([...read.readings]).toEqual([[slash, "regular-expression"]]);
   });
 
   it("reads an element's tag with the slashes in it read as told", () => {
@@ -276,6 +279,108 @@ describe("what the reader judges a slash by", () => {
   });
 });
 
+/**
+ * What the reader reads the way TypeScript's parser does without being told:
+ * each source here needs no reading, so a file of them is read once. Read the
+ * other way, each regular expression holding a bracket hid the next from the
+ * enforester, and a file of them was read once for each.
+ */
+describe("where the statements around a token say how it reads", () => {
+  it.each([
+    // A statement ending with a type.
+    ["a variable's type", "let a: string\n/[(]/.test(s);"],
+    ["a binding with no type", "let a\n/[(]/.test(s);"],
+    ["a pattern's type", "const { a }: T\n/[(]/.test(s);"],
+    [
+      "type arguments across lines",
+      "let a: Map<string,\n  number>\n/[(]/.test(s);",
+    ],
+    ["a union across lines", "let a: A\n  | B\n/[(]/.test(s);"],
+    ["a declarator after an initializer", "let a = 1, b: U\n/[(]/.test(s);"],
+    ["type arguments in an initializer", "let a = f<A, B>(c) / 2;"],
+    ["a declared constant", "declare const a: string\n/[(]/.test(s);"],
+    ["a type alias", "type T = {}\n/[(]/.test(s);"],
+    ["a type alias's parameters", "type T<A = B> = A\n/[(]/.test(s);"],
+    [
+      "a conditional type",
+      "type T = A extends B\n  ? C\n  : D\n/[(]/.test(s);",
+    ],
+    ["an overload", "function f(): string\n/[(]/.test(s);"],
+    [
+      "an ambient function",
+      "declare function f(): void\nfunction g() {}\n/[(]/.test(s);",
+    ],
+    [
+      "generic type parameters",
+      "declare function f<T extends (a) => b>(x: T): T\n/[(]/.test(s);",
+    ],
+    ["an import alias", "import x = A.B\n/[(]/.test(s);"],
+    ["a statement after a type", "type T = string\nx = a\n/ b;"],
+    ["a block after a type", "let a: string\n{ /[(]/.test(s); }"],
+    // A function or a class written as an expression.
+    [
+      "a function expression's body",
+      "foo(function () {\n  a;\n  function g() {}\n  /[(]/.test(s);\n});",
+    ],
+    [
+      "a method's body",
+      "const o = { m() {\n  a;\n  function g() {}\n  /[(]/.test(s);\n} };",
+    ],
+    [
+      "a class expression's method",
+      "const C = class { m() {\n  a;\n  class D {}\n  /[(]/.test(s);\n} };",
+    ],
+    ["a class expression divided", "x = class {} / 2;"],
+    [
+      "a key spelled `class`",
+      "o = { class: 1, m() { a; function g() {} /[(]/.test(s); } };",
+    ],
+    // Statement starts.
+    [
+      "a static block",
+      "class C { static { function f() {}\n/[(]/.test(s); } }",
+    ],
+    [
+      "a parameter's decorator",
+      "class A { constructor(@Inject(T) t: T) {} }\nclass B {}\n/[(]/.test(s);",
+    ],
+    [
+      "a last member's decorator",
+      "class A {\n  @d x\n}\nclass B {}\n/[(]/.test(s);",
+    ],
+    ["`export default` braces", "export default {} / 2;"],
+    ["a type after `as` in a conditional", "x = c ? w as T : {} / 2;"],
+    [
+      "a `return` on its own line",
+      "function q() { return\nfunction f() {}\n/[(]/.test(s); }",
+    ],
+    ["`async` on its own line", "x = async\nfunction f() {}\n/[(]/.test(s);"],
+    ["`declare` on its own line", "declare\nfunction f() {}\n/[(]/.test(s);"],
+    ["a block under an operand", "f(x)\n{ /[(]/.test(s) }"],
+  ])("reads a slash after %s as TypeScript does", (_, source) => {
+    const { readings, unparsed } = typescriptReadings(source, "standard");
+    expect(unparsed).toEqual([]);
+    expect([...readings]).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a container after a container",
+      "const a = <div>{f(x)}{/[(]/.test(s)}</div>;",
+    ],
+    ["an element under a type", "let a: T\n<b>(note): x</b>;"],
+    ["an element in a function body", "function g() {\n  <b>(note): x</b>;\n}"],
+    [
+      "an element in a callback's body",
+      "foo(function () {\n  a;\n  function g() {}\n  <div>{x}</div>;\n});",
+    ],
+  ])("reads %s in a JSX file as TypeScript does", (_, source) => {
+    const { readings, unparsed } = typescriptReadings(source, "jsx");
+    expect(unparsed).toEqual([]);
+    expect([...readings]).toEqual([]);
+  });
+});
+
 describe("reading a slash's text the other way", () => {
   it.each([
     ["a regular expression", "if (c) /a  b/.test(s);", 7, 13],
@@ -315,10 +420,11 @@ describe("reading a slash's text the other way", () => {
 
 describe("TypeScript's reading of a source's slashes", () => {
   it("reads slashes as TypeScript's parser reads them", () => {
-    const source = "let x: T\n/(/.test(s);\nx = y as const / 2 / 3;";
+    const source =
+      "let w = a\n  + 1, x: T\n/(/.test(s);\nx = y as const / 2 / 3;";
     const { readings, unparsed } = typescriptReadings(source, "standard");
     expect([...readings]).toEqual([
-      [9, "regular-expression"],
+      [source.indexOf("/(/"), "regular-expression"],
       [source.indexOf("/ 2"), "division"],
     ]);
     expect(unparsed).toEqual([]);
@@ -332,7 +438,7 @@ describe("TypeScript's reading of a source's slashes", () => {
    * reading its tree by recursion ran out of stack on a chain this long.
    */
   it("reads the slashes of fifty thousand divisions", () => {
-    const source = `x = ${Array.from({ length: 50_000 }, () => "a").join(" / ")};\nlet y: T\n/(/.test(s);`;
+    const source = `x = ${Array.from({ length: 50_000 }, () => "a").join(" / ")};\nlet w = a\n  + 1, y: T\n/(/.test(s);`;
     const { readings, unparsed } = typescriptReadings(source, "standard");
     expect(unparsed).toEqual([]);
     expect([...readings]).toEqual([
@@ -376,12 +482,24 @@ function groupsElement(syntax: Syntax): boolean {
 }
 
 describe("the reading of a bare `<T>` in a JSX file", () => {
-  const statement = "function g() {\n  <b>(note): x</b>;\n}\n";
+  const member = "type T = {\n  <b>(note): x</b>;\n}\n";
+  // After an initializer that goes on across a line the reader reads `, x:
+  // T` as an expression's, and the `<` under it as a comparison; TypeScript
+  // reads a declarator and, under it, a statement that begins with an
+  // element.
+  const statement = "let w = a\n  + 1, x: T\n<b>(note): x</b>;\n";
   const angle = statement.indexOf("<b>");
 
   it("is judged type parameters where a member begins", () => {
-    const read = readSyntax(statement, { sourceId, scopes, variant: "jsx" });
+    const read = readSyntax(member, { sourceId, scopes, variant: "jsx" });
     expect(groupsElement(read.root)).toBe(false);
+  });
+
+  it("is judged an element where a statement begins", () => {
+    const source = "function g() {\n  <b>(note): x</b>;\n}\n";
+    const read = readSyntax(source, { sourceId, scopes, variant: "jsx" });
+    expect(read.diagnostics).toEqual([]);
+    expect(groupsElement(read.root)).toBe(true);
   });
 
   it("is read as the reading given for it says", () => {
@@ -409,23 +527,33 @@ describe("the reading of a bare `<T>` in a JSX file", () => {
     expect(printLossless(read.root)).toBe(source);
   });
 
-  it("is not applied where the reader judges no `<`", () => {
-    // After a name a `<` opens type arguments or compares, and is not judged.
-    const source = "const e = a <b>(c);\n";
+  it("is applied where the reader judged the `<` to follow an operand", () => {
+    // After a name the reader judges no element. Where the enforester reads
+    // one beginning there -- after the `}` of a declaration the reader took
+    // for an operand's end -- the read follows its reading, as for a slash;
+    // unapplied, the reading was asked for again on every read.
+    const source = "const e = a\n<b>(c)</b>;\n";
+    const angle = source.indexOf("<b>");
+    expect(
+      groupsElement(
+        readSyntax(source, { sourceId, scopes, variant: "jsx" }).root,
+      ),
+    ).toBe(false);
     const read = readSyntax(source, {
       sourceId,
       scopes,
       variant: "jsx",
-      readings: new Map([[source.indexOf("<b>"), "element"]]),
+      readings: new Map([[angle, "element"]]),
     });
-    expect(groupsElement(read.root)).toBe(false);
-    expect([...read.readings]).toEqual([]);
+    expect(groupsElement(read.root)).toBe(true);
+    expect([...read.readings]).toEqual([[angle, "element"]]);
+    expect(printLossless(read.root)).toBe(source);
   });
 });
 
 describe("TypeScript's reading of a JSX source's `<`s", () => {
   it("reads an element where TypeScript does", () => {
-    const source = "function g() {\n  <b>(note): x</b>;\n}\n";
+    const source = "let w = a\n  + 1, x: T\n<b>(note): x</b>;\n";
     const { readings, unparsed } = typescriptReadings(source, "jsx");
     expect(unparsed).toEqual([]);
     expect([...readings]).toEqual([[source.indexOf("<b>"), "element"]]);

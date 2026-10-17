@@ -265,6 +265,12 @@ function readsRegularExpression(
   return reading === undefined ? allowed : reading === "regular-expression";
 }
 
+/** Whether `readings` says what the `<` starting at `start` opens. */
+function readsAngle(readings: TokenReadings, start: number): boolean {
+  const reading = readings.get(start);
+  return reading === "element" || reading === "type-parameters";
+}
+
 /**
  * Whether a token can stand among the parameters of a signature or function
  * type: names, keywords, literals and the punctuation types are written with.
@@ -515,15 +521,33 @@ function computeEndsExpression(kind: ts.SyntaxKind): boolean {
 
 /**
  * What a group was opened after, as far as a slash written after its closing
- * delimiter is concerned.
- */
-/**
- * What a group was opened after, as far as a slash written after its closing
  * delimiter is concerned, and what the group holds: a `block` holds
  * statements, and `members` the members of a class, an interface or an enum.
- * Both end a statement where they close.
+ * Both end a statement where they close. A `body` holds statements and a
+ * `class` members as those do, but each is the body of a function or a class
+ * written as an expression, which is an operand where it closes:
+ * `foo(function () { function g() {} })` declares `g`, and `x = class {} / 2`
+ * divides.
  */
-type GroupHead = "statement" | "for" | "catch" | "block" | "members" | "other";
+type GroupHead =
+  | "statement"
+  | "for"
+  | "catch"
+  | "block"
+  | "members"
+  | "body"
+  | "class"
+  | "other";
+
+/** Whether a group with the head holds statements. */
+function holdsStatements(head: GroupHead | undefined): boolean {
+  return head === undefined || head === "block" || head === "body";
+}
+
+/** Whether a group with the head holds a class's or an interface's members. */
+function holdsMembers(head: GroupHead | undefined): boolean {
+  return head === "members" || head === "class";
+}
 
 /** The words a statement's parenthesized head is written after. */
 const statementHeads = new Map<ts.SyntaxKind, GroupHead>([
@@ -590,6 +614,20 @@ const declarationModifiers = new Set<ts.SyntaxKind>([
 ]);
 
 /**
+ * The words after which a line break ends the statement they stand in: the
+ * jumps that take an operand only on their own line, and the contextual
+ * modifiers, which are names where a line break follows them.
+ */
+const endsStatementAtLineBreak = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.ReturnKeyword,
+  ts.SyntaxKind.BreakKeyword,
+  ts.SyntaxKind.ContinueKeyword,
+  ts.SyntaxKind.AsyncKeyword,
+  ts.SyntaxKind.DeclareKeyword,
+  ts.SyntaxKind.AbstractKeyword,
+]);
+
+/**
  * The tokens a type is written after, where a brace in a declaration's header
  * opens an object type rather than the declaration's body: a return type's
  * `:`, a constraint's `extends`, a default's `=`, and the operators and
@@ -608,6 +646,130 @@ const typeBraceAfter = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.KeyOfKeyword,
   ts.SyntaxKind.ReadonlyKeyword,
   ts.SyntaxKind.IsKeyword,
+]);
+
+/**
+ * The tokens that carry a type on where it could have ended, across a line
+ * break as well: the operators of the type grammar, a qualified name's `.`, a
+ * type argument list's `,` and `>`, a conditional's `?` and `:`, a function
+ * type's `=>`, a type parameter's constraint and default. None of them begins
+ * a statement. A `[`, a `<` and a conditional's `extends` continue a type only
+ * on its own line, which TypeScript requires of each.
+ */
+const continuesType = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.DotToken,
+  ts.SyntaxKind.CommaToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.QuestionToken,
+  ts.SyntaxKind.ColonToken,
+  ts.SyntaxKind.EqualsGreaterThanToken,
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.ExtendsKeyword,
+]);
+
+/**
+ * Whether a type, or the name a declaration binds, could end at a token: a
+ * name, a literal, a closer, a type argument list's `>`, `void`. The words
+ * that take a type after them -- `keyof`, `infer`, `unique`, `readonly`,
+ * `asserts`, `is`, `abstract new` -- end none.
+ */
+function completesType(kind: ts.SyntaxKind): boolean {
+  switch (kind) {
+    case ts.SyntaxKind.KeyOfKeyword:
+    case ts.SyntaxKind.InferKeyword:
+    case ts.SyntaxKind.UniqueKeyword:
+    case ts.SyntaxKind.ReadonlyKeyword:
+    case ts.SyntaxKind.AssertsKeyword:
+    case ts.SyntaxKind.IsKeyword:
+    case ts.SyntaxKind.AbstractKeyword:
+      return false;
+    case ts.SyntaxKind.GreaterThanToken:
+    case ts.SyntaxKind.VoidKeyword:
+      return true;
+    default:
+      return tokenCanEndExpression(kind);
+  }
+}
+
+/** Whether a token can follow `function` in a function expression. */
+function continuesFunction(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.OpenParenToken ||
+    kind === ts.SyntaxKind.AsteriskToken ||
+    kind === ts.SyntaxKind.LessThanToken ||
+    isBindingName(kind)
+  );
+}
+
+/** Whether a token can follow `class` in a class expression. */
+function continuesClass(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.OpenBraceToken ||
+    kind === ts.SyntaxKind.ExtendsKeyword ||
+    kind === ts.SyntaxKind.ImplementsKeyword ||
+    kind === ts.SyntaxKind.LessThanToken ||
+    isBindingName(kind)
+  );
+}
+
+/** Whether a token can be the name a declaration binds: `let of`, `type T`. */
+function isBindingName(kind: ts.SyntaxKind): boolean {
+  return (
+    kind === ts.SyntaxKind.Identifier ||
+    (kind >= ts.SyntaxKind.AbstractKeyword && kind <= ts.SyntaxKind.OfKeyword)
+  );
+}
+
+/**
+ * What of a statement that ends with a type is being read: the names a
+ * variable statement binds and their types (`binding`, ended by an
+ * initializer's `=`), an initializer (`initializer`, which the next
+ * declarator's `,` ends), a type alias's or an import alias's name and type
+ * parameters (`name`, before its `=`), or the type itself (`type`).
+ */
+type TypedPart = "binding" | "initializer" | "name" | "type";
+
+/**
+ * The words that begin a statement ending with a type, what of it follows,
+ * whether the name they declare must be written on their own line, and
+ * whether it may be a destructuring pattern: `let x: T`, `using r: R = ...`,
+ * `type T = ...`, `import x = A.B`. Words that are names elsewhere --
+ * `type = 1`, `using\n(x)` -- begin one only before a name on their line.
+ */
+const typedStatements = new Map<
+  ts.SyntaxKind,
+  {
+    readonly part: TypedPart;
+    readonly sameLine: boolean;
+    readonly patterns: boolean;
+  }
+>([
+  [
+    ts.SyntaxKind.LetKeyword,
+    { part: "binding", sameLine: false, patterns: true },
+  ],
+  [
+    ts.SyntaxKind.ConstKeyword,
+    { part: "binding", sameLine: false, patterns: true },
+  ],
+  [
+    ts.SyntaxKind.VarKeyword,
+    { part: "binding", sameLine: false, patterns: true },
+  ],
+  [
+    ts.SyntaxKind.UsingKeyword,
+    { part: "binding", sameLine: true, patterns: false },
+  ],
+  [
+    ts.SyntaxKind.TypeKeyword,
+    { part: "name", sameLine: true, patterns: false },
+  ],
+  [
+    ts.SyntaxKind.ImportKeyword,
+    { part: "name", sameLine: true, patterns: false },
+  ],
 ]);
 
 /** The opening delimiter each closing one closes. */
@@ -633,10 +795,15 @@ const opens = new Map<ts.SyntaxKind, ts.SyntaxKind>([
  * `}` that closes a block written as such a body, or after `else`, `do`,
  * `try`, `finally` or `catch`, or as an arrow's body, ends a statement or an
  * arrow function, and TypeScript takes no operator after either. That is the
- * sweet.js reader's lookbehind, as far as the groups alone can tell it. A
- * block written on its own, or a function's or a class's body, is a
- * statement's end or an operand's by where the declaration stands, which is
- * the enforester's to say (see `TokenReadings`).
+ * sweet.js reader's lookbehind, as far as the groups alone can tell it.
+ *
+ * Past that, the scan follows the statements it stands in, as far as their
+ * words tell it: where a declaration's body ends the statement, where a
+ * function or a class written as an expression has a body that is an
+ * operand, and where a statement ends with a type -- `let a: string`, `type
+ * T = {}`, an overload's return type -- after which nothing divides. Where
+ * only the grammar can tell, the enforester says (see `TokenReadings`), and
+ * the source is read again.
  *
  * The groups are matched as the reader matches them: a closer closes the
  * nearest group it can, and every group still open inside that one with it.
@@ -665,13 +832,28 @@ class SlashJudgement {
    */
   #nextAfterExpression = false;
   /**
+   * Whether the next token stands in a list of statements after a word that
+   * ends a statement where a line break follows it: a `return`, `break` or
+   * `continue` taking nothing, or a contextual modifier -- `async`,
+   * `declare`, `abstract` -- that a line break makes a name. `return` and
+   * `function f() {}` on the line under it are two statements.
+   */
+  #nextAfterLineEnd = false;
+  /**
    * A declaration whose body has not been read yet: how many groups stood
    * open at its declaring word, where its body is the first brace opened at
-   * that depth where no type is written, and whether that body holds members
-   * rather than statements. Undefined where no such word was read.
+   * that depth where no type is written, whether that body holds members
+   * rather than statements, and whether the function or class is written as
+   * an expression rather than declared. Undefined where no such word was
+   * read.
    */
   #declaration:
-    { readonly depth: number; readonly members: boolean } | undefined;
+    | {
+        readonly depth: number;
+        readonly members: boolean;
+        readonly expression: boolean;
+      }
+    | undefined;
   /**
    * What must follow a contextual declaring word just read for it to declare,
    * on the same line, and the declaration it would begin. Undefined where
@@ -708,14 +890,100 @@ class SlashJudgement {
     | undefined;
   /** How many groups stood open at a name that began a statement, just read. */
   #label: number | undefined;
+  /**
+   * A statement that ends with a type, being read: how many groups stood
+   * open where it began, and what of it the scan stands in. Nothing in a type
+   * or in the names a declaration binds is divided, so a slash written there
+   * at the statement's own depth is past its end and begins a regular
+   * expression: `let a: string` and the `/[(]/.test(s)` under it. Where the
+   * type ends at a line break, the token after it begins a statement.
+   * Undefined where no such statement is being read.
+   */
+  #typed:
+    | {
+        readonly depth: number;
+        part: TypedPart;
+        /**
+         * How many `<` an initializer holds that no `>` has closed: the `,`
+         * of `f<A, B>(c)` separates type arguments, not declarators.
+         */
+        angles: number;
+      }
+    | undefined;
+  /**
+   * A word just read that begins a statement ending with a type if a name
+   * follows it as `typedStatements` says, with how many groups stood open at
+   * it. Undefined where none was read.
+   */
+  #typedCandidate:
+    | {
+        readonly depth: number;
+        readonly part: TypedPart;
+        readonly sameLine: boolean;
+        readonly patterns: boolean;
+      }
+    | undefined;
+  /**
+   * A function declaration whose return type has not been reached yet: how
+   * many groups stood open at its `function`, and whether its parameter list
+   * is still to come, being read, or just closed, where a `:` writes the
+   * return type its signature may end with -- an overload's, or an ambient
+   * function's. `angles` counts the `<` of its type parameters still open,
+   * which may hold parentheses of their own: `f<T extends (a: A) => B>(x)`.
+   * Undefined where none is being read.
+   */
+  #signature:
+    | {
+        readonly depth: number;
+        part: "header" | "parameters" | "closed";
+        angles: number;
+      }
+    | undefined;
 
   constructor(allowed: boolean) {
     this.#allowed = allowed;
   }
 
-  /** Whether a slash read next begins a regular expression. */
-  get regularExpressionAllowed(): boolean {
-    return this.#allowed;
+  /** Whether the scan stands in a list of statements. */
+  get inStatements(): boolean {
+    return holdsStatements(this.#open.at(-1)?.head);
+  }
+
+  /**
+   * Whether a `kind` read next, after a line break where `lineBreakBefore`
+   * says so, begins an expression: a slash a regular expression, and a `<`
+   * an element where the variant has them.
+   */
+  beginsExpression(kind: ts.SyntaxKind, lineBreakBefore: boolean): boolean {
+    return this.#allowed || this.#typeEndsAt(kind, lineBreakBefore);
+  }
+
+  /**
+   * Whether the statement ending with a type being read ends in front of a
+   * `kind` read next, where it stands at the statement's depth: at a slash
+   * where a type or a binding is read, at a brace after a complete type --
+   * a function's body, or a block on the line under it -- and, after a line
+   * break, at any token that does not carry a type on.
+   */
+  #typeEndsAt(kind: ts.SyntaxKind, lineBreakBefore: boolean): boolean {
+    const typed = this.#typed;
+    if (
+      typed === undefined ||
+      typed.part === "initializer" ||
+      this.#open.length !== typed.depth
+    )
+      return false;
+    if (
+      typed.part !== "name" &&
+      (kind === ts.SyntaxKind.SlashToken ||
+        kind === ts.SyntaxKind.SlashEqualsToken ||
+        kind === ts.SyntaxKind.RegularExpressionLiteral)
+    )
+      return true;
+    if (this.#previous === undefined || !completesType(this.#previous))
+      return false;
+    if (kind === ts.SyntaxKind.OpenBraceToken) return true;
+    return lineBreakBefore && !continuesType.has(kind);
   }
 
   /**
@@ -732,11 +1000,100 @@ class SlashJudgement {
         this.#previous === ts.SyntaxKind.QuestionDotToken) &&
       kind >= ts.SyntaxKind.FirstKeyword &&
       kind <= ts.SyntaxKind.LastKeyword;
-    const beginsStatement = this.#nextBeginsStatement && !memberName;
+    const depth = this.#open.length;
+    // A function or a class written as an expression goes on to its name, its
+    // parameters or its heritage; a word spelled like one that does not is a
+    // key: `{ class: 1, m() {} }`.
+    if (
+      this.#declaration?.expression === true &&
+      this.#declaration.depth === depth &&
+      ((this.#previous === ts.SyntaxKind.FunctionKeyword &&
+        !continuesFunction(kind)) ||
+        (this.#previous === ts.SyntaxKind.ClassKeyword &&
+          !continuesClass(kind)))
+    )
+      this.#declaration = undefined;
+    const typeEnds = this.#typeEndsAt(kind, lineBreakBefore);
+    const typed = typeEnds ? undefined : this.#typed;
+    this.#typed = typed;
+    if (typed !== undefined && depth === typed.depth) {
+      if (kind === ts.SyntaxKind.SemicolonToken) this.#typed = undefined;
+      else if (typed.part === "initializer") {
+        // An initializer holds no bare comma operator, so a `,` at the
+        // statement's depth begins the next declarator, which may be typed:
+        // `let w = 1, x: T`. Where its expression is not known to end, the
+        // statement is left to the enforester: at a line break that no `,`
+        // stands at, since an expression goes on across one.
+        if (
+          lineBreakBefore &&
+          kind !== ts.SyntaxKind.CommaToken &&
+          this.#previous !== ts.SyntaxKind.CommaToken
+        )
+          this.#typed = undefined;
+        else if (kind === ts.SyntaxKind.LessThanToken) typed.angles += 1;
+        else if (kind === ts.SyntaxKind.GreaterThanToken)
+          typed.angles = Math.max(0, typed.angles - 1);
+        else if (kind === ts.SyntaxKind.CommaToken && typed.angles === 0)
+          typed.part = "binding";
+      } else if (kind === ts.SyntaxKind.EqualsToken) {
+        // A variable's initializer is an expression; an alias's `=` writes
+        // its type, after a type parameter's default that has its own.
+        if (typed.part === "binding") typed.part = "initializer";
+        else typed.part = "type";
+      }
+    }
+    const typedCandidate = this.#typedCandidate;
+    this.#typedCandidate = undefined;
+    if (
+      typedCandidate !== undefined &&
+      depth === typedCandidate.depth &&
+      !(typedCandidate.sameLine && lineBreakBefore) &&
+      (isBindingName(kind) ||
+        (typedCandidate.patterns &&
+          (kind === ts.SyntaxKind.OpenBraceToken ||
+            kind === ts.SyntaxKind.OpenBracketToken)))
+    )
+      this.#typed = { depth, part: typedCandidate.part, angles: 0 };
+    const signature = this.#signature;
+    if (signature !== undefined) {
+      if (signature.part === "closed") {
+        this.#signature = undefined;
+        if (kind === ts.SyntaxKind.ColonToken && depth === signature.depth)
+          this.#typed = { depth, part: "type", angles: 0 };
+      } else if (signature.part === "header" && depth === signature.depth) {
+        if (kind === ts.SyntaxKind.LessThanToken) signature.angles += 1;
+        else if (kind === ts.SyntaxKind.GreaterThanToken) signature.angles -= 1;
+        else if (
+          kind === ts.SyntaxKind.OpenParenToken &&
+          signature.angles === 0
+        )
+          signature.part = "parameters";
+        else if (
+          kind === ts.SyntaxKind.SemicolonToken ||
+          kind === ts.SyntaxKind.OpenBraceToken
+        )
+          this.#signature = undefined;
+      }
+    }
+    // A statement that ends with a type ends where a slash is written after
+    // it, or where a line break stands after the type.
+    // A contextual modifier with a line break after it modifies nothing.
+    if (this.#nextAfterLineEnd && lineBreakBefore) this.#ambient = false;
+    const typedStatementEnds =
+      typeEnds && (lineBreakBefore || kind !== ts.SyntaxKind.OpenBraceToken);
+    // A brace on the line under an operand's end cannot carry it on, and
+    // begins a block: `f(x)` and the `{ ... }` under it are two statements.
+    const beginsStatement =
+      (this.#nextBeginsStatement ||
+        typedStatementEnds ||
+        (this.#nextAfterLineEnd && lineBreakBefore) ||
+        (kind === ts.SyntaxKind.OpenBraceToken &&
+          this.#nextAfterExpression &&
+          lineBreakBefore)) &&
+      !memberName;
     /** Whether a word that cannot carry an expression on begins one here. */
     const wordBeginsStatement =
       beginsStatement || (this.#nextAfterExpression && !memberName);
-    const depth = this.#open.length;
     if (
       this.#candidate !== undefined &&
       !lineBreakBefore &&
@@ -745,6 +1102,7 @@ class SlashJudgement {
       this.#declaration = {
         depth: this.#candidate.depth,
         members: this.#candidate.members,
+        expression: false,
       };
     this.#candidate = undefined;
     let clauseEnds = false;
@@ -757,8 +1115,12 @@ class SlashJudgement {
         this.#clause.questions += 1;
       else if (kind === ts.SyntaxKind.ColonToken) this.#clause.questions -= 1;
     }
+    // The `:` after a name a variable statement binds writes its type: `const
+    // l: string` labels nothing.
     const labelEnds =
-      this.#label === depth && kind === ts.SyntaxKind.ColonToken;
+      this.#label === depth &&
+      kind === ts.SyntaxKind.ColonToken &&
+      !(this.#typed?.part === "binding" && this.#typed.depth === depth);
     this.#label = undefined;
     if (!memberName) {
       const declares =
@@ -773,6 +1135,17 @@ class SlashJudgement {
         this.#declaration = {
           depth,
           members: kind !== ts.SyntaxKind.FunctionKeyword,
+          expression: false,
+        };
+      else if (
+        !declares &&
+        (kind === ts.SyntaxKind.FunctionKeyword ||
+          kind === ts.SyntaxKind.ClassKeyword)
+      )
+        this.#declaration = {
+          depth,
+          members: kind === ts.SyntaxKind.ClassKeyword,
+          expression: true,
         };
       const follows = contextualDeclarationKeywords.get(kind);
       if (wordBeginsStatement && follows !== undefined)
@@ -791,8 +1164,18 @@ class SlashJudgement {
           questions: 0,
           default: kind === ts.SyntaxKind.DefaultKeyword,
         };
-      if (wordBeginsStatement && kind === ts.SyntaxKind.Identifier)
+      // A name after an operand begins a statement only on a line of its own:
+      // the `T` of `c ? w as T : {}` is a type, and labels nothing.
+      if (
+        (beginsStatement || (wordBeginsStatement && lineBreakBefore)) &&
+        kind === ts.SyntaxKind.Identifier
+      )
         this.#label = depth;
+      const typedStatement = typedStatements.get(kind);
+      if (wordBeginsStatement && typedStatement !== undefined)
+        this.#typedCandidate = { depth, ...typedStatement };
+      if (wordBeginsStatement && kind === ts.SyntaxKind.FunctionKeyword)
+        this.#signature = { depth, part: "header", angles: 0 };
       if (kind === ts.SyntaxKind.AtToken)
         this.#decorated ??= { beginsStatement: wordBeginsStatement, depth };
     }
@@ -827,6 +1210,18 @@ class SlashJudgement {
             : kind,
         head: "other",
       });
+    if (this.#typed !== undefined && this.#open.length < this.#typed.depth)
+      this.#typed = undefined;
+    if (this.#signature !== undefined) {
+      if (this.#open.length < this.#signature.depth)
+        this.#signature = undefined;
+      else if (
+        this.#signature.part === "parameters" &&
+        kind === ts.SyntaxKind.CloseParenToken &&
+        this.#open.length === this.#signature.depth
+      )
+        this.#signature.part = "closed";
+    }
     if (this.#declaration !== undefined) {
       // A `;` at the declaration's depth ends one with no body -- an
       // overload -- and a closer below it leaves the scope it was written in.
@@ -838,16 +1233,19 @@ class SlashJudgement {
         this.#declaration = undefined;
     }
     // A member's decorators end at its name; a brace or a `;` where they
-    // were written is past them.
+    // were written is past them, and so is a closer that leaves the group
+    // they were written in: a parameter's, `(@Inject(T) t: T)`, or a last
+    // member's with no `;` after it.
     if (
       this.#decorated !== undefined &&
-      (kind === ts.SyntaxKind.OpenBraceToken ||
-        kind === ts.SyntaxKind.SemicolonToken) &&
-      depth === this.#decorated.depth
+      (this.#open.length < this.#decorated.depth ||
+        ((kind === ts.SyntaxKind.OpenBraceToken ||
+          kind === ts.SyntaxKind.SemicolonToken) &&
+          depth === this.#decorated.depth))
     )
       this.#decorated = undefined;
     const innermost = this.#open.at(-1)?.head;
-    const statements = innermost === undefined || innermost === "block";
+    const statements = holdsStatements(innermost);
     this.#nextBeginsStatement =
       statements &&
       (kind === ts.SyntaxKind.SemicolonToken ||
@@ -856,9 +1254,10 @@ class SlashJudgement {
         (!memberName &&
           (kind === ts.SyntaxKind.ElseKeyword ||
             kind === ts.SyntaxKind.DoKeyword)) ||
-        (kind === ts.SyntaxKind.OpenBraceToken &&
-          this.#open.at(-1)?.head === "block") ||
+        (kind === ts.SyntaxKind.OpenBraceToken && holdsStatements(innermost)) ||
         (!memberName && declarationModifiers.has(kind) && wordBeginsStatement));
+    this.#nextAfterLineEnd =
+      statements && !memberName && endsStatementAtLineBreak.has(kind);
     this.#nextAfterExpression =
       statements &&
       judged &&
@@ -917,30 +1316,37 @@ class SlashJudgement {
     const previous = this.#previous;
     const typed = previous !== undefined && typeBraceAfter.has(previous);
     if (this.#declaration?.depth === this.#open.length && !typed) {
-      const { members } = this.#declaration;
+      const { members, expression } = this.#declaration;
       this.#declaration = undefined;
-      return members ? "members" : "block";
+      if (members) return expression ? "class" : "members";
+      return expression ? "body" : "block";
     }
+    // What `export default` is followed by in braces is an object.
+    if (previous === ts.SyntaxKind.DefaultKeyword && this.#keyword())
+      return "other";
     // A brace that begins a statement is a block; and among a class's
     // members one after a parameter list, a return type or `static` is a
     // method's body or a static block, where one after an operator is an
     // object written in an initializer.
     if (beginsStatement) return "block";
     if (
-      this.#open.at(-1)?.head === "members" &&
+      holdsMembers(this.#open.at(-1)?.head) &&
       previous !== undefined &&
       !typed &&
       (tokenCanEndExpression(previous) ||
+        previous === ts.SyntaxKind.StaticKeyword ||
         previous === ts.SyntaxKind.GreaterThanToken ||
         previous === ts.SyntaxKind.VoidKeyword)
     )
       return "block";
+    // After any other parameter list, a method's body: written in an object,
+    // nothing else takes a brace after a parenthesis.
     if (previous === ts.SyntaxKind.CloseParenToken)
       return this.#closed === "statement" ||
         this.#closed === "for" ||
         this.#closed === "catch"
         ? "block"
-        : "other";
+        : "body";
     if (previous === ts.SyntaxKind.EqualsGreaterThanToken) return "block";
     return previous !== undefined && blockHeads.has(previous) && this.#keyword()
       ? "block"
@@ -1063,12 +1469,19 @@ export function scanWithSupportedTypeScript(
       read.add(start);
       return reading === "element";
     }
+    // A list of statements holds no member, and what begins one there is an
+    // element: `function g() { <b>(note): x</b>; }`.
     return looksLikeJsxStart(
       lookahead,
       source,
       start,
       readings,
-      beginsMember(previousSignificantKind, openGroups.at(-1), lineBreakBefore),
+      !judgement.inStatements &&
+        beginsMember(
+          previousSignificantKind,
+          openGroups.at(-1),
+          lineBreakBefore,
+        ),
     );
   };
   while (true) {
@@ -1133,7 +1546,7 @@ export function scanWithSupportedTypeScript(
           readsRegularExpression(
             readings,
             start,
-            judgement.regularExpressionAllowed,
+            judgement.beginsExpression(kind, lineBreakBefore),
           )
         )
           kind = scanner.reScanSlashToken();
@@ -1171,10 +1584,14 @@ export function scanWithSupportedTypeScript(
       // comparison. Deciding from the lookahead alone read the `<T>` of
       // `declare function useState<T>(v: T)` as an element and reported a
       // missing closing tag for a line that is ordinary TSX.
-      judgement.regularExpressionAllowed &&
-      // `f?.<string>()` passes type arguments to an optional call: a `<`
-      // straight after `?.` opens nothing else.
-      previousSignificantKind !== ts.SyntaxKind.QuestionDotToken &&
+      // Where a reading says what the `<` opens, the enforester found an
+      // expression or a type begin there, whatever the token before it led
+      // this judgement to expect -- as for a slash.
+      (readsAngle(readings, scanner.getTokenStart()) ||
+        (judgement.beginsExpression(kind, lineBreakBefore) &&
+          // `f?.<string>()` passes type arguments to an optional call: a `<`
+          // straight after `?.` opens nothing else.
+          previousSignificantKind !== ts.SyntaxKind.QuestionDotToken)) &&
       opensElement(scanner.getTokenStart())
     ) {
       jsxContainers.push({ returnMode: jsxMode, depth: 0 });
@@ -1278,7 +1695,15 @@ export function scanWithSupportedTypeScript(
       if (/[\r\n\u2028\u2029]/u.test(scanner.getTokenText()))
         lineBreakBefore = true;
     } else {
-      judgement.take(kind, lineBreakBefore, lexicalMode !== "jsx-text");
+      // Only the text says nothing of what follows it: the `{` of a
+      // container scanned in the text opens an expression, and a slash after
+      // it begins one -- `{a}{/re/.test(s)}`.
+      judgement.take(
+        kind,
+        lineBreakBefore,
+        kind !== ts.SyntaxKind.JsxText &&
+          kind !== ts.SyntaxKind.JsxTextAllWhiteSpaces,
+      );
       lineBreakBefore = false;
       previousSignificantKind = kind;
       if (

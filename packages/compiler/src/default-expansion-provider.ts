@@ -58,6 +58,7 @@ import {
   createToken,
   OriginStore,
   type SlashReading,
+  type SourceOrigin,
   type TokenReading,
   type TokenReadings,
   type Syntax,
@@ -1548,6 +1549,28 @@ export class DefaultProjectExpansionProvider
       };
       /** The template slashes reported, by where each use writes one. */
       const templateSlashes = new Set<string>();
+      /**
+       * The module a `<` was written in and where, if that module reads JSX:
+       * the file's own text, or a template, which was read where it is
+       * written and is read again there -- in the module that defines the
+       * macro, with the whole project. One the expander wrote stands in no
+       * source, and one written where JSX is not read opens no element.
+       */
+      const angleWrittenWhereJsxIs = (
+        angle: TokenSyntax,
+      ):
+        | { readonly module: ParsedFile; readonly at: SourceOrigin }
+        | undefined => {
+        const at =
+          writtenSource(origins, angle.origin) ??
+          origins.selectPrimarySource(angle.origin, "definition");
+        const module = bySource.get(at.sourceId);
+        return module !== undefined &&
+          module.kind.variant === "jsx" &&
+          module.sourceText.startsWith("<", at.span.start)
+          ? { module, at }
+          : undefined;
+      };
       const resolvedGraph = resolveMacroProject({
         entry: file.fileName,
         languageVersion: project.sweet.languageVersion,
@@ -1744,24 +1767,13 @@ export class DefaultProjectExpansionProvider
         allocateSyntaxId: syntaxIds.allocate,
         allocateBindingId: bindingIds.allocate,
         allocateInvocationId: invocationIds.allocate,
+        readsElement: (angle) => angleWrittenWhereJsxIs(angle) !== undefined,
         misread: (token, reading) => {
           const written = writtenSource(origins, token.origin);
           if (angleReading(reading)) {
-            // Where the `<` was written: in the file's own text, or in a
-            // template, which was read where it is written and is read again
-            // there -- in the module that defines the macro, with the whole
-            // project. One the expander wrote stands in no source, and a `<`
-            // read where JSX is not has no element to open.
-            const at =
-              written ??
-              origins.selectPrimarySource(token.origin, "definition");
-            const module = bySource.get(at.sourceId);
-            if (
-              module === undefined ||
-              module.kind.variant !== "jsx" ||
-              !module.sourceText.startsWith("<", at.span.start)
-            )
-              return;
+            const where = angleWrittenWhereJsxIs(token);
+            if (where === undefined) return;
+            const { module, at } = where;
             if (module !== file) {
               let found = templateAngles.get(module);
               if (found === undefined) {

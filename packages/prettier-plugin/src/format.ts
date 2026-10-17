@@ -546,6 +546,55 @@ function withoutCompileTimeClauses(source: string, root: RootSyntax): string {
   return text;
 }
 
+/**
+ * Where the templates of the macros `root` defines are written, from each
+ * template's opening brace to past its closing one, in source order. A
+ * template written inside another is in the outer one's span.
+ */
+function templateSpans(
+  root: RootSyntax,
+): readonly (readonly [number, number])[] {
+  const spans: [number, number][] = [];
+  for (const definition of parseMacroDefinitions(root, { sourceId })
+    .definitions)
+    for (const rule of definition.rules)
+      if (rule.template !== undefined && rule.template.close.tag === "token")
+        spans.push([
+          rule.template.open.span.start,
+          rule.template.close.span.end,
+        ]);
+  spans.sort(([left], [right]) => left - right);
+  return spans.filter(([start], index) =>
+    spans.slice(0, index).every(([, end]) => start >= end),
+  );
+}
+
+/**
+ * `source` with everything but the templates of the macros it defines, at
+ * `templates`, written as spaces, for TypeScript's parser to read each template's braces as a
+ * block. The parser reads a macro's definition as statements it could not
+ * parse, so the whole-source read says nothing of the syntax a template
+ * writes; read on their own, the statements an expression or a statement
+ * template writes are TypeScript's, and so are the `<` and the slashes in
+ * them. A template of another category, or one using the template
+ * language's own syntax, is a statement the parser could not read, and is
+ * left to the reader. Every offset stays where it was.
+ */
+function onlyTemplates(
+  source: string,
+  templates: readonly (readonly [number, number])[],
+): string {
+  let text = "";
+  let at = 0;
+  for (const [start, end] of templates) {
+    text +=
+      source.slice(at, start).replace(/[^\r\n\u2028\u2029]/gu, " ") +
+      source.slice(start, end);
+    at = end;
+  }
+  return text + source.slice(at).replace(/[^\r\n\u2028\u2029]/gu, " ");
+}
+
 /** Every token of `syntax`, delimiters included, in source order. */
 function flatTokens(syntax: Syntax): readonly TokenSyntax[] {
   const tokens: TokenSyntax[] = [];
@@ -589,25 +638,39 @@ function readForFormatting(
 ): { readonly root: RootSyntax; readonly unparsed: readonly Span[] } {
   const variant = options.filepath?.endsWith("x") === true ? "jsx" : "standard";
   const initial = readSyntax(source, { sourceId, scopes, variant });
-  const typescript =
+  const asks =
     initial.diagnostics.length > 0 ||
     possibleRegularExpressions(source, initial.root).length > 0 ||
-    (variant === "jsx" && bareAngleBrackets(flatTokens(initial.root)))
-      ? typescriptReadings(
-          withoutCompileTimeClauses(source, initial.root),
+    (variant === "jsx" && bareAngleBrackets(flatTokens(initial.root)));
+  const uses = asks ? macroUses(initial.root) : [];
+  const typescript = asks
+    ? typescriptReadings(
+        withoutCompileTimeClauses(source, initial.root),
+        variant,
+        uses,
+      )
+    : undefined;
+  const templates = asks ? templateSpans(initial.root) : [];
+  const templateReadings =
+    templates.length === 0
+      ? new Map()
+      : typescriptReadings(
+          onlyTemplates(source, templates),
           variant,
-          macroUses(initial.root),
-        )
-      : undefined;
+          // A use outside the templates is written as spaces, and would stand
+          // for whichever statement TypeScript reads around its offset.
+          uses.filter((use) =>
+            templates.some(([start, end]) => use >= start && use < end),
+          ),
+        ).readings;
+  const readings = new Map([
+    ...(typescript?.readings ?? []),
+    ...templateReadings,
+  ]);
   const result =
-    typescript === undefined || typescript.readings.size === 0
+    readings.size === 0
       ? initial
-      : readSyntax(source, {
-          sourceId,
-          scopes,
-          variant,
-          readings: typescript.readings,
-        });
+      : readSyntax(source, { sourceId, scopes, variant, readings });
   if (result.diagnostics.length > 0) {
     const first = result.diagnostics[0];
     throw new SyntaxError(

@@ -758,12 +758,14 @@ function parsePrefix(
  *
  * TypeScript writes `TypeAssertion: < Type > UnaryExpression`, and reads one
  * only where JSX is off: in a `.tsx` file a `<` in an operand position opens
- * an element instead. The consumers are never told which file they are reading
- * and do not need to be, because the reader has already settled it. Reading a
- * `.stsx` file it groups the element -- `<A>y` arrives as one `jsx-element`
- * node, with the diagnostic TypeScript reports for it -- so a `<` still
- * standing here as a token was read from a `.sts` file, where the assertion is
- * what TypeScript reads too.
+ * an element instead. Reading a `.stsx` file the reader groups the element
+ * wherever it judges one -- `<A>y` arrives as one `jsx-element` node, with the
+ * diagnostic TypeScript reports for it -- but it judges from the token before,
+ * and after a macro's name, which it reads as any other, it judges the `<` to
+ * compare: `wrap <p>{x}</p>`. A `<` written where JSX is read (`readsElement`)
+ * that still stands here as a token is such a misreading, and is reported to
+ * be read again as the element it opens, rather than read as an assertion
+ * that would let a rule match the element's tags and text as code.
  *
  * A generic arrow's type parameters are written with the same `<...>`, and
  * TypeScript resolves the ambiguity in the arrow's favour. The primary
@@ -773,7 +775,12 @@ function parseTypeAssertion(
   cursor: SyntaxCursor,
   context: PrattContext,
 ): ParsedExpression | undefined {
-  if (tokenSpelling(cursor) !== "<") return undefined;
+  const angle = cursor.peek();
+  if (angle?.tag !== "token" || angle.raw !== "<") return undefined;
+  if (context.consumer.readsElement?.(angle) === true) {
+    context.consumer.misread?.(angle, "element");
+    return undefined;
+  }
   const region = consumeBalancedTypeArguments(cursor, context.consumer);
   if (region === undefined) return undefined;
   const working = cursor.fork();
