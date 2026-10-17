@@ -327,6 +327,15 @@ class TypeConsumer implements SyntaxConsumer {
     const children: Syntax[] = [];
     let expectingOperand = true;
     let conditionalDepth = 0;
+    /**
+     * How many `extends` of a conditional type were read at this level and
+     * wait for their `?`. Only a conditional's `?` carries a type on: one with
+     * none waiting -- a tuple's optional element, or the conditional around a
+     * type captured from its `extends` on -- ends the type, where reading it
+     * as the start of a conditional of its own swallowed `? A : B` into
+     * `nullable string`.
+     */
+    let awaitingQuestion = 0;
     let genericFunctionHead = false;
     let invalidAdjacency = false;
     // Whether the parameter list just read must, or may, be followed by `=>`.
@@ -475,8 +484,9 @@ class TypeConsumer implements SyntaxConsumer {
         continue;
       }
       if (spelling === "?") {
-        if (expectingOperand) break;
+        if (expectingOperand || awaitingQuestion === 0) break;
         children.push(cursor.consume()!);
+        awaitingQuestion -= 1;
         conditionalDepth += 1;
         expectingOperand = true;
         continue;
@@ -487,6 +497,7 @@ class TypeConsumer implements SyntaxConsumer {
           !(children.length === 0 && (spelling === "|" || spelling === "&"))
         )
           break;
+        if (spelling === "extends") awaitingQuestion += 1;
         children.push(cursor.consume()!);
         expectingOperand = true;
         continue;

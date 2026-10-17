@@ -27,6 +27,9 @@ const macros = `
 export syntax orNull:type {
   rule { orNull($t:type) } => { $t | null }
 }
+export syntax nullable:type {
+  rule { nullable $t:type } => { $t | null }
+}
 export syntax justString:type {
   rule { justString() } => { string }
 }
@@ -43,7 +46,7 @@ function expand(source: string): string {
   writeFileSync(join(directory, "macros.sts"), macros);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { orNull, justString, listOfString, voidFn } from "./macros.sts" for syntax;\n${source}\n`,
+    `import { orNull, nullable, justString, listOfString, voidFn } from "./macros.sts" for syntax;\n${source}\n`,
   );
   writeFileSync(
     join(directory, "tsconfig.json"),
@@ -402,5 +405,33 @@ describe("grouping a captured type", () => {
     expect(text).toContain("export type A = (string | number)[];");
     expect(text).not.toContain("((string | number))");
     expect(diagnostics).toEqual([]);
+  });
+});
+
+describe("a type captured where a `?` stands", () => {
+  test.each([
+    [
+      "before the `?` of a conditional it is the extends of",
+      "export type R<T> = T extends nullable string ? 'yes' : 'no';",
+      "T extends string | null ? 'yes' : 'no'",
+    ],
+    [
+      // Where the capture begins at the check, the conditional is one type,
+      // all of it captured.
+      "after the branches of a conditional it begins",
+      "export type R<T> = nullable T extends string ? 1 : 2;",
+      "(T extends string ? 1 : 2) | null",
+    ],
+    [
+      "before a tuple's optional `?`",
+      "export type R = [nullable string?];",
+      "[(string | null) ?]",
+    ],
+  ])("is read to its end %s", (_, source, expected) => {
+    // Only a conditional's `?` carries a type on, and only after the
+    // `extends` it pairs with: read as one of its own, the `?` took the
+    // conditional's branches into the capture and printed a conditional
+    // that means something else.
+    expect(expand(source)).toContain(expected);
   });
 });
