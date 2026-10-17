@@ -258,6 +258,8 @@ The compiler validates:
   or type member macro, which stands in a member list, cannot bind in one
   (`SWR3006`): what follows a member is more members, and no name is bound in
   a member list;
+- nor can an expression operator (`SWR3007`), which is applied while the
+  expression holding it is read, before anything following that expression;
 - alternatives return the fields referenced by the contract.
 
 During matching, the expander allocates a lexical scope `L`, adds `L` to the

@@ -605,6 +605,22 @@ describe("macro-definition parser", () => {
         bind $name in following as lexical value
         => { const $name = 1; }
       }
+      operator (<~):expr {
+        fixity infix;
+        associativity none;
+        precedence 20;
+        rule { $name:binding <~ $source:expr }
+        bind $name in following as lexical value;
+        => { ($source) }
+      }
+      operator (<-):stmt {
+        fixity infix;
+        associativity none;
+        precedence 20;
+        rule { $name:binding <- $source:expr; }
+        bind $name in following as lexical value;
+        => { const $name = $source; }
+      }
     `;
     const read = readSyntax(source, { sourceId, scopes });
     const parsed = parseMacroDefinitions(read.root, { sourceId });
@@ -634,8 +650,12 @@ describe("macro-definition parser", () => {
         "SWR3006",
         "A typeMember macro cannot bind in following: a member list is not a lexical scope.",
       ],
+      [
+        "SWR3007",
+        "Operator <~ is an expression operator, which cannot bind in following: it is applied while the expression holding it is read. Declare it stmt to bind the statements after it.",
+      ],
     ]);
-    expect(compiled.rules).toHaveLength(2);
+    expect(compiled.rules).toHaveLength(3);
   });
 
   it("expands a syntax-class binder into its declared binding fields", () => {

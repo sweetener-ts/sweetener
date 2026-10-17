@@ -790,7 +790,7 @@ describe("a following region", () => {
       `import { (<~) } from "./macros.sts" for syntax;\nexport function f(): number { let v = 0; v <~ 1; return v; }\n`,
     );
     expect(messages.join("\n")).toContain(
-      "Operator <~ binds a name in following syntax, but it was expanded while the expression holding it was read, where no syntax following it can be bound.",
+      "Operator <~ is an expression operator, which cannot bind in following: it is applied while the expression holding it is read. Declare it stmt to bind the statements after it.",
     );
   });
 });

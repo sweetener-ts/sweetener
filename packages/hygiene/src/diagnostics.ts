@@ -6,6 +6,7 @@ export const invalidBindingPathCode = diagnosticCode("SWR3003");
 export const incompatibleBindingAlignmentCode = diagnosticCode("SWR3004");
 export const incompatibleBindingSpaceCode = diagnosticCode("SWR3005");
 export const followingOutsideLexicalScopeCode = diagnosticCode("SWR3006");
+export const operatorFollowingCode = diagnosticCode("SWR3007");
 
 export const hygieneDiagnosticRegistry = new DiagnosticRegistry([
   {
@@ -65,5 +66,15 @@ export const hygieneDiagnosticRegistry = new DiagnosticRegistry([
       "A `following` region is the rest of the block or module an invocation stands in. A class element or type member macro stands in a member list, which binds nothing a later member can see.",
     format: (arguments_) =>
       `A ${String(arguments_[0] ?? "member")} macro cannot bind in following: a member list is not a lexical scope.`,
+  },
+  {
+    code: operatorFollowingCode,
+    owner: "hygiene-binding",
+    stage: "binding",
+    severity: "error",
+    documentation:
+      "An expression operator is applied while the expression holding it is read, to the operands the parser found around it, and the syntax following that expression is read after it: nothing there can be bound by the operator. A statement operator, which stands in the statements it binds, can.",
+    format: (arguments_) =>
+      `Operator ${String(arguments_[0] ?? "")} is an expression operator, which cannot bind in following: it is applied while the expression holding it is read. Declare it stmt to bind the statements after it.`,
   },
 ]);

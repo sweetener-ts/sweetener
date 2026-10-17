@@ -4,6 +4,7 @@ import {
   incompatibleBindingAlignmentCode,
   incompatibleBindingSpaceCode,
   followingOutsideLexicalScopeCode,
+  operatorFollowingCode,
   invalidBindingPathCode,
   malformedBindingContractCode,
   type BindingContract,
@@ -163,7 +164,8 @@ export function compileParsedBindingContracts(
       | typeof invalidBindingPathCode
       | typeof incompatibleBindingAlignmentCode
       | typeof incompatibleBindingSpaceCode
-      | typeof followingOutsideLexicalScopeCode,
+      | typeof followingOutsideLexicalScopeCode
+      | typeof operatorFollowingCode,
     origin: OriginId,
     argument?: string,
   ): void => {
@@ -358,6 +360,15 @@ export function compileParsedBindingContracts(
           (category === "classElement" || category === "typeMember")
         ) {
           diagnostic(followingOutsideLexicalScopeCode, origin, category);
+          index = next + 3;
+          continue;
+        }
+        if (
+          region.kind === "following" &&
+          definition.kind === "operator" &&
+          category === "expr"
+        ) {
+          diagnostic(operatorFollowingCode, origin, definition.spelling);
           index = next + 3;
           continue;
         }
