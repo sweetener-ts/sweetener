@@ -474,6 +474,12 @@ interface SyntaxRun {
    * declares it.
    */
   readonly statements?: boolean | undefined;
+  /**
+   * Whether the run is a class body's members or one member of an object
+   * literal, where no statement stands: a method there may be named `if`
+   * or `for`, and its parameter list is no statement's head.
+   */
+  readonly members?: boolean | undefined;
 }
 
 /**
@@ -2575,6 +2581,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // statement, `[function twice() {}, twice(2)]` bound the function's name
     // across the whole array.
     statements: boolean,
+    // Whether `nodes` is a member list or one member, where a method may be
+    // named like a control statement's keyword (`SyntaxRun.members`).
+    memberList = false,
   ): void => {
     const run = runOf(nodes);
     // A run of types or of type members applies type arguments to nothing
@@ -2652,7 +2661,9 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
               afterHash(nodes, at - 1)))
         )
           continue;
-        if (loopHeaderAt(nodes, at)) {
+        // A member named `for` writes a parameter list where a loop writes
+        // its header: `{ for(x: number) { return x; } }`.
+        if (!memberList && loopHeaderAt(nodes, at)) {
           const header = node.children;
           const loop = { from: at, to: loopEnd(nodes, at) };
           for (let entry = 0; entry < header.length; entry += 1) {
@@ -2663,7 +2674,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
           hoistVars(header, into);
           continue;
         }
-        const end = parameterScopeEnd(nodes, at, statements);
+        const end = parameterScopeEnd(nodes, at, statements, memberList);
         const open = typeParametersOpenBefore(run, at);
         if (end !== undefined) {
           // A parameter's binder stands after the modifiers of a parameter
@@ -2774,10 +2785,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     sequence: SyntaxSequence,
     category: SyntaxCategory,
     statements: boolean,
+    members = false,
   ): CollectedBindings => {
     const into = collecting();
     if (extractBinders !== undefined)
-      collectRegion(sequence, into, category, statements);
+      collectRegion(sequence, into, category, statements, members);
     return into;
   };
 
@@ -2999,6 +3011,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     at: number,
     /** Whether `nodes` is a run of statements, where no method stands. */
     statements = false,
+    /** Whether `nodes` is a member list or a member, where no statement does. */
+    members = false,
   ): number | undefined => {
     const node = nodes[at];
     if (node?.tag !== "group" || node.delimiter !== "parenthesis")
@@ -3009,6 +3023,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // body like one. What a `for` binds is written with a keyword inside it, so
     // it is found by reading the header rather than by reading its entries.
     if (
+      !members &&
       previous?.tag === "token" &&
       ["for", "while", "if", "switch", "with"].includes(previous.raw)
     )
@@ -3020,7 +3035,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     // only what comes next. A body already enforested arrives protected rather
     // than as the brace it was read from, which `parametersFunction` reads
     // through.
-    const fn = parametersFunction(node, { ...runOf(nodes), statements }, at);
+    const fn = parametersFunction(
+      node,
+      { ...runOf(nodes), statements, members },
+      at,
+    );
     if (fn === undefined) return undefined;
     return "arrow" in fn ? arrowBodyEnd(nodes, fn.arrow + 1).end : fn.body + 1;
   };
@@ -4037,7 +4056,8 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     if (opener?.tag === "group")
       return opener.delimiter === "bracket" ? functionBrace : otherBrace;
     if (opener?.tag !== "token") return otherBrace;
-    if (controlKeywords.has(opener.raw)) return otherBrace;
+    if (controlKeywords.has(opener.raw) && run.members !== true)
+      return otherBrace;
     if (
       opener.raw === "await" &&
       lastTokenOf(nodeAt(run, parameters - 2))?.raw === "for"
@@ -5181,7 +5201,12 @@ function* walk(
   const statementRun =
     !groupInterior && (category === "stmt" || category === "item");
   const region: Region = {
-    bindings: regionBindings(initialInput, category, statementRun),
+    bindings: regionBindings(
+      initialInput,
+      category,
+      statementRun,
+      classBody || objectMember || category === "classElement",
+    ),
     at: 0,
     declared: collecting(),
     hoisted: collecting(),
@@ -5199,7 +5224,14 @@ function* walk(
    * than copied, so this reads what has been walked at the moment it is
    * asked and one run serves the whole walk.
    */
-  const walkedRun: SyntaxRun = { ...runOf(output), statements: statementRun };
+  /** Whether the run is a member list, or one member, where no statement stands. */
+  const memberRun =
+    classBody || objectMember || category === "classElement";
+  const walkedRun: SyntaxRun = {
+    ...runOf(output),
+    statements: statementRun,
+    members: memberRun,
+  };
   /**
    * Everything walked so far and then what is yet to be walked, read from
    * `from` on. A rule that reads across the two -- a parameter list and the
@@ -5210,6 +5242,7 @@ function* walk(
     following: input,
     from,
     statements: statementRun,
+    members: memberRun,
   });
   /**
    * Gives `scopes`, which binding contracts gave the syntax following them,

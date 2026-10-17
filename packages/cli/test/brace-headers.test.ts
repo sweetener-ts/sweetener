@@ -172,6 +172,27 @@ describe("a parameter list behind its body", () => {
   });
 });
 
+describe("a method named like a control statement's keyword", () => {
+  test.each([
+    [
+      "in an object literal",
+      "export const v = { if(x: number) { return x; } };",
+    ],
+    ["in a class", "export class C { while(x: number) { return x; } }"],
+    [
+      "in a literal a raw run walked as a block",
+      "export function f() { one <- 1; return { for(x: number) { return x + one; } }; }",
+    ],
+  ])("binds its parameters %s", (_, source) => {
+    // A member list holds no statement, so `if(` there heads a method; read
+    // as a condition, the parameter was walked as an expression and the
+    // macro spelled like it expanded in the parameter list and the body.
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toContain("(x: number) { return x");
+  });
+});
+
 describe("an enum body", () => {
   test("is split only at commas between members", () => {
     const { text, messages } = expand(
