@@ -357,6 +357,15 @@ describe("where the statements around a token say how it reads", () => {
     ["`async` on its own line", "x = async\nfunction f() {}\n/[(]/.test(s);"],
     ["`declare` on its own line", "declare\nfunction f() {}\n/[(]/.test(s);"],
     ["a block under an operand", "f(x)\n{ /[(]/.test(s) }"],
+    ["a label after a block", "if (x) {} l: function g() {}\n/[(]/.test(s);"],
+    [
+      "a label after a statement's head",
+      "do {} while (x) l: function g() {}\n/[(]/.test(s);",
+    ],
+    ["a module's specifier", "import * as x from 'y'\n/[(]/.test(s);"],
+    ["a re-export's specifier", "export * from 'a'\n/[(]/.test(s);"],
+    ["a side-effect import", "import 'm'\n/[(]/.test(s);"],
+    ["a `break`'s label", "l: for (;;) { break l\n/[(]/.test(s); }"],
   ])("reads a slash after %s as TypeScript does", (_, source) => {
     const { readings, unparsed } = typescriptReadings(source, "standard");
     expect(unparsed).toEqual([]);
@@ -369,6 +378,7 @@ describe("where the statements around a token say how it reads", () => {
       "const a = <div>{f(x)}{/[(]/.test(s)}</div>;",
     ],
     ["an element under a type", "let a: T\n<b>(note): x</b>;"],
+    ["a division after an element", "const a = <div>{a}{b}</div> / 2;"],
     ["an element in a function body", "function g() {\n  <b>(note): x</b>;\n}"],
     [
       "an element in a callback's body",

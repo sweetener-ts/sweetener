@@ -540,7 +540,7 @@ function withoutCompileTimeClauses(source: string, root: RootSyntax): string {
     const to = tokens[last]!.span.end;
     text =
       text.slice(0, from) +
-      text.slice(from, to).replace(/[^\r\n\u2028\u2029]/gu, " ") +
+      text.slice(from, to).replace(/[^\r\n\u2028\u2029]/g, " ") +
       text.slice(to);
   }
   return text;
@@ -578,7 +578,9 @@ function templateSpans(
  * template writes are TypeScript's, and so are the `<` and the slashes in
  * them. A template of another category, or one using the template
  * language's own syntax, is a statement the parser could not read, and is
- * left to the reader. Every offset stays where it was.
+ * left to the reader. Every offset stays where it was: each UTF-16 unit is
+ * written as a space, so a character outside the Basic Multilingual Plane --
+ * an emoji -- in front of a template is two.
  */
 function onlyTemplates(
   source: string,
@@ -588,11 +590,11 @@ function onlyTemplates(
   let at = 0;
   for (const [start, end] of templates) {
     text +=
-      source.slice(at, start).replace(/[^\r\n\u2028\u2029]/gu, " ") +
+      source.slice(at, start).replace(/[^\r\n\u2028\u2029]/g, " ") +
       source.slice(start, end);
     at = end;
   }
-  return text + source.slice(at).replace(/[^\r\n\u2028\u2029]/gu, " ");
+  return text + source.slice(at).replace(/[^\r\n\u2028\u2029]/g, " ");
 }
 
 /** Every token of `syntax`, delimiters included, in source order. */

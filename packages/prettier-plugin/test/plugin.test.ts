@@ -316,6 +316,10 @@ describe("slashes the reader judges from what stands before them", () => {
       "only TypeScript's parser reads",
       "export syntax el:stmt {\n  rule { el } => { let w = a\n+ 1, x: T\n<b>(note):   x</b>; }\n}\n",
     ],
+    [
+      "a character of two UTF-16 units stands before it",
+      "// 😀\nexport syntax el:stmt {\n  rule { el } => { let w = a\n+ 1, x: T\n<b>(note):   x</b>; }\n}\n",
+    ],
   ])(
     "leaves the text of an element a template writes where %s",
     (_, source) => {

@@ -840,6 +840,13 @@ class SlashJudgement {
    */
   #nextAfterLineEnd = false;
   /**
+   * Whether the statement the latest token stands in ends with it where a
+   * line break follows: a module's specifier, `import x from "m"`, or the
+   * label a `break` or `continue` jumps to. A slash on the line under either
+   * begins a regular expression, which after a name it otherwise does not.
+   */
+  #statementEndsAtLineBreak = false;
+  /**
    * A declaration whose body has not been read yet: how many groups stood
    * open at its declaring word, where its body is the first brace opened at
    * that depth where no type is written, whether that body holds members
@@ -955,7 +962,20 @@ class SlashJudgement {
    * an element where the variant has them.
    */
   beginsExpression(kind: ts.SyntaxKind, lineBreakBefore: boolean): boolean {
-    return this.#allowed || this.#typeEndsAt(kind, lineBreakBefore);
+    return (
+      this.#allowed ||
+      (this.#statementEndsAtLineBreak && lineBreakBefore) ||
+      this.#typeEndsAt(kind, lineBreakBefore)
+    );
+  }
+
+  /**
+   * Takes in that the latest token ended an element, which is an operand:
+   * `<div>{a}</div> / 2` divides.
+   */
+  endOperand(): void {
+    this.#allowed = false;
+    this.#nextAfterExpression = holdsStatements(this.#open.at(-1)?.head);
   }
 
   /**
@@ -1086,7 +1106,8 @@ class SlashJudgement {
     const beginsStatement =
       (this.#nextBeginsStatement ||
         typedStatementEnds ||
-        (this.#nextAfterLineEnd && lineBreakBefore) ||
+        ((this.#nextAfterLineEnd || this.#statementEndsAtLineBreak) &&
+          lineBreakBefore) ||
         (kind === ts.SyntaxKind.OpenBraceToken &&
           this.#nextAfterExpression &&
           lineBreakBefore)) &&
@@ -1255,9 +1276,24 @@ class SlashJudgement {
           (kind === ts.SyntaxKind.ElseKeyword ||
             kind === ts.SyntaxKind.DoKeyword)) ||
         (kind === ts.SyntaxKind.OpenBraceToken && holdsStatements(innermost)) ||
+        // A statement begins after a block, a body that declares, or a
+        // statement's head: `if (x) {} l: function g() {}` labels.
+        closed === "block" ||
+        closed === "members" ||
+        closed === "statement" ||
+        closed === "for" ||
         (!memberName && declarationModifiers.has(kind) && wordBeginsStatement));
     this.#nextAfterLineEnd =
       statements && !memberName && endsStatementAtLineBreak.has(kind);
+    this.#statementEndsAtLineBreak =
+      statements &&
+      ((kind === ts.SyntaxKind.StringLiteral &&
+        (this.#previous === ts.SyntaxKind.FromKeyword ||
+          this.#previous === ts.SyntaxKind.ImportKeyword)) ||
+        (kind === ts.SyntaxKind.Identifier &&
+          !lineBreakBefore &&
+          (this.#previous === ts.SyntaxKind.BreakKeyword ||
+            this.#previous === ts.SyntaxKind.ContinueKeyword)));
     this.#nextAfterExpression =
       statements &&
       judged &&
@@ -1495,6 +1531,8 @@ export function scanWithSupportedTypeScript(
     // the `<` and `>` that delimit them stay tag syntax, which is how the
     // delimiter reader tells them from a nested element.
     const insideTypeArguments = jsxMode === "tag" && typeArgumentDepth > 0;
+    /** Whether this token is the `>` that ends an element. */
+    let elementEnds = false;
     let kind: ts.SyntaxKind;
     if (jsxMode === "text") {
       kind = scanner.scanJsxToken();
@@ -1656,6 +1694,7 @@ export function scanWithSupportedTypeScript(
           if (container.depth <= 0) {
             jsxContainers.pop();
             jsxMode = container.returnMode;
+            elementEnds = true;
           } else {
             jsxMode = "text";
           }
@@ -1704,6 +1743,7 @@ export function scanWithSupportedTypeScript(
         kind !== ts.SyntaxKind.JsxText &&
           kind !== ts.SyntaxKind.JsxTextAllWhiteSpaces,
       );
+      if (elementEnds) judgement.endOperand();
       lineBreakBefore = false;
       previousSignificantKind = kind;
       if (
