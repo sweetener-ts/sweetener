@@ -33,6 +33,7 @@ import {
   type ProtectedSyntax,
   type Syntax,
   type SyntaxCategory,
+  type SyntaxCursor,
   type SyntaxSequence,
   type TokenSyntax,
   type Trivia,
@@ -1320,6 +1321,10 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
         continue;
       }
       if (node.tag !== "token") return false;
+      // No heritage, and no type argument list in one, holds a `;` or an
+      // `=`: the `>` of `one > 2`, counted as closing one, read back over the
+      // whole run for every parenthesis written after it.
+      if (node.raw === ";" || node.raw === "=") return false;
       const closes = angles(node, ">");
       if (closes > 0) {
         typeArguments += closes;
@@ -2058,16 +2063,19 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   /**
    * The index just past the statement written as tokens from `from` in
    * `nodes`: past its `;`, or at the line break automatic semicolon insertion
-   * ends it at, outside a type argument list; the length of the run where it
-   * runs to the end.
+   * ends it at; the length of the run where it runs to the end.
+   *
+   * No angle is counted. A type argument list holds no `;` outside the braces
+   * of an object type, and a line break inside one stands after a `<` or a
+   * `,`, or before a `>`, none of which lets a statement end there. Counted,
+   * the `>` of `one > 2` left the count below zero for the rest of the run:
+   * the statement never ended, every `,` after it separated declarators, and
+   * the macros written after it were read as names being declared.
    */
   const statementEnd = (nodes: readonly Syntax[], from: number): number => {
-    let depth = 0;
     for (let at = from; at < nodes.length; at += 1) {
-      const node = nodes[at]!;
-      if (depth === 0 && at > from && statementEndsBefore(nodes, at)) return at;
-      depth += angles(node, "<") - angles(node, ">");
-      if (depth === 0 && spelling(node) === ";") return at + 1;
+      if (at > from && statementEndsBefore(nodes, at)) return at;
+      if (spelling(nodes[at]) === ";") return at + 1;
     }
     return nodes.length;
   };
@@ -5092,6 +5100,22 @@ function* walk(
       ...input.slice(from).map((syntax) => addScopes(syntax, scopes)),
     ]);
   };
+  /**
+   * A cursor over `input` from its start, which each invocation forks. Made
+   * once for each `input` rather than for each invocation: making one checks
+   * every node of the run, and a run of many macro uses checked the whole run
+   * once for each of them.
+   */
+  let inputCursor:
+    | { readonly over: readonly Syntax[]; readonly cursor: SyntaxCursor }
+    | undefined;
+  const cursorAt = (at: number): SyntaxCursor => {
+    if (inputCursor?.over !== input)
+      inputCursor = { over: input, cursor: createSyntaxCursor(input) };
+    const cursor = inputCursor.cursor.fork();
+    cursor.advance(at);
+    return cursor;
+  };
   let currentEnvironment = environment;
   let index = 0;
   let suppressPending = suppressHead;
@@ -6843,8 +6867,7 @@ function* walk(
           macros.some(({ binding }) => binding === macro.binding),
         ) ??
         lexicalModule;
-      const cursor = createSyntaxCursor(input);
-      cursor.advance(index);
+      const cursor = cursorAt(index);
       let replacementEnvironment: BindingEnvironment | undefined;
       let eraseReplacement = false;
       let result;
