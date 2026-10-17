@@ -86,7 +86,9 @@ export function typescriptReadings(
     variant === "jsx" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const parsed = new Map<number, TokenReading>();
-  const errors = syntacticErrorPositions(file);
+  const errors = [...syntacticErrorPositions(file)].sort(
+    (left, right) => left - right,
+  );
   const unparsed: Span[] = errors.map((at) => {
     const { line } = file.getLineAndCharacterOfPosition(at);
     const lines = file.getLineStarts();
@@ -134,11 +136,14 @@ export function typescriptReadings(
       const angle = typeParametersOpening(node, file);
       if (angle !== undefined) parsed.set(angle, "type-parameters");
     }
-    if (
-      (ts.isStatement(node) || ts.isClassElement(node)) &&
-      errors.some((at) => at >= node.getStart(file) && at < node.end)
-    )
-      unparsed.push(createSpan(node.getStart(file), node.end));
+    if (ts.isStatement(node) || ts.isClassElement(node)) {
+      // The first error at or after the statement's start, found by halving
+      // rather than by asking every error of every statement.
+      const start = node.getStart(file);
+      const error = errors[firstAtOrAfter(errors, start)];
+      if (error !== undefined && error < node.end)
+        unparsed.push(createSpan(start, node.end));
+    }
     ts.forEachChild(node, (child) => {
       pending.push(child);
     });
@@ -149,12 +154,20 @@ export function typescriptReadings(
         ? createSpan(0, source.length)
         : createSpan(statement.getStart(file), statement.end),
     );
-  const certain = (offset: number) =>
-    !unparsed.some(({ start, end }) => offset >= start && offset < end);
+  const covered = mergedSpans(unparsed);
+  const coveredStarts = covered.map(({ start }) => start);
+  /** Whether no unparsed span holds `offset`, asked of the merged spans. */
+  const certain = (offset: number): boolean => {
+    const at = firstAtOrAfter(coveredStarts, offset + 1) - 1;
+    return at < 0 || covered[at]!.end <= offset;
+  };
   // Read again until the read agrees with the parser where it parsed. Each
   // time round settles at least one more slash, and a reading taken never
   // changes, so this ends; it is usually once.
-  let readings = new Map<number, TokenReading>();
+  // One map, added to as readings are taken: what a read is given is read
+  // before the next is added to, and copied for each it made reading a long
+  // file's slashes quadratic.
+  const readings = new Map<number, TokenReading>();
   for (;;) {
     let changed = false;
     for (const token of scanWithSupportedTypeScript(
@@ -177,7 +190,7 @@ export function typescriptReadings(
               : undefined;
       if (read === undefined || read === reading || readings.has(token.start))
         continue;
-      readings = new Map([...readings, [token.start, reading]]);
+      readings.set(token.start, reading);
       changed = true;
     }
     if (!changed) return Object.freeze({ readings, unparsed });
@@ -222,6 +235,22 @@ function holdsStatements(node: ts.Node | undefined): boolean {
 }
 
 /** The index of the first of the sorted `offsets` at or after `start`. */
+/**
+ * `spans` sorted by start and with each overlapping or touching run made one,
+ * so that a position is held by at most one of them.
+ */
+function mergedSpans(spans: readonly Span[]): readonly Span[] {
+  const sorted = [...spans].sort((left, right) => left.start - right.start);
+  const merged: { start: number; end: number }[] = [];
+  for (const { start, end } of sorted) {
+    const last = merged.at(-1);
+    if (last !== undefined && start <= last.end)
+      last.end = Math.max(last.end, end);
+    else merged.push({ start, end });
+  }
+  return merged;
+}
+
 function firstAtOrAfter(offsets: readonly number[], start: number): number {
   let low = 0;
   let high = offsets.length;

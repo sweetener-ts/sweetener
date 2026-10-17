@@ -517,18 +517,25 @@ export function macroOperatorUses(
  */
 function withoutCompileTimeClauses(source: string, root: RootSyntax): string {
   const tokens = flatTokens(root);
-  let text = source;
-  for (const declaration of parseCompileTimeSyntaxImports(root, { sourceId })
-    .imports) {
+  // The imports are in source order, as the tokens are, so one pass over the
+  // tokens finds every clause, and the text is put together once.
+  const declarations = [
+    ...parseCompileTimeSyntaxImports(root, { sourceId }).imports,
+  ].sort((left, right) => left.span.start - right.span.start);
+  const chunks: string[] = [];
+  let copied = 0;
+  let at = 0;
+  for (const declaration of declarations) {
     const { start, end } = declaration.span;
-    const clause = tokens.findIndex(
-      (token, index) =>
-        token.span.start >= start &&
-        token.span.end <= end &&
-        token.raw === "for" &&
-        tokens[index + 1]?.raw === "syntax",
-    );
-    if (clause < 0) continue;
+    while (at < tokens.length && tokens[at]!.span.start < start) at += 1;
+    let clause = at;
+    while (
+      clause < tokens.length &&
+      tokens[clause]!.span.end <= end &&
+      !(tokens[clause]!.raw === "for" && tokens[clause + 1]?.raw === "syntax")
+    )
+      clause += 1;
+    if (clause >= tokens.length || tokens[clause]!.span.end > end) continue;
     let last = clause + 1;
     while (
       tokens[last + 1] !== undefined &&
@@ -538,12 +545,15 @@ function withoutCompileTimeClauses(source: string, root: RootSyntax): string {
       last += 1;
     const from = tokens[clause]!.span.start;
     const to = tokens[last]!.span.end;
-    text =
-      text.slice(0, from) +
-      text.slice(from, to).replace(/[^\r\n\u2028\u2029]/g, " ") +
-      text.slice(to);
+    chunks.push(
+      source.slice(copied, from),
+      source.slice(from, to).replace(/[^\r\n\u2028\u2029]/g, " "),
+    );
+    copied = to;
+    at = last + 1;
   }
-  return text;
+  chunks.push(source.slice(copied));
+  return chunks.join("");
 }
 
 /**
@@ -564,9 +574,15 @@ function templateSpans(
           rule.template.close.span.end,
         ]);
   spans.sort(([left], [right]) => left - right);
-  return spans.filter(([start], index) =>
-    spans.slice(0, index).every(([, end]) => start >= end),
-  );
+  // Each span that starts past the end of every span before it, read once in
+  // order: a template written inside another is in the outer one's span.
+  const outermost: [number, number][] = [];
+  let reached = -Infinity;
+  for (const span of spans) {
+    if (span[0] >= reached) outermost.push(span);
+    reached = Math.max(reached, span[1]);
+  }
+  return outermost;
 }
 
 /**
@@ -700,11 +716,39 @@ function keptSpans(
   root: RootSyntax,
   unparsed: readonly Span[],
 ): readonly { readonly start: number; readonly end: number }[] {
+  const holds = coveredBy(unparsed);
   return disjoint(
     possibleRegularExpressions(source, root).filter(({ start }) =>
-      unparsed.some((span) => start >= span.start && start < span.end),
+      holds(start),
     ),
   );
+}
+
+/**
+ * Whether one of `spans` holds an offset, answered by halving over the spans
+ * sorted and joined once: asked of every span for every slash, a file of many
+ * of each was laid out in time quadratic in its length.
+ */
+function coveredBy(spans: readonly Span[]): (offset: number) => boolean {
+  const sorted = [...spans].sort((left, right) => left.start - right.start);
+  const joined: { start: number; end: number }[] = [];
+  for (const { start, end } of sorted) {
+    const last = joined.at(-1);
+    if (last !== undefined && start <= last.end)
+      last.end = Math.max(last.end, end);
+    else joined.push({ start, end });
+  }
+  return (offset) => {
+    let low = 0;
+    let high = joined.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (joined[middle]!.start <= offset) low = middle + 1;
+      else high = middle;
+    }
+    const span = joined[low - 1];
+    return span !== undefined && offset < span.end;
+  };
 }
 
 /**
