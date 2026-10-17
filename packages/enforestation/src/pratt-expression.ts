@@ -308,6 +308,37 @@ function joinGreaterThan(
   return widest;
 }
 
+/**
+ * The context an operand is read in, told where an operator macro ends it
+ * (see `ConsumerContext.operatorFollows`).
+ */
+function withOperatorFollows(context: PrattContext): ConsumerContext {
+  return context.options.resolveMacroOperator === undefined
+    ? context.consumer
+    : {
+        ...context.consumer,
+        operatorFollows: (at) =>
+          leftOperatorMacroAt(at, context) !== undefined,
+      };
+}
+
+/**
+ * The macro operator taking an operand on its left -- postfix or infix --
+ * written at the cursor, if one is. A core operator spelled with fewer of
+ * the same tokens gives way to it: `a +++ b`, with `+++` an operator, is not
+ * `a++ + b`.
+ */
+function leftOperatorMacroAt(
+  cursor: SyntaxCursor,
+  context: PrattContext,
+): PrattOperator | undefined {
+  for (const fixity of ["postfix", "infix"] as const) {
+    const operator = resolveOperator(cursor, fixity, context);
+    if (operator?.macro !== undefined) return operator;
+  }
+  return undefined;
+}
+
 function resolveOperator(
   cursor: SyntaxCursor,
   fixity: PrattFixity,
@@ -719,7 +750,7 @@ function parsePrefix(
   }
   const operandStart = cursor.index;
   const operand = cursor.peek();
-  const attempt = context.primary.consume(cursor, context.consumer);
+  const attempt = context.primary.consume(cursor, withOperatorFollows(context));
   if (!attempt.matched) {
     // The primary consumer read no operand, and a `<` standing where the
     // operand began is the one thing that still can be one. Asked only where
@@ -890,7 +921,7 @@ function parseAssertedType(
   const consumer = context.options.consumeType;
   if (consumer === undefined)
     return parseExpression(cursor, precedence + 1, context);
-  const attempt = consumer.consume(cursor, context.consumer);
+  const attempt = consumer.consume(cursor, withOperatorFollows(context));
   if (!attempt.matched) return attempt;
   return {
     syntax: attempt.syntax,
@@ -1279,7 +1310,18 @@ function parseOperators(
       left = conditional;
       continue;
     }
-    const postfix = resolveOperator(cursor, "postfix", context);
+    const resolvedPostfix = resolveOperator(cursor, "postfix", context);
+    // A core postfix gives way to a wider macro operator its tokens begin.
+    const wider =
+      resolvedPostfix !== undefined && resolvedPostfix.macro === undefined
+        ? leftOperatorMacroAt(cursor, context)
+        : undefined;
+    const postfix =
+      wider !== undefined && wider.width > resolvedPostfix!.width
+        ? wider.fixity === "postfix"
+          ? wider
+          : undefined
+        : resolvedPostfix;
     if (
       postfix !== undefined &&
       postfix.precedence >= minimumPrecedence &&

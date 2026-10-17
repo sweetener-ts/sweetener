@@ -15,6 +15,10 @@ import {
  * arguments, what a module exports by default. Each of those is read as an
  * expression, so the operator in it is dispatched; walked as the syntax
  * around it, the operator was left standing and reported as unexpanded.
+ *
+ * An operator is spelled with the tokens TypeScript has, and where those
+ * tokens begin one of TypeScript's own operators -- `!` of a non-null
+ * assertion, `++`, a `<` of type arguments -- the macro written there wins.
  */
 
 const macros = `
@@ -162,5 +166,26 @@ describe("an operator written where an expression is", () => {
     );
     expect(messages).toEqual([]);
     expect(text).toBe("export default function g(v = add(a, b)) { return v; }");
+  });
+});
+
+describe("an operator spelled with the tokens of TypeScript's own", () => {
+  test.each([
+    ["two non-null assertions", "export const r = a!!;", "force(a)"],
+    ["an increment and a plus", "export const r = a +++ b;", "add(a, b)"],
+    [
+      "type arguments, after an instantiation",
+      "export const r = id<number> <+> b;",
+      "add(id<number>, b)",
+    ],
+    [
+      "type arguments, after an asserted type",
+      "export const r = a as number <+> b;",
+      "add(a as number, b)",
+    ],
+  ])("is the operator over %s", (_label, source, expected) => {
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toContain(expected);
   });
 });

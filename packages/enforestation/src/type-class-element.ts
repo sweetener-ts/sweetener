@@ -407,7 +407,11 @@ class TypeConsumer implements SyntaxConsumer {
         children.length > 0 &&
         conditionalDepth === 0 &&
         arrow !== "required" &&
-        context.stopSet.matches(cursor)
+        (context.stopSet.matches(cursor) ||
+          // An operator macro after the type asserted in an expression ends
+          // it: `x as number <+> y` asserts `number`, and does not give it
+          // the type arguments `<+>`.
+          (!expectingOperand && context.operatorFollows?.(cursor) === true))
       )
         break;
       const next = cursor.peek()!;

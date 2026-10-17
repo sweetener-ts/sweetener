@@ -93,6 +93,13 @@ export interface ConsumerContext {
   /** Told of a token read the other way from the grammar, where one is. */
   readonly misread?: MisreadListener | undefined;
   /**
+   * Whether a macro operator that takes an operand on its left is written at
+   * the cursor, which ends the operand in front of it there: with `!!` an
+   * operator, `a!!` is `a` and the operator rather than two non-null
+   * assertions. Undefined where no operator macro is read.
+   */
+  readonly operatorFollows?: ((cursor: SyntaxCursor) => boolean) | undefined;
+  /**
    * Whether a `<` was written where JSX is read; undefined where none was,
    * and every `<` beginning an operand is an assertion's or an arrow's.
    */

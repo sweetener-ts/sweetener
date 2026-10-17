@@ -811,6 +811,13 @@ export function typeArgumentsFollow(following: Syntax | undefined): boolean {
   return leadingLineBreak(following) || !beginsExpression(following);
 }
 
+/** A cursor `width` nodes past `cursor`, which stays where it is. */
+function advanced(cursor: SyntaxCursor, width: number): SyntaxCursor {
+  const fork = cursor.fork();
+  fork.advance(width);
+  return fork;
+}
+
 function consumePostfix(
   cursor: SyntaxCursor,
   context: ConsumerContext,
@@ -818,7 +825,12 @@ function consumePostfix(
   optionalChain: boolean,
 ): ConsumerAttempt | undefined {
   const next = cursor.peek();
-  if (context.stopSet.matches(cursor) || next === undefined) return undefined;
+  if (
+    context.stopSet.matches(cursor) ||
+    next === undefined ||
+    context.operatorFollows?.(cursor) === true
+  )
+    return undefined;
   if (isPunctuation(next, ".")) {
     cursor.advance();
     if (!isPropertyName(cursor.peek())) {
@@ -879,8 +891,14 @@ function consumePostfix(
       // An instantiation expression: a generic value with its type arguments
       // supplied and no call after them. The type arguments are taken and the
       // operand read on from, so `const f = y<string>;` reads as the
-      // declaration TypeScript reads rather than being refused.
-      if (typeArgumentsFollow(following)) {
+      // declaration TypeScript reads rather than being refused. An operator
+      // macro after them ends the operand as any operator does, though
+      // TypeScript never reads one: `id<number> <+> b`.
+      if (
+        typeArgumentsFollow(following) ||
+        (context.operatorFollows !== undefined &&
+          context.operatorFollows(advanced(cursor, typeArguments.width)))
+      ) {
         cursor.advance(typeArguments.width);
         return undefined;
       }
