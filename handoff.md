@@ -138,7 +138,8 @@ printer and formatter, the hosts), each finding reproduced on the branch and on
 
 ## Open bugs
 
-None known. The four listed here after the review were fixed on 2026-10-17,
+None known. The four listed here after the review, and issue #1, were fixed on
+2026-10-17,
 and with them what fixing them showed:
 
 - **A template's free name captured by a caller's local** (`5f9d4c3`). A
@@ -157,6 +158,12 @@ and with them what fixing them showed:
   head taking a function type's `=>` among its return type's arguments, and
   a function type that could not return a generic one. 1,500 sampled
   third-party files now read whole.
+- **Issue #1, a template's binder renamed with the global beside it**
+  (`019aeee`). A class of binders is renamed only
+  where TypeScript scopes them. The template's free `JSON` then means what
+  a free template name means: the global, past any local of the caller's,
+  or what the using module declares at its top, as `add($a)` does.
+  `globalThis.JSON` reaches the global whatever the module declares.
 - **A member access after a postfix operator** (`1a38ce9`): one declared at
   a left-hand-side expression's precedence (200) or tighter makes one, and
   what is read off a name is read off it; one that binds as `++` does is
