@@ -213,6 +213,13 @@ function bindingScope(identifier: ts.Identifier): ts.Node | undefined {
   if (declaration === undefined) return undefined;
   const container = (node: ts.Node | undefined): ts.Node | undefined =>
     node !== undefined && ts.isCaseClause(node) ? node.parent : node;
+  // A parameter property declares a member as well, which `this.name`
+  // reaches anywhere in the class.
+  if (
+    ts.isParameter(declaration) &&
+    ts.isParameterPropertyDeclaration(declaration, declaration.parent)
+  )
+    return declaration.parent.parent;
   if (ts.isParameter(declaration) || ts.isTypeParameterDeclaration(declaration))
     return declaration.parent;
   if (ts.isVariableDeclaration(declaration)) {
@@ -509,6 +516,17 @@ export function planHygienicRenames(
   const planFor = (space: NameNamespace): NameAssignmentPlan | undefined => {
     const inSpace = tokens.filter((token) => spaceOf(token) === space);
     const classes = new Map<string, IntroducedBinderClass>();
+    /**
+     * The regions each class's binders scope, by class, where the class
+     * binds only in them; a class with a binder at a module's top binds
+     * everywhere and has none. A template's tokens carry one scope set, so
+     * its parameter `JSON` and the global `JSON` it uses beside it are one
+     * class by their scopes alone: renamed together, `((JSON) => JSON)(1),
+     * JSON.stringify(x)` printed `JSON_1.stringify(x)`, which names nothing.
+     * Where a binder binds says which of them it binds.
+     */
+    const classRegions = new Map<string, Region[]>();
+    const unbounded = new Set<string>();
     const published = new Set<string>();
     for (const token of inSpace) {
       if (roleBySyntax.get(token.id) !== "binder") continue;
@@ -524,15 +542,38 @@ export function planHygienicRenames(
         published.add(key);
         continue;
       }
-      classes.set(key, {
-        spelling: token.raw,
-        scopes,
-        declaration: token.origin,
-      });
+      const region = regionBySyntax.get(token.id);
+      if (region === undefined) unbounded.add(key);
+      else {
+        const regions = classRegions.get(key);
+        if (regions === undefined) classRegions.set(key, [region]);
+        else regions.push(region);
+      }
+      if (!classes.has(key))
+        classes.set(key, {
+          spelling: token.raw,
+          scopes,
+          declaration: token.origin,
+        });
     }
     // One published binder holds the whole class in place; the rest of the
     // class is the same name.
     for (const key of published) classes.delete(key);
+    for (const key of unbounded) classRegions.delete(key);
+    for (const key of [...classRegions.keys()])
+      if (!classes.has(key)) classRegions.delete(key);
+    /** Whether `token` stands where a class with these regions binds. */
+    const standsIn = (
+      token: TokenSyntax,
+      regions: readonly Region[] | undefined,
+    ): boolean => {
+      if (regions === undefined) return true;
+      const at = printedAt.get(token.id);
+      return (
+        at !== undefined &&
+        regions.some((region) => at >= region.start && at < region.end)
+      );
+    };
 
     // A name a template writes and does not bind there is free in it, and
     // never means a local of the function or block its invocation stands
@@ -543,8 +584,7 @@ export function planHygienicRenames(
     // module declares at its top is left alone: a template that writes
     // `add($a)` where its own module declares no `add` means the one the
     // module using it declares or imports.
-    const introducedClasses = [...classes.values()];
-    const callSiteRegions = new Map<string, Region[]>();
+    const introducedClasses = [...classes];
     const freeBySpelling = new Map<string, TokenSyntax[]>();
     for (const token of inSpace) {
       if (roleBySyntax.get(token.id) === "property") continue;
@@ -552,9 +592,10 @@ export function planHygienicRenames(
       if (!options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
       if (
         introducedClasses.some(
-          (candidate) =>
+          ([key, candidate]) =>
             candidate.spelling === token.raw &&
-            options.scopes.subset(candidate.scopes, token.scopes),
+            options.scopes.subset(candidate.scopes, token.scopes) &&
+            standsIn(token, classRegions.get(key)),
         )
       )
         continue;
@@ -585,10 +626,10 @@ export function planHygienicRenames(
       // carry as well, so what it binds is told by where it binds too: its
       // class is renamed only over the regions its binders scope.
       const key = `${token.raw} ${String(token.scopes)}`;
-      const regions = callSiteRegions.get(key);
+      const regions = classRegions.get(key);
       if (regions !== undefined) regions.push(region);
       else {
-        callSiteRegions.set(key, [region]);
+        classRegions.set(key, [region]);
         classes.set(key, {
           spelling: token.raw,
           scopes: token.scopes,
@@ -630,37 +671,40 @@ export function planHygienicRenames(
         position: token.span.start,
       });
 
-    const unavailable = new Set(options.reservedNames ?? []);
-    for (const token of inSpace) {
-      if (roleBySyntax.get(token.id) === "property") continue;
-      if (!belongsToClass(token)) unavailable.add(token.raw);
-    }
-
-    const callSiteClasses = [...callSiteRegions].map(([key, regions]) => ({
+    const boundedClasses = [...classRegions].map(([key, regions]) => ({
       class: classes.get(key)!,
       regions,
     }));
-    /** Whether a token a call-site class would reach stands where it binds. */
-    const withinCallSiteClass = (token: TokenSyntax): boolean => {
-      const reached = callSiteClasses.filter(
+    /**
+     * Whether a token a class bounded to regions would reach by its scopes
+     * stands where that class binds; a token no such class reaches does
+     * wherever it stands.
+     */
+    const withinItsClass = (token: TokenSyntax): boolean => {
+      const reached = boundedClasses.filter(
         (candidate) =>
           candidate.class.spelling === token.raw &&
           options.scopes.subset(candidate.class.scopes, token.scopes),
       );
-      if (reached.length === 0) return true;
-      const at = printedAt.get(token.id);
       return (
-        at !== undefined &&
-        reached.some(({ regions }) =>
-          regions.some((region) => at >= region.start && at < region.end),
-        )
+        reached.length === 0 ||
+        reached.some(({ regions }) => standsIn(token, regions))
       );
     };
+
+    // A token no class renames keeps its spelling, which no class may then
+    // be renamed to.
+    const unavailable = new Set(options.reservedNames ?? []);
+    for (const token of inSpace) {
+      if (roleBySyntax.get(token.id) === "property") continue;
+      if (!belongsToClass(token) || !withinItsClass(token))
+        unavailable.add(token.raw);
+    }
 
     const takesPart = (token: TokenSyntax): boolean =>
       spaceOf(token) === space &&
       roleBySyntax.get(token.id) !== "property" &&
-      withinCallSiteClass(token);
+      withinItsClass(token);
 
     return createHygienicNamePlan({
       syntax: options.syntax,

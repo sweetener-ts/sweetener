@@ -389,3 +389,50 @@ export const s = sum(1, 2);
     expect(text).toContain("export const s = add(1, 2);");
   });
 });
+
+/**
+ * A template's tokens all carry one scope set, so a binder it writes and a
+ * global of the same spelling it uses beside the binder are one name by
+ * their scopes alone. Renamed together, the global was renamed out of
+ * existence (#1). A binder binds where TypeScript scopes it, and only there
+ * is its name renamed.
+ */
+describe("a binder a template writes beside a global of its spelling", () => {
+  const bareGlobalUse = `export syntax bareGlobalUse:expr {
+  rule { bareGlobalUse($input:expr) } => {
+    [((JSON) => JSON)(1), JSON.stringify($input)]
+  }
+}
+`;
+
+  test("is renamed without the global", () => {
+    const { text, diagnostics } = expand(
+      bareGlobalUse,
+      `import { bareGlobalUse } from "./macros.sts" for syntax;
+const JSON = { stringify: (v: unknown) => String(v) };
+export const a = bareGlobalUse(1);
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toContain(
+      "export const a = [((JSON_1) => JSON_1)(1), JSON.stringify(1)];",
+    );
+  });
+
+  test("leaves the global the template means past a caller's local", () => {
+    const { text, diagnostics } = expand(
+      bareGlobalUse,
+      `import { bareGlobalUse } from "./macros.sts" for syntax;
+export function h() {
+  const JSON = { stringify: (v: unknown) => String(v) };
+  return [bareGlobalUse(1), JSON.stringify(2)];
+}
+`,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(text).toMatch(
+      /\[\(\((JSON_\d+)\) => \1\)\(1\), JSON\.stringify\(1\)\]/u,
+    );
+    expect(text).toContain("JSON_1.stringify(2)");
+  });
+});
