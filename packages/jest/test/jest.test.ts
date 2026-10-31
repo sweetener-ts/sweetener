@@ -273,6 +273,48 @@ test("keys a file from what its last expansion read, in a worker that has not ex
 });
 
 /**
+ * What a file expands to changes with the release that expands it, so a key
+ * computed under another release is another key: upgraded, a project was
+ * served the expansions of the release before until its cache was cleared.
+ */
+test("keys a file anew under another release of the compiler", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-jest-release-"));
+  const main = join(directory, "main.sts");
+  writeFileSync(main, "export const answer = 1;\n");
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      files: ["main.sts"],
+    }),
+  );
+  const options = {
+    config: { rootDir: directory, cacheDirectory: join(directory, "cache") },
+    transformerConfig: { configFile: join(directory, "tsconfig.json") },
+  };
+  const source = readFileSync(main, "utf8");
+  const keyUnder = async (release: string): Promise<string> => {
+    vi.resetModules();
+    vi.doMock("../src/package-identity.js", () => ({
+      packageIdentity: (moduleUrl: string) =>
+        moduleUrl.includes("compiler")
+          ? `@sweetener/compiler@${release}`
+          : "@sweetener/jest@x",
+    }));
+    try {
+      const { default: worker } = await import("../src/index.js");
+      return await worker.getCacheKeyAsync(source, main, options);
+    } finally {
+      vi.doUnmock("../src/package-identity.js");
+      vi.resetModules();
+    }
+  };
+  const before = await keyUnder("0.1.0-alpha.8");
+  expect(await keyUnder("0.1.0-alpha.8")).toBe(before);
+  expect(await keyUnder("0.1.0-alpha.9")).not.toBe(before);
+});
+
+/**
  * Jest has to be able to find this by name.
  *
  * `transform: { "\\.sts$": ["@sweetener/jest", {}] }` is the configuration

@@ -16,6 +16,7 @@ import {
   loadSweetProject,
   type SweetenerSession,
 } from "@sweetener/compiler";
+import { packageIdentity } from "./package-identity.js";
 
 /** The governing config, or nothing when the file has none to find. */
 function discoverSweetConfigFor(sourcePath: string): string | undefined {
@@ -139,6 +140,20 @@ let workerSession: SweetenerSession | undefined;
 const sessionFor = (): SweetenerSession =>
   (workerSession ??= createSweetenerSession());
 
+/**
+ * This transformer's release and the compiler's it expands with. Jest keeps a
+ * transform until its key changes, and what a file expands to changes with
+ * either: upgraded, a project was served the expansions of the release before
+ * until its cache was cleared. Each package is published at one version,
+ * pinning the others at it, so the versions say which code ran.
+ */
+let releases: string | undefined;
+const releasesExpandingWith = (): string =>
+  (releases ??= [
+    packageIdentity(import.meta.url),
+    packageIdentity(import.meta.resolve("@sweetener/compiler")),
+  ].join("\0"));
+
 /** The hash of what a record is written from; see `recordPath`. */
 function inputsOf(
   sourceText: string,
@@ -146,6 +161,7 @@ function inputsOf(
   configFile: string | undefined,
 ): string {
   const hash = createHash("sha256");
+  hash.update(releasesExpandingWith());
   hash.update(sourceText);
   hash.update(sourcePath);
   // The macros a file expands through are as much of its input as its own
