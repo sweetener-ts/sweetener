@@ -43,6 +43,13 @@ export operator (<-):stmt {
   rule { $name:binding <- $source:expr; } => { const $name = $source; }
   bind $name in following;
 }
+export syntax exported:item {
+  rule { exported!; } => {
+    export default a <+> b
+    export const z = a +++ b;
+    one <- 1;
+  }
+}
 `;
 
 const declared =
@@ -59,7 +66,7 @@ function expand(main: string, macroModule = macros) {
   writeFileSync(join(directory, "macros.sts"), macroModule);
   writeFileSync(
     join(directory, "main.sts"),
-    `import { (<+>), (+++), (!!), (%%), (<-) } from "./macros.sts" for syntax;\n${declared}${main}\n`,
+    `import { (<+>), (+++), (!!), (%%), (<-), exported } from "./macros.sts" for syntax;\n${declared}${main}\n`,
   );
   const configPath = join(directory, "tsconfig.json");
   writeFileSync(
@@ -164,6 +171,16 @@ describe("an operator written where an expression is", () => {
     expect(text).toBe(expected);
   });
 
+  test("ends what a module exports by default where its statement ends", () => {
+    // A replacement holding a statement operator is walked as tokens: read
+    // on to the next `;`, the default took in the item under it, and the
+    // operator in it was left standing with nothing said.
+    const { text, messages } = expand("exported!;");
+    expect(text).toContain("export default add(a, b)\n");
+    expect(text).toContain("export const z = add(a, b);");
+    expect(messages.filter((message) => !message.includes("<-"))).toEqual([]);
+  });
+
   test("leaves a function exported by default a declaration", () => {
     const { text, messages } = expand(
       "export default function g(v = a <+> b) { return v; }",
@@ -240,7 +257,10 @@ test("an operator declared as tight as a name is refused where it is defined", (
   // operand must bind more tightly than the operator.
   const { messages } = expand(
     "export const r = a!!;",
-    macros.replace("fixity postfix; precedence 160;", "fixity postfix; precedence 1000;"),
+    macros.replace(
+      "fixity postfix; precedence 160;",
+      "fixity postfix; precedence 1000;",
+    ),
   );
   expect(messages).toContain(
     "Invalid operator !!: precedence must be below 1000, where a name or a call binds.",

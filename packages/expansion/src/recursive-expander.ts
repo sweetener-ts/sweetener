@@ -4893,6 +4893,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     anglesOpen,
     commaSeparatedMembers,
     expressionEnd,
+    statementEnd,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -5198,6 +5199,7 @@ function* walk(
     angles,
     commaSeparatedMembers,
     expressionEnd,
+    statementEnd,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -5506,7 +5508,8 @@ function* walk(
         closes -= Math.min(open.held, closes);
       }
       const innermost = openAngles.at(-1);
-      if (innermost !== undefined) readConditional(innermost.conditionals, node);
+      if (innermost !== undefined)
+        readConditional(innermost.conditionals, node);
       const opens = angles(node, "<");
       if (opens > 0)
         openAngles.push({
@@ -6684,7 +6687,10 @@ function* walk(
     // What a module exports by default, where it is not a declaration, is an
     // expression, read whole for the same reason: an import or an export is
     // read as the tokens it is written with, never as an expression, and
-    // `export default a <+> b;` left the operator standing.
+    // `export default a <+> b;` left the operator standing. It ends where
+    // its statement does, at its `;` or where a line break ends it: read to
+    // the next `;`, a run holding `export default a <+> b` and an item under
+    // it with no `;` between read the item into what is exported.
     if (
       category === "item" &&
       previous?.tag === "token" &&
@@ -6693,12 +6699,10 @@ function* walk(
       (output.at(-2) as TokenSyntax).raw === "export" &&
       !defaultExportDeclares(input, index)
     ) {
-      let end = index;
-      while (
-        end < input.length &&
-        !(input[end]!.tag === "token" && (input[end] as TokenSyntax).raw === ";")
-      )
-        end += 1;
+      const statement = statementEnd(input, index);
+      const last = input[statement - 1];
+      const end =
+        last?.tag === "token" && last.raw === ";" ? statement - 1 : statement;
       const value = yield* walkInside(
         scope,
         node,
@@ -7467,8 +7471,7 @@ function* walk(
         const expressionStatement =
           result.syntax.category === "expr" &&
           statementStartFollows(output.length) &&
-          (after === undefined ||
-            (after.tag === "token" && after.raw === ";"));
+          (after === undefined || (after.tag === "token" && after.raw === ";"));
         output.push(
           ...withLeadingTrivia(
             expressionStatement
@@ -7802,7 +7805,7 @@ function* walk(
         decoratorArgumentsFollow(output)
       ) {
         const children: Syntax[] = [];
-        for (let at = 0; at < node.children.length; ) {
+        for (let at = 0; at < node.children.length;) {
           const end = expressionEnd(node.children, at);
           if (end > at) {
             const argument = yield* walkInside(
