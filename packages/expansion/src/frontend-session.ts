@@ -12,6 +12,7 @@ import {
 import {
   coreExpressionOperators,
   createConsumerSuite,
+  endsAtLineBreak,
   foldMacroOperatorChain,
   StopSet,
   type ConsumerContext,
@@ -73,6 +74,7 @@ import { invokeMacro, type MacroTraceEvent } from "./invocation.js";
 import {
   boundsItself,
   expandMacroSyntax,
+  operandlessStatementHeads,
   operatorWidthAt,
   type ExpandMacroSyntaxOptions,
   type ExpandMacroSyntaxResult,
@@ -1468,6 +1470,20 @@ export function createExpansionFrontendSession(
         ? node.delimiter === "brace"
         : node.tag === "protected" &&
           (node.category === "stmt" || node.category === "item");
+    // Whether the statement the node at `at` in a run of statements stands
+    // in begins with a word no operand begins with.
+    const headsOperandlessStatement = (
+      children: readonly Syntax[],
+      at: number,
+    ): boolean => {
+      let head = at;
+      while (head > 0 && !beginsStatement(children, head)) {
+        if (endsAtLineBreak((offset) => children[offset], head)) break;
+        head -= 1;
+      }
+      const first = children[head];
+      return first?.tag === "token" && operandlessStatementHeads.has(first.raw);
+    };
     // Whether the node at `at` in a run of statements stands at the head of
     // one: first in the run, or after the statement before it.
     const beginsStatement = (children: readonly Syntax[], at: number) => {
@@ -1503,6 +1519,17 @@ export function createExpansionFrontendSession(
         );
         if (spelling === undefined) continue;
         const width = operatorWidthAt(children, at, spelling)!;
+        // The walk offers an operator on statements only a statement an
+        // operand may begin, and leaves the rest as written: `const r =
+        // a<-b;` compares.
+        if (
+          statements &&
+          !anywhere.includes(spelling) &&
+          headsOperandlessStatement(children, at)
+        ) {
+          at += width - 1;
+          continue;
+        }
         const origin = originOfSyntax(node);
         // An operator that was offered its input and taken by no rule has a
         // diagnostic saying so already, reported from wherever its invocation

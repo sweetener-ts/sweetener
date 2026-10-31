@@ -289,6 +289,36 @@ const itemDispatchPrefixes = new Set([
   "abstract",
 ]);
 
+/**
+ * Reserved words a statement begins with that no operand does: a declaration,
+ * or a statement of its own kind. An operator on statements reads the
+ * statement from its left operand, so a statement beginning with one of these
+ * is never one an operator's rule is written for -- `const r = a<-b;`
+ * compares, as TypeScript reads it.
+ */
+export const operandlessStatementHeads: ReadonlySet<string> = new Set([
+  "break",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "do",
+  "enum",
+  "export",
+  "for",
+  "function",
+  "if",
+  "interface",
+  "let",
+  "return",
+  "switch",
+  "throw",
+  "try",
+  "var",
+  "while",
+  "with",
+]);
+
 /** Whether a spelling is punctuation rather than an identifier. */
 /** Whether the node at `offset` in `nodes` is the token spelled `raw`. */
 function tokenAt(
@@ -4888,6 +4918,7 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     commaSeparatedMembers,
     expressionEnd,
     statementEnd,
+    statementEndsBefore,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -5194,6 +5225,7 @@ function* walk(
     commaSeparatedMembers,
     expressionEnd,
     statementEnd,
+    statementEndsBefore,
     assignmentPatternAt,
     shorthandProperty,
     binderFollows,
@@ -6539,6 +6571,14 @@ function* walk(
       // and all.
       (resolvedMacro === undefined || resolvedCategory === "expr") &&
       (category === "item" || category === "stmt") &&
+      // An operator on statements is invoked from the head of the statement
+      // it stands in, and from nowhere else: offered at every position of
+      // the statement, the one after the `=` of `const r = a<-b;` -- a
+      // comparison -- took `a <- b;` as its statement and printed
+      // `const r = const a = b;`.
+      (statementStartFollows(output.length) ||
+        statementEndsBefore(input, index)) &&
+      !(node.tag === "token" && operandlessStatementHeads.has(node.raw)) &&
       // A separator ends the segment before it, so no operand begins there.
       // The walk stands on one once the statement it ended has been
       // emitted, and reading forward from there reached the operator of the

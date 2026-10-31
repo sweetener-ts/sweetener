@@ -222,6 +222,27 @@ describe("an operator on statements spelled inside an expression", () => {
   });
 });
 
+describe("an operator on statements in a block walked as tokens", () => {
+  // A block holding a statement operator is walked as tokens, and the
+  // operator was offered at every position of every statement: the one
+  // after the `=` of a comparison took `a<-b;` as its statement.
+  test("is offered only a statement an operand begins", () => {
+    const { text, messages } = expand(
+      "export function g() { const r = a<-b; one <- 1; return r || one; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const r = a<-b;");
+    expect(text).toContain("const one = 1;");
+  });
+
+  test("is still offered a statement it does not accept", () => {
+    const { messages } = expand("export function g() { 5 <- a; }");
+    expect(messages).toEqual([
+      "No rule for macro <- accepted this input: 1 rule attempt(s).",
+    ]);
+  });
+});
+
 describe("an operator on statements left standing at a statement's head", () => {
   // Read as the comparison `one < -1`, the statement is an expression
   // statement, and its expression begins where the statement does: the

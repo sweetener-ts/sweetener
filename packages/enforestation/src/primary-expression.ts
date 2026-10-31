@@ -739,7 +739,7 @@ function returnTypeArrow(
  * line break stands in front of it, what stands behind it expects no operand,
  * and it carries nothing on.
  */
-function endsAtLineBreak(
+export function endsAtLineBreak(
   nodeAt: (offset: number) => Syntax | undefined,
   offset: number,
 ): boolean {
