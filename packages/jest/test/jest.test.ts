@@ -9,7 +9,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import type * as Compiler from "@sweetener/compiler";
 import transformer from "../src/index.js";
 
 const execute = promisify(execFile);
@@ -172,6 +173,103 @@ test("re-expands after a macro an installed package exports changes", async () =
   expect(after).not.toBe(before);
   const { code } = await transformer.processAsync(source, main, options);
   expect(code).toContain("[1, 1, 1]");
+});
+
+/**
+ * A worker that finds what a file's last expansion read in Jest's cache keys
+ * the file from that, without expanding it: expanded to answer every key, a
+ * warm run expanded the whole project in each worker before Jest served a
+ * cached transform. The record is still checked against the files it names,
+ * so a macro no list names changing changes the key all the same.
+ */
+test("keys a file from what its last expansion read, in a worker that has not expanded it", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "sweet-jest-record-"));
+  const pkg = join(directory, "node_modules", "@acme", "forms");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({
+      name: "@acme/forms",
+      version: "1.0.0",
+      sweetMacros: "./sweet-macros.json",
+    }),
+  );
+  writeFileSync(
+    join(pkg, "sweet-macros.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      name: "@acme/forms",
+      languageVersion: "1",
+      compiler: { minimum: "0.1.0", maximum: "0.9.x" },
+      entry: "./macros.sts",
+      exports: {
+        packaged: { source: "./forms.sts", category: "expr", phase: 1 },
+      },
+      dependencies: [],
+    }),
+  );
+  writeFileSync(join(pkg, "macros.sts"), 'export const metadata = "x";\n');
+  const rule = (template: string): void =>
+    writeFileSync(
+      join(pkg, "forms.sts"),
+      `export syntax packaged:expr { rule { packaged($value:tt) } => { ${template} } }\n`,
+    );
+  rule("[$value, $value]");
+  const main = join(directory, "main.sts");
+  writeFileSync(
+    main,
+    'import { packaged } from "@acme/forms" for syntax;\nexport const answer = packaged(1);\n',
+  );
+  const configFile = join(directory, "tsconfig.json");
+  writeFileSync(
+    configFile,
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      files: ["main.sts"],
+    }),
+  );
+  const options = {
+    config: { rootDir: directory, cacheDirectory: join(directory, "cache") },
+    transformerConfig: { configFile },
+  };
+  const source = readFileSync(main, "utf8");
+  const first = await transformer.getCacheKeyAsync(source, main, options);
+
+  // Another worker: the module loaded afresh, with no session of its own,
+  // counting what its sessions are asked to expand.
+  let expansions = 0;
+  vi.resetModules();
+  vi.doMock("@sweetener/compiler", async (original) => {
+    const compiler = await original<typeof Compiler>();
+    return {
+      ...compiler,
+      createSweetenerSession: () => {
+        const session = compiler.createSweetenerSession();
+        return {
+          ...session,
+          transform: (request: Parameters<typeof session.transform>[0]) => {
+            expansions += 1;
+            return session.transform(request);
+          },
+        };
+      },
+    };
+  });
+  try {
+    const { default: worker } = await import("../src/index.js");
+    expect(await worker.getCacheKeyAsync(source, main, options)).toBe(first);
+    expect(expansions).toBe(0);
+
+    rule("[$value, $value, $value]");
+    const changed = await worker.getCacheKeyAsync(source, main, options);
+    expect(changed).not.toBe(first);
+    expect(expansions).toBe(0);
+    const { code } = await worker.processAsync(source, main, options);
+    expect(code).toContain("[1, 1, 1]");
+  } finally {
+    vi.doUnmock("@sweetener/compiler");
+    vi.resetModules();
+  }
 });
 
 /**
