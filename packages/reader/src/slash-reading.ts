@@ -154,13 +154,9 @@ export function typescriptReadings(
         ? createSpan(0, source.length)
         : createSpan(statement.getStart(file), statement.end),
     );
-  const covered = mergedSpans(unparsed);
-  const coveredStarts = covered.map(({ start }) => start);
-  /** Whether no unparsed span holds `offset`, asked of the merged spans. */
-  const certain = (offset: number): boolean => {
-    const at = firstAtOrAfter(coveredStarts, offset + 1) - 1;
-    return at < 0 || covered[at]!.end <= offset;
-  };
+  const covered = coveredBy(unparsed);
+  /** Whether no unparsed span holds `offset`. */
+  const certain = (offset: number): boolean => !covered(offset);
   // Read again until the read agrees with the parser where it parsed. Each
   // time round settles at least one more slash, and a reading taken never
   // changes, so this ends; it is usually once.
@@ -234,12 +230,13 @@ function holdsStatements(node: ts.Node | undefined): boolean {
   );
 }
 
-/** The index of the first of the sorted `offsets` at or after `start`. */
 /**
- * `spans` sorted by start and with each overlapping or touching run made one,
- * so that a position is held by at most one of them.
+ * Whether one of `spans` holds an offset, answered by halving over the spans
+ * sorted, with each overlapping or touching run made one, once: asked of
+ * every span for every slash, a file of many of each was read in time
+ * quadratic in its length. The formatter asks it of the same spans.
  */
-function mergedSpans(spans: readonly Span[]): readonly Span[] {
+export function coveredBy(spans: readonly Span[]): (offset: number) => boolean {
   const sorted = [...spans].sort((left, right) => left.start - right.start);
   const merged: { start: number; end: number }[] = [];
   for (const { start, end } of sorted) {
@@ -248,9 +245,14 @@ function mergedSpans(spans: readonly Span[]): readonly Span[] {
       last.end = Math.max(last.end, end);
     else merged.push({ start, end });
   }
-  return merged;
+  const starts = merged.map(({ start }) => start);
+  return (offset) => {
+    const at = firstAtOrAfter(starts, offset + 1) - 1;
+    return at >= 0 && offset < merged[at]!.end;
+  };
 }
 
+/** The index of the first of the sorted `offsets` at or after `start`. */
 function firstAtOrAfter(offsets: readonly number[], start: number): number {
   let low = 0;
   let high = offsets.length;

@@ -3,6 +3,7 @@ import {
   parseMacroDefinitions,
 } from "@sweetener/macro-language";
 import {
+  coveredBy,
   readSyntax,
   regularExpressionEnd,
   typescriptReadings,
@@ -838,33 +839,6 @@ function keptSpans(
       holds(start),
     ),
   );
-}
-
-/**
- * Whether one of `spans` holds an offset, answered by halving over the spans
- * sorted and joined once: asked of every span for every slash, a file of many
- * of each was laid out in time quadratic in its length.
- */
-function coveredBy(spans: readonly Span[]): (offset: number) => boolean {
-  const sorted = [...spans].sort((left, right) => left.start - right.start);
-  const joined: { start: number; end: number }[] = [];
-  for (const { start, end } of sorted) {
-    const last = joined.at(-1);
-    if (last !== undefined && start <= last.end)
-      last.end = Math.max(last.end, end);
-    else joined.push({ start, end });
-  }
-  return (offset) => {
-    let low = 0;
-    let high = joined.length;
-    while (low < high) {
-      const middle = (low + high) >> 1;
-      if (joined[middle]!.start <= offset) low = middle + 1;
-      else high = middle;
-    }
-    const span = joined[low - 1];
-    return span !== undefined && offset < span.end;
-  };
 }
 
 /**
