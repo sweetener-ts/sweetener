@@ -696,6 +696,15 @@ function readForFormatting(
   // that is the one reading the source is well formed in. So a slash there
   // is read as one where that moves the first error the reader reports past
   // where it stood, the nearest before the error first; each is tried once.
+  //
+  // Each try reads the whole file, and a file of many such slashes needs one
+  // apiece, so the errors are first settled together: the reader goes on
+  // past an error and reports the next, and for each the nearest slash
+  // between it and the error before it is read as a regular expression, all
+  // in one read. The reader reads left to right, so where that read leaves
+  // no error up to the last of them, each slash settled what trying it alone,
+  // nearest first, would have; where it does not, the first error is settled
+  // alone.
   if (result.diagnostics.length > 0) {
     const unanswered = coveredBy(typescript?.unparsed ?? []);
     const tried = new Set<number>();
@@ -704,12 +713,33 @@ function readForFormatting(
       failsAt !== undefined;
       failsAt = firstErrorAt(result)
     ) {
-      const candidates = possibleRegularExpressions(source, result.root)
+      const open = possibleRegularExpressions(source, result.root)
         .map(({ start }) => start)
-        .filter(
-          (start) => start < failsAt && unanswered(start) && !tried.has(start),
-        )
-        .reverse();
+        .filter((start) => unanswered(start) && !tried.has(start));
+      const together = nearestBeforeEach(open, errorsAt(result));
+      if (together.length > 1) {
+        const attempt = readSyntax(source, {
+          sourceId,
+          scopes,
+          variant,
+          readings: new Map([
+            ...readings,
+            ...together.map(
+              ({ slash }) => [slash, "regular-expression"] as const,
+            ),
+          ]),
+        });
+        const at = firstErrorAt(attempt);
+        if (at === undefined || at > together.at(-1)!.error) {
+          for (const { slash } of together) {
+            tried.add(slash);
+            readings.set(slash, "regular-expression");
+          }
+          result = attempt;
+          continue;
+        }
+      }
+      const candidates = open.filter((start) => start < failsAt).reverse();
       let settled: typeof result | undefined;
       for (const start of candidates) {
         tried.add(start);
@@ -741,6 +771,40 @@ function readForFormatting(
     );
   }
   return { root: result.root, unparsed: typescript?.unparsed ?? [] };
+}
+
+/** Where each error reading a source reported stands, in source order. */
+function errorsAt(read: {
+  readonly diagnostics: readonly { readonly primaryOrigin: Span }[];
+}): readonly number[] {
+  return read.diagnostics
+    .map(({ primaryOrigin }) => primaryOrigin.start)
+    .sort((left, right) => left - right);
+}
+
+/**
+ * For each of `errors` in turn, the nearest of `slashes` before it and after
+ * the error before it, both in source order: up to the first error with
+ * none, which a slash settling it alone has to answer first.
+ */
+function nearestBeforeEach(
+  slashes: readonly number[],
+  errors: readonly number[],
+): readonly { readonly slash: number; readonly error: number }[] {
+  const chosen: { slash: number; error: number }[] = [];
+  let next = 0;
+  let after = -1;
+  for (const error of errors) {
+    if (error <= after) continue;
+    while (next < slashes.length && slashes[next]! <= after) next += 1;
+    let nearest: number | undefined;
+    while (next < slashes.length && slashes[next]! < error)
+      nearest = slashes[next++];
+    if (nearest === undefined) break;
+    chosen.push({ slash: nearest, error });
+    after = error;
+  }
+  return chosen;
 }
 
 /** Where the first error reading a source reported stands, if it reported one. */

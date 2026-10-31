@@ -323,6 +323,33 @@ describe("slashes the reader judges from what stands before them", () => {
     },
   );
 
+  // Each slash is settled by a read of the file, and a file of many was laid
+  // out in time quadratic in its length; the reader's errors are settled
+  // together, in one read, where that leaves the file well formed up to the
+  // last of them. Between them stand divisions TypeScript reads, which stay
+  // divisions, and a regular expression that balances read either way.
+  test("formats many regular expressions holding delimiters in a macro's syntax", () => {
+    const lines = Array.from({ length: 300 }, (_, index) =>
+      index % 3 === 0
+        ? "unless(c) /[(]/.test(s);\n"
+        : index % 3 === 1
+          ? "x = a  /  b;\n"
+          : "unless(c) /[)]/.test(s);\n",
+    );
+    const source = `${importsUnless}${lines.join("")}run(  1 );\n`;
+    const formatted = `${importsUnless}${lines
+      .map((line) => line.replace("a  /  b", "a / b"))
+      .join("")}run( 1 );\n`;
+    expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(formatted);
+  });
+
+  test("refuses a file whose last error no slash settles, past ones that do", () => {
+    const source = `${importsUnless}unless(c) /[(]/.test(s);\nunless(c) /[(]/.test(s);\nrun((1);\n`;
+    expect(() => formatSweetener(source, { filepath: "regex.sts" })).toThrow(
+      /could not format malformed source/u,
+    );
+  });
+
   test("formats a source whose regular expression holds a delimiter", async () => {
     const source = "if (c) /(/.test(s);\nrun(  1 );\n";
     expect(formatSweetener(source, { filepath: "regex.sts" })).toBe(
