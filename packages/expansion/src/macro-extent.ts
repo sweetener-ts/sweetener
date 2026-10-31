@@ -230,9 +230,10 @@ export function createMacroExtentResolver(
       ...macro.rules.filter(({ fallback }) => !fallback),
       ...macro.rules.filter(({ fallback }) => fallback),
     ];
+    const consumeClass = options.consumeClass(macro, context);
     for (const rule of ordered) {
       const matched = executeMatcher(rule.matcher, cursor.fork(), {
-        consumeClass: options.consumeClass(macro, context),
+        consumeClass,
         tracker: context.tracker,
         cancellation: context.cancellation,
         environmentEpoch: context.environmentEpoch,
