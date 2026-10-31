@@ -1,6 +1,10 @@
 import type { SyntaxId } from "@sweetener/shared";
 import type { PrintedTokenSpan } from "@sweetener/printer";
 import type { ProtectedSyntax, Syntax } from "@sweetener/syntax";
+import {
+  isJavaScriptFileName,
+  scriptKindForFileName,
+} from "@sweetener/typescript-host";
 import * as ts from "typescript";
 
 /**
@@ -54,7 +58,9 @@ export function misreadLessThans(
   operators: ReadonlySet<SyntaxId>,
 ): ReadonlySet<SyntaxId> {
   const misread = new Set<SyntaxId>();
-  if (operators.size === 0) return misread;
+  // JavaScript reads no type arguments in an expression, so a file emitted
+  // as JavaScript misreads none.
+  if (operators.size === 0 || isJavaScriptFileName(fileName)) return misread;
   const operatorAt = new Map<number, SyntaxId>();
   for (const span of tokenSpans)
     if (operators.has(span.syntax)) operatorAt.set(span.start, span.syntax);
@@ -64,7 +70,7 @@ export function misreadLessThans(
     text,
     ts.ScriptTarget.Latest,
     false,
-    fileName.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    scriptKindForFileName(fileName),
   );
   const pending: ts.Node[] = [parsed];
   while (pending.length > 0) {
