@@ -253,15 +253,31 @@ describe("an operator on statements in a block walked as tokens", () => {
   });
 });
 
-describe("an operator on statements left standing at a statement's head", () => {
-  // Read as the comparison `one < -1`, the statement is an expression
-  // statement, and its expression begins where the statement does: the
-  // operator was written there, and is reported as left unexpanded, as on
-  // `main`, rather than reaching TypeScript as a comparison.
-  test("is reported at a module's top", () => {
-    const { messages } = expand("one <- 1;\nexport const two = 2;");
+describe("an operator on statements at a module's top", () => {
+  // Each statement at a module's top was read before the walk, so `one <-
+  // 1;` was the comparison `one < -1` and the operator was never offered it.
+  test("is offered its statement, which binds the items after it", () => {
+    const { text, messages } = expand("one <- 1;\nexport const two = one + 1;");
+    expect(messages).toEqual([]);
+    expect(text).toBe("const one = 1;\nexport const two = one + 1;");
+  });
+
+  test("is offered a statement on the line under a declaration with no `;`", () => {
+    const { text, messages } = expand("export const k = 1\none <- k;");
+    expect(messages).toEqual([]);
+    expect(text).toBe("export const k = 1\nconst one = k;");
+  });
+
+  test("is not offered a declaration it is spelled in", () => {
+    const { text, messages } = expand("export const r = a<-b;");
+    expect(messages).toEqual([]);
+    expect(text).toBe("export const r = a<-b;");
+  });
+
+  test("is still offered a statement it does not accept", () => {
+    const { messages } = expand("5 <- a;");
     expect(messages).toEqual([
-      "Operator <- was left unexpanded: the expression it is written in could not be read, so none of its rules were tried.",
+      "No rule for macro <- accepted this input: 1 rule attempt(s).",
     ]);
   });
 });

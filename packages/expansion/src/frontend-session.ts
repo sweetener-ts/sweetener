@@ -54,6 +54,7 @@ import {
   type ProtectedSyntax,
   type Syntax,
   type SyntaxCategory,
+  type SyntaxCursor,
   type SyntaxSequence,
 } from "@sweetener/syntax";
 import type { CompileParsedMacrosResult } from "./compile-macros.js";
@@ -1576,6 +1577,17 @@ export function createExpansionFrontendSession(
     };
   };
 
+  /** The nodes from `cursor` on to the `;` that ends their statement. */
+  const statementFrom = (cursor: SyntaxCursor): readonly Syntax[] => {
+    const ahead = cursor.fork();
+    const nodes: Syntax[] = [];
+    while (!ahead.atEnd) {
+      const node = ahead.consume()!;
+      nodes.push(node);
+      if (node.tag === "token" && node.raw === ";") break;
+    }
+    return nodes;
+  };
   const prepareInput = (
     syntax: SyntaxSequence,
     category: SyntaxCategory,
@@ -1672,8 +1684,16 @@ export function createExpansionFrontendSession(
         next?.tag === "token" &&
         leadingItemBoundary(next) &&
         macroSpellingsInScope().has(next.raw);
+      // And so does a statement an operator on statements stands in, written
+      // on the line under it: read as more of the initializer, `one <- k;`
+      // under `export const k = 1` was never offered the operator.
+      const operatorStatementHeadsLine =
+        next !== undefined &&
+        leadingItemBoundary(next) &&
+        holdsStatementOperator(statementFrom(attempted.cursor));
       const incompleteVariable =
         !macroHeadsLine &&
+        !operatorStatementHeadsLine &&
         !(next?.tag === "token" && (next.raw === "/" || next.raw === "/=")) &&
         consumed.some(
           (node) =>
@@ -1696,6 +1716,25 @@ export function createExpansionFrontendSession(
         continue;
       }
       cursor.advance(attempted.cursor.index - cursor.index);
+      // A statement at a module's top holding an operator on statements is
+      // left as its tokens, as a block holding one is, for the walk to offer
+      // it the operator: read here, `one <- 1;` was the comparison `one <
+      // -1`, and the operator was never offered its statement.
+      const head = consumed[0];
+      if (
+        holdsStatementOperator(consumed) &&
+        !(head?.tag === "token" && operandlessStatementHeads.has(head.raw))
+      ) {
+        prepared.push(
+          protect(
+            createSyntaxSequence([
+              protect(createSyntaxSequence(consumed), "stmt"),
+            ]),
+            "item",
+          ),
+        );
+        continue;
+      }
       prepared.push(normalizeProtectedInput(attempted.syntax, handed, options));
     }
     return createSyntaxSequence(prepared);
