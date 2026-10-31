@@ -228,9 +228,7 @@ function bindingScope(identifier: ts.Identifier): ts.Node | undefined {
     if (!ts.isVariableDeclarationList(list)) return undefined;
     const holder = list.parent;
     if ((list.flags & ts.NodeFlags.BlockScoped) !== 0)
-      return ts.isVariableStatement(holder)
-        ? container(holder.parent)
-        : holder;
+      return ts.isVariableStatement(holder) ? container(holder.parent) : holder;
     let scope: ts.Node | undefined = holder;
     while (
       scope !== undefined &&
@@ -382,6 +380,47 @@ interface IntroducedBinderClass {
   readonly spelling: string;
   readonly scopes: ScopeSetId;
   readonly declaration: OriginId;
+}
+
+/**
+ * Entries keyed by a spelling and a scope set, asked for those a token
+ * reaches: spelled as it is, with every one of their scopes among its own.
+ *
+ * Each is kept under its spelling and the newest of its scopes, which a
+ * token reaching it carries, so a token is held only against the entries
+ * kept under one of its own few scopes. Asked by spelling alone, every token
+ * of a name each invocation introduces -- the `tmp` of a swap -- was held
+ * against every invocation's class, and planning was quadratic in how many
+ * invocations a file holds.
+ */
+class ScopedIndex<Entry extends { readonly scopes: ScopeSetId }> {
+  readonly #entries = new Map<string, Entry[]>();
+
+  constructor(readonly scopes: ScopeStore) {}
+
+  add(spelling: string, entry: Entry): void {
+    const key = ScopedIndex.#key(
+      spelling,
+      this.scopes.scopesOf(entry.scopes).at(-1),
+    );
+    const kept = this.#entries.get(key);
+    if (kept === undefined) this.#entries.set(key, [entry]);
+    else kept.push(entry);
+  }
+
+  reaching(token: TokenSyntax): readonly Entry[] {
+    const reached: Entry[] = [];
+    for (const scope of [undefined, ...this.scopes.scopesOf(token.scopes)])
+      for (const entry of this.#entries.get(
+        ScopedIndex.#key(token.raw, scope),
+      ) ?? [])
+        if (this.scopes.subset(entry.scopes, token.scopes)) reached.push(entry);
+    return reached;
+  }
+
+  static #key(spelling: string, scope: number | undefined): string {
+    return `${spelling} ${scope ?? ""}`;
+  }
 }
 
 /**
@@ -584,42 +623,61 @@ export function planHygienicRenames(
     // module declares at its top is left alone: a template that writes
     // `add($a)` where its own module declares no `add` means the one the
     // module using it declares or imports.
-    const introducedClasses = [...classes];
+    const introducedClasses = new ScopedIndex<{
+      readonly key: string;
+      readonly scopes: ScopeSetId;
+    }>(options.scopes);
+    for (const [key, candidate] of classes)
+      introducedClasses.add(candidate.spelling, {
+        key,
+        scopes: candidate.scopes,
+      });
     const freeBySpelling = new Map<string, TokenSyntax[]>();
     for (const token of inSpace) {
       if (roleBySyntax.get(token.id) === "property") continue;
       if (roleBySyntax.get(token.id) === "binder") continue;
       if (!options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
       if (
-        introducedClasses.some(
-          ([key, candidate]) =>
-            candidate.spelling === token.raw &&
-            options.scopes.subset(candidate.scopes, token.scopes) &&
-            standsIn(token, classRegions.get(key)),
-        )
+        introducedClasses
+          .reaching(token)
+          .some(({ key }) => standsIn(token, classRegions.get(key)))
       )
         continue;
       const spelled = freeBySpelling.get(token.raw);
       if (spelled === undefined) freeBySpelling.set(token.raw, [token]);
       else spelled.push(token);
     }
+    // Each spelling's free names in the order they are printed, so a
+    // binder's region is asked of the ones in it, not of every one.
+    const freeAt = new Map<string, { at: number; reference: TokenSyntax }[]>();
+    for (const [spelling, references] of freeBySpelling)
+      freeAt.set(
+        spelling,
+        references
+          .flatMap((reference) => {
+            const at = printedAt.get(reference.id);
+            return at === undefined ? [] : [{ at, reference }];
+          })
+          .sort((left, right) => left.at - right.at),
+      );
     for (const token of inSpace) {
-      const free = freeBySpelling.get(token.raw);
+      const free = freeAt.get(token.raw);
       if (free === undefined) continue;
       if (roleBySyntax.get(token.id) !== "binder") continue;
       if (options.scopes.hasUnmatchedIntroduction(token.scopes)) continue;
       if (publicBinderSyntax.has(token.id) || isExported(token)) continue;
       const region = regionBySyntax.get(token.id);
       if (region === undefined) continue;
-      const captures = free.some((reference) => {
-        const at = printedAt.get(reference.id);
-        return (
-          at !== undefined &&
-          at >= region.start &&
-          at < region.end &&
-          !options.scopes.subset(token.scopes, reference.scopes)
+      let captures = false;
+      for (
+        let index = firstAtOrAfter(free, region.start);
+        index < free.length && free[index]!.at < region.end && !captures;
+        index += 1
+      )
+        captures = !options.scopes.subset(
+          token.scopes,
+          free[index]!.reference.scopes,
         );
-      });
       if (!captures) continue;
       // A binder the call site declares carries the scopes of the code
       // around it, which an import or a binder of another function may
@@ -671,21 +729,21 @@ export function planHygienicRenames(
         position: token.span.start,
       });
 
-    const boundedClasses = [...classRegions].map(([key, regions]) => ({
-      class: classes.get(key)!,
-      regions,
-    }));
+    const boundedClasses = new ScopedIndex<{
+      readonly scopes: ScopeSetId;
+      readonly regions: readonly Region[];
+    }>(options.scopes);
+    for (const [key, regions] of classRegions) {
+      const bounded = classes.get(key)!;
+      boundedClasses.add(bounded.spelling, { scopes: bounded.scopes, regions });
+    }
     /**
      * Whether a token a class bounded to regions would reach by its scopes
      * stands where that class binds; a token no such class reaches does
      * wherever it stands.
      */
     const withinItsClass = (token: TokenSyntax): boolean => {
-      const reached = boundedClasses.filter(
-        (candidate) =>
-          candidate.class.spelling === token.raw &&
-          options.scopes.subset(candidate.class.scopes, token.scopes),
-      );
+      const reached = boundedClasses.reaching(token);
       return (
         reached.length === 0 ||
         reached.some(({ regions }) => standsIn(token, regions))
@@ -740,4 +798,19 @@ export function planHygienicRenames(
     rewrites: Object.freeze(plans.flatMap((plan) => [...plan.rewrites])),
     nameFor: (binding: BindingId) => names.get(binding),
   });
+}
+
+/** The index of the first of `sorted`, in printed order, at or after `at`. */
+function firstAtOrAfter(
+  sorted: readonly { readonly at: number }[],
+  at: number,
+): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sorted[middle]!.at < at) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }

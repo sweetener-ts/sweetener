@@ -18,6 +18,13 @@ hardware — numbers taken before per-scenario process isolation are not
 comparable with numbers taken after it, because every scenario but the first
 used to inherit the heap its predecessors left behind.
 
+## Unmeasured
+
+- `expansion/bounded-renames` has no row in either file yet. It was added on
+  2026-10-31 with the fix that made it linear, on a machine at a load average
+  near 29, where no row is worth recording. Until both files are re-recorded
+  on an idle machine, run the check with `--allow-unmeasured`.
+
 ## `node26.json`
 
 - **This file includes an open regression.** `expansion/project-scale` and

@@ -27,6 +27,7 @@ import ts from "typescript";
 import { defineReaderBenchmarks } from "./reader.mjs";
 import { defineExpansionBenchmark } from "./expansion.mjs";
 import { defineFollowingContractsBenchmark } from "./following-contracts.mjs";
+import { defineBoundedRenamesBenchmark } from "./bounded-renames.mjs";
 import { defineHygienicRenamesBenchmark } from "./hygienic-renames.mjs";
 import { defineLongRepetitionBenchmark } from "./long-repetition.mjs";
 import { defineMacroEnvironmentBenchmark } from "./macro-environment.mjs";
@@ -55,6 +56,7 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
   const wideReplacementScenario = defineWideReplacementBenchmark();
   const followingContractsScenario = defineFollowingContractsBenchmark();
   const hygienicRenamesScenario = defineHygienicRenamesBenchmark();
+  const boundedRenamesScenario = defineBoundedRenamesBenchmark();
   const longRepetitionScenario = defineLongRepetitionBenchmark();
   const macroEnvironmentScenario = defineMacroEnvironmentBenchmark();
   const macroModuleScenario = defineMacroModuleBenchmark();
@@ -336,6 +338,7 @@ export async function defineBenchmarkScenarios(repositoryRoot) {
     wideReplacementScenario,
     followingContractsScenario,
     hygienicRenamesScenario,
+    boundedRenamesScenario,
     longRepetitionScenario,
     macroEnvironmentScenario,
     macroModuleScenario,
