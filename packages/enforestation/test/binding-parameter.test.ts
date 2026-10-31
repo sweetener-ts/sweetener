@@ -277,6 +277,43 @@ describe("binding and parameter consumers", () => {
     },
   );
 
+  // Each list is split where TypeScript's parser splits it, which the test
+  // asks of the parser too: angles in a default hold type arguments only
+  // where TypeScript reads them, and type arguments hold no `=` of their own.
+  test.each([
+    ["(a = b < c, d = e > (f))", ["a", "d"]],
+    ["(a = b < c, d = e > f)", ["a", "d"]],
+    ["(k = make<A, B>(x), m = 1)", ["k", "m"]],
+    ["(k = make<A, <T = B>() => T>(x), m = 1)", ["k", "m"]],
+    ["(h = <T = A, U = B>(t: T) => t, m = 1)", ["h", "m"]],
+    ["(h = () => a < b, d = e > (f))", ["h", "d"]],
+    ["(m: Map<K, V> = new Map<K, V>(), n = 1)", ["m", "n"]],
+    // A word TypeScript reserves only in some places is a name here, and an
+    // operand ends with it as with any name.
+    ["(v = type < a, w = b > c)", ["v", "w"]],
+  ])("splits %s where TypeScript does", (source, names) => {
+    const parsed = ts.createSourceFile(
+      "parameters.ts",
+      `function f${source} {}`,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const declaration = parsed.statements[0] as ts.FunctionDeclaration;
+    expect(
+      declaration.parameters.map(({ name }) => name.getText(parsed)),
+    ).toEqual(names);
+    const prepared = setup(source);
+    const result = consumeParameterList(
+      createSyntaxCursor(prepared.syntax),
+      prepared.context,
+      prepared.options,
+    );
+    expect(result?.skeleton.names.map(({ spelling }) => spelling)).toEqual(
+      names,
+    );
+  });
+
   test("representative bindings and parameters parse under pinned TypeScript", () => {
     const sources = [
       "const { short, source: target, nested: { deep }, ...rest } = value;",

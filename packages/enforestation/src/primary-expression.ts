@@ -505,7 +505,7 @@ function parenthesizedArrowBodyStart(
   // not the arrow's: `(): Map<(k: K) => V, never> => …`. Taken as the
   // arrow's, its body began inside the angles and ended at their comma.
   let typeArguments = 0;
-  for (;; offset += 1) {
+  for (; ; offset += 1) {
     const node = cursor.peek(offset);
     if (node === undefined) return undefined;
     if (node.tag === "token") {
@@ -644,8 +644,17 @@ export function arrowBodyExtent(
  * a generic arrow's type parameters where an operand begins, and type
  * arguments after an operand where a call, or what may follow an
  * instantiation, comes after them. Undefined where the `<` compares.
+ *
+ * Type arguments hold no `=` of their own -- only a type parameter's default
+ * does, and those stand where an operand begins -- so TypeScript gives the
+ * arguments up there: `g(a = b < c, d = e > (f))` is two defaults, not
+ * `b<c, d = e>(f)`. A `=` deeper in, in a generic function type an argument
+ * holds, is that type's.
+ *
+ * Every reader of an expression over a run of syntax asks this, so that one
+ * rule says where angles in an expression hold types.
  */
-function typeAnglesWidth(
+export function typeAnglesWidth(
   nodeAt: (offset: number) => Syntax | undefined,
   offset: number,
   first: boolean,
@@ -662,6 +671,13 @@ function typeAnglesWidth(
         ? previous.raw !== "!" && previous.raw !== "++" && previous.raw !== "--"
         : previous.kind === "keyword" && beginsOperandAfter.has(previous.raw)));
   if (operandBegins) return width;
+  let depth = 0;
+  for (let ahead = 0; ahead < width; ahead += 1) {
+    const inside = nodeAt(offset + ahead);
+    if (inside?.tag !== "token") continue;
+    if (depth === 1 && inside.raw === "=") return undefined;
+    depth += angleWidth(inside.raw, "<") - angleWidth(inside.raw, ">");
+  }
   const following = nodeAt(offset + width);
   return callFollowsTypeArguments(following) || typeArgumentsFollow(following)
     ? width

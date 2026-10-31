@@ -33,10 +33,7 @@ import {
   type MacroExtentResolver,
   type SyntaxConsumer,
 } from "./consumer.js";
-import {
-  callFollowsTypeArguments,
-  typeArgumentsFollow,
-} from "./primary-expression.js";
+import { typeAnglesWidth } from "./primary-expression.js";
 import { anglesWidthAt } from "./type-class-element.js";
 
 export type BindingShape = "identifier" | "array" | "object";
@@ -233,11 +230,13 @@ function splitOnComma(
     }
     const segment = segments.at(-1)!;
     if (reads !== "binder" && token(item) && angleWidth(item.raw, "<") > 0) {
-      const width = anglesWidthAt(syntax, at);
-      if (
-        width !== undefined &&
-        (reads === "type" || anglesHoldTypes(segment, syntax[at + width]))
-      ) {
+      // A default is an expression, whose angles hold types where an
+      // expression's do: `v = make<A, B>(x)`, but not `v = a < b, w = c > d`.
+      const width =
+        reads === "type"
+          ? anglesWidthAt(syntax, at)
+          : typeAnglesWidth((offset) => syntax[offset], at, false);
+      if (width !== undefined) {
         segment.push(...syntax.slice(at, at + width));
         at += width - 1;
         continue;
@@ -250,34 +249,6 @@ function splitOnComma(
   }
   return Object.freeze(
     segments.map((segment) => createSyntaxSequence(segment)),
-  );
-}
-
-/**
- * Whether angles that close in a default, after `before` and with
- * `following` after them, hold types: where an operand begins they are a
- * generic arrow's type parameters, and after one they are type arguments
- * where a call, or what may follow an instantiation, comes next -- as
- * TypeScript reads them. Otherwise they compare: `v = a < b, w = c > d`.
- */
-function anglesHoldTypes(
-  before: readonly Syntax[],
-  following: Syntax | undefined,
-): boolean {
-  const previous = before.at(-1);
-  const operandEnds =
-    previous !== undefined &&
-    (previous.tag !== "token" ||
-      (previous.kind === "punctuation"
-        ? previous.raw === "!" || previous.raw === "++" || previous.raw === "--"
-        : previous.kind !== "keyword" ||
-          ["this", "super", "null", "true", "false", "undefined"].includes(
-            previous.raw,
-          )));
-  return (
-    !operandEnds ||
-    callFollowsTypeArguments(following) ||
-    typeArgumentsFollow(following)
   );
 }
 
