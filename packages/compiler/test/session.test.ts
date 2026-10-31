@@ -6,6 +6,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -958,7 +959,7 @@ describe("a session after the project changes", () => {
       symlinkSync(version("base@1"), link);
       const session = createSweetenerSession();
       await expectFresh(session, fixture.main, fixture.config, "[10, 1]");
-      rmSync(link);
+      unlinkSync(link);
       symlinkSync(version("base@2"), link);
       await expectFresh(session, fixture.main, fixture.config, "[10, 2]");
       await session.close();
@@ -1196,7 +1197,7 @@ describe("a session after the project changes", () => {
     const before = await transform(session, fixture.main, fixture.config);
     expect(before.code).toContain("[1, 1]");
 
-    rmSync(fixture.packageRoot);
+    unlinkSync(fixture.packageRoot);
     symlinkSync(version("forms@2"), fixture.packageRoot);
     const after = await transform(session, fixture.other, fixture.config);
     expect(after.code).toContain("[2, 2, 2]");
@@ -1435,7 +1436,7 @@ describe("a session after what TypeScript read for binding literals changes", ()
     const before = await transform(session, fixture.main, fixture.config);
     expect(before.code).toContain('"circle"');
 
-    rmSync(link);
+    unlinkSync(link);
     symlinkSync(version("shapes@2"), link);
     const after = await transform(session, fixture.main, fixture.config);
     expect(after.code).toContain('"other"');
