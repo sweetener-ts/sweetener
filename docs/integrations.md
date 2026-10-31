@@ -44,11 +44,18 @@ matching, no comment toggling.
 ln -s "$PWD/editors/vscode" ~/.vscode/extensions/sweetener
 ```
 
-It contributes no language server, deliberately. Associating these files with
-the built-in `typescript` language would start TypeScript's own service on
-them, and every macro definition and invocation would be reported as a syntax
-error. For checking, run `sweetener check`, or `sweetener watch` to have it
-report as you edit.
+`editors/zed` registers `.sts` and `.stsx` as their own Zed languages,
+`Sweetener TypeScript` and `Sweetener TSX`. Zed highlights with Tree-sitter,
+so the extension uses the TypeScript and TSX grammars.
+It does not reuse the TextMate grammar, and it does not register the files as
+Zed's TypeScript or TSX languages. In Zed, run `zed: install dev extension`
+and choose `editors/zed`.
+
+Neither extension contributes a language server, deliberately. Associating
+these files with the built-in `typescript` language would start TypeScript's
+own service on them, and every macro definition and invocation would be
+reported as a syntax error. For checking, run `sweetener check`, or
+`sweetener watch` to have it report as you edit.
 
 Ordinary `.ts` and `.tsx` files that import a `.sts` module do get completions
 and type errors across the boundary; see source declarations below. The two
