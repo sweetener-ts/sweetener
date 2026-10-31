@@ -164,15 +164,25 @@ reproduced before it was fixed, and fixed in the 12 commits after `4af8d8e`:
 - **Duplicates removed**: the span cover the formatter copied from the
   reader (`11aabf1`) and a hand-written `contextsOf` (`29b88d3`).
 
-Known and not fixed there, as both are the same on `main`:
+What that review left known, and what fixing it showed, was fixed after
+`615ca7f`:
 
-- A statement operator at a module's top is reported as left unexpanded,
-  with a message saying its expression could not be read; it is never
-  offered its statement there.
-- Nothing in the Jest cache key changes with the compiler's version, so an
-  upgrade serves transforms from before it until the cache is cleared.
-- `expansion/bounded-renames` has no baseline row yet (see
-  `benchmarks/baselines/README.md`).
+- **A statement operator at a module's top** was never offered its
+  statement -- each was read as an item first, `one <- 1;` as a comparison
+  -- and was reported as an expression that could not be read. Such a
+  statement is left as its tokens for the walk, as a block holding one is
+  (`e455b16`).
+- **A statement operator in a block walked as tokens** was offered from
+  every position of every statement, so the `a` of `const r = a<-b;` took
+  `a <- b;` as its statement and printed `const r = const a = b;`. It is
+  offered only the head of a statement an operand begins (`2b98aff`).
+- **An operator's statement under a statement ASI ended** was printed on
+  that statement's line, `const k = 1 const one = 1;` (`2aabc0d`).
+- **The Jest key** now changes with the transformer's and the compiler's
+  release (`83622ab`).
+
+`expansion/bounded-renames` has no baseline row yet (see
+`benchmarks/baselines/README.md` and issue #23).
 
 ## Open bugs
 
