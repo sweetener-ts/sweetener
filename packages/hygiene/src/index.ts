@@ -9,3 +9,4 @@ export * from "./invocation-scopes.js";
 export * from "./diagnostics.js";
 export * from "./resolution.js";
 export * from "./binding-contract.js";
+export * from "./scope-filed-index.js";

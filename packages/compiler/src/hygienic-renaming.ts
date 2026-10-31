@@ -1,6 +1,7 @@
 import {
   BindingResolver,
   EnvironmentStore,
+  ScopeFiledIndex,
   type Binding,
   type Phase,
   type ScopeStore,
@@ -383,43 +384,33 @@ interface IntroducedBinderClass {
 }
 
 /**
- * Entries keyed by a spelling and a scope set, asked for those a token
- * reaches: spelled as it is, with every one of their scopes among its own.
- *
- * Each is kept under its spelling and the newest of its scopes, which a
- * token reaching it carries, so a token is held only against the entries
- * kept under one of its own few scopes. Asked by spelling alone, every token
- * of a name each invocation introduces -- the `tmp` of a swap -- was held
- * against every invocation's class, and planning was quadratic in how many
- * invocations a file holds.
+ * Entries kept by spelling and filed by scope (see `ScopeFiledIndex`), asked
+ * for those a token reaches: spelled as it is, with every one of their
+ * scopes among its own. Every class each invocation introduces of a name --
+ * the `tmp` of a swap -- is one more of its spelling.
  */
 class ScopedIndex<Entry extends { readonly scopes: ScopeSetId }> {
-  readonly #entries = new Map<string, Entry[]>();
+  readonly #bySpelling = new Map<string, ScopeFiledIndex<Entry>>();
 
   constructor(readonly scopes: ScopeStore) {}
 
   add(spelling: string, entry: Entry): void {
-    const key = ScopedIndex.#key(
-      spelling,
-      this.scopes.scopesOf(entry.scopes).at(-1),
-    );
-    const kept = this.#entries.get(key);
-    if (kept === undefined) this.#entries.set(key, [entry]);
-    else kept.push(entry);
+    let filed = this.#bySpelling.get(spelling);
+    if (filed === undefined) {
+      filed = new ScopeFiledIndex<Entry>(this.scopes, ({ scopes }) => scopes);
+      this.#bySpelling.set(spelling, filed);
+    }
+    filed.add(entry);
   }
 
   reaching(token: TokenSyntax): readonly Entry[] {
-    const reached: Entry[] = [];
-    for (const scope of [undefined, ...this.scopes.scopesOf(token.scopes)])
-      for (const entry of this.#entries.get(
-        ScopedIndex.#key(token.raw, scope),
-      ) ?? [])
-        if (this.scopes.subset(entry.scopes, token.scopes)) reached.push(entry);
-    return reached;
-  }
-
-  static #key(spelling: string, scope: number | undefined): string {
-    return `${spelling} ${scope ?? ""}`;
+    return (
+      this.#bySpelling
+        .get(token.raw)
+        ?.filter(token.scopes, (entry) =>
+          this.scopes.subset(entry.scopes, token.scopes),
+        ) ?? []
+    );
   }
 }
 
