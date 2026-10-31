@@ -136,6 +136,44 @@ printer and formatter, the hosts), each finding reproduced on the branch and on
   macro's syntax as malformed (`9a73375`), and it and TypeScript's readings
   were quadratic in a file's length (`6edef96`).
 
+The 47 commits after `fe47046` were reviewed on 2026-10-31, each finding
+reproduced before it was fixed, and fixed in the 12 commits after `4af8d8e`:
+
+- **A default's angles** were read as type arguments wherever they closed:
+  `(a = b < c, d = e > (f))` was one parameter and `d` was lost, and a name
+  spelled like a keyword -- `type` -- began an operand there. Defaults and
+  arrow bodies ask one rule, which ends type arguments at a `=` of their
+  own (`35cd581`).
+- **`export default` in an item run walked as tokens** read on to the next
+  `;`, taking the item under it in (`4e0444a`).
+- **A statement operator left standing at a module's top** -- `one <- 1;`
+  -- reached TypeScript with nothing said, where `main` reports it; a
+  regression of `6c5a202` (`0cb0d89`).
+- **A JavaScript file** was asked whether a comparison misreads as type
+  arguments as if it were TypeScript, and printed `(void 0, …)` (`ea3bae9`).
+- **A conditional type's `extends` after `infer U`** was counted as opening
+  one by three of the four readers that count them, so
+  `[nullable T extends infer U extends string ? U : 2?]` was refused. All
+  four ask one rule (`405f2eb`).
+- **Cost.** Every Jest cache key ran a fresh expansion of the project in each
+  worker; a key is now computed from what the file's last expansion read,
+  recorded in Jest's cache directory (`ca86fbb`). Rename planning was
+  quadratic in the invocations introducing one spelling inside functions,
+  19 s for 3,200 functions (`c3fb731`), and the formatter read the file
+  again for every slash it settled, 2.6 s for 400 (`b2c7210`).
+- **Duplicates removed**: the span cover the formatter copied from the
+  reader (`11aabf1`) and a hand-written `contextsOf` (`29b88d3`).
+
+Known and not fixed there, as both are the same on `main`:
+
+- A statement operator at a module's top is reported as left unexpanded,
+  with a message saying its expression could not be read; it is never
+  offered its statement there.
+- Nothing in the Jest cache key changes with the compiler's version, so an
+  upgrade serves transforms from before it until the cache is cleared.
+- `expansion/bounded-renames` has no baseline row yet (see
+  `benchmarks/baselines/README.md`).
+
 ## Open bugs
 
 None known. The four listed here after the review, and issue #1, were fixed on
