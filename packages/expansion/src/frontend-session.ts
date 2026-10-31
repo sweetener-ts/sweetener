@@ -1456,7 +1456,9 @@ export function createExpansionFrontendSession(
     // parenthesis, a bracket or an expression already read, its spelling is
     // the tokens it is spelled with -- `if (a<-1)` compares, with `<-` an
     // operator on statements. A brace holds statements again wherever it
-    // stands, as an arrow's body does.
+    // stands, as an arrow's body does. So does the expression an expression
+    // statement is made of, which begins at its statement's head: `one <- 1;`
+    // read as the comparison `one < -1` is where the operator was written.
     const anywhere = spelledBy(
       visibleOperators.filter(({ category }) => category === "expr"),
     );
@@ -1469,6 +1471,17 @@ export function createExpansionFrontendSession(
         ? node.delimiter === "brace"
         : node.tag === "protected" &&
           (node.category === "stmt" || node.category === "item");
+    // Whether the node at `at` in a run of statements stands at the head of
+    // one: first in the run, or after the statement before it.
+    const beginsStatement = (children: readonly Syntax[], at: number) => {
+      const previous = children[at - 1];
+      return (
+        previous === undefined ||
+        (previous.tag === "token" && previous.raw === ";") ||
+        (previous.tag === "protected" &&
+          (previous.category === "stmt" || previous.category === "item"))
+      );
+    };
     const visitRun = (
       children: readonly Syntax[],
       statements: boolean,
@@ -1478,7 +1491,14 @@ export function createExpansionFrontendSession(
         const node = children[at]!;
         if (node.tag !== "token") {
           if ("children" in node)
-            visitRun(node.children as readonly Syntax[], holdsStatements(node));
+            visitRun(
+              node.children as readonly Syntax[],
+              holdsStatements(node) ||
+                (statements &&
+                  node.tag === "protected" &&
+                  node.category === "expr" &&
+                  beginsStatement(children, at)),
+            );
           continue;
         }
         const spelling = spellings.find(

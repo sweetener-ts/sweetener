@@ -222,6 +222,19 @@ describe("an operator on statements spelled inside an expression", () => {
   });
 });
 
+describe("an operator on statements left standing at a statement's head", () => {
+  // Read as the comparison `one < -1`, the statement is an expression
+  // statement, and its expression begins where the statement does: the
+  // operator was written there, and is reported as left unexpanded, as on
+  // `main`, rather than reaching TypeScript as a comparison.
+  test("is reported at a module's top", () => {
+    const { messages } = expand("one <- 1;\nexport const two = 2;");
+    expect(messages).toEqual([
+      "Operator <- was left unexpanded: the expression it is written in could not be read, so none of its rules were tried.",
+    ]);
+  });
+});
+
 /**
  * A postfix operator declared to bind as a left-hand-side expression does,
  * or more tightly, makes one, and what is read off a name may be read off
