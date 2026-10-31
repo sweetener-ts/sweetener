@@ -181,6 +181,25 @@ What that review left known, and what fixing it showed, was fixed after
 - **The Jest key** now changes with the transformer's and the compiler's
   release (`83622ab`).
 
+Those 16 commits were reviewed in turn on 2026-10-31 and what it found was
+fixed in the 5 commits after `ac76d8c`, each reproduced first:
+
+- **Where an operator on statements is offered** (`92c2c0f`): the body an
+  `if`, a loop or an `else` heads was never offered it; `x = a<-b;`, a
+  comparison, was offered and refused. A keyword list said which
+  statements could not be its own, and is gone: a statement whose every
+  rule stopped before the operator is one it is spelled inside, as
+  TypeScript reads it, and is left as written. A comment above such a
+  statement was printed twice, and a pattern operand lost its line.
+- **Jest records** (`3b72e73`): named by the process, though workers may
+  be threads of one; a damaged record failed the key on every run; the
+  transform hashed the project again after the key had.
+- **The formatter's batch** (`01db938`) settles together only slashes
+  whose own text an error stands in, which is what makes it settle as one
+  at a time would; over 20,000 generated files the two agree.
+- **One scope-filed index** (`35e3240`) in place of the expander's and the
+  renamer's.
+
 `expansion/bounded-renames` has no baseline row yet (see
 `benchmarks/baselines/README.md` and issue #23).
 
