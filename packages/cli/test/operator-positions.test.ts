@@ -241,6 +241,16 @@ describe("an operator on statements in a block walked as tokens", () => {
       "No rule for macro <- accepted this input: 1 rule attempt(s).",
     ]);
   });
+
+  test("keeps its statement on the line it was written on", () => {
+    // Spaced as the operator was, the statement automatic semicolon
+    // insertion ended above it ran into it: `const k = 1 const one = 1;`.
+    const { text, messages } = expand(
+      "export function g() { const k = 1\n  one <- 1; return one + k; }",
+    );
+    expect(messages).toEqual([]);
+    expect(text).toContain("const k = 1\n  const one = 1;");
+  });
 });
 
 describe("an operator on statements left standing at a statement's head", () => {

@@ -7477,14 +7477,17 @@ function* walk(
       }
       // The invocation's own leading trivia positioned it on the page, and
       // it is consumed along with the invocation. Handing it to the
-      // replacement keeps the expansion where the call stood.
+      // replacement keeps the expansion where the call stood. The invocation
+      // begins where the walk stands, which for an infix operator is its
+      // left operand: taken from the operator, an operator's statement
+      // written under one automatic semicolon insertion ended was printed
+      // on its line, `const k = 1 const one = 1;`.
       // A body a statement heads is a scope of its own, which nothing after
       // it is in: `if (c) letBound twice;` binds nothing the `return` under it
       // writes, and the `else` after it is no more inside it.
       const substatement = substatementAt(output, output.length);
       if (!eraseReplacement) {
-        const head = input[resolvedHeadIndex] ?? node;
-        const trivia = head.tag === "token" ? head.leadingTrivia : [];
+        const trivia = node.tag === "token" ? node.leadingTrivia : [];
         // An expression or a type keeps the node that says where it begins
         // and ends. Spreading its children would splice the tokens loose
         // into whatever surrounds the call, so the operators there would
