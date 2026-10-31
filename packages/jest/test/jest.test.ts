@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -312,6 +313,90 @@ test("keys a file anew under another release of the compiler", async () => {
   const before = await keyUnder("0.1.0-alpha.8");
   expect(await keyUnder("0.1.0-alpha.8")).toBe(before);
   expect(await keyUnder("0.1.0-alpha.9")).not.toBe(before);
+});
+
+function recordedProject(prefix: string) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(
+    join(directory, "macros.sts"),
+    `export syntax twice:expr { rule { twice($x:tt) } => { [$x, $x] } }\n`,
+  );
+  const main = join(directory, "main.sts");
+  writeFileSync(
+    main,
+    `import { twice } from "./macros.sts" for syntax;\nexport const answer = twice(1);\n`,
+  );
+  writeFileSync(
+    join(directory, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { module: "ESNext", target: "ES2022" },
+      sweet: { macroExtensions: [".sts"] },
+      files: ["macros.sts", "main.sts"],
+    }),
+  );
+  const cache = join(directory, "cache");
+  return {
+    main,
+    cache,
+    source: readFileSync(main, "utf8"),
+    options: {
+      config: { rootDir: directory, cacheDirectory: cache },
+      transformerConfig: { configFile: join(directory, "tsconfig.json") },
+    },
+  };
+}
+
+test("treats a damaged record as none, and writes it again", async () => {
+  // Read as a record, a file damaged on disk failed the key on every run
+  // until the cache was cleared.
+  const { main, cache, source, options } = recordedProject(
+    "sweet-jest-damaged-",
+  );
+  const first = await transformer.getCacheKeyAsync(source, main, options);
+  const records = join(cache, "sweetener-jest");
+  for (const name of readdirSync(records))
+    writeFileSync(join(records, name), "{ not a record");
+  expect(await transformer.getCacheKeyAsync(source, main, options)).toBe(first);
+  for (const name of readdirSync(records)) {
+    expect(name).toMatch(/\.json$/u);
+    expect(() =>
+      JSON.parse(readFileSync(join(records, name), "utf8")),
+    ).not.toThrow();
+  }
+});
+
+test("reads the project once for a file's key and its transform", async () => {
+  // Hashed again for the transform, the config and every file it lists
+  // were read twice for each file transformed.
+  const { main, source, options } = recordedProject("sweet-jest-once-");
+  let loads = 0;
+  vi.resetModules();
+  vi.doMock("@sweetener/compiler", async (original) => {
+    const compiler = await original<typeof Compiler>();
+    return {
+      ...compiler,
+      loadSweetProject: (
+        ...request: Parameters<typeof compiler.loadSweetProject>
+      ) => {
+        loads += 1;
+        return compiler.loadSweetProject(...request);
+      },
+    };
+  });
+  try {
+    const { default: worker } = await import("../src/index.js");
+    await worker.getCacheKeyAsync(source, main, options);
+    const before = loads;
+    const { code } = await worker.processAsync(source, main, options);
+    expect(code).toContain("[1, 1]");
+    expect(loads).toBe(before);
+    // A key is computed afresh however recently the file was asked about.
+    await worker.getCacheKeyAsync(source, main, options);
+    expect(loads).toBeGreaterThan(before);
+  } finally {
+    vi.doUnmock("@sweetener/compiler");
+    vi.resetModules();
+  }
 });
 
 /**

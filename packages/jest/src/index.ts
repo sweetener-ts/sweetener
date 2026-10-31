@@ -1,12 +1,14 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { threadId } from "node:worker_threads";
 import { transformAsync, type PluginAPI, type PluginObject } from "@babel/core";
 import typescript from "@babel/preset-typescript";
 import {
@@ -102,33 +104,61 @@ function recordPath(
 }
 
 function readRecord(path: string, inputs: string): ReadInputs | undefined {
-  let text: string;
+  let record: unknown;
   try {
-    text = readFileSync(path, "utf8");
+    record = JSON.parse(readFileSync(path, "utf8"));
   } catch {
+    // Missing, or not a record at all -- damaged on disk -- which is a
+    // miss, rewritten once the file is expanded, rather than a key that
+    // fails on every run until the cache is cleared.
     return undefined;
   }
-  const record = JSON.parse(text) as ReadInputs & { readonly inputs: string };
-  return record.inputs === inputs ? record : undefined;
+  return isRecord(record) && record.inputs === inputs ? record : undefined;
+}
+
+function isRecord(
+  value: unknown,
+): value is ReadInputs & { readonly inputs: string } {
+  const strings = (list: unknown) =>
+    Array.isArray(list) && list.every((each) => typeof each === "string");
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "inputs" in value &&
+    typeof value.inputs === "string" &&
+    "dependencies" in value &&
+    strings(value.dependencies) &&
+    "missingDependencies" in value &&
+    strings(value.missingDependencies)
+  );
 }
 
 /**
  * Written whole under a name of its own and renamed into place, so a worker
  * reading the record while another writes it reads one record or the other.
+ * The name is the writer's alone: Jest's workers may be threads of one
+ * process, and named by the process, two writing one record at once wrote
+ * one file and renamed it twice.
  */
 function writeRecord(path: string, inputs: string, read: ReadInputs): void {
   const directory = join(path, "..");
   mkdirSync(directory, { recursive: true });
-  const partial = `${path}.${process.pid}.partial`;
-  writeFileSync(
-    partial,
-    JSON.stringify({
-      inputs,
-      dependencies: [...read.dependencies],
-      missingDependencies: [...read.missingDependencies],
-    }),
-  );
-  renameSync(partial, path);
+  const partial = `${path}.${String(process.pid)}.${String(threadId)}.${randomUUID()}.partial`;
+  try {
+    writeFileSync(
+      partial,
+      JSON.stringify({
+        inputs,
+        dependencies: [...read.dependencies],
+        missingDependencies: [...read.missingDependencies],
+      }),
+    );
+    renameSync(partial, path);
+  } finally {
+    // Renamed, there is nothing left to remove; failing part way, what was
+    // written is not left behind in the cache directory.
+    rmSync(partial, { force: true });
+  }
 }
 
 /**
@@ -177,22 +207,68 @@ function inputsOf(
   return hash.digest("hex");
 }
 
+interface Record {
+  readonly inputs: string;
+  readonly path: string | undefined;
+}
+
+/**
+ * The record the last key was computed from, and what it was asked for.
+ * Jest asks for a file's key and then, where it has no transform under it,
+ * for the transform, and both need the record: hashed again for the
+ * transform, the config and every file it lists were read twice for each
+ * file transformed. The transform takes it, and only the transform: a key
+ * is always computed afresh, or a run in watch mode would key a file from
+ * what its macros were the run before. One is kept, so nothing builds up
+ * for the files Jest has a transform for.
+ */
+let lastRecord:
+  | {
+      readonly sourceText: string;
+      readonly sourcePath: string;
+      readonly configFile: string | undefined;
+      readonly cacheDirectory: string | undefined;
+      readonly record: Record;
+    }
+  | undefined;
+
 /** Where a file's record is kept and what it is trusted against. */
 function recordOf(
   sourceText: string,
   sourcePath: string,
   options: JestTransformOptions,
-): { readonly inputs: string; readonly path: string | undefined } {
-  const configFile =
-    options.transformerConfig.configFile ?? discoverSweetConfigFor(sourcePath);
+  reuse: "for-the-transform" | "never",
+): Record {
+  const { configFile: passed } = options.transformerConfig;
   const { cacheDirectory } = options.config;
-  return {
+  const kept = lastRecord;
+  lastRecord = undefined;
+  if (
+    reuse === "for-the-transform" &&
+    kept !== undefined &&
+    kept.sourceText === sourceText &&
+    kept.sourcePath === sourcePath &&
+    kept.configFile === passed &&
+    kept.cacheDirectory === cacheDirectory
+  )
+    return kept.record;
+  const configFile = passed ?? discoverSweetConfigFor(sourcePath);
+  const record = {
     inputs: inputsOf(sourceText, sourcePath, configFile),
     path:
       cacheDirectory === undefined
         ? undefined
         : recordPath(cacheDirectory, sourcePath, configFile),
   };
+  if (reuse === "never")
+    lastRecord = {
+      sourceText,
+      sourcePath,
+      configFile: passed,
+      cacheDirectory,
+      record,
+    };
+  return record;
 }
 
 const expand = (
@@ -213,7 +289,7 @@ const transformer = {
     sourcePath: string,
     options: JestTransformOptions,
   ): Promise<string> {
-    const { inputs, path } = recordOf(sourceText, sourcePath, options);
+    const { inputs, path } = recordOf(sourceText, sourcePath, options, "never");
     // A macro module the config does not list -- one an installed or a
     // workspace package exports -- is read all the same, and so is whatever
     // it imports; and a module looked for and not found may appear. Each is
@@ -246,7 +322,12 @@ const transformer = {
     // yet, or the file or something it read changed. What this expansion
     // read is the record from now on, or a file it reads that the last did
     // not would go unwatched.
-    const { inputs, path } = recordOf(sourceText, sourcePath, options);
+    const { inputs, path } = recordOf(
+      sourceText,
+      sourcePath,
+      options,
+      "for-the-transform",
+    );
     if (path !== undefined) writeRecord(path, inputs, expanded);
     if (expanded.diagnostics.length > 0)
       throw new Error(describeDiagnostics(expanded.diagnostics));
