@@ -235,12 +235,73 @@ describe("an operator on statements in a block walked as tokens", () => {
     expect(text).toContain("const one = 1;");
   });
 
-  test("is still offered a statement it does not accept", () => {
-    const { messages } = expand("export function g() { 5 <- a; }");
+  test.each([
+    [
+      "an assignment",
+      "export function g() { let x = false; x = a<-b; return x; }",
+    ],
+    [
+      "a case's label",
+      "export function g(v: number) { switch (v) { case a<-1: break; } }",
+    ],
+    ["a statement no binding begins", "export function g() { 5 <- a; }"],
+  ])(
+    "leaves %s it is spelled in as written, where its rule stops before it",
+    (_label, source) => {
+      // The rule reads its statement from the left operand to the operator,
+      // and these never reach it: TypeScript reads a comparison.
+      const { text, messages } = expand(source);
+      expect(messages).toEqual([]);
+      expect(text).toBe(source);
+    },
+  );
+
+  test("reports the refusal of a statement read to the operator", () => {
+    const { messages } = expand("export function g() { x <- ; }");
     expect(messages).toEqual([
       "No rule for macro <- accepted this input: 1 rule attempt(s).",
     ]);
   });
+
+  test.each([
+    [
+      "an `if`",
+      "export function g(c: boolean) { if (c) x <- 1; }",
+      "if (c) const x = 1;",
+    ],
+    [
+      "an `else`",
+      "export function g(c: boolean) { if (c) {} else x <- 1; }",
+      "else const x = 1;",
+    ],
+  ])("is offered the body %s heads", (_label, source, expected) => {
+    // A body is a statement of its own, headed where the statement around
+    // it ends its header; TypeScript reports the declaration written there.
+    const { text, messages } = expand(source);
+    expect(messages).toEqual([]);
+    expect(text).toContain(expected);
+  });
+
+  test.each([
+    ["a name", "  // one\n  one <- 1;", "  // one\n  const one = 1;"],
+    [
+      "a pattern",
+      "  // pair\n  [p, q] <- [1, 2];",
+      "  // pair\n  const [p, q] = [1, 2];",
+    ],
+  ])(
+    "keeps the comment above a statement whose left operand is %s once, above it",
+    (_label, statement, expected) => {
+      // The statement's leading trivia is handed to what it expands to, and
+      // the captured operand kept the comment too, or kept it alone, after
+      // the `const`.
+      const { text, messages } = expand(
+        `export function g() {\n  f();\n${statement}\n}`,
+      );
+      expect(messages).toEqual([]);
+      expect(text).toContain(`f();\n${expected}`);
+    },
+  );
 
   test("keeps its statement on the line it was written on", () => {
     // Spaced as the operator was, the statement automatic semicolon
@@ -274,11 +335,10 @@ describe("an operator on statements at a module's top", () => {
     expect(text).toBe("export const r = a<-b;");
   });
 
-  test("is still offered a statement it does not accept", () => {
-    const { messages } = expand("5 <- a;");
-    expect(messages).toEqual([
-      "No rule for macro <- accepted this input: 1 rule attempt(s).",
-    ]);
+  test("leaves an assignment it is spelled in as written", () => {
+    const { text, messages } = expand("let x = false;\nx = a<-b;");
+    expect(messages).toEqual([]);
+    expect(text).toBe("let x = false;\nx = a<-b;");
   });
 });
 

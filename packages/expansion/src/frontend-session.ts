@@ -75,7 +75,6 @@ import { invokeMacro, type MacroTraceEvent } from "./invocation.js";
 import {
   boundsItself,
   expandMacroSyntax,
-  operandlessStatementHeads,
   operatorWidthAt,
   type ExpandMacroSyntaxOptions,
   type ExpandMacroSyntaxResult,
@@ -1471,20 +1470,6 @@ export function createExpansionFrontendSession(
         ? node.delimiter === "brace"
         : node.tag === "protected" &&
           (node.category === "stmt" || node.category === "item");
-    // Whether the statement the node at `at` in a run of statements stands
-    // in begins with a word no operand begins with.
-    const headsOperandlessStatement = (
-      children: readonly Syntax[],
-      at: number,
-    ): boolean => {
-      let head = at;
-      while (head > 0 && !beginsStatement(children, head)) {
-        if (endsAtLineBreak((offset) => children[offset], head)) break;
-        head -= 1;
-      }
-      const first = children[head];
-      return first?.tag === "token" && operandlessStatementHeads.has(first.raw);
-    };
     // Whether the node at `at` in a run of statements stands at the head of
     // one: first in the run, or after the statement before it.
     const beginsStatement = (children: readonly Syntax[], at: number) => {
@@ -1520,17 +1505,6 @@ export function createExpansionFrontendSession(
         );
         if (spelling === undefined) continue;
         const width = operatorWidthAt(children, at, spelling)!;
-        // The walk offers an operator on statements only a statement an
-        // operand may begin, and leaves the rest as written: `const r =
-        // a<-b;` compares.
-        if (
-          statements &&
-          !anywhere.includes(spelling) &&
-          headsOperandlessStatement(children, at)
-        ) {
-          at += width - 1;
-          continue;
-        }
         const origin = originOfSyntax(node);
         // An operator that was offered its input and taken by no rule has a
         // diagnostic saying so already, reported from wherever its invocation
@@ -1577,17 +1551,39 @@ export function createExpansionFrontendSession(
     };
   };
 
-  /** The nodes from `cursor` on to the `;` that ends their statement. */
+  /**
+   * The nodes of the statement that begins at `cursor`: up to its `;`, or to
+   * where a line break ends it. Read on to the `;` alone, an operator
+   * several statements further down was taken for the next line's.
+   */
   const statementFrom = (cursor: SyntaxCursor): readonly Syntax[] => {
     const ahead = cursor.fork();
     const nodes: Syntax[] = [];
     while (!ahead.atEnd) {
+      if (
+        nodes.length > 0 &&
+        endsAtLineBreak(
+          (offset) =>
+            offset < nodes.length
+              ? nodes[offset]
+              : ahead.peek(offset - nodes.length),
+          nodes.length,
+        )
+      )
+        break;
       const node = ahead.consume()!;
       nodes.push(node);
       if (node.tag === "token" && node.raw === ";") break;
     }
     return nodes;
   };
+
+  /** Whether an item was read as a statement, rather than a declaration. */
+  const readAsStatement = (read: Syntax): boolean =>
+    read.tag === "protected" &&
+    read.children.length === 1 &&
+    read.children[0]!.tag === "protected" &&
+    read.children[0]!.category === "stmt";
   const prepareInput = (
     syntax: SyntaxSequence,
     category: SyntaxCategory,
@@ -1719,11 +1715,12 @@ export function createExpansionFrontendSession(
       // A statement at a module's top holding an operator on statements is
       // left as its tokens, as a block holding one is, for the walk to offer
       // it the operator: read here, `one <- 1;` was the comparison `one <
-      // -1`, and the operator was never offered its statement.
-      const head = consumed[0];
+      // -1`, and the operator was never offered its statement. A
+      // declaration is no statement an operator's rule reads, and stays
+      // read.
       if (
-        holdsStatementOperator(consumed) &&
-        !(head?.tag === "token" && operandlessStatementHeads.has(head.raw))
+        readAsStatement(attempted.syntax) &&
+        holdsStatementOperator(consumed)
       ) {
         prepared.push(
           protect(

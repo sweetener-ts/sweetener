@@ -24,6 +24,7 @@ import {
   createSyntaxSequence,
   createToken,
   createTrivia,
+  firstToken,
   isIdentifierToken,
   isPropertyNameToken,
   leadingLineBreak,
@@ -287,36 +288,6 @@ const itemDispatchPrefixes = new Set([
   "declare",
   "async",
   "abstract",
-]);
-
-/**
- * Reserved words a statement begins with that no operand does: a declaration,
- * or a statement of its own kind. An operator on statements reads the
- * statement from its left operand, so a statement beginning with one of these
- * is never one an operator's rule is written for -- `const r = a<-b;`
- * compares, as TypeScript reads it.
- */
-export const operandlessStatementHeads: ReadonlySet<string> = new Set([
-  "break",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "do",
-  "enum",
-  "export",
-  "for",
-  "function",
-  "if",
-  "interface",
-  "let",
-  "return",
-  "switch",
-  "throw",
-  "try",
-  "var",
-  "while",
-  "with",
 ]);
 
 /** Whether a spelling is punctuation rather than an identifier. */
@@ -1594,12 +1565,20 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
     );
   };
 
-  /** A sequence whose first token has had the whitespace before it removed. */
-  const withoutLeadingTrivia = (syntax: SyntaxSequence): SyntaxSequence => {
+  /**
+   * A sequence whose first token has had the whitespace before it removed,
+   * or, with `comments`, everything before it: the comments it was written
+   * under go with it otherwise.
+   */
+  const withoutLeadingTrivia = (
+    syntax: SyntaxSequence,
+    comments: "kept" | "removed" = "kept",
+  ): SyntaxSequence => {
     const strip = (node: Syntax): Syntax => {
       switch (node.tag) {
         case "token":
-          return node.leadingTrivia.every(({ kind }) => kind === "whitespace")
+          return comments === "removed" ||
+            node.leadingTrivia.every(({ kind }) => kind === "whitespace")
             ? createToken({ ...node, leadingTrivia: [] })
             : node;
         case "group":
@@ -5681,6 +5660,19 @@ function* walk(
    * that ended the one before, after a label, and after the body of a
    * function or a class, which the keyword that opened them ends at.
    */
+  /**
+   * Whether the closest rule of a refused invocation stopped before
+   * `operator`, as the refusal's diagnostic says where it stopped. Positions
+   * in different sources say nothing about each other, and are not before.
+   */
+  const stoppedBefore = (refusal: Diagnostic, operator: Syntax): boolean => {
+    const written = options.origins.selectPrimarySource(operator.origin);
+    return (
+      written !== undefined &&
+      refusal.primaryOrigin.sourceId === written.sourceId &&
+      refusal.primaryOrigin.start < written.span.start
+    );
+  };
   const statementStartFollows = (end: number): boolean => {
     if (!statementRun) return false;
     const previous = output[end - 1];
@@ -6572,13 +6564,14 @@ function* walk(
       (resolvedMacro === undefined || resolvedCategory === "expr") &&
       (category === "item" || category === "stmt") &&
       // An operator on statements is invoked from the head of the statement
-      // it stands in, and from nowhere else: offered at every position of
+      // it stands in -- one of a run, or the body an `if`, a loop or an
+      // `else` heads -- and from nowhere else: offered at every position of
       // the statement, the one after the `=` of `const r = a<-b;` -- a
       // comparison -- took `a <- b;` as its statement and printed
       // `const r = const a = b;`.
       (statementStartFollows(output.length) ||
-        statementEndsBefore(input, index)) &&
-      !(node.tag === "token" && operandlessStatementHeads.has(node.raw)) &&
+        statementEndsBefore(input, index) ||
+        substatementAt(output, output.length)) &&
       // A separator ends the segment before it, so no operand begins there.
       // The walk stands on one once the statement it ended has been
       // emitted, and reading forward from there reached the operator of the
@@ -7280,7 +7273,32 @@ function* walk(
           macros.some(({ binding }) => binding === macro.binding),
         ) ??
         lexicalModule;
-      const cursor = cursorAt(index);
+      // An operator's invocation begins at its left operand, which its rule
+      // captures, and the leading trivia of the node it begins at is the
+      // statement's: handed to the replacement below, and kept by the
+      // capture as well, a comment written above `one <- 1;` was printed
+      // twice. Where that trivia holds more than whitespace -- which the
+      // capture gives up wherever it is spliced -- the invocation reads the
+      // node without it.
+      const commentedOperand =
+        macro.binding.kind === "operator" &&
+        resolvedHeadIndex > index &&
+        (firstToken(node)?.leadingTrivia ?? []).some(
+          ({ kind }) => kind !== "whitespace",
+        );
+      const cursor = commentedOperand
+        ? createSyntaxCursor(
+            input.map((each, at) =>
+              at === index
+                ? withoutLeadingTrivia(
+                    createSyntaxSequence([each]),
+                    "removed",
+                  )[0]!
+                : each,
+            ),
+          )
+        : cursorAt(index);
+      if (commentedOperand) cursor.advance(index);
       let replacementEnvironment: BindingEnvironment | undefined;
       let eraseReplacement = false;
       let result;
@@ -7464,6 +7482,27 @@ function* walk(
       // Prepending retains invocation/preorder order: parent, then descendants.
       traces.unshift(result.trace);
       if (!result.expanded) {
+        // An operator on statements whose every rule stopped before reaching
+        // it was spelled inside a statement that is not its own: the rule
+        // reads the statement from its left operand to the operator, and
+        // `const r = a<-b;` and `x = a<-b;` never reach the `<-` they hold.
+        // TypeScript reads a comparison there, and the statement is left as
+        // written. Stopped at the operator or past it, the statement was
+        // the operator's, and the rule's refusal is reported -- as is a rule
+        // that matched and was refused where it stands, which says nothing
+        // about where it stopped: `2 -> table;` outside a generator.
+        if (
+          macro.binding.kind === "operator" &&
+          resolvedHeadIndex > index &&
+          result.trace.attemptedRules.every(
+            ({ status }) => status === "no-match",
+          ) &&
+          stoppedBefore(result.diagnostic, input[resolvedHeadIndex]!)
+        ) {
+          output.push(node);
+          index += 1;
+          continue;
+        }
         // A failure that claims nothing defines the name is held for the
         // side that resolves names, the way a mismatched space is; one about
         // the syntax written here is expansion's own to report.
@@ -7487,7 +7526,7 @@ function* walk(
       // writes, and the `else` after it is no more inside it.
       const substatement = substatementAt(output, output.length);
       if (!eraseReplacement) {
-        const trivia = node.tag === "token" ? node.leadingTrivia : [];
+        const trivia = firstToken(node)?.leadingTrivia ?? [];
         // An expression or a type keeps the node that says where it begins
         // and ends. Spreading its children would splice the tokens loose
         // into whatever surrounds the call, so the operators there would
