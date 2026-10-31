@@ -80,7 +80,10 @@ import {
   callFollowsTypeArguments,
   typeArgumentsFollow,
   typeOperandFollows,
+  openConditionals,
+  readConditional,
   type ArrowBodyExtent,
+  type ConditionalsOpen,
 } from "@sweetener/enforestation";
 import { EnforestationError } from "./enforestation-error.js";
 import { chainLink, joinedChain, type ChainLink } from "./chain-joining.js";
@@ -468,30 +471,21 @@ interface OpenAngles {
 }
 
 /**
- * Conditional types read so far in a list of types: begun with `extends`
- * and not yet given their `?`, and given one and awaiting their `:`.
- * Outside a group of its own, a list of types holds a `:` only as one of
- * theirs.
+ * Counts the token at `at` in `nodes` into the conditional types `open`
+ * counts, and answers whether a list of types can still hold it: outside a
+ * group of its own, one holds a `:` only as a conditional's, and a `:` none
+ * awaits ends it.
  */
-interface ConditionalsOpen {
-  awaitingQuestion: number;
-  awaitingColon: number;
-}
-
-/**
- * Counts `node` into `open`, and answers whether a list of types can still
- * hold it: false for a `:` no conditional type awaits.
- */
-function readConditional(open: ConditionalsOpen, node: TokenSyntax): boolean {
-  if (node.raw === "extends") open.awaitingQuestion += 1;
-  else if (node.raw === "?" && open.awaitingQuestion > 0) {
-    open.awaitingQuestion -= 1;
-    open.awaitingColon += 1;
-  } else if (node.raw === ":") {
-    if (open.awaitingColon === 0) return false;
-    open.awaitingColon -= 1;
-  }
-  return true;
+function typeListHolds(
+  open: ConditionalsOpen,
+  nodes: readonly Syntax[],
+  at: number,
+): boolean {
+  const node = nodes[at] as TokenSyntax;
+  return !(
+    readConditional(open, node, nodes[at - 2]) === "unawaited" &&
+    node.raw === ":"
+  );
 }
 
 interface SyntaxRun {
@@ -3442,11 +3436,11 @@ function createExpansionScope(options: ExpandMacroSyntaxOptions) {
   ): boolean => {
     if (signature || !endsOperand(member, member.length, true)) return true;
     let depth = 0;
-    const conditionals = { awaitingQuestion: 0, awaitingColon: 0 };
+    const conditionals = openConditionals();
     for (let ahead = at; ahead < members.length; ahead += 1) {
       const node = members[ahead]!;
       if (node.tag !== "token") continue;
-      if (!readConditional(conditionals, node)) return false;
+      if (!typeListHolds(conditionals, members, ahead)) return false;
       depth += angles(node, "<") - angles(node, ">");
       if (depth > 0) continue;
       const following = members[ahead + 1];
@@ -5509,13 +5503,13 @@ function* walk(
       }
       const innermost = openAngles.at(-1);
       if (innermost !== undefined)
-        readConditional(innermost.conditionals, node);
+        typeListHolds(innermost.conditionals, output, anglesRead);
       const opens = angles(node, "<");
       if (opens > 0)
         openAngles.push({
           held: opens,
           answer: undefined,
-          conditionals: { awaitingQuestion: 0, awaitingColon: 0 },
+          conditionals: openConditionals(),
         });
     }
     return openAngles.at(-1);
@@ -5556,7 +5550,7 @@ function* walk(
     for (let forward = at + 1; forward < input.length; forward += 1) {
       const node = input[forward]!;
       if (node.tag !== "token") continue;
-      if (node.raw === ";" || !readConditional(conditionals, node))
+      if (node.raw === ";" || !typeListHolds(conditionals, input, forward))
         return { until: forward, encloses: false };
       depth += angles(node, "<");
       depth -= angles(node, ">");

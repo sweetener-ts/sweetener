@@ -430,6 +430,14 @@ describe("a type captured where a `?` stands", () => {
       "export type R = [nullable string?];",
       "[(string | null) ?]",
     ],
+    [
+      // The `extends` of `infer U extends string` constrains `U` and opens
+      // no conditional; counted as one, it left a `?` waiting that the
+      // tuple's optional `?` answered, and the invocation was refused.
+      "before a tuple's optional `?`, after an `infer` constrained in its extends",
+      "export type R<T> = [nullable T extends infer U extends string ? U : 2?];",
+      "[((T extends infer U extends string ? U : 2) | null) ?]",
+    ],
   ])("is read to its end %s", (_, source, expected) => {
     // Only a conditional's `?` carries a type on, and only after the
     // `extends` it pairs with: read as one of its own, the `?` took the

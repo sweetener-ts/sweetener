@@ -297,6 +297,57 @@ export function anglesWidthFrom(
 }
 
 /**
+ * The conditional types read so far at one level of a type: begun with
+ * `extends` and not yet given their `?`, and given one and awaiting their
+ * `:`. A `?` or a `:` none of them awaits is no conditional's.
+ */
+export interface ConditionalsOpen {
+  awaitingQuestion: number;
+  awaitingColon: number;
+}
+
+export function openConditionals(): ConditionalsOpen {
+  return { awaitingQuestion: 0, awaitingColon: 0 };
+}
+
+/**
+ * Counts the token `node` into `open`, `beforePrevious` being the node two
+ * before it: whether it opens a conditional type, is the `?` or the `:` one
+ * awaits, is a `?` or a `:` none awaits, or is none of those.
+ *
+ * The `extends` of `infer U extends C` gives `U` its constraint and opens no
+ * conditional, as TypeScript reads it: counted as one, it left a `?` waiting
+ * that a tuple's optional element or the expression around the type then
+ * answered.
+ *
+ * Every reader that counts conditional types asks this, so that they agree
+ * where a list of types or an asserted type ends.
+ */
+export function readConditional(
+  open: ConditionalsOpen,
+  node: TokenSyntax,
+  beforePrevious: Syntax | undefined,
+): "opens" | "awaited" | "unawaited" | "other" {
+  switch (node.raw) {
+    case "extends":
+      if (token(beforePrevious, "infer")) return "other";
+      open.awaitingQuestion += 1;
+      return "opens";
+    case "?":
+      if (open.awaitingQuestion === 0) return "unawaited";
+      open.awaitingQuestion -= 1;
+      open.awaitingColon += 1;
+      return "awaited";
+    case ":":
+      if (open.awaitingColon === 0) return "unawaited";
+      open.awaitingColon -= 1;
+      return "awaited";
+    default:
+      return "other";
+  }
+}
+
+/**
  * The scan `consumeAngles` makes, over the nodes `peek` gives from the `<`
  * on: whether the list closed, and how many nodes it read, up to and
  * including the one that closed it or that said it was no list.
@@ -306,10 +357,7 @@ function scanAngles(
   work: () => void,
 ): { readonly closed: boolean; readonly width: number } {
   let depth = 0;
-  // Conditional types begun with `extends` and not yet given their `?`, and
-  // those given one and awaiting their `:`.
-  let awaitingQuestion = 0;
-  let awaitingColon = 0;
+  const conditionals = openConditionals();
   for (let offset = 0; ; offset += 1) {
     work();
     const next = peek(offset);
@@ -317,14 +365,15 @@ function scanAngles(
     if (!token(next)) continue;
     const width = offset + 1;
     if (typeListEndsBefore.has(next.raw)) return { closed: false, width };
-    if (next.raw === "extends") awaitingQuestion += 1;
-    else if (next.raw === "?" && awaitingQuestion > 0) {
-      awaitingQuestion -= 1;
-      awaitingColon += 1;
-    } else if (next.raw === ":") {
-      if (awaitingColon === 0) return { closed: false, width };
-      awaitingColon -= 1;
-    }
+    if (
+      readConditional(
+        conditionals,
+        next,
+        offset >= 2 ? peek(offset - 2) : undefined,
+      ) === "unawaited" &&
+      next.raw === ":"
+    )
+      return { closed: false, width };
     depth += angleWidth(next.raw, "<");
     depth -= angleWidth(next.raw, ">");
     if (depth === 0) return { closed: true, width };
@@ -384,16 +433,15 @@ class TypeConsumer implements SyntaxConsumer {
     checkWork(context);
     const children: Syntax[] = [];
     let expectingOperand = true;
-    let conditionalDepth = 0;
     /**
-     * How many `extends` of a conditional type were read at this level and
-     * wait for their `?`. Only a conditional's `?` carries a type on: one with
-     * none waiting -- a tuple's optional element, or the conditional around a
-     * type captured from its `extends` on -- ends the type, where reading it
-     * as the start of a conditional of its own swallowed `? A : B` into
-     * `nullable string`.
+     * The conditional types read at this level: an `extends` waiting for its
+     * `?`, and a `?` for its `:`. Only a conditional's `?` carries a type on:
+     * one with none waiting -- a tuple's optional element, or the
+     * conditional around a type captured from its `extends` on -- ends the
+     * type, where reading it as the start of a conditional of its own
+     * swallowed `? A : B` into `nullable string`.
      */
-    let awaitingQuestion = 0;
+    const conditionals = openConditionals();
     let genericFunctionHead = false;
     let invalidAdjacency = false;
     // Whether the parameter list just read must, or may, be followed by `=>`.
@@ -409,7 +457,7 @@ class TypeConsumer implements SyntaxConsumer {
       checkWork(context);
       if (
         children.length > 0 &&
-        conditionalDepth === 0 &&
+        conditionals.awaitingColon === 0 &&
         arrow !== "required" &&
         (context.stopSet.matches(cursor) ||
           // An operator macro after the type asserted in an expression ends
@@ -516,7 +564,7 @@ class TypeConsumer implements SyntaxConsumer {
       if (!token(next)) break;
       const spelling = next.raw;
       if (
-        conditionalDepth === 0 &&
+        conditionals.awaitingColon === 0 &&
         hardTypeStops.has(spelling) &&
         children.length > 0
       )
@@ -538,18 +586,13 @@ class TypeConsumer implements SyntaxConsumer {
         expectingOperand = false;
         continue;
       }
-      if (spelling === ":") {
-        if (conditionalDepth === 0 || expectingOperand) break;
+      if (spelling === ":" || spelling === "?") {
+        if (
+          expectingOperand ||
+          readConditional(conditionals, next, children.at(-2)) !== "awaited"
+        )
+          break;
         children.push(cursor.consume()!);
-        conditionalDepth -= 1;
-        expectingOperand = true;
-        continue;
-      }
-      if (spelling === "?") {
-        if (expectingOperand || awaitingQuestion === 0) break;
-        children.push(cursor.consume()!);
-        awaitingQuestion -= 1;
-        conditionalDepth += 1;
         expectingOperand = true;
         continue;
       }
@@ -559,7 +602,8 @@ class TypeConsumer implements SyntaxConsumer {
           !(children.length === 0 && (spelling === "|" || spelling === "&"))
         )
           break;
-        if (spelling === "extends") awaitingQuestion += 1;
+        if (spelling === "extends")
+          readConditional(conditionals, next, children.at(-2));
         children.push(cursor.consume()!);
         expectingOperand = true;
         continue;
@@ -629,7 +673,7 @@ class TypeConsumer implements SyntaxConsumer {
       children.length === 0 ||
       expectingOperand ||
       arrow === "required" ||
-      conditionalDepth !== 0 ||
+      conditionals.awaitingColon !== 0 ||
       invalidAdjacency
     ) {
       return failure(
@@ -1124,8 +1168,7 @@ function createMemberTracker(modifiers: MemberModifiers) {
   let asserted:
     | {
         readonly type: TypeTracker;
-        awaitingQuestion: number;
-        awaitingColon: number;
+        readonly conditionals: ConditionalsOpen;
         taken: number;
         previous: Syntax | undefined;
         beforePrevious: Syntax | undefined;
@@ -1172,8 +1215,7 @@ function createMemberTracker(modifiers: MemberModifiers) {
     ) {
       asserted = {
         type: createTypeTracker(undefined, false),
-        awaitingQuestion: 0,
-        awaitingColon: 0,
+        conditionals: openConditionals(),
         taken: 0,
         previous: undefined,
         beforePrevious: undefined,
@@ -1191,19 +1233,14 @@ function createMemberTracker(modifiers: MemberModifiers) {
     // of `as -1` is a literal's sign. Nested in type arguments, a `>` closes
     // them and a `,` separates them.
     if (!asserted.type.nested() && !asserted.type.unfinished() && token(node)) {
-      if (node.raw === "extends") {
-        // `infer U extends C` constrains `U`, and opens no conditional.
-        if (!token(asserted.beforePrevious, "infer"))
-          asserted.awaitingQuestion += 1;
-      } else if (node.raw === "?" && asserted.awaitingQuestion > 0) {
-        asserted.awaitingQuestion -= 1;
-        asserted.awaitingColon += 1;
-      } else if (node.raw === ":" && asserted.awaitingColon > 0) {
-        asserted.awaitingColon -= 1;
-      } else if (
-        endsAssertedType.has(node.raw) ||
-        node.raw === "?" ||
-        node.raw === ":"
+      const read = readConditional(
+        asserted.conditionals,
+        node,
+        asserted.beforePrevious,
+      );
+      if (
+        read === "unawaited" ||
+        (read === "other" && endsAssertedType.has(node.raw))
       ) {
         asserted = undefined;
         return;
