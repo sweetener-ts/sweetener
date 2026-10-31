@@ -702,10 +702,15 @@ function readForFormatting(
   // apiece, so the errors are first settled together: the reader goes on
   // past an error and reports the next, and for each the nearest slash
   // between it and the error before it is read as a regular expression, all
-  // in one read. The reader reads left to right, so where that read leaves
-  // no error up to the last of them, each slash settled what trying it alone,
-  // nearest first, would have; where it does not, the first error is settled
-  // alone.
+  // in one read, where the error stands in the text that slash would read as
+  // one. There the delimiter the error is about is that slash's own, which
+  // no slash before it reads either way, so the slash a one-at-a-time search
+  // would try first for it is the same whatever was settled before it: a
+  // later error a misread slash caused stands outside every regular
+  // expression a slash between could begin, and is left to that search. The
+  // reader reads left to right, so where the read leaves no error up to the
+  // last of them, each slash settled what trying it alone would have; where
+  // it does not, the first error is settled alone.
   if (result.diagnostics.length > 0) {
     const unanswered = coveredBy(typescript?.unparsed ?? []);
     const tried = new Set<number>();
@@ -714,9 +719,9 @@ function readForFormatting(
       failsAt !== undefined;
       failsAt = firstErrorAt(result)
     ) {
-      const open = possibleRegularExpressions(source, result.root)
-        .map(({ start }) => start)
-        .filter((start) => unanswered(start) && !tried.has(start));
+      const open = possibleRegularExpressions(source, result.root).filter(
+        ({ start }) => unanswered(start) && !tried.has(start),
+      );
       const together = nearestBeforeEach(open, errorsAt(result));
       if (together.length > 1) {
         const attempt = readSyntax(source, {
@@ -740,7 +745,10 @@ function readForFormatting(
           continue;
         }
       }
-      const candidates = open.filter((start) => start < failsAt).reverse();
+      const candidates = open
+        .map(({ start }) => start)
+        .filter((start) => start < failsAt)
+        .reverse();
       let settled: typeof result | undefined;
       for (const start of candidates) {
         tried.add(start);
@@ -785,11 +793,12 @@ function errorsAt(read: {
 
 /**
  * For each of `errors` in turn, the nearest of `slashes` before it and after
- * the error before it, both in source order: up to the first error with
- * none, which a slash settling it alone has to answer first.
+ * the error before it, both in source order, where the error stands in the
+ * text that slash would read as a regular expression: up to the first error
+ * with no such slash, which a slash settling it alone has to answer first.
  */
 function nearestBeforeEach(
-  slashes: readonly number[],
+  slashes: readonly { readonly start: number; readonly end: number }[],
   errors: readonly number[],
 ): readonly { readonly slash: number; readonly error: number }[] {
   const chosen: { slash: number; error: number }[] = [];
@@ -797,12 +806,12 @@ function nearestBeforeEach(
   let after = -1;
   for (const error of errors) {
     if (error <= after) continue;
-    while (next < slashes.length && slashes[next]! <= after) next += 1;
-    let nearest: number | undefined;
-    while (next < slashes.length && slashes[next]! < error)
+    while (next < slashes.length && slashes[next]!.start <= after) next += 1;
+    let nearest: { readonly start: number; readonly end: number } | undefined;
+    while (next < slashes.length && slashes[next]!.start < error)
       nearest = slashes[next++];
-    if (nearest === undefined) break;
-    chosen.push({ slash: nearest, error });
+    if (nearest === undefined || error >= nearest.end) break;
+    chosen.push({ slash: nearest.start, error });
     after = error;
   }
   return chosen;
