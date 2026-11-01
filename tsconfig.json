@@ -19,6 +19,7 @@
     { "path": "packages/jest" },
     { "path": "packages/deno" },
     { "path": "packages/node" },
+    { "path": "packages/content-mapper" },
     { "path": "packages/parcel-transformer" },
     { "path": "packages/unplugin" },
     { "path": "packages/webpack-loader" }

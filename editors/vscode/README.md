@@ -1,6 +1,7 @@
 # Sweetener for Visual Studio Code
 
-Syntax highlighting for `.sts` and `.stsx`.
+Syntax highlighting for `.sts` and `.stsx`, and TypeScript 7's language
+server on them.
 
 ## What it does
 
@@ -14,6 +15,17 @@ template operations such as `#core`.
 It also gives Prettier somewhere to attach: `@sweetener/prettier-plugin`
 already declares these two language ids, so with both installed, formatting a
 `.sts` from the editor works the way it does for every other file.
+
+## TypeScript 7
+
+With the TypeScript 7 extension running TypeScript 7.1 (see
+[docs/integrations.md](../../docs/integrations.md#in-vs-code)) and a tsconfig
+that names `@sweetener/content-mapper`, TypeScript's own language server
+checks `.sts` and `.stsx`: diagnostics, hover, go-to-definition, rename. This
+extension's part is `extension.js`, which registers the two extensions with
+TypeScript's when one of these files opens. TypeScript's server only takes a
+file a loaded tsconfig maps, and loads a tsconfig only for a file it has been
+sent, so a `.sts` opened before any `.ts` would otherwise never reach it.
 
 ## How the grammar is put together
 

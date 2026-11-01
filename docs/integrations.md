@@ -44,16 +44,126 @@ matching, no comment toggling.
 ln -s "$PWD/editors/vscode" ~/.vscode/extensions/sweetener
 ```
 
-It contributes no language server, deliberately. Associating these files with
+It contributes no language server of its own. Associating these files with
 the built-in `typescript` language would start TypeScript's own service on
 them, and every macro definition and invocation would be reported as a syntax
-error. For checking, run `sweetener check`, or `sweetener watch` to have it
-report as you edit.
+error. On TypeScript 7.1, the content mapper below is how a `.sts` gets
+diagnostics, hover, and rename. Before 7.1, run `sweetener check`, or
+`sweetener watch` to have it report as you edit.
 
 Ordinary `.ts` and `.tsx` files that import a `.sts` module do get completions
 and type errors across the boundary; see source declarations below. The two
 language ids match the ones `@sweetener/prettier-plugin` declares, so with both
 installed, formatting a `.sts` from the editor works as it does elsewhere.
+
+## TypeScript 7 content mapper
+
+TypeScript 7.1 can hand a file it does not understand to a content mapper: a
+process named in `tsconfig.json` that turns the file into TypeScript and says
+where each piece of the result came from. `@sweetener/content-mapper` is one
+for Sweetener. With it, `tsc` checks `.sts` files itself, and TypeScript's
+language server gives them diagnostics, hover, go-to-definition, references,
+and rename, each reported at the place the author wrote rather than in the
+expansion.
+
+```bash
+npm install --save-dev typescript@beta @sweetener/content-mapper
+```
+
+TypeScript 7.1 is in beta (`7.1.0-beta`); 7.0 has no content mappers. The
+mapper's tests run against that beta.
+
+```json
+{
+  "compilerOptions": { "strict": true, "noEmit": true },
+  "contentMappers": [
+    { "package": "@sweetener/content-mapper", "extensions": [".sts", ".stsx"] }
+  ],
+  "include": ["src"]
+}
+```
+
+A content mapper runs code out of `node_modules`, so TypeScript asks first:
+
+```bash
+npx tsc --runExternalCode
+```
+
+A language server takes the same permission as `runExternalCode: true` in its
+initialization options, which an editor sends for a workspace it trusts.
+Sweetener's settings stay in the tsconfig's `sweet` section, which the command
+line and every build integration read too; options given in the
+`contentMappers` entry are refused with `SWR6001`, since the editor would
+otherwise disagree with the build.
+
+A type error inside a macro's output is reported on the invocation that wrote
+it. A name the author wrote and a macro copied keeps its own position, so hover
+and go-to-definition on it answer about that name. Rename goes through a name
+a macro copied when every copy refers to one binding. Where a macro copies one
+name to different bindings, a rename cannot start there, and one started at
+either declaration leaves the copy alone, where TypeScript then reports it,
+rather than changing what the other binding means.
+
+When the mapper cannot expand a file, the file comes back empty with one error
+at its top saying why: `SWR6001` when the tsconfig's `sweet` section has a
+problem (also reported at the `contentMappers` entry), `SWR6202` when the file
+is not part of the Sweetener project, or its extension is mapped here but
+missing from `sweet.macroExtensions`, and `SWR6201` when expansion itself
+failed.
+
+The mapper expands the whole project when TypeScript first opens it, which is
+what a `tsc` run then asks for file by file. After that, each file's expansion
+is kept together with what it read: itself, the macro modules it imports for
+syntax, and every lookup made resolving their imports. An edit expands again
+only the files whose reads changed, so typing in a file expands that file and
+nothing else, and saving a macro module expands exactly the files that use it.
+Every source is still read and parsed again to do it, which is most of what an
+edit costs: on copies of the language tour, about 20 ms at 50 files, 120 ms at
+500 and 380 ms at 1,500.
+
+Where it differs from `sweetener check`:
+
+- An unsaved edit to a macro module reaches a file that uses it when that file
+  is next edited, or once the module is saved. TypeScript transforms a file
+  again only when its own text changes, and the protocol has no way to say
+  that one file's expansion read another.
+- The protocol carries errors only. Sweetener's warnings, such as an item the
+  reader passed through unread, are left out rather than reported as errors.
+- `sweetener check` adds what expansion knows to TypeScript's "cannot find
+  name" errors. Through the content mapper, TypeScript's own message stands.
+- A macro that copies one captured expression twice produces TypeScript's
+  error once per copy, both at the one place in the source.
+- A `"use sweetener"` file keeps its `.ts` name, and TypeScript does not let a
+  content mapper claim `.ts`, so it is read as written. Give it a macro
+  extension to check it this way.
+- TypeScript emits declarations for a `.sts` (`main.d.sts.ts`) but no
+  JavaScript. Build with `sweetener build` or a bundler integration.
+
+### In VS Code
+
+Install the TypeScript 7 extension from the Marketplace (`TypeScriptTeam.native-preview`)
+and `editors/vscode`, then point the extension at the project's TypeScript 7.1:
+
+```json
+{
+  "js/ts.experimental.useTsgo": true,
+  "js/ts.tsdk.path": "/path/to/project/node_modules/typescript"
+}
+```
+
+The extension bundles TypeScript 7.0, which has no content mappers, and runs
+it unless told otherwise. Set in user settings, `js/ts.tsdk.path` is used as
+given; set in a workspace's, it is used only once you choose the workspace's
+version with **TypeScript: Select TypeScript Version…**.
+
+`editors/vscode` registers `.sts` and `.stsx` with the TypeScript 7 extension
+when one of them opens. TypeScript's server only takes a file whose extension
+a loaded tsconfig maps, and it only loads a tsconfig for a file it has been
+sent, so without that a project whose open files are all `.sts` never reaches
+it. With extension 1.0.1 running TypeScript 7.1.0-beta in VS Code 1.139, a
+`.sts` gets diagnostics at the place the author wrote and hover through a
+macro invocation. A `.sts` outside any tsconfig gets nothing: the extension
+starts a content mapper only for a project whose tsconfig names one.
 
 ## Universal plugin
 

@@ -41,6 +41,15 @@ export default tseslint.config(
     },
   },
   {
+    // VS Code loads an extension's entry point with `require`.
+    files: ["editors/vscode/**/*.js"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: { require: "readonly", module: "writable" },
+    },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
     files: ["**/*.ts"],
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",

@@ -281,17 +281,21 @@ validation evidence.
 
 Three limits, before you adopt it.
 
-**Editor support is highlighting only.** `editors/vscode` contributes a grammar
+**Editor support needs TypeScript 7.1.** `editors/vscode` contributes a grammar
 for `.sts` and `.stsx`. It is not on the Marketplace, so link it from a
-checkout. It ships no language server on purpose: registering `.sts` as
-`typescript` starts TypeScript's own service on the file and paints every macro
-definition as a syntax error. So a `.sts` gets no hover, diagnostics, or
-go-to-definition, and `sweetener check` and `watch` cover that instead. A `.ts`
-file importing a `.sts` does get completions and errors, through the
-declarations above.
+checkout. Diagnostics, hover, go-to-definition and rename in a `.sts` come from
+TypeScript's own language server, through
+[`@sweetener/content-mapper`](docs/integrations.md#typescript-7-content-mapper),
+which needs TypeScript 7.1, now in beta. In VS Code that is the Marketplace
+TypeScript 7 extension pointed at the project's TypeScript 7.1, since the one
+it bundles is 7.0. On earlier TypeScript, `sweetener check` and `watch` cover checking, and a `.ts`
+file importing a `.sts` gets completions and errors through the declarations
+above.
 
-**Sweetener declines to rename through a macro invocation.** A captured
-reference carries no proof of which binding each copy denotes, so it refuses
-rather than guessing.
+**Rename through a macro invocation is cautious.** Through the content mapper,
+a name a macro copied renames when every copy refers to one binding, and
+refuses where the copies name different ones. Sweetener's own language-service
+host refuses rename through any captured reference, since it has no proof of
+which binding each copy denotes.
 
 **macOS and Linux.** Nobody has run this on Windows.

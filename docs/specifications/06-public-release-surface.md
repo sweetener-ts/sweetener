@@ -128,17 +128,18 @@ not use it.
 
 ## 7. Public packages
 
-| Package                         | Contract                                                             |
-| ------------------------------- | -------------------------------------------------------------------- |
-| `@sweetener/compiler`           | the expansion session every adapter is built on                      |
-| `@sweetener/cli`                | configuration and check/build/watch/expand/explain commands          |
-| `@sweetener/unplugin`           | Vite, Rollup, Rolldown, webpack, Rspack, Rsbuild, esbuild, Farm, Bun |
-| `@sweetener/webpack-loader`     | the loader a webpack rule names, and Next.js through Turbopack       |
-| `@sweetener/parcel-transformer` | Parcel transformer, named as Parcel requires plugins to be           |
-| `@sweetener/jest`               | Jest transformer for `.sts` and `.stsx`                              |
-| `@sweetener/prettier-plugin`    | conservative, syntax-safe formatting for `.sts` and `.stsx`          |
-| `@sweetener/node`               | `node --import @sweetener/node/register`                             |
-| `@sweetener/deno`               | `deno run --import npm:@sweetener/deno/register`                     |
+| Package                         | Contract                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `@sweetener/compiler`           | the expansion session every adapter is built on                          |
+| `@sweetener/cli`                | configuration and check/build/watch/expand/explain commands              |
+| `@sweetener/unplugin`           | Vite, Rollup, Rolldown, webpack, Rspack, Rsbuild, esbuild, Farm, Bun     |
+| `@sweetener/webpack-loader`     | the loader a webpack rule names, and Next.js through Turbopack           |
+| `@sweetener/parcel-transformer` | Parcel transformer, named as Parcel requires plugins to be               |
+| `@sweetener/jest`               | Jest transformer for `.sts` and `.stsx`                                  |
+| `@sweetener/prettier-plugin`    | conservative, syntax-safe formatting for `.sts` and `.stsx`              |
+| `@sweetener/node`               | `node --import @sweetener/node/register`                                 |
+| `@sweetener/deno`               | `deno run --import npm:@sweetener/deno/register`                         |
+| `@sweetener/content-mapper`     | TypeScript 7.1 content mapper: `tsc` and its language server read `.sts` |
 
 The compiler's layers ship inside `@sweetener/compiler` rather than as packages
 of their own: opaque IDs and diagnostics, immutable syntax and origins, the

@@ -163,6 +163,25 @@ const summaries = {
       "```",
     ].join("\n"),
   },
+  "content-mapper": {
+    keywords: ["content-mapper", "language-service", "editor"],
+    text: "A TypeScript 7.1 content mapper for Sweetener sources. TypeScript expands `.sts` files through it, so `tsc` checks them and the TypeScript language server gives an editor diagnostics, hover, go-to-definition and rename in them, with no other plugin.",
+    usage: [
+      "```json",
+      "// tsconfig.json",
+      "{",
+      '  "contentMappers": [',
+      '    { "package": "@sweetener/content-mapper", "extensions": [".sts"] }',
+      "  ],",
+      '  "include": ["src"]',
+      "}",
+      "```",
+      "",
+      "Content mappers run code from `node_modules`, so TypeScript asks first:",
+      "pass `--runExternalCode` to `tsc`, and trust the workspace in the editor.",
+      "Add `.stsx` to `extensions` for JSX sources.",
+    ].join("\n"),
+  },
   compiler: {
     keywords: ["compiler", "expansion", "hygiene"],
     text: "The Sweetener compiler: the expansion session every build-tool adapter is built on. Reach for an adapter first.",
@@ -364,6 +383,11 @@ for (const directory of packageDirectories) {
     ...(manifest.main === undefined ? {} : { main: manifest.main }),
     ...(manifest.types === undefined ? {} : { types: manifest.types }),
     ...(manifest.bin === undefined ? {} : { bin: manifest.bin }),
+    // How TypeScript finds a content mapper's executable. Without it the
+    // package installs, a tsconfig names it, and TypeScript refuses to use it.
+    ...(manifest.typescript === undefined
+      ? {}
+      : { typescript: manifest.typescript }),
     // A package that imports its host at runtime — @babel/core, webpack, jest,
     // vite — has to say so, or it installs cleanly, warns about nothing, and
     // fails on the first import.

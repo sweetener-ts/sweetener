@@ -1,7 +1,7 @@
 {
   "name": "sweetener-vscode",
   "displayName": "Sweetener",
-  "description": "Syntax highlighting for Sweetener's .sts and .stsx files.",
+  "description": "Syntax highlighting for Sweetener's .sts and .stsx files, and TypeScript 7's language server on them through @sweetener/content-mapper.",
   "version": "0.1.0-alpha.0",
   "private": true,
   "publisher": "sweetener",
@@ -11,6 +11,11 @@
   },
   "categories": [
     "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:sweetener-typescript",
+    "onLanguage:sweetener-typescriptreact"
   ],
   "contributes": {
     "languages": [

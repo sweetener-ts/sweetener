@@ -282,6 +282,101 @@ try {
       }
     }
   }
+
+  // TypeScript finds a content mapper through its manifest and starts the
+  // command it names, so the check is TypeScript doing that from the tarball:
+  // a manifest without the field, or naming a file the tarball lacks, checks
+  // nothing and says so only as a refusal inside someone's editor.
+  const mapper = release.packages.find(
+    ({ name }) => name === "@sweetener/content-mapper",
+  );
+  if (mapper === undefined)
+    problems.push("no @sweetener/content-mapper in the release");
+  else {
+    const manifest = JSON.parse(
+      await readFile(join(modules, mapper.name, "package.json"), "utf8"),
+    );
+    const exec = manifest.typescript?.contentMapper?.exec;
+    if (!Array.isArray(exec))
+      problems.push(
+        `${mapper.name} publishes no typescript.contentMapper.exec, so TypeScript cannot start it`,
+      );
+    else {
+      const project = join(directory, "mapped");
+      await mkdir(project);
+      await writeFile(
+        join(project, "macros.sts"),
+        await readFile(join(directory, "macros.sts"), "utf8"),
+        "utf8",
+      );
+      // One type error, inside a macro invocation, so the check shows both
+      // that the file expanded and that the error came back to its source.
+      await writeFile(
+        join(project, "main.sts"),
+        `import { twice } from "./macros.sts" for syntax;\nexport const doubled = twice(21);\nexport const wrong: string[] = twice(21);\n`,
+        "utf8",
+      );
+      await writeFile(
+        join(project, "tsconfig.json"),
+        `${JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: "ES2022",
+              module: "ESNext",
+              moduleResolution: "Bundler",
+            },
+            contentMappers: [{ package: mapper.name, extensions: [".sts"] }],
+            files: ["macros.sts", "main.sts"],
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      const tsc = join(
+        root,
+        "packages",
+        "content-mapper",
+        "node_modules",
+        "typescript7",
+        "bin",
+        "tsc",
+      );
+      let report = "";
+      try {
+        report = execFileSync(
+          process.execPath,
+          [tsc, "-p", project, "--runExternalCode", "--pretty", "false"],
+          { cwd: project, encoding: "utf8", stdio: "pipe" },
+        );
+      } catch (error) {
+        report =
+          error instanceof Error && "stdout" in error
+            ? `${error.stdout ?? ""}${error.stderr ?? ""}`
+            : String(error);
+      }
+      // The template copies `21` twice, and TypeScript types each copy, so
+      // the one mistake is reported once per copy -- at the same place in the
+      // source, which is the thing being checked. The path is left out: a
+      // temporary directory is spelled differently depending on whether the
+      // symlink above it was followed.
+      const expected =
+        "main.sts(3,38): error TS2322: Type 'number' is not assignable to type 'string'.";
+      const lines = report
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      if (
+        lines.length === 0 ||
+        !lines.every((line) => line.endsWith(`/mapped/${expected}`))
+      )
+        problems.push(
+          `TypeScript 7 checking through the packed content mapper reported ${JSON.stringify(report.trim())}, not ${JSON.stringify(expected)}`,
+        );
+    }
+  }
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
@@ -291,5 +386,5 @@ if (problems.length > 0) {
   process.exitCode = 1;
 } else
   process.stdout.write(
-    "The packed command line installs and expands a project.\n",
+    "The packed command line installs and expands a project, and TypeScript 7 checks one through the packed content mapper.\n",
   );
