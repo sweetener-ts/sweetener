@@ -7594,6 +7594,34 @@ function* walk(
       continue;
     }
     if (node.tag === "group" || node.tag === "protected") {
+      /**
+       * A JSX expression container -- an attribute's braces, or braces among
+       * an element's children -- holds one expression, or a spread of one.
+       * Nothing around it reads that expression: the statement it stands in
+       * takes the element whole. Walked as it stood, an operator in it was
+       * never offered its operands, and `<b title={x |> f} />` left the `|>`
+       * standing. It is read as the expression it holds; where it cannot be,
+       * it is walked as it stands.
+       */
+      const jsxContainer = function* (container: GroupSyntax): Walk {
+        const spread =
+          container.children[0]?.tag === "token" &&
+          container.children[0].raw === "..."
+            ? 1
+            : 0;
+        const contents = yield* walkInside(
+          scope,
+          container,
+          expressionWalk(container.children.slice(spread)),
+        );
+        return {
+          ...contents,
+          syntax: createSyntaxSequence([
+            ...container.children.slice(0, spread),
+            ...contents.syntax,
+          ]),
+        };
+      };
       if (
         node.tag === "group" &&
         (node.delimiter === "jsx-element" || node.delimiter === "jsx-fragment")
@@ -7649,24 +7677,10 @@ function* walk(
             continue;
           }
           // An attribute's braces are an expression container, not an
-          // object literal, so what is walked as an expression is what they
-          // hold: walked whole, `title={c ? x : 1}` was split at its `:`
-          // into a key and a value, and `x` was never expanded.
+          // object literal: walked whole, `title={c ? x : 1}` was split at
+          // its `:` into a key and a value, and `x` was never expanded.
           if (child.delimiter === "brace") {
-            const contents = yield* walkInside(
-              scope,
-              child,
-              nestedWalk(
-                child.children,
-                currentEnvironment,
-                "expr",
-                parentInvocation,
-                lexicalModule,
-                contexts,
-                false,
-                recursiveBinding,
-              ),
-            );
+            const contents = yield* jsxContainer(child);
             currentEnvironment = contents.environment;
             jsxChildren.push(
               createGroup({
@@ -7716,6 +7730,23 @@ function* walk(
             ...node,
             id: options.allocateSyntaxId(),
             children: createSyntaxSequence(jsxChildren),
+          }),
+        );
+        index += 1;
+        continue;
+      }
+      if (
+        node.tag === "group" &&
+        node.delimiter === "brace" &&
+        category === "jsxChild"
+      ) {
+        const contents = yield* jsxContainer(node);
+        currentEnvironment = contents.environment;
+        output.push(
+          createGroup({
+            ...node,
+            id: options.allocateSyntaxId(),
+            children: contents.syntax,
           }),
         );
         index += 1;
