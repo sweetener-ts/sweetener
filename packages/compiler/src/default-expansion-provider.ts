@@ -887,8 +887,20 @@ export class DefaultProjectExpansionProvider
    * Every read of the project asks the file system through one recorder, so
    * each read takes the text the first one found, and the inputs are every
    * question any of them asked.
+   *
+   * `files`, where given, names by absolute path the sources to expand; the
+   * rest are still read, so the macros each named file sees and the names its
+   * binding literals resolve are those of the whole project's expansion. Only
+   * expanding and printing the others is skipped, which is most of the cost:
+   * an editor expanding again the one file being typed in asks for this. The
+   * output's files, and what `inspectSource` answers, are then the named
+   * files' alone; its diagnostics still include what reading every source
+   * raised.
    */
-  expandProject(project: LoadedSweetProject): DefaultProjectExpansionOutput {
+  expandProject(
+    project: LoadedSweetProject,
+    options: { readonly files?: ReadonlySet<string> | undefined } = {},
+  ): DefaultProjectExpansionOutput {
     const recorder = new InputRecorder(this.#fileSystem.system);
     const history: ReadingHistory = new Map();
     return settleReadings<
@@ -908,6 +920,7 @@ export class DefaultProjectExpansionProvider
           final,
           reads,
           history,
+          options.files,
         ),
     );
   }
@@ -919,6 +932,7 @@ export class DefaultProjectExpansionProvider
     final: boolean,
     projectReads: number,
     history: ReadingHistory,
+    expanding: ReadonlySet<string> | undefined,
   ): ReadAttempt<
     DefaultProjectExpansionOutput,
     ReadonlyMap<string, TokenReadings>
@@ -2217,6 +2231,11 @@ export class DefaultProjectExpansionProvider
     /** Whether a file asked to be read again with the whole project. */
     let rereadProject = false;
     for (const projectFile of projectFiles) {
+      if (
+        expanding !== undefined &&
+        !expanding.has(resolve(projectFile.fileName))
+      )
+        continue;
       let file = projectFile;
       // What the project asked the file to be read with, which the reader
       // read only where it stood at a token for each.
