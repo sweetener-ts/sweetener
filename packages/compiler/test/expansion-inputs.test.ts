@@ -1,8 +1,12 @@
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as ts from "typescript";
 import { expect, test } from "vitest";
 import {
   checkedInputs,
   createDefaultProjectExpansionProvider,
+  diskFileSystem,
   InputCheckRound,
   nowNanoseconds,
   type LoadedSweetProject,
@@ -226,4 +230,45 @@ test("reads a project read again for a slash from what its first read recorded",
     path: macros,
     text: macroText(2),
   });
+});
+
+/**
+ * An editor's unsaved text stands in front of the disk, where a stat says
+ * nothing about it. A file held that way is read to be checked; the rest are
+ * still confirmed by stat, without being read.
+ */
+test("reads a held file to check it, and confirms the rest by stat", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-held-")));
+  const held = join(directory, "held.sts");
+  const plain = join(directory, "plain.sts");
+  writeFileSync(held, "on disk\n");
+  writeFileSync(plain, "plain\n");
+  const unsaved = new Map([[held, "unsaved\n"]]);
+  const reads: string[] = [];
+  const fileSystem = {
+    system: {
+      ...ts.sys,
+      readFile: (path: string) => {
+        reads.push(path);
+        return unsaved.get(path) ?? ts.sys.readFile(path);
+      },
+    },
+    stat: diskFileSystem.stat,
+    held: (path: string) => unsaved.has(path),
+  };
+  // Read, as far as the check can tell, well after both were written, so
+  // each stat is settled and can stand in for reading the file.
+  const checked = checkedInputs(
+    fileSystem,
+    nowNanoseconds() + 10_000_000_000n,
+  )([
+    { kind: "file", path: held, text: "unsaved\n" },
+    { kind: "file", path: plain, text: "plain\n" },
+  ]);
+  expect(new InputCheckRound().hold(checked)).toBe(true);
+  expect(reads).toEqual([held]);
+
+  // The unsaved text changes and the disk does not.
+  unsaved.set(held, "typed\n");
+  expect(new InputCheckRound().hold(checked)).toBe(false);
 });

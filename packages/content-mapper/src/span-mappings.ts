@@ -181,7 +181,9 @@ function withoutAmbiguousRename(
     )
       continue;
     const key = `${segment.originalStart}:${segment.originalEnd}`;
-    copies.set(key, [...(copies.get(key) ?? []), segment]);
+    const group = copies.get(key);
+    if (group === undefined) copies.set(key, [segment]);
+    else group.push(segment);
   }
   const ambiguous = new Set<Segment>();
   for (const group of copies.values())
@@ -235,6 +237,14 @@ export function segmentsForExpansion(options: {
   );
 }
 
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff;
+}
+
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}
+
 /**
  * Converts JavaScript string indices into offsets in the negotiated encoding.
  *
@@ -251,17 +261,16 @@ export function offsetEncoder(
   for (let index = 0; index < text.length; index += 1) {
     const unit = text.charCodeAt(index);
     // A surrogate pair is four bytes; count them on the high half and nothing
-    // on the low half, so an index between the halves is never produced.
+    // on the low half, so an index between the halves is never produced. A
+    // surrogate on its own is not a character, and reaches TypeScript as the
+    // replacement character U+FFFD, three bytes.
+    const high = isHighSurrogate(unit);
+    const low = isLowSurrogate(unit);
+    const paired = high
+      ? isLowSurrogate(text.charCodeAt(index + 1))
+      : low && isHighSurrogate(text.charCodeAt(index - 1));
     const width =
-      unit < 0x80
-        ? 1
-        : unit < 0x800
-          ? 2
-          : unit >= 0xd800 && unit <= 0xdbff
-            ? 4
-            : unit >= 0xdc00 && unit <= 0xdfff
-              ? 0
-              : 3;
+      unit < 0x80 ? 1 : unit < 0x800 ? 2 : !paired ? 3 : high ? 4 : 0;
     bytesBefore[index + 1] = bytesBefore[index]! + width;
   }
   return (index) => {

@@ -5410,6 +5410,34 @@ function* walk(
     );
   };
   /**
+   * A JSX expression container -- an attribute's braces, or braces among
+   * an element's children -- holds one expression, or a spread of one.
+   * Nothing around it reads that expression: the statement it stands in
+   * takes the element whole. Walked as it stood, an operator in it was
+   * never offered its operands, and `<b title={x |> f} />` left the `|>`
+   * standing. It is read as the expression it holds; where it cannot be,
+   * it is walked as it stands.
+   */
+  const jsxContainer = function* (container: GroupSyntax): Walk {
+    const spread =
+      container.children[0]?.tag === "token" &&
+      container.children[0].raw === "..."
+        ? 1
+        : 0;
+    const contents = yield* walkInside(
+      scope,
+      container,
+      expressionWalk(container.children.slice(spread)),
+    );
+    return {
+      ...contents,
+      syntax: createSyntaxSequence([
+        ...container.children.slice(0, spread),
+        ...contents.syntax,
+      ]),
+    };
+  };
+  /**
    * Whether the position being walked stands inside an expression. A
    * replacement is walked before it is parsed, so the category of a position
    * in it cannot be read from the one token in front of it: `f(inner(2))`,
@@ -7594,34 +7622,6 @@ function* walk(
       continue;
     }
     if (node.tag === "group" || node.tag === "protected") {
-      /**
-       * A JSX expression container -- an attribute's braces, or braces among
-       * an element's children -- holds one expression, or a spread of one.
-       * Nothing around it reads that expression: the statement it stands in
-       * takes the element whole. Walked as it stood, an operator in it was
-       * never offered its operands, and `<b title={x |> f} />` left the `|>`
-       * standing. It is read as the expression it holds; where it cannot be,
-       * it is walked as it stands.
-       */
-      const jsxContainer = function* (container: GroupSyntax): Walk {
-        const spread =
-          container.children[0]?.tag === "token" &&
-          container.children[0].raw === "..."
-            ? 1
-            : 0;
-        const contents = yield* walkInside(
-          scope,
-          container,
-          expressionWalk(container.children.slice(spread)),
-        );
-        return {
-          ...contents,
-          syntax: createSyntaxSequence([
-            ...container.children.slice(0, spread),
-            ...contents.syntax,
-          ]),
-        };
-      };
       if (
         node.tag === "group" &&
         (node.delimiter === "jsx-element" || node.delimiter === "jsx-fragment")

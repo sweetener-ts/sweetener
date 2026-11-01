@@ -68,6 +68,12 @@ export interface ExpansionFileSystem {
    * for one that keeps no stats, whose files are read again every time.
    */
   readonly stat: ((path: string) => BigIntStats | undefined) | undefined;
+  /**
+   * Whether `system` holds the file at a path in front of the disk -- an
+   * editor's unsaved text -- where the disk's stat says nothing about what
+   * it reads. Such a file is read again every time it is checked.
+   */
+  readonly held?: ((path: string) => boolean) | undefined;
 }
 
 /** The disk, read the way TypeScript reads it. */
@@ -256,7 +262,9 @@ export function checkedInputs(
         inputs.map((input) =>
           remember(records, input, () => {
             const stats =
-              input.kind === "file" && input.text !== undefined
+              input.kind === "file" &&
+              input.text !== undefined &&
+              fileSystem.held?.(input.path) !== true
                 ? fileSystem.stat?.(input.path)
                 : undefined;
             return {
@@ -288,8 +296,9 @@ function sameNames(
  * one it was confirmed under is not read; any other is, and its text decides.
  */
 function fileHolds(checked: CheckedInput, input: ExpansionFileInput): boolean {
-  const { system, stat } = checked.fileSystem;
-  if (stat === undefined) return fileText(system, input.path) === input.text;
+  const { system, stat, held } = checked.fileSystem;
+  if (stat === undefined || held?.(input.path) === true)
+    return fileText(system, input.path) === input.text;
   const checkedAt = nowNanoseconds();
   const stats = stat(input.path);
   if (stats?.isFile() !== true) return input.text === undefined;

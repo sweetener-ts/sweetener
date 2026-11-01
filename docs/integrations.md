@@ -118,15 +118,16 @@ syntax, and every lookup made resolving their imports. An edit expands again
 only the files whose reads changed, so typing in a file expands that file and
 nothing else, and saving a macro module expands exactly the files that use it.
 Every source is still read and parsed again to do it, which is most of what an
-edit costs: on copies of the language tour, about 20 ms at 50 files, 120 ms at
-500 and 380 ms at 1,500.
+edit costs: on copies of the language tour, about 15 ms at 50 files, 90 ms at
+500 and 250 ms at 1,500.
 
 Where it differs from `sweetener check`:
 
-- An unsaved edit to a macro module reaches a file that uses it when that file
-  is next edited, or once the module is saved. TypeScript transforms a file
-  again only when its own text changes, and the protocol has no way to say
-  that one file's expansion read another.
+- An unsaved edit to a macro module reaches the files that use it one edit
+  late: at the next edit anywhere in the workspace, or once the module is
+  saved. TypeScript transforms a file again only when its own text or the
+  project's identity changes, and it asks for the identity before it
+  transforms the module that was edited.
 - The protocol carries errors only. Sweetener's warnings, such as an item the
   reader passed through unread, are left out rather than reported as errors.
 - `sweetener check` adds what expansion knows to TypeScript's "cannot find

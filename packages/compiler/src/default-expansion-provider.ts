@@ -854,13 +854,35 @@ export class DefaultProjectExpansionProvider
   /**
    * `system` is what expansion reads in place of the disk: every source,
    * package and lookup, and what TypeScript reads resolving binding literals.
+   * Where it is the disk with some files held in front of it -- an editor's
+   * unsaved text -- `held` names those, and `stat` is the disk's, so the
+   * rest are checked by stat rather than read again.
    */
-  constructor(options: { readonly system?: ts.System | undefined } = {}) {
+  constructor(
+    options: {
+      readonly system?: ts.System | undefined;
+      readonly stat?: ExpansionFileSystem["stat"];
+      readonly held?: ExpansionFileSystem["held"];
+    } = {},
+  ) {
     this.#system = options.system ?? ts.sys;
+    if (
+      options.system === undefined &&
+      (options.stat !== undefined || options.held !== undefined)
+    )
+      throw new Error(
+        "A stat or held files describe a supplied system; the disk has its own",
+      );
     this.#fileSystem =
       options.system === undefined
         ? diskFileSystem
-        : suppliedFileSystem(options.system);
+        : options.stat === undefined
+          ? suppliedFileSystem(options.system)
+          : Object.freeze({
+              system: options.system,
+              stat: options.stat,
+              held: options.held,
+            });
   }
 
   /**
@@ -2392,6 +2414,8 @@ export class DefaultProjectExpansionProvider
 export function createDefaultProjectExpansionProvider(
   options: {
     readonly system?: ts.System | undefined;
+    readonly stat?: ExpansionFileSystem["stat"];
+    readonly held?: ExpansionFileSystem["held"];
   } = {},
 ): DefaultProjectExpansionProvider {
   return new DefaultProjectExpansionProvider(options);

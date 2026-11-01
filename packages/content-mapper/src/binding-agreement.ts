@@ -40,8 +40,10 @@ function identifierAt(
  *
  * Binds the expanded file on its own -- no lib, no imports followed -- which
  * is enough to tell one local declaration from another: an import resolves to
- * its own alias, and a global to nothing, the same for every copy. Only a
- * file with a token copied more than once pays for the program.
+ * its own alias, the same for every copy. A name that resolves to nothing
+ * proves nothing: a global, and a property of something untyped, both resolve
+ * to nothing here, and a copy of each is not one binding. Only a file with a
+ * token copied more than once pays for the program.
  */
 export function createBindingAgreement(
   virtualText: string,
@@ -93,7 +95,7 @@ export function createBindingAgreement(
   };
   return (copies) => {
     const { sourceFile, checker: typeChecker } = bound();
-    let first: ts.Symbol | undefined | null = null;
+    let first: ts.Symbol | null = null;
     for (const { start, end } of copies) {
       const identifier = identifierAt(sourceFile, start, end);
       // A copy that is not an identifier here -- a property name the parser
@@ -101,6 +103,7 @@ export function createBindingAgreement(
       // is proven about it.
       if (identifier === undefined) return false;
       const symbol = typeChecker.getSymbolAtLocation(identifier);
+      if (symbol === undefined) return false;
       if (first === null) first = symbol;
       else if (symbol !== first) return false;
     }

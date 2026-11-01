@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSweetProject } from "@sweetener/compiler";
 import { describe, expect, test } from "vitest";
+import { createBindingAgreement } from "../src/binding-agreement.js";
 import { ResponseError } from "../src/json-rpc.js";
 import { SweetenerContentMapper } from "../src/mapper.js";
 import {
@@ -125,14 +126,67 @@ describe("initialize", () => {
 });
 
 describe("openProject", () => {
-  test("watches every source expansion read, and fingerprints them", () => {
+  test("watches what an expansion read from another file, and digests it", () => {
     const { config, file } = project();
     const { result } = opened(config);
-    expect(result.watchedFiles).toEqual(
-      [config, file("macros.sts"), file("main.sts")].sort(),
-    );
+    // A file's own text is not among them: TypeScript transforms a file again
+    // when that changes, without the project's identity changing.
+    expect(result.watchedFiles).toEqual([config, file("macros.sts")].sort());
     expect(result.configIdentity).toMatch(/^[0-9a-f]{64}$/u);
     expect(result.optionDiagnostics).toEqual([]);
+  });
+
+  test("keeps TypeScript's unsaved text when the config changes", () => {
+    const { config, file } = project();
+    const { mapper, transform } = opened(config);
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          strict: true,
+          noUnusedLocals: true,
+        },
+        contentMappers: [
+          { package: "@sweetener/content-mapper", extensions: [".sts"] },
+        ],
+        include: ["*.sts"],
+      }),
+    );
+    mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ", 1)`);
+  });
+
+  test("an unsaved change to a macro module changes the identity, and one to a file that only uses it does not", () => {
+    const { config, file } = project();
+    const { mapper, result, transform } = opened(config);
+    const reopen = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      }).configIdentity;
+    expect(reopen()).toBe(result.configIdentity);
+    transform(file("main.sts"), `${main}\n// typed\n`);
+    expect(reopen()).toBe(result.configIdentity);
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    const changed = reopen();
+    expect(changed).not.toBe(result.configIdentity);
+    // The edit undone, the project is what it was.
+    transform(file("macros.sts"), macros);
+    expect(reopen()).toBe(result.configIdentity);
   });
 
   test("a saved change to a macro module changes the identity", () => {
@@ -439,6 +493,111 @@ describe("transform", () => {
   });
 });
 
+describe("errors in other files", () => {
+  const helpers = `export syntax shout:expr {
+  rule { shout($value:expr) } => { $value.toUpperCase( }
+}
+`;
+  const user = `import { shout } from "./helpers.stsx" for syntax;
+export const loud = shout("a");
+`;
+  /** A project whose macro module is a .stsx, claimed by `contentMappers` or not. */
+  function withModule(config: Record<string, unknown>, base?: unknown) {
+    const { directory, file } = project({
+      "helpers.stsx": helpers,
+      "main.sts": user,
+    });
+    const tsconfig = join(directory, "tsconfig.json");
+    writeFileSync(
+      tsconfig,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          jsx: "preserve",
+        },
+        include: ["main.sts", "helpers.stsx"],
+        ...config,
+      }),
+    );
+    if (base !== undefined)
+      writeFileSync(join(directory, "base.json"), JSON.stringify(base));
+    const { transform } = opened(tsconfig);
+    return transform(file("main.sts")).diagnostics?.map(
+      ({ messageText }) => messageText,
+    );
+  }
+  const both = {
+    contentMappers: [
+      { package: "@sweetener/content-mapper", extensions: [".sts", ".stsx"] },
+    ],
+  };
+
+  test("reports an error in a module TypeScript never transforms here", () => {
+    const reported = withModule({
+      contentMappers: [
+        { package: "@sweetener/content-mapper", extensions: [".sts"] },
+      ],
+    });
+    expect(reported).toEqual([
+      expect.stringMatching(
+        /helpers\.stsx\(2,54\): Missing closing delimiter \)$/u,
+      ),
+    ]);
+  });
+
+  test("leaves an error in a module it transforms to that module", () => {
+    expect(withModule(both)).toEqual([]);
+  });
+
+  test("reads the claimed extensions through extends, as TypeScript does", () => {
+    expect(withModule({ extends: "./base" }, both)).toEqual([]);
+    // A config's own entry is the one that counts.
+    expect(
+      withModule(
+        {
+          extends: "./base",
+          contentMappers: [
+            { package: "@sweetener/content-mapper", extensions: [".sts"] },
+          ],
+        },
+        both,
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe("binding agreement", () => {
+  test("names that resolve to nothing prove nothing", () => {
+    // `ext.x` is a property of something untyped and `x` a global: both
+    // resolve to nothing, and they are not one binding.
+    const text = "declare const ext: any;\next.x;\nx;\n";
+    const at = (from: number) => {
+      const start = text.indexOf("x", from);
+      return { start, end: start + 1 };
+    };
+    const agree = createBindingAgreement(text, ".ts");
+    const property = at(text.indexOf("ext.x") + 4);
+    const global = at(text.indexOf("\nx;") + 1);
+    expect(agree([property, global])).toBe(false);
+  });
+
+  test("copies of one declared name agree", () => {
+    const text = "const x = 1;\nx;\nx;\n";
+    const first = text.indexOf("\nx;") + 1;
+    const second = text.lastIndexOf("\nx;") + 1;
+    expect(
+      createBindingAgreement(
+        text,
+        ".ts",
+      )([
+        { start: first, end: first + 1 },
+        { start: second, end: second + 1 },
+      ]),
+    ).toBe(true);
+  });
+});
+
 describe("span maps TypeScript accepts", () => {
   const segment = (
     virtualStart: number,
@@ -482,6 +641,10 @@ describe("span maps TypeScript accepts", () => {
     const encode = offsetEncoder("aé🍬b", "utf-8");
     expect([0, 1, 2, 4, 5].map(encode)).toEqual([0, 1, 3, 7, 8]);
     expect(offsetEncoder("aé", "utf-16")(2)).toBe(2);
+    // A surrogate on its own reaches TypeScript as U+FFFD, three bytes.
+    expect(offsetEncoder("a\ud800b", "utf-8")(2)).toBe(4);
+    expect(offsetEncoder("a\udc00b", "utf-8")(2)).toBe(4);
+    expect(offsetEncoder("a\ud800\ud800b", "utf-8")(3)).toBe(7);
   });
 });
 

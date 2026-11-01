@@ -254,6 +254,28 @@ describe("the language server", () => {
     ]);
   });
 
+  test("an unsaved change to a macro reaches a file that uses it at the next edit anywhere", async () => {
+    const { directory, file } = mappedProject({
+      "macros.sts": macros,
+      "main.sts": main,
+    });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), main);
+    client.open(file("macros.sts"), macros);
+    expect(await client.diagnostics(file("main.sts"))).toEqual([]);
+    const changed = macros.replace("$callee($value)", "$callee($value, 1)");
+    client.change(file("macros.sts"), 2, changed);
+    await client.diagnostics(file("macros.sts"));
+    // TypeScript asks for the project's identity before it transforms the
+    // edited module, so the edit after it is the one that carries it.
+    client.change(file("macros.sts"), 3, `${changed}\n`);
+    await client.diagnostics(file("macros.sts"));
+    expect(await client.diagnostics(file("main.sts"))).toEqual([
+      "5:35 2554 Expected 1 arguments, but got 2.",
+      "5:43 2554 Expected 1 arguments, but got 2.",
+    ]);
+  });
+
   test("a saved change to a macro re-expands the files that use it", async () => {
     const { directory, file } = mappedProject({
       "macros.sts": macros,
