@@ -99,6 +99,14 @@ function spanKey(segment: Segment): string {
   return `${segment.originalStart}:${segment.originalEnd}`;
 }
 
+/** How many segments map to each original span, by `spanKey`. */
+function spanUses(segments: readonly Segment[]): ReadonlyMap<string, number> {
+  const uses = new Map<string, number>();
+  for (const segment of segments)
+    uses.set(spanKey(segment), (uses.get(spanKey(segment)) ?? 0) + 1);
+  return uses;
+}
+
 /** The spans that overlap some other span, by `spanKey`. */
 function spansThatCollide(segments: readonly Segment[]): ReadonlySet<string> {
   const spans = [
@@ -273,9 +281,7 @@ function withoutCopiedEdits(
   segments: readonly Segment[],
   generatedText: string,
 ): Segment[] {
-  const uses = new Map<string, number>();
-  for (const segment of segments)
-    uses.set(spanKey(segment), (uses.get(spanKey(segment)) ?? 0) + 1);
+  const uses = spanUses(segments);
   return segments.map((segment) =>
     segment.kind !== SpanMapKind.Verbatim ||
     uses.get(spanKey(segment)) === 1 ||
@@ -304,9 +310,7 @@ function joinedAsWritten(
 ): Segment[] {
   // Not a token with other copies: as part of a longer span, it would overlap
   // them, and TypeScript accepts no such thing.
-  const uses = new Map<string, number>();
-  for (const segment of segments)
-    uses.set(spanKey(segment), (uses.get(spanKey(segment)) ?? 0) + 1);
+  const uses = spanUses(segments);
   const joined: Segment[] = [];
   const joins = (segment: Segment) =>
     segment.kind === SpanMapKind.Verbatim &&

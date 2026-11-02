@@ -931,6 +931,10 @@ export class DefaultProjectExpansionProvider
     project: LoadedSweetProject,
     options: { readonly files?: ReadonlySet<string> | undefined } = {},
   ): DefaultProjectExpansionOutput {
+    const named =
+      options.files === undefined
+        ? undefined
+        : new Set([...options.files].map((fileName) => resolve(fileName)));
     const recorder = new InputRecorder(this.#fileSystem.system);
     this.#recorder = recorder;
     const settled = (reading: ReadonlySet<string> | undefined) => {
@@ -952,14 +956,13 @@ export class DefaultProjectExpansionProvider
             final,
             reads,
             history,
-            options.files,
+            named,
             reading,
           ),
       );
     };
     const output =
-      (options.files === undefined ? undefined : settled(options.files)) ??
-      settled(undefined);
+      (named === undefined ? undefined : settled(named)) ?? settled(undefined);
     if (output === undefined)
       throw new Error(
         "Expanding every source of a project gave no output, which only a narrowed read does",
@@ -1549,13 +1552,14 @@ export class DefaultProjectExpansionProvider
     /**
      * What a file's expansion consulted on disk: what it and each module it
      * reads macros from consulted, every lookup resolving their imports among
-     * it -- or, once TypeScript resolved binding literals over the whole
-     * project, everything.
+     * it -- or, where one of them has binding literals, which TypeScript
+     * resolved over the whole project, everything.
      */
     const inputsFor = (
       modules: readonly ParsedFile[],
     ): readonly ExpansionInput[] => {
-      if (resolvesBindingLiterals) return inputs;
+      if (modules.some(({ compiled }) => compiled.bindingLiterals.length > 0))
+        return inputs;
       const consulted = new Set<ExpansionInput>();
       for (const { fileName } of modules) {
         for (const input of consultedBy.get(fileName) ?? [])

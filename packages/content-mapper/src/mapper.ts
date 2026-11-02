@@ -1,4 +1,4 @@
-import { extname, resolve } from "node:path";
+import { extname, resolve, sep } from "node:path";
 import {
   checkedInputs,
   configurationProblems,
@@ -10,6 +10,7 @@ import {
   loadSweetProject,
   macroExtensionTarget,
   nowNanoseconds,
+  settled,
   projectSignature,
   type CheckedInput,
   type DefaultProjectExpansionProvider,
@@ -73,7 +74,9 @@ function isVirtualExtension(extension: string): extension is VirtualExtension {
 }
 
 function canonical(fileName: string): string {
-  return resolve(fileName).replaceAll("\\", "/");
+  // On Windows a backslash separates; elsewhere a name may hold one.
+  const absolute = resolve(fileName);
+  return sep === "\\" ? absolute.replaceAll("\\", "/") : absolute;
 }
 
 function requireString(
@@ -164,6 +167,8 @@ interface ConfigState {
   project: LoadedSweetProject;
   /** What it was loaded from: while these hold, the config says the same. */
   configuration: readonly CheckedInput[];
+  /** When the config was last loaded, which is when `include` was walked. */
+  loadedAt: bigint;
   /** The project's files, by the names the mapper writes them. */
   listed: ReadonlySet<string>;
   /**
@@ -688,6 +693,7 @@ export class SweetenerContentMapper {
         diskFileSystem,
         loadedAt,
       )(loaded.project.configurationInputs),
+      loadedAt,
     );
     return undefined;
   }
@@ -713,11 +719,13 @@ export class SweetenerContentMapper {
     configFileName: string,
     project: LoadedSweetProject,
     configuration: readonly CheckedInput[],
+    loadedAt: bigint,
   ): void {
     const signature = projectSignature(project);
     const existing = this.#configs.get(configFileName);
     if (existing !== undefined && existing.signature === signature) {
       existing.configuration = configuration;
+      existing.loadedAt = loadedAt;
       this.#relist(existing, project);
       this.#refresh(existing);
       return;
@@ -728,6 +736,7 @@ export class SweetenerContentMapper {
       signature,
       project,
       configuration,
+      loadedAt,
       listed: listedFiles(project),
       resolvesBindingLiterals: false,
       provider: overlayProvider(overlay),
@@ -766,14 +775,18 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * Load the config again for a file it did not list: it may be new. The load
-   * may find the config can no longer be used, which is then what the file
-   * hears.
+   * Load the config again for a file it did not list, if that could list it: one
+   * on disk and written since `include` was walked. Any other is what the config
+   * said it was, and walking `include` for each would have a project importing
+   * many files outside it load its config as many times. The load may find the
+   * config can no longer be used, which is then what the file hears.
    */
   #lookFor(state: ConfigState, fileName: string): void {
-    const onDisk = ts.sys.fileExists(fileName);
+    const stats = diskFileSystem.stat?.(fileName);
+    const onDisk = stats?.isFile() === true;
     if (state.unlisted.get(fileName) === onDisk) return;
-    this.#problemsWith(state.configFileName, true);
+    if (stats !== undefined && onDisk && !settled(stats, state.loadedAt))
+      this.#problemsWith(state.configFileName, true);
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
       loaded.unlisted.set(fileName, onDisk);
@@ -853,13 +866,8 @@ export class SweetenerContentMapper {
    */
   #expand(state: ConfigState, fileNames: readonly string[] | undefined): void {
     const expandedAt = nowNanoseconds();
-    // Named as the provider names them, which on Windows is not how this
-    // mapper writes them.
     state.provider.expandProject(state.project, {
-      files:
-        fileNames === undefined
-          ? undefined
-          : new Set(fileNames.map((name) => resolve(name))),
+      files: fileNames === undefined ? undefined : new Set(fileNames),
     });
     const check = checkedInputs(state.provider.fileSystem, expandedAt);
     for (const fileName of fileNames ??
@@ -888,11 +896,10 @@ export class SweetenerContentMapper {
    * the overlay. A file the project does not expand has none, and reading
    * every source would only say so again.
    *
-   * Every expansion whose inputs no longer hold is stale. When this file's
-   * is, it is expanded again together with every other stale file: after an
-   * edit that is the one file, and after a saved change to a macro module it
-   * is every file that module reaches, which is cheaper expanded at once than
-   * one at a time as TypeScript asks.
+   * It is expanded again if what it read no longer says the same. Any other
+   * file that read this one is expanded when TypeScript asks for it, or when the
+   * project next opens: read narrowly, doing them together saves nothing, and
+   * typing in a file any binding literal's program reads would cost them all.
    */
   #expansionFor(
     state: ConfigState,
@@ -903,20 +910,10 @@ export class SweetenerContentMapper {
       !state.project.sweet.macroExtensions.includes(extname(fileName))
     )
       return undefined;
-    // One round for the request, so a list of inputs files share is walked
-    // once.
-    const round = new InputCheckRound();
-    const fresh = (file: ExpandedFile) => round.hold(file.consulted);
     const cached = state.expanded.get(fileName);
-    if (cached !== undefined && fresh(cached)) return cached;
-    const others = [...state.expanded]
-      .filter(([name, file]) => name !== fileName && !fresh(file))
-      .map(([name]) => name);
-    if (others.length > 0) this.#expandOrForget(state, [fileName, ...others]);
-    // Alone if there were no others, or if expanding them with it failed: a
-    // failure then is this file's to report.
-    if (others.length === 0 || !state.expanded.has(fileName))
-      this.#expand(state, [fileName]);
+    if (cached !== undefined && new InputCheckRound().hold(cached.consulted))
+      return cached;
+    this.#expand(state, [fileName]);
     return state.expanded.get(fileName);
   }
 
@@ -1002,7 +999,11 @@ export class SweetenerContentMapper {
       watchedFiles: [
         ...new Set([
           canonical(state.configFileName),
-          ...answers.map(({ path }) => canonical(path)),
+          // Not what a directory lists, which is not a file to watch and whose
+          // change names only the child: heard when the project next opens.
+          ...answers
+            .filter(({ kind }) => kind !== "subdirectories")
+            .map(({ path }) => canonical(path)),
           ...state.unlisted.keys(),
         ]),
       ].sort(),

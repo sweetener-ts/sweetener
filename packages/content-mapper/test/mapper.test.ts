@@ -1012,6 +1012,28 @@ describe("what it does not expand again", () => {
     expect(reopen(mapper, config).configIdentity).toBe(result.configIdentity);
   });
 
+  test("typing in a file with a binding literal elsewhere expands that file", () => {
+    const { config, file } = project({
+      "local.ts": "export const Circle = 1;\n",
+      "macros.sts": [
+        'import { Circle } from "./local";',
+        "export syntax kind:expr {",
+        "  literal Circle as Circle;",
+        '  rule { kind(Circle) } => { "circle" }',
+        '  fallback rule { kind($value:expr) } => { "other" }',
+        "}",
+        "",
+      ].join("\n"),
+      "main.sts":
+        'import { kind } from "./macros.sts" for syntax;\nimport { Circle } from "./local";\nexport const a = kind(Circle);\n',
+      "other.sts": "export const o = 1;\n",
+    });
+    const { transform } = opened(config);
+    const asked = expansions();
+    transform(file("other.sts"), "export const o = 2;\n");
+    expect(asked()).toEqual([[file("other.sts")]]);
+  });
+
   test("a binding literal gone stops the config being loaded at every open", () => {
     const module = (literal: boolean) =>
       [
@@ -1137,12 +1159,34 @@ describe("a file the config does not list", () => {
   test("several are each looked for once", () => {
     const { config, file } = project();
     const { transform } = opened(config);
-    const walked = vi.spyOn(ts.sys, "readDirectory");
     const names = ["new1.sts", "new2.sts", "new3.sts"];
+    for (const name of names) writeFileSync(file(name), "export {};\n");
+    const walked = vi.spyOn(ts.sys, "readDirectory");
     for (const name of names) transform(file(name), "export {};\n");
     const walks = walked.mock.calls.length;
     for (const name of names) transform(file(name), "export {};\n");
     expect(walked.mock.calls).toHaveLength(walks);
+  });
+
+  test("written before the config was loaded is not looked for", () => {
+    const { config, file } = project();
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["macros.sts", "main.sts"],
+      }),
+    );
+    writeFileSync(file("outside.sts"), "export {};\n");
+    // Opened long enough after every file was written for its stat to say so.
+    const later = Date.now() + 60_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const { transform } = opened(config);
+    const walked = vi.spyOn(ts.sys, "readDirectory");
+    expect(transform(file("outside.sts")).diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+    expect(walked).not.toHaveBeenCalled();
   });
 
   test("hears what is wrong with a config that has since broken", () => {
@@ -1191,10 +1235,11 @@ describe("a file the config does not list", () => {
     expect(transform(file("new.sts"), text).diagnostics).toEqual([
       expect.objectContaining({ code: 6202 }),
     ]);
-    const walks = walked.mock.calls.length;
-    expect(walks).toBeGreaterThan(0);
+    // Not on disk, so walking `include` could not find it.
+    expect(walked).not.toHaveBeenCalled();
     transform(file("new.sts"), `${text}// typed\n`);
-    expect(walked.mock.calls).toHaveLength(walks);
+    expect(walked).not.toHaveBeenCalled();
+    const walks = walked.mock.calls.length;
     writeFileSync(file("new.sts"), text);
     expect(transform(file("new.sts"), text).diagnostics).toEqual([]);
     expect(walked.mock.calls.length).toBeGreaterThan(walks);

@@ -234,7 +234,11 @@ export function nowNanoseconds(): bigint {
   return BigInt(Date.now()) * 1_000_000n;
 }
 
-function settled(stats: BigIntStats, readAfter: bigint): boolean {
+/**
+ * Whether a file with these stats has not been written since well before a
+ * moment: a stat's times lag the clock, so one close to it says nothing.
+ */
+export function settled(stats: BigIntStats, readAfter: bigint): boolean {
   return (
     stats.mtimeNs < readAfter - settledNanoseconds &&
     stats.ctimeNs < readAfter - settledNanoseconds

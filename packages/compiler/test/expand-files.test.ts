@@ -205,7 +205,10 @@ test("a file alone reads only what it leads to", () => {
       },
     },
   });
-  alone.expandProject(project, { files: new Set([user]) });
+  // Named however the caller writes it.
+  alone.expandProject(project, {
+    files: new Set([`${directory}/./a.sts`]),
+  });
   expect(reads).toContain(module);
   expect(reads).not.toContain(other);
   expect(alone.inspectSource(user)?.generated.text).toContain(

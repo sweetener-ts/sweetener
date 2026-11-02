@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -262,6 +262,18 @@ registerHooks({
     expect(logged).toContain("printed loading");
     const bodies = [...new MessageReader().messages(Buffer.concat(received))];
     expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
+  });
+
+  test("an output that fails rejects, and is not left to crash the process", async () => {
+    const input = new PassThrough();
+    const output = new Writable({
+      write(_chunk, _encoding, done) {
+        done(new Error("EPIPE"));
+      },
+    });
+    const served = serve(new Map(), input, output);
+    input.write(frame({ jsonrpc: "2.0", id: 1, method: "unknown" }));
+    await expect(served).rejects.toThrow("EPIPE");
   });
 
   test("an input that ends inside a message rejects", async () => {

@@ -224,11 +224,14 @@ Other commands:
 
 ## Know the limits
 
-- **No editor support.** Editing `.sts` gives no hover, diagnostics, or
-  go-to-definition. The loop is edit, run `check`, read the output.
-- **Rename through a macro is declined.** A captured reference carries no proof
-  of which binding each copy denotes, so the language service refuses rather
-  than guessing.
+- **Editor support needs TypeScript 7.1.** `@sweetener/content-mapper` gives
+  `.sts` hover, diagnostics and go-to-definition through TypeScript's own
+  language server: see `docs/integrations.md`. Without it, the loop is edit, run
+  `check`, read the output.
+- **Rename through a macro is cautious.** Through the content mapper, a name a
+  macro copied renames where every copy means one binding, and refuses where they
+  differ or a copy stands for two names, as in `{ $x }`. Sweetener's own
+  language-service host refuses any captured reference.
 - Macros run at compile time only, and cannot call host functions or inspect
   runtime values.
 - **A macro is visible to what follows its definition**, the way a `const` is,

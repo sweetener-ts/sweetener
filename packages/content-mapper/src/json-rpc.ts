@@ -194,6 +194,11 @@ export function serve(
       }
     });
     input.on("error", reject);
+    // TypeScript closing the pipe mid reply, as it may when it shuts down.
+    output.on("error", (error) => {
+      input.destroy();
+      reject(error);
+    });
     input.on("end", () => {
       if (reader.pending)
         reject(new Error("JSON-RPC input ended inside a message"));

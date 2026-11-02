@@ -56,8 +56,9 @@ the scopes that come out.
 
 ## What it deliberately does not do
 
-There is no language server here, so nothing type-checks a `.sts` in the
-editor. That is on purpose rather than unfinished: associating these files with
+There is no language server here: before TypeScript 7.1, nothing type-checks a
+`.sts` in the editor. That is on purpose rather than unfinished: associating
+these files with
 the built-in `typescript` language would start TypeScript's own service on
 them, and it would report every macro definition and every macro invocation as
 a syntax error. Highlighting without diagnostics is worth more than
