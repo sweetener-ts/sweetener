@@ -7,6 +7,7 @@ import {
   InputCheckRound,
   loadStandaloneProject,
   loadSweetProject,
+  macroExtensionTarget,
   nowNanoseconds,
   type CheckedInput,
   type DefaultProjectExpansionProvider,
@@ -17,7 +18,13 @@ import {
 } from "@sweetener/compiler";
 import * as ts from "typescript";
 import { createBindingAgreement } from "./binding-agreement.js";
-import { ErrorCode, ResponseError, type RequestHandler } from "./json-rpc.js";
+import {
+  describeError,
+  ErrorCode,
+  isObject,
+  ResponseError,
+  type RequestHandler,
+} from "./json-rpc.js";
 import {
   protocolVersion,
   type CloseProjectParams,
@@ -51,10 +58,6 @@ const virtualExtensions: ReadonlyMap<string, VirtualExtension> = new Map([
 
 function canonical(fileName: string): string {
   return resolve(fileName).replaceAll("\\", "/");
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireString(
@@ -102,7 +105,8 @@ type Overlay = Map<
  * TypeScript closes and reopens a project whenever its snapshot changes --
  * in an editor, on every edit -- so this outlives any one project handle and
  * is found again by the config's name. It is replaced when the config itself
- * says something different.
+ * says something different; a change to which files it lists keeps what is
+ * expanded, since a file's expansion reads only what its inputs say.
  *
  * Each expanded file keeps what its expansion asked of the files: its own
  * text, the macro modules it imported for syntax and every lookup made
@@ -118,15 +122,18 @@ interface ConfigState {
   readonly configFileName: string;
   /** Everything about the config that decides what expansion does. */
   readonly signature: string;
-  readonly project: LoadedSweetProject;
+  /** As last loaded: the file list may have changed since the state was made. */
+  project: LoadedSweetProject;
+  /** The project's files, by the names the mapper writes them. */
+  listed: ReadonlySet<string>;
+  /**
+   * Whether the last expansion resolved binding literals, which makes every
+   * file's expansion depend on the whole file list.
+   */
+  resolvesBindingLiterals: boolean;
   /** Expands through `overlay`, in front of the disk. */
   readonly provider: DefaultProjectExpansionProvider;
-  /**
-   * TypeScript's unsaved text. It stands in for the file until the file
-   * changes: TypeScript re-sends a buffer it holds, but once a file is saved
-   * or rewritten, the text it last sent for it may be older than the disk --
-   * and the file that imports it may well be asked for first.
-   */
+  /** See `SweetenerContentMapper.#overlays`. */
   readonly overlay: Overlay;
   readonly expanded: Map<string, ExpandedFile>;
   /**
@@ -135,6 +142,8 @@ interface ConfigState {
    * read.
    */
   claimed: ReadonlySet<string> | undefined;
+  /** What the configs said when `claimed` was read from them. */
+  claimedFrom: string | undefined;
   /** The identity last given, kept while what it was made from holds. */
   identity: Identity | undefined;
 }
@@ -154,9 +163,24 @@ interface Identity {
 function signatureOf(project: LoadedSweetProject): string {
   return JSON.stringify({
     options: project.typescript.options,
-    fileNames: [...project.typescript.fileNames].map(canonical).sort(),
     sweet: project.sweet,
   });
+}
+
+function listedFiles(project: LoadedSweetProject): ReadonlySet<string> {
+  return new Set(project.typescript.fileNames.map(canonical));
+}
+
+/** Remembers the text TypeScript holds for a file, if it is not the file's. */
+function holdText(overlay: Overlay, fileName: string, content: string): void {
+  const disk = ts.sys.readFile(fileName);
+  if (content === disk) overlay.delete(fileName);
+  else overlay.set(fileName, { text: content, disk });
+}
+
+/** What was thrown, in a sentence fit for the author to read. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** A source's text as it stands: TypeScript's unsaved text, or the disk's. */
@@ -345,14 +369,6 @@ interface Expanded {
   readonly claimed: ReadonlySet<string> | undefined;
 }
 
-/** What each source extension expands to, for a file that could not be. */
-const failedExtensions: ReadonlyMap<string, VirtualExtension> = new Map([
-  [".sts", ".ts"],
-  [".stsx", ".tsx"],
-  [".sjs", ".js"],
-  [".sjsx", ".jsx"],
-]);
-
 /**
  * A file Sweetener could not expand, as TypeScript should see it: empty,
  * with one error at its start saying why. Empty rather than the source as
@@ -365,7 +381,10 @@ function failedTransform(
 ): TransformResult {
   return {
     text: "",
-    extension: failedExtensions.get(extname(request.fileName)) ?? ".ts",
+    extension:
+      virtualExtensions.get(
+        macroExtensionTarget(extname(request.fileName)) ?? ".ts",
+      ) ?? ".ts",
     mappings: [],
     diagnostics: [{ messageText, start: 0, length: 0, code }],
   };
@@ -393,6 +412,15 @@ function describeLocation(diagnostic: ts.Diagnostic): string {
  */
 export class SweetenerContentMapper {
   readonly #configs = new Map<string, ConfigState>();
+  /**
+   * TypeScript's unsaved text, by config. It stands in for the file until the
+   * file changes: TypeScript re-sends a buffer it holds, but once a file is
+   * saved or rewritten, the text it last sent for it may be older than the
+   * disk -- and the file that imports it may well be asked for first. It
+   * outlives a config's state: TypeScript re-sends a buffer only when it
+   * changes, whatever became of the config meanwhile.
+   */
+  readonly #overlays = new Map<string, Overlay>();
   /** Each open project handle, and the config it names ("" for none). */
   readonly #handles = new Map<string, string>();
   /** Configs Sweetener cannot use, and what is wrong with each. */
@@ -493,7 +521,15 @@ export class SweetenerContentMapper {
         optionDiagnostics: [...optionDiagnostics, { path: [], ...problems }],
       };
     const state = this.#configs.get(configFileName)!;
-    state.claimed = claimedExtensions(configFileName);
+    // Each config in the chain was read loading the project just now, so
+    // reading them again waits for one of them to say something different.
+    const configs = digest(
+      state.project.configurationInputs.map((input) => JSON.stringify(input)),
+    );
+    if (state.claimedFrom !== configs) {
+      state.claimed = claimedExtensions(configFileName);
+      state.claimedFrom = configs;
+    }
     const identity = this.#identityOf(state);
     return {
       configIdentity: identity.value,
@@ -517,6 +553,10 @@ export class SweetenerContentMapper {
         `Unknown project handle ${JSON.stringify(request.projectHandle)}`,
       );
     const fileName = canonical(request.fileName);
+    // Before anything else: text sent while the config is unusable is what
+    // the file says once it is usable again.
+    if (configFileName !== "")
+      holdText(this.#overlayFor(configFileName), fileName, request.content);
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
       return failedTransform(request, unusable.code, unusable.messageText);
@@ -525,23 +565,19 @@ export class SweetenerContentMapper {
       expanded =
         configFileName === ""
           ? this.#standalone(fileName, request.content)
-          : this.#expansionFor(
-              this.#configs.get(configFileName)!,
-              fileName,
-              request.content,
-            );
+          : this.#expansionFor(this.#configs.get(configFileName)!, fileName);
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
       // Thrown back as a failed request, TypeScript would report that the
       // mapper failed and drop what failed; returned as a diagnostic, the
       // author reads why, where the file is.
       process.stderr.write(
-        `Sweetener failed to expand ${fileName}:\n${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        `Sweetener failed to expand ${fileName}:\n${describeError(error)}\n`,
       );
       return failedTransform(
         request,
         6201,
-        `Project expansion failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Project expansion failed: ${messageOf(error)}`,
       );
     }
     const { file, project } = expanded;
@@ -626,9 +662,7 @@ export class SweetenerContentMapper {
     try {
       loaded = { project: loadSweetProject(configFileName) };
     } catch (error) {
-      loaded = {
-        failure: error instanceof Error ? error.message : String(error),
-      };
+      loaded = { failure: messageOf(error) };
     }
     const problems =
       "failure" in loaded
@@ -645,12 +679,12 @@ export class SweetenerContentMapper {
       this.#stateFor(configFileName, loaded.project);
     } catch (error) {
       process.stderr.write(
-        `Sweetener failed to expand ${configFileName}:\n${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        `Sweetener failed to expand ${configFileName}:\n${describeError(error)}\n`,
       );
       return this.#markUnusable(
         configFileName,
         6201,
-        `Project expansion failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Project expansion failed: ${messageOf(error)}`,
       );
     }
     return undefined;
@@ -667,6 +701,15 @@ export class SweetenerContentMapper {
     return problem;
   }
 
+  #overlayFor(configFileName: string): Overlay {
+    let overlay = this.#overlays.get(configFileName);
+    if (overlay === undefined) {
+      overlay = new Map();
+      this.#overlays.set(configFileName, overlay);
+    }
+    return overlay;
+  }
+
   /**
    * The state for a config, kept from before if the config still says the
    * same thing, and otherwise made fresh by expanding the whole project --
@@ -675,25 +718,45 @@ export class SweetenerContentMapper {
   #stateFor(configFileName: string, project: LoadedSweetProject): ConfigState {
     const signature = signatureOf(project);
     const existing = this.#configs.get(configFileName);
-    if (existing !== undefined && existing.signature === signature)
+    if (existing !== undefined && existing.signature === signature) {
+      this.#relist(existing, project);
       return existing;
-    // TypeScript's unsaved text outlives a change to the config: it re-sends
-    // a buffer only when that buffer changes, and a file expanded meanwhile
-    // reads the macros it holds.
-    const overlay: Overlay = new Map(existing?.overlay);
+    }
+    const overlay = this.#overlayFor(configFileName);
     const state: ConfigState = {
       configFileName,
       signature,
       project,
+      listed: listedFiles(project),
+      resolvesBindingLiterals: false,
       provider: overlayProvider(overlay),
       overlay,
       expanded: new Map(),
-      claimed: existing?.claimed,
+      claimed: undefined,
+      claimedFrom: undefined,
       identity: undefined,
     };
     this.#expand(state, undefined);
     this.#configs.set(configFileName, state);
     return state;
+  }
+
+  /**
+   * Bring a kept state up to the project as just loaded. A file made or gone
+   * changes what expands only for the files that looked for it, which their
+   * inputs say, so only a file newly listed is expanded here -- unless binding
+   * literals were resolved, over a program of the whole file list.
+   */
+  #relist(state: ConfigState, project: LoadedSweetProject): void {
+    state.project = project;
+    const listed = listedFiles(project);
+    const added = [...listed].filter((name) => !state.listed.has(name));
+    if (added.length === 0 && listed.size === state.listed.size) return;
+    state.listed = listed;
+    for (const name of state.expanded.keys())
+      if (!listed.has(name)) state.expanded.delete(name);
+    if (state.resolvesBindingLiterals) this.#expand(state, undefined);
+    else if (added.length > 0) this.#expand(state, added);
   }
 
   /**
@@ -704,12 +767,13 @@ export class SweetenerContentMapper {
     const expandedAt = nowNanoseconds();
     // Named as the provider names them, which on Windows is not how this
     // mapper writes them.
-    state.provider.expandProject(state.project, {
+    const output = state.provider.expandProject(state.project, {
       files:
         fileNames === undefined
           ? undefined
           : new Set(fileNames.map((name) => resolve(name))),
     });
+    state.resolvesBindingLiterals = output.resolvesBindingLiterals;
     const check = checkedInputs(state.provider.fileSystem, expandedAt);
     for (const fileName of fileNames ??
       state.project.typescript.fileNames.map(canonical)) {
@@ -726,22 +790,26 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * This file's expansion against exactly the text TypeScript holds.
+   * This file's expansion against the text TypeScript holds, which has joined
+   * the overlay. A file the project does not expand has none, and reading
+   * every source would only say so again.
    *
-   * The text joins the overlay, then every expansion whose inputs no longer
-   * hold is stale. When this file's is, it is expanded again together with
-   * every other stale file: after an edit that is the one file, and after a
-   * saved change to a macro module it is every file that module reaches,
-   * which is cheaper expanded at once than one at a time as TypeScript asks.
+   * Every expansion whose inputs no longer hold is stale. When this file's
+   * is, it is expanded again together with every other stale file: after an
+   * edit that is the one file, and after a saved change to a macro module it
+   * is every file that module reaches, which is cheaper expanded at once than
+   * one at a time as TypeScript asks.
    */
-  #expansionFor(
-    state: ConfigState,
-    fileName: string,
-    content: string,
-  ): Expanded {
-    const disk = ts.sys.readFile(fileName);
-    if (content === disk) state.overlay.delete(fileName);
-    else state.overlay.set(fileName, { text: content, disk });
+  #expansionFor(state: ConfigState, fileName: string): Expanded {
+    if (
+      !state.listed.has(fileName) ||
+      !state.project.sweet.macroExtensions.includes(extname(fileName))
+    )
+      return {
+        file: undefined,
+        project: state.project,
+        claimed: state.claimed,
+      };
     // One round for the request: each file is read once, however many
     // expansions asked of it.
     const round = new InputCheckRound();

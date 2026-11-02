@@ -37,26 +37,36 @@ const headerSeparator = Buffer.from("\r\n\r\n", "ascii");
 export class MessageReader {
   #buffered: Buffer = Buffer.alloc(0);
 
-  /** Every complete message body the bytes so far contain, in order. */
-  push(chunk: Buffer): string[] {
+  /**
+   * Each complete message body the bytes so far contain, in order, as it is
+   * reached: a header that cannot be read throws only once the messages in
+   * front of it have been handed over, which were sent correctly and are owed
+   * their replies.
+   */
+  *messages(chunk: Buffer): Generator<string, void, void> {
     this.#buffered =
       this.#buffered.length === 0
         ? chunk
         : Buffer.concat([this.#buffered, chunk]);
-    const bodies: string[] = [];
     for (;;) {
       const headerEnd = this.#buffered.indexOf(headerSeparator);
-      if (headerEnd === -1) return bodies;
+      if (headerEnd === -1) return;
       const length = contentLength(
         this.#buffered.subarray(0, headerEnd).toString("ascii"),
       );
       const bodyStart = headerEnd + headerSeparator.length;
-      if (this.#buffered.length < bodyStart + length) return bodies;
-      bodies.push(
-        this.#buffered.subarray(bodyStart, bodyStart + length).toString("utf8"),
-      );
+      if (this.#buffered.length < bodyStart + length) return;
+      const body = this.#buffered
+        .subarray(bodyStart, bodyStart + length)
+        .toString("utf8");
       this.#buffered = this.#buffered.subarray(bodyStart + length);
+      yield body;
     }
+  }
+
+  /** Every complete message body the bytes so far contain, in order. */
+  push(chunk: Buffer): string[] {
+    return [...this.messages(chunk)];
   }
 
   /** Whether bytes of an unfinished message are still waiting. */
@@ -88,7 +98,7 @@ export function frame(message: unknown): Buffer {
   ]);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -108,7 +118,7 @@ export function dispatch(
   try {
     message = JSON.parse(body);
   } catch (error) {
-    return failure(null, ErrorCode.ParseError, describe(error));
+    return failure(null, ErrorCode.ParseError, describeError(error));
   }
   if (!isObject(message) || message["jsonrpc"] !== "2.0")
     return failure(
@@ -131,7 +141,7 @@ export function dispatch(
   } catch (error) {
     return error instanceof ResponseError
       ? failure(id, error.code, error.message)
-      : failure(id, ErrorCode.InternalError, describe(error));
+      : failure(id, ErrorCode.InternalError, describeError(error));
   }
 }
 
@@ -139,7 +149,8 @@ function failure(id: MessageId | null, code: number, message: string) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-function describe(error: unknown): string {
+/** What was thrown, with where it was thrown from if it says. */
+export function describeError(error: unknown): string {
   return error instanceof Error
     ? (error.stack ?? error.message)
     : String(error);
@@ -161,17 +172,14 @@ export function serve(
   const reader = new MessageReader();
   return new Promise((resolvePromise, reject) => {
     input.on("data", (chunk: Buffer) => {
-      let bodies: string[];
       try {
-        bodies = reader.push(chunk);
+        for (const body of reader.messages(chunk)) {
+          const response = dispatch(handlers, body);
+          if (response !== undefined) output.write(frame(response));
+        }
       } catch (error) {
         input.destroy();
         reject(error instanceof Error ? error : new Error(String(error)));
-        return;
-      }
-      for (const body of bodies) {
-        const response = dispatch(handlers, body);
-        if (response !== undefined) output.write(frame(response));
       }
     });
     input.on("error", reject);

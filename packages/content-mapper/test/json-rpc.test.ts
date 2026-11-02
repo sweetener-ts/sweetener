@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import {
   dispatch,
@@ -136,6 +138,48 @@ describe("serve", () => {
     await served;
     const bodies = new MessageReader().push(Buffer.concat(written));
     expect(bodies.map((body) => JSON.parse(body).result)).toEqual(["a", "b"]);
+  });
+
+  test("answers what came before a header it cannot read, then rejects", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const written: Buffer[] = [];
+    output.on("data", (chunk: Buffer) => written.push(chunk));
+    const served = serve(
+      new Map([["echo", (params) => params]]),
+      input,
+      output,
+    );
+    input.write(
+      Buffer.concat([
+        frame({ jsonrpc: "2.0", id: 1, method: "echo", params: "a" }),
+        Buffer.from("Content-Length: nope\r\n\r\n", "ascii"),
+      ]),
+    );
+    await expect(served).rejects.toThrow(/Malformed Content-Length/u);
+    const bodies = new MessageReader().push(Buffer.concat(written));
+    expect(bodies.map((body) => JSON.parse(body).result)).toEqual(["a"]);
+  });
+
+  test("the server's last reply arrives whole after its input ends", async () => {
+    const server = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../dist/src/server.js", import.meta.url))],
+      { stdio: ["pipe", "pipe", "inherit"] },
+    );
+    const received: Buffer[] = [];
+    server.stdout.on("data", (chunk: Buffer) => received.push(chunk));
+    // Far more than a pipe holds at once, so the reply is still being written
+    // when the input has ended.
+    const method = "x".repeat(4_000_000);
+    server.stdin.end(frame({ jsonrpc: "2.0", id: 1, method }));
+    const status = await new Promise((resolveExit) =>
+      server.once("close", resolveExit),
+    );
+    expect(status).toBe(0);
+    const bodies = new MessageReader().push(Buffer.concat(received));
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0]!).error.message).toContain(method);
   });
 
   test("an input that ends inside a message rejects", async () => {

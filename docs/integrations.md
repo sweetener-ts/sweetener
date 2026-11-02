@@ -128,6 +128,11 @@ Where it differs from `sweetener check`:
   saved. TypeScript transforms a file again only when its own text or the
   project's identity changes, and it asks for the identity before it
   transforms the module that was edited.
+- Expansion reads the tsconfig on disk, as `sweetener check` and every build
+  integration do. An unsaved edit to the tsconfig, or an option given to `tsc`
+  on its command line, reaches TypeScript but not expansion: TypeScript sends
+  its options, but `sweet` is not among them, and which files are listed is
+  not either.
 - The protocol carries errors only. Sweetener's warnings, such as an item the
   reader passed through unread, are left out rather than reported as errors.
 - `sweetener check` adds what expansion knows to TypeScript's "cannot find

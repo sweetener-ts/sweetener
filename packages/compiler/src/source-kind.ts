@@ -37,6 +37,11 @@ const macroExtensionTargets = new Map<string, string>([
   [".sjsx", ".jsx"],
 ]);
 
+/** What a macro extension expands to, if `extension` is one. */
+export function macroExtensionTarget(extension: string): string | undefined {
+  return macroExtensionTargets.get(extension);
+}
+
 /** Macro extensions a project may list in `sweet.macroExtensions`. */
 export const supportedMacroExtensions: readonly string[] = Object.freeze([
   ...macroExtensionTargets.keys(),

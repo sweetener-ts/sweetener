@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { serve } from "./json-rpc.js";
+import { describeError, serve } from "./json-rpc.js";
 import { SweetenerContentMapper } from "./mapper.js";
 
 // stdout carries the protocol and nothing else: one stray line of logging
@@ -9,11 +9,14 @@ import { SweetenerContentMapper } from "./mapper.js";
 for (const method of ["log", "info", "debug"] as const)
   console[method] = (...values: unknown[]) => console.error(...values);
 
-serve(new SweetenerContentMapper().handlers(), process.stdin, process.stdout)
-  .then(() => process.exit(0))
-  .catch((error: unknown) => {
-    process.stderr.write(
-      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
-    );
-    process.exit(1);
-  });
+// The process ends by itself once stdin has and stdout has drained. Exiting
+// here could drop replies still on their way out, where a pipe is written
+// asynchronously.
+serve(
+  new SweetenerContentMapper().handlers(),
+  process.stdin,
+  process.stdout,
+).catch((error: unknown) => {
+  process.stderr.write(`${describeError(error)}\n`);
+  process.exitCode = 1;
+});

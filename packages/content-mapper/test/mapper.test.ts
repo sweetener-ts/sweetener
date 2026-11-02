@@ -2,13 +2,18 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadSweetProject } from "@sweetener/compiler";
-import { describe, expect, test } from "vitest";
+import {
+  DefaultProjectExpansionProvider,
+  loadSweetProject,
+} from "@sweetener/compiler";
+import * as ts from "typescript";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBindingAgreement } from "../src/binding-agreement.js";
 import { ResponseError } from "../src/json-rpc.js";
 import { SweetenerContentMapper } from "../src/mapper.js";
@@ -164,6 +169,32 @@ describe("openProject", () => {
       compilerOptions: {},
     });
     expect(transform(file("main.sts")).text).toContain(`trim("  hello  ", 1)`);
+  });
+
+  test("keeps TypeScript's unsaved text while the config cannot be used", () => {
+    const { config, file } = project();
+    const { mapper, transform } = opened(config);
+    const reopen = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    const usable = readFileSync(config, "utf8");
+    writeFileSync(config, "{ not json");
+    expect(reopen().optionDiagnostics).toHaveLength(1);
+    // Sent while the config is broken, and just as much what the file says.
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 2)"),
+    );
+    writeFileSync(config, usable);
+    expect(reopen().optionDiagnostics).toEqual([]);
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ", 2)`);
   });
 
   test("an unsaved change to a macro module changes the identity, and one to a file that only uses it does not", () => {
@@ -493,6 +524,103 @@ describe("transform", () => {
   });
 });
 
+describe("what it does not expand again", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The files each expansion from here on is asked for, `all` for every one. */
+  const expansions = () => {
+    const spy = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    return () =>
+      spy.mock.calls.map(([, options]) =>
+        options?.files === undefined ? "all" : [...options.files].sort(),
+      );
+  };
+  const reopen = (mapper: SweetenerContentMapper, config: string) =>
+    mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+
+  test("a file the project does not list says so without reading the project", () => {
+    const { config, file } = project();
+    const { transform } = opened(config);
+    const asked = expansions();
+    const result = transform(file("elsewhere.stsx"), "export const a = 1;\n");
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+    expect(result.extension).toBe(".tsx");
+    expect(asked()).toEqual([]);
+  });
+
+  test("a file made expands that file, and keeps what the others expanded to", () => {
+    const { config, file } = project();
+    const { mapper, transform } = opened(config);
+    const asked = expansions();
+    writeFileSync(file("added.sts"), "export const a = 1;\n");
+    reopen(mapper, config);
+    expect(asked()).toEqual([[file("added.sts")]]);
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+    expect(transform(file("added.sts")).text).toContain("export const a = 1;");
+    expect(asked()).toHaveLength(1);
+  });
+
+  test("a file gone is no longer served, and the others stay", () => {
+    const { config, directory, file } = project({ "gone.sts": "export {};\n" });
+    const { mapper, transform } = opened(config);
+    const asked = expansions();
+    rmSync(join(directory, "gone.sts"));
+    reopen(mapper, config);
+    expect(asked()).toEqual([]);
+    expect(transform(file("gone.sts"), "export {};\n").diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+    transform(file("main.sts"));
+    expect(asked()).toEqual([]);
+  });
+
+  test("a file made expands everything where binding literals read the file list", () => {
+    const { config, file } = project({
+      "local.ts": "export const Circle = 1;\n",
+      "macros.sts": [
+        'import { Circle } from "./local";',
+        "export syntax kind:expr {",
+        "  literal Circle as Circle;",
+        '  rule { kind(Circle) } => { "circle" }',
+        '  fallback rule { kind($value:expr) } => { "other" }',
+        "}",
+        "",
+      ].join("\n"),
+      "main.sts":
+        'import { kind } from "./macros.sts" for syntax;\nimport { Circle } from "./local";\nexport const answer = kind(Circle);\n',
+    });
+    const { mapper } = opened(config);
+    const asked = expansions();
+    writeFileSync(file("added.sts"), "export const a = 1;\n");
+    reopen(mapper, config);
+    expect(asked()).toEqual(["all"]);
+  });
+
+  test("reads the configs no more than loading them and checking the identity do", () => {
+    const { config } = project();
+    const { mapper } = opened(config);
+    const reads = vi.spyOn(ts.sys, "readFile");
+    reopen(mapper, config);
+    // Loading reads it, and a check of the identity reads a file written too
+    // recently for its stat to say anything. Reading what the entry claims
+    // waits for the config to say something different.
+    expect(
+      reads.mock.calls.filter(([path]) => path === config).length,
+    ).toBeLessThanOrEqual(2);
+  });
+});
+
 describe("errors in other files", () => {
   const helpers = `export syntax shout:expr {
   rule { shout($value:expr) } => { $value.toUpperCase( }
@@ -548,6 +676,39 @@ export const loud = shout("a");
 
   test("leaves an error in a module it transforms to that module", () => {
     expect(withModule(both)).toEqual([]);
+  });
+
+  test("hears a change to what the entry claims, which changes no option", () => {
+    const { directory, file } = project({
+      "helpers.stsx": helpers,
+      "main.sts": user,
+    });
+    const tsconfig = join(directory, "tsconfig.json");
+    const claiming = (extensions: readonly string[]) =>
+      writeFileSync(
+        tsconfig,
+        JSON.stringify({
+          compilerOptions: {
+            module: "ESNext",
+            target: "ES2022",
+            jsx: "preserve",
+          },
+          include: ["main.sts", "helpers.stsx"],
+          contentMappers: [
+            { package: "@sweetener/content-mapper", extensions },
+          ],
+        }),
+      );
+    claiming([".sts"]);
+    const { mapper, transform } = opened(tsconfig);
+    expect(transform(file("main.sts")).diagnostics).toHaveLength(1);
+    claiming([".sts", ".stsx"]);
+    mapper.openProject({
+      configFileName: tsconfig,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+    expect(transform(file("main.sts")).diagnostics).toEqual([]);
   });
 
   test("reads the claimed extensions through extends, as TypeScript does", () => {

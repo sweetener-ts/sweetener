@@ -1,3 +1,5 @@
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
@@ -57,4 +59,61 @@ test("expanding one file alone matches expanding the project", () => {
     }
   }
   expect(compared).toBeGreaterThan(20);
+});
+
+/**
+ * A macro module is read again once a template of it writes an element, and
+ * only expanding a use of that template finds out. Skipping that file reads
+ * the module the first way, which changes nothing for a file using another of
+ * its macros: the reading belongs to the template, and any file using the
+ * template asks for it.
+ */
+test("a file alone matches where only a skipped file has a macro module read again", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-alone-")));
+  const write = (name: string, text: string) => {
+    writeFileSync(join(directory, name), text);
+    return join(directory, name);
+  };
+  write(
+    "macros.stsx",
+    `export syntax el:expr { rule { el } => { <p>(optional) note</p> } }
+export syntax later:expr { rule { later } => { 7 } }
+`,
+  );
+  const plain = write(
+    "plain.stsx",
+    'import { later } from "./macros.stsx" for syntax;\nexport const a = later;\n',
+  );
+  const element = write(
+    "element.stsx",
+    'import { el } from "./macros.stsx" for syntax;\nexport const b = el;\n',
+  );
+  const config = write(
+    "tsconfig.json",
+    JSON.stringify({
+      compilerOptions: {
+        noEmit: true,
+        target: "ES2022",
+        module: "ESNext",
+        moduleResolution: "Bundler",
+        jsx: "preserve",
+      },
+      sweet: { macroExtensions: [".sts", ".stsx"] },
+      files: ["macros.stsx", "plain.stsx", "element.stsx"],
+    }),
+  );
+  const project = loadSweetProject(config);
+  const whole = createDefaultProjectExpansionProvider();
+  whole.expandProject(project);
+  expect(whole.inspectSource(element)?.generated.text).toContain(
+    "<p>(optional) note</p>",
+  );
+  for (const fileName of [plain, element]) {
+    const alone = createDefaultProjectExpansionProvider();
+    alone.expandProject(project, { files: new Set([fileName]) });
+    expect(alone.inspectSource(fileName)?.generated.text).toBe(
+      whole.inspectSource(fileName)?.generated.text,
+    );
+    expect(alone.inspectSource(fileName)?.diagnostics).toEqual([]);
+  }
 });
