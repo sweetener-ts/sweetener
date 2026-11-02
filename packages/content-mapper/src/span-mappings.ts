@@ -302,10 +302,17 @@ function joinedAsWritten(
   generatedText: string,
   sourceText: string,
 ): Segment[] {
+  // Not a token with other copies: as part of a longer span, it would overlap
+  // them, and TypeScript accepts no such thing.
+  const uses = new Map<string, number>();
+  for (const segment of segments)
+    uses.set(spanKey(segment), (uses.get(spanKey(segment)) ?? 0) + 1);
   const joined: Segment[] = [];
   const joins = (segment: Segment) =>
     segment.kind === SpanMapKind.Verbatim &&
-    segment.features === SpanMapFeature.All;
+    segment.features === SpanMapFeature.All &&
+    // A run already joined has a span no count has heard of.
+    (uses.get(spanKey(segment)) ?? 1) === 1;
   for (const segment of segments) {
     const last = joined.at(-1);
     if (

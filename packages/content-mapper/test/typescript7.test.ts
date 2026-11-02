@@ -1,4 +1,11 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
@@ -88,6 +95,21 @@ describe("tsc", () => {
     expect(lines.some((line) => line.includes("failed to transform"))).toBe(
       false,
     );
+  });
+
+  test("expands a directory linked in under the project", () => {
+    const { directory } = mappedProject({
+      "main.sts": `import { one } from "./shared/x.sts" for syntax;\nexport const a: string = one;\n`,
+    });
+    const shared = realpathSync(mkdtempSync(join(tmpdir(), "sweet-shared-")));
+    writeFileSync(
+      join(shared, "x.sts"),
+      "export syntax one:expr { rule { one } => { 1 } }\n",
+    );
+    symlinkSync(shared, join(directory, "src", "shared"), "dir");
+    expect(check(directory).lines).toEqual([
+      "src/main.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    ]);
   });
 
   test("accepts an option only TypeScript 7 knows", () => {

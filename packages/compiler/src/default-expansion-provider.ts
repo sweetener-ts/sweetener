@@ -833,6 +833,8 @@ export interface DefaultSourceExpansionInspection extends SourceExpansionInspect
    * `resolvesBindingLiterals`).
    */
   readonly inputs: readonly ExpansionInput[];
+  /** Whether this file, or a macro module it reads from, has binding literals. */
+  readonly readsBindingLiterals: boolean;
 }
 
 /** Default, synchronous project frontend used by both the API and executable. */
@@ -842,11 +844,8 @@ export class DefaultProjectExpansionProvider
   readonly #system: ts.System;
   readonly #fileSystem: ExpansionFileSystem;
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
-  /**
-   * What the expansion last begun asked of the file system to read the
-   * project, once it has read it all.
-   */
-  #readInputs: readonly ExpansionInput[] | undefined;
+  /** What the expansion last begun has asked of the file system so far. */
+  #recorder: InputRecorder | undefined;
   /** The config the last expansion to finish was of, and what it asked. */
   #lastInputs:
     | {
@@ -932,8 +931,8 @@ export class DefaultProjectExpansionProvider
     project: LoadedSweetProject,
     options: { readonly files?: ReadonlySet<string> | undefined } = {},
   ): DefaultProjectExpansionOutput {
-    this.#readInputs = undefined;
     const recorder = new InputRecorder(this.#fileSystem.system);
+    this.#recorder = recorder;
     const settled = (reading: ReadonlySet<string> | undefined) => {
       const history: ReadingHistory = new Map();
       return settleReadings<
@@ -1547,7 +1546,6 @@ export class DefaultProjectExpansionProvider
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
-    this.#readInputs = inputs;
     /**
      * What a file's expansion consulted on disk: what it and each module it
      * reads macros from consulted, every lookup resolving their imports among
@@ -2162,6 +2160,9 @@ export class DefaultProjectExpansionProvider
             ),
           ),
           inputs: inputsFor([file, ...macroModules]),
+          readsBindingLiterals: [file, ...macroModules].some(
+            ({ compiled }) => compiled.bindingLiterals.length > 0,
+          ),
           // The rest of what was reported, and what is held about a name this
           // file left standing. `expand` and a build tool's transform read an
           // inspection and then stop; there is no checker behind either, so
@@ -2447,12 +2448,11 @@ export class DefaultProjectExpansionProvider
   }
 
   /**
-   * What the expansion last begun asked of the file system to read the project,
-   * however it went on from there: an expansion that throws has no output to
-   * say so. Nothing if it never finished reading.
+   * What the expansion last begun has asked of the file system, however it went
+   * on from there: one that throws, even reading, has no output to say so.
    */
-  readInputs(): readonly ExpansionInput[] | undefined {
-    return this.#readInputs;
+  readInputs(): readonly ExpansionInput[] {
+    return this.#recorder?.inputs ?? Object.freeze([]);
   }
 
   /**

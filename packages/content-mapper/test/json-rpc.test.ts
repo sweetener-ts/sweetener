@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   dispatch,
   ErrorCode,
@@ -30,6 +30,21 @@ describe("message framing", () => {
       expect(bodies.map((body) => JSON.parse(body))).toEqual([message]);
       expect(reader.pending).toBe(false);
     }
+  });
+
+  test("a long message is joined once it has all come, not at every chunk", () => {
+    const message = frame({ text: "x".repeat(100_000) });
+    const reader = new MessageReader();
+    const header = message.indexOf("\r\n\r\n") + 4;
+    expect([...reader.messages(message.subarray(0, header))]).toEqual([]);
+    const joins = vi.spyOn(Buffer, "concat");
+    const bodies: string[] = [];
+    for (let at = header; at < message.length; at += 1024)
+      bodies.push(...reader.messages(message.subarray(at, at + 1024)));
+    expect(joins).toHaveBeenCalledOnce();
+    joins.mockRestore();
+    expect(bodies).toHaveLength(1);
+    expect(reader.pending).toBe(false);
   });
 
   test("several messages in one chunk come out in order", () => {
@@ -217,6 +232,36 @@ JSON.parse = (...args) => {
     expect(logged).toContain("stray log");
     expect(logged).toContain("stray dir");
     expect(logged).toContain("stray write");
+  });
+
+  test("what a dependency prints as it loads does not reach the protocol", async () => {
+    const hooks = `import { registerHooks } from "node:module";
+registerHooks({
+  load(url, context, next) {
+    const loaded = next(url, context);
+    return url.endsWith("/mapper.js")
+      ? { ...loaded, source: 'console.log("printed loading");\\n' + loaded.source }
+      : loaded;
+  },
+});`;
+    const server = spawn(
+      process.execPath,
+      [
+        "--import",
+        `data:text/javascript,${encodeURIComponent(hooks)}`,
+        fileURLToPath(new URL("../dist/src/server.js", import.meta.url)),
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const received: Buffer[] = [];
+    let logged = "";
+    server.stdout.on("data", (chunk: Buffer) => received.push(chunk));
+    server.stderr.on("data", (chunk: Buffer) => (logged += chunk.toString()));
+    server.stdin.end(frame({ jsonrpc: "2.0", id: 1, method: "unknown" }));
+    await new Promise((resolveExit) => server.once("close", resolveExit));
+    expect(logged).toContain("printed loading");
+    const bodies = [...new MessageReader().messages(Buffer.concat(received))];
+    expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
   });
 
   test("an input that ends inside a message rejects", async () => {

@@ -35,7 +35,11 @@ const headerSeparator = Buffer.from("\r\n\r\n", "ascii");
  * message has arrived.
  */
 export class MessageReader {
-  #buffered: Buffer = Buffer.alloc(0);
+  /** The bytes waiting, in the chunks they came in. */
+  #chunks: Buffer[] = [];
+  #waiting = 0;
+  /** How many bytes the message being read needs, once its header is read. */
+  #needed = 0;
 
   /**
    * Each complete message body the bytes so far contain, in order, as it is
@@ -44,29 +48,41 @@ export class MessageReader {
    * their replies.
    */
   *messages(chunk: Buffer): Generator<string, void, void> {
-    this.#buffered =
-      this.#buffered.length === 0
-        ? chunk
-        : Buffer.concat([this.#buffered, chunk]);
+    this.#chunks.push(chunk);
+    this.#waiting += chunk.length;
+    // A long message comes in many chunks: joined at every one, its bytes would
+    // be copied again each time.
+    if (this.#waiting < this.#needed) return;
+    let buffered: Buffer = Buffer.concat(this.#chunks, this.#waiting);
+    const keep = (rest: Buffer) => {
+      buffered = rest;
+      this.#chunks = [rest];
+      this.#waiting = rest.length;
+    };
+    keep(buffered);
     for (;;) {
-      const headerEnd = this.#buffered.indexOf(headerSeparator);
+      this.#needed = 0;
+      const headerEnd = buffered.indexOf(headerSeparator);
       if (headerEnd === -1) return;
       const length = contentLength(
-        this.#buffered.subarray(0, headerEnd).toString("ascii"),
+        buffered.subarray(0, headerEnd).toString("ascii"),
       );
       const bodyStart = headerEnd + headerSeparator.length;
-      if (this.#buffered.length < bodyStart + length) return;
-      const body = this.#buffered
+      if (buffered.length < bodyStart + length) {
+        this.#needed = bodyStart + length;
+        return;
+      }
+      const body = buffered
         .subarray(bodyStart, bodyStart + length)
         .toString("utf8");
-      this.#buffered = this.#buffered.subarray(bodyStart + length);
+      keep(buffered.subarray(bodyStart + length));
       yield body;
     }
   }
 
   /** Whether bytes of an unfinished message are still waiting. */
   get pending(): boolean {
-    return this.#buffered.length > 0;
+    return this.#waiting > 0;
   }
 }
 

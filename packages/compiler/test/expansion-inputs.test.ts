@@ -289,3 +289,43 @@ test("lets go of its inspections when asked", () => {
   provider.releaseInspections();
   expect(provider.inspectSource(source)).toBeUndefined();
 });
+
+/**
+ * An expansion that throws has no output to say what it read, and what it read
+ * is what could mend it, reading included.
+ */
+test("says what an expansion that threw while reading asked", () => {
+  const source = `${root}/a.sts`;
+  const module = `${root}/m.sts`;
+  const files = new Map([
+    [
+      source,
+      'import { foo } from "./m.sts" for syntax;\nexport const a = 1;\n',
+    ],
+    [module, "export const m = 1;\n"],
+  ]);
+  const system = memorySystem(files);
+  const provider = createDefaultProjectExpansionProvider({
+    system: {
+      ...system,
+      readFile: (fileName) => {
+        if (fileName === module) throw new Error("the read broke");
+        return system.readFile(fileName);
+      },
+    },
+  });
+  expect(() =>
+    provider.expandProject(
+      memoryProject([source], {
+        allowNonTsExtensions: true,
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+      }),
+    ),
+  ).toThrow("the read broke");
+  expect(provider.readInputs()).toContainEqual({
+    kind: "file",
+    path: source,
+    text: files.get(source),
+  });
+});

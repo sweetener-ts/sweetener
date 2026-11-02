@@ -539,6 +539,27 @@ describe("transform", () => {
   });
 });
 
+describe("a config that finds no inputs", () => {
+  test("is no problem of its, and a file made under it expands", () => {
+    const { directory, config } = project();
+    mkdirSync(join(directory, "src"));
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["src"],
+      }),
+    );
+    const { result, transform } = opened(config);
+    expect(result.optionDiagnostics).toEqual([]);
+    const made = join(directory, "src", "a.sts");
+    writeFileSync(made, "export const a = 1;\n");
+    const answer = transform(made);
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const a = 1;");
+  });
+});
+
 describe("a config it cannot use", () => {
   test("hears a change to a config the broken one extends, and watches it", () => {
     const { config, directory } = project();
@@ -569,6 +590,20 @@ describe("a config it cannot use", () => {
     const { result, transform } = opened(config);
     expect(result.optionDiagnostics).toEqual([]);
     expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+  });
+});
+
+describe("a project with no tsconfig", () => {
+  test("is refused, saying what it needs", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    expect(() =>
+      mapper.openProject({
+        configFileName: "",
+        projectHandle: "p",
+        compilerOptions: {},
+      }),
+    ).toThrow(/only as part of a project/u);
   });
 });
 
@@ -969,6 +1004,39 @@ describe("what it does not expand again", () => {
     expect(asked()).toEqual([]);
   });
 
+  test("a file found as soon as it is asked for changes nothing else", () => {
+    const { config, file } = project();
+    const { mapper, result, transform } = opened(config);
+    writeFileSync(file("added.sts"), "export const a = 1;\n");
+    transform(file("added.sts"));
+    expect(reopen(mapper, config).configIdentity).toBe(result.configIdentity);
+  });
+
+  test("a binding literal gone stops the config being loaded at every open", () => {
+    const module = (literal: boolean) =>
+      [
+        'import { Circle } from "./local";',
+        "export syntax kind:expr {",
+        ...(literal ? ["  literal Circle as Circle;"] : []),
+        '  rule { kind(Circle) } => { "circle" }',
+        '  fallback rule { kind($value:expr) } => { "other" }',
+        "}",
+        "",
+      ].join("\n");
+    const { config, file } = project({
+      "local.ts": "export const Circle = 1;\n",
+      "macros.sts": module(true),
+      "main.sts":
+        'import { kind } from "./macros.sts" for syntax;\nexport const a = kind(1);\n',
+    });
+    const { mapper } = opened(config);
+    writeFileSync(file("macros.sts"), module(false));
+    reopen(mapper, config);
+    const walked = vi.spyOn(ts.sys, "readDirectory");
+    reopen(mapper, config);
+    expect(walked).not.toHaveBeenCalled();
+  });
+
   test("a file made expands when it is asked for, and keeps what the others expanded to", () => {
     const { config, file } = project();
     const { mapper, transform } = opened(config);
@@ -1265,6 +1333,26 @@ describe("text a macro copied", () => {
     expect(copied.map(([, , , , kind]) => kind)).toEqual([
       SpanMapKind.Verbatim,
     ]);
+  });
+});
+
+describe("a token next to another copy of a token", () => {
+  test("keeps its own mapping", () => {
+    const { config, file } = project({
+      "macros.sts":
+        "export syntax m:expr { rule { m($a:tt $b:tt) } => { [$a 1, $a $b] } }\n",
+      "main.sts":
+        'import { m } from "./macros.sts" for syntax;\nconst x = 1;\nexport const o = m(typeof x);\n',
+    });
+    const source = readFileSync(file("main.sts"), "utf8");
+    const x = source.indexOf("x", source.indexOf("m(typeof"));
+    const result = opened(config).transform(file("main.sts"));
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      result.mappings.some(
+        ([, , start, length]) => start <= x && x < start + length,
+      ),
+    ).toBe(true);
   });
 });
 

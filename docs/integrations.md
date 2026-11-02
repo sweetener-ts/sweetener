@@ -113,8 +113,9 @@ where no file has an error), `SWR6202` when the file
 is not part of the Sweetener project, or its extension is mapped here but
 missing from `sweet.macroExtensions`, and `SWR6201` when expansion itself
 failed, which is said of the file it failed on and leaves the others expanded.
-An option TypeScript 6's parser does not know is left to TypeScript 7 to judge:
-Sweetener reads a tsconfig through 6, and expansion goes on without it.
+An option TypeScript 6's parser does not know, and a tsconfig that finds no
+inputs, are left to TypeScript 7 to judge: Sweetener reads a tsconfig through 6,
+and expansion goes on without them.
 
 An error in a macro module is reported in the module and at the top of each
 file using it, naming where it is: an editor asks about the files that are open,
