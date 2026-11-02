@@ -1340,17 +1340,17 @@ describe("a token next to another copy of a token", () => {
   test("keeps its own mapping", () => {
     const { config, file } = project({
       "macros.sts":
-        "export syntax m:expr { rule { m($a:tt $b:tt) } => { [$a 1, $a $b] } }\n",
+        "export syntax m:expr { rule { m($a:ident $dot:tt $b:ident) } => { [$a, $a $dot $b] } }\n",
       "main.sts":
-        'import { m } from "./macros.sts" for syntax;\nconst x = 1;\nexport const o = m(typeof x);\n',
+        'import { m } from "./macros.sts" for syntax;\nconst a = { b: 1 };\nexport const o = m(a.b);\n',
     });
     const source = readFileSync(file("main.sts"), "utf8");
-    const x = source.indexOf("x", source.indexOf("m(typeof"));
+    const b = source.indexOf("b", source.indexOf("m(a.b"));
     const result = opened(config).transform(file("main.sts"));
     expect(result.diagnostics).toEqual([]);
     expect(
       result.mappings.some(
-        ([, , start, length]) => start <= x && x < start + length,
+        ([, , start, length]) => start <= b && b < start + length,
       ),
     ).toBe(true);
   });
