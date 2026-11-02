@@ -238,7 +238,7 @@ export function nowNanoseconds(): bigint {
  * Whether a file with these stats has not been written since well before a
  * moment: a stat's times lag the clock, so one close to it says nothing.
  */
-export function settled(stats: BigIntStats, readAfter: bigint): boolean {
+export function statIsSettled(stats: BigIntStats, readAfter: bigint): boolean {
   return (
     stats.mtimeNs < readAfter - settledNanoseconds &&
     stats.ctimeNs < readAfter - settledNanoseconds
@@ -296,7 +296,7 @@ export function checkedInputs(
               fileSystem,
               input,
               confirmed:
-                stats?.isFile() === true && settled(stats, readAfter)
+                stats?.isFile() === true && statIsSettled(stats, readAfter)
                   ? statKey(stats)
                   : undefined,
             };
@@ -332,7 +332,7 @@ function fileHolds(checked: CheckedInput, input: ExpansionFileInput): boolean {
   const text = fileText(system, input.path);
   if (text !== input.text) return false;
   checked.confirmed =
-    text !== undefined && settled(stats, checkedAt) ? key : undefined;
+    text !== undefined && statIsSettled(stats, checkedAt) ? key : undefined;
   return true;
 }
 

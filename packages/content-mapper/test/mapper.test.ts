@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -778,6 +779,39 @@ describe("a compiler failure", () => {
     expect(open().configIdentity).not.toBe(failed.configIdentity);
   });
 
+  test("what each failed file read counts, whichever failed last", () => {
+    const { config, directory, file } = project({
+      "other.sts": "export {};\n",
+    });
+    const inputs = (name: string) => [
+      { kind: "file" as const, path: join(directory, name), text: undefined },
+    ];
+    const read = vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "readInputs")
+      .mockReturnValueOnce(inputs("first-read.sts"))
+      .mockReturnValueOnce(inputs("second-read.sts"));
+    const failing = vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
+      .mockImplementation(() => {
+        throw new Error("the compiler broke");
+      });
+    const { mapper, transform } = opened(config);
+    transform(file("other.sts"));
+    const { watchedFiles } = mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+    expect(watchedFiles).toEqual(
+      expect.arrayContaining([
+        join(directory, "first-read.sts"),
+        join(directory, "second-read.sts"),
+      ]),
+    );
+    failing.mockRestore();
+    read.mockRestore();
+  });
+
   test("a failure every file meets is said by each, and over once text changes", () => {
     const { config, file } = project();
     const failing = vi
@@ -1166,6 +1200,29 @@ describe("a file the config does not list", () => {
     const walks = walked.mock.calls.length;
     for (const name of names) transform(file(name), "export {};\n");
     expect(walked.mock.calls).toHaveLength(walks);
+  });
+
+  test("in a folder renamed into place is found, its files' times being old", () => {
+    const { config, directory, file } = project();
+    mkdirSync(join(directory, "src"));
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["src"],
+      }),
+    );
+    writeFileSync(file("src/a.sts"), "export const a = 1;\n");
+    mkdirSync(join(directory, "elsewhere"));
+    writeFileSync(file("elsewhere/moved.sts"), "export const m = 1;\n");
+    let now = Date.now() + 60_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { transform } = opened(config);
+    renameSync(join(directory, "elsewhere"), join(directory, "src", "moved"));
+    now += 3_000;
+    const moved = transform(file("src/moved/moved.sts"));
+    expect(moved.diagnostics).toEqual([]);
+    expect(moved.text).toContain("export const m = 1;");
   });
 
   test("written before the config was loaded is not looked for", () => {

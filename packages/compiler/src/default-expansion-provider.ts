@@ -570,6 +570,15 @@ function compileTimeImportsKey(file: ParsedFile): string {
   );
 }
 
+/**
+ * Whether expanding these depends on a program of every source, which is what
+ * resolves a binding literal. A file's inputs and what it says it reads agree on
+ * this, so what is kept against them stands for as long as it should.
+ */
+function readBindingLiterals(modules: readonly ParsedFile[]): boolean {
+  return modules.some(({ compiled }) => compiled.bindingLiterals.length > 0);
+}
+
 function compileTimeRanges(file: ParsedFile, origins: OriginStore) {
   return [
     // The opt-in directive is a compile-time marker with no runtime meaning,
@@ -1441,12 +1450,12 @@ export class DefaultProjectExpansionProvider
     // Read as far as the named files lead, and no further if that will not do.
     if (
       reading !== undefined &&
-      [...byPath.values()].some(
-        ({ fileName, compiled }) =>
-          compiled.bindingLiterals.length > 0 ||
-          (listed.has(resolve(fileName)) &&
-            !project.sweet.macroExtensions.includes(parse(fileName).ext)),
-      )
+      (readBindingLiterals([...byPath.values()]) ||
+        [...byPath.keys()].some(
+          (fileName) =>
+            listed.has(resolve(fileName)) &&
+            !project.sweet.macroExtensions.includes(parse(fileName).ext),
+        ))
     )
       return { kind: "settled", settled: undefined };
     const moduleSources: MacroModuleSource[] = [...byPath.values()].map(
@@ -1543,9 +1552,7 @@ export class DefaultProjectExpansionProvider
     );
     // Whether TypeScript resolved binding literals, over every source in the
     // project, which then makes every file's expansion depend on all of it.
-    const resolvesBindingLiterals = [...byPath.values()].some(
-      ({ compiled }) => compiled.bindingLiterals.length > 0,
-    );
+    const resolvesBindingLiterals = readBindingLiterals([...byPath.values()]);
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
@@ -1558,8 +1565,7 @@ export class DefaultProjectExpansionProvider
     const inputsFor = (
       modules: readonly ParsedFile[],
     ): readonly ExpansionInput[] => {
-      if (modules.some(({ compiled }) => compiled.bindingLiterals.length > 0))
-        return inputs;
+      if (readBindingLiterals(modules)) return inputs;
       const consulted = new Set<ExpansionInput>();
       for (const { fileName } of modules) {
         for (const input of consultedBy.get(fileName) ?? [])
@@ -2164,9 +2170,7 @@ export class DefaultProjectExpansionProvider
             ),
           ),
           inputs: inputsFor([file, ...macroModules]),
-          readsBindingLiterals: [file, ...macroModules].some(
-            ({ compiled }) => compiled.bindingLiterals.length > 0,
-          ),
+          readsBindingLiterals: readBindingLiterals([file, ...macroModules]),
           // The rest of what was reported, and what is held about a name this
           // file left standing. `expand` and a build tool's transform read an
           // inspection and then stop; there is no checker behind either, so

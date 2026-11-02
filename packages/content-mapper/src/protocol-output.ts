@@ -16,3 +16,10 @@ export const protocolOutput = new Writable({
     writeProtocol(chunk, encoding, done);
   },
 });
+
+// TypeScript closing the pipe as it shuts down fails a write on the stream
+// itself too, and with no one listening that would end the process in a stack
+// trace, for what is a routine end. `serve` hears it from the writable above.
+process.stdout.on("error", (error) => protocolOutput.destroy(error));
+// Nothing can be said of a stderr that is gone, and what was said is not owed.
+process.stderr.on("error", () => {});

@@ -264,6 +264,23 @@ registerHooks({
     expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
   });
 
+  test("the server ends without a stack trace when its stdout is closed", async () => {
+    const server = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../dist/src/server.js", import.meta.url))],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let logged = "";
+    server.stderr.on("data", (chunk: Buffer) => (logged += chunk.toString()));
+    server.stdout.destroy();
+    server.stdin.write(frame({ jsonrpc: "2.0", id: 1, method: "unknown" }));
+    const status = await new Promise((resolveExit) =>
+      server.once("close", resolveExit),
+    );
+    expect(logged).not.toContain("Unhandled 'error' event");
+    expect(status).toBe(1);
+  });
+
   test("an output that fails rejects, and is not left to crash the process", async () => {
     const input = new PassThrough();
     const output = new Writable({

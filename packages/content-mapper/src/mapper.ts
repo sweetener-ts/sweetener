@@ -10,7 +10,7 @@ import {
   loadSweetProject,
   macroExtensionTarget,
   nowNanoseconds,
-  settled,
+  statIsSettled,
   projectSignature,
   type CheckedInput,
   type DefaultProjectExpansionProvider,
@@ -57,6 +57,9 @@ export const diagnosticSource = "SWR";
  * keep them all.
  */
 const keptClosedConfigs = 8;
+
+/** How long after walking `include` a file it did not list is taken at its word. */
+const lookAgainNanoseconds = 2_000_000_000n;
 
 const virtualExtensions: ReadonlySet<string> = new Set<VirtualExtension>([
   ".ts",
@@ -186,8 +189,8 @@ interface ConfigState {
    * of what they read, so what would mend them is not known: see `#identityOf`.
    */
   readonly failed: Set<string>;
-  /** What reading the project asked when a file last failed. */
-  failureInputs: readonly ExpansionInput[];
+  /** What was read by the expansions that failed, while any file has. */
+  readonly failureInputs: Map<string, ExpansionInput>;
   /**
    * Files TypeScript asked about that the config, as last loaded, does not
    * list, and whether each was on disk then. Loading the config walks
@@ -283,14 +286,11 @@ function failedTransform(
   code: number,
   messageText: string,
 ): TransformResult {
+  const target = macroExtensionTarget(extname(request.fileName));
   return {
     text: "",
-    extension: (() => {
-      const target = macroExtensionTarget(extname(request.fileName));
-      return target !== undefined && isVirtualExtension(target)
-        ? target
-        : ".ts";
-    })(),
+    extension:
+      target !== undefined && isVirtualExtension(target) ? target : ".ts",
     mappings: [],
     diagnostics: [{ messageText, start: 0, length: 0, code }],
   };
@@ -410,7 +410,7 @@ export class SweetenerContentMapper {
   readonly #overlays = new Map<string, Overlay>();
   /** Every config that has been opened and not let go of, last opened last. */
   readonly #opened = new Set<string>();
-  /** Each open project handle, and the config it names ("" for none). */
+  /** Each open project handle, and the config it names. */
   readonly #handles = new Map<string, string>();
   /** Configs Sweetener cannot use, and what is wrong with each. */
   readonly #unusable = new Map<string, ConfigProblem>();
@@ -547,9 +547,15 @@ export class SweetenerContentMapper {
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
       return failedTransform(request, unusable.code, unusable.messageText);
+    const state = this.#configs.get(configFileName);
+    if (state === undefined)
+      throw new ResponseError(
+        ErrorCode.InternalError,
+        `${configFileName} has a project open and neither a state nor a problem`,
+      );
     let file: ExpandedFile | undefined;
     try {
-      file = this.#expansionFor(this.#configs.get(configFileName)!, fileName);
+      file = this.#expansionFor(state, fileName);
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
       // Thrown back as a failed request, TypeScript would report that the
@@ -558,25 +564,21 @@ export class SweetenerContentMapper {
       process.stderr.write(
         `Sweetener failed to expand ${fileName}:\n${describeError(error)}\n`,
       );
-      const state = this.#configs.get(configFileName);
-      if (state !== undefined) this.#recordFailure(state, [fileName]);
+      this.#recordFailure(state, [fileName]);
       return failedTransform(
         request,
         6201,
         `Project expansion failed: ${messageOf(error)}`,
       );
     }
-    if (file === undefined) {
-      const project = this.#configs.get(configFileName)?.project;
+    if (file === undefined)
       return failedTransform(
         request,
         6202,
-        project !== undefined &&
-          !project.sweet.macroExtensions.includes(extname(fileName))
+        !state.project.sweet.macroExtensions.includes(extname(fileName))
           ? `${configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
           : `This file is not opted into Sweetener expansion by ${configFileName}. List it there, under "files" or "include".`,
       );
-    }
     return {
       text: file.text,
       extension: file.extension,
@@ -743,7 +745,7 @@ export class SweetenerContentMapper {
       expanded: new Map(),
       identity: undefined,
       failed: new Set(),
-      failureInputs: [],
+      failureInputs: new Map(),
       unlisted: new Map(),
       nowListed: 0,
     };
@@ -775,17 +777,24 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * Load the config again for a file it did not list, if that could list it: one
-   * on disk and written since `include` was walked. Any other is what the config
-   * said it was, and walking `include` for each would have a project importing
-   * many files outside it load its config as many times. The load may find the
-   * config can no longer be used, which is then what the file hears.
+   * Load the config again for a file it did not list, which may be a file it
+   * would list now: one newly written, or, since a folder renamed into place
+   * keeps its files' times, any on disk once `include` was last walked a while
+   * ago. Asked at once about many files outside it, as a project importing them
+   * does, it walks `include` no more than that, and typing in one no more often.
+   * The load may find the config can no longer be used, which is then what the
+   * file hears.
    */
   #lookFor(state: ConfigState, fileName: string): void {
     const stats = diskFileSystem.stat?.(fileName);
     const onDisk = stats?.isFile() === true;
-    if (state.unlisted.get(fileName) === onDisk) return;
-    if (stats !== undefined && onDisk && !settled(stats, state.loadedAt))
+    const walkedAWhileAgo =
+      nowNanoseconds() - state.loadedAt >= lookAgainNanoseconds;
+    const newlyWritten =
+      stats !== undefined &&
+      state.unlisted.get(fileName) !== onDisk &&
+      !statIsSettled(stats, state.loadedAt);
+    if (onDisk && (walkedAWhileAgo || newlyWritten))
       this.#problemsWith(state.configFileName, true);
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
@@ -857,7 +866,9 @@ export class SweetenerContentMapper {
       state.expanded.delete(name);
       state.failed.add(name);
     }
-    state.failureInputs = state.provider.readInputs();
+    // Added to: a batch that throws may not have reached what another file read.
+    for (const input of state.provider.readInputs())
+      state.failureInputs.set(`${input.kind}\0${input.path}`, input);
   }
 
   /**
@@ -886,6 +897,7 @@ export class SweetenerContentMapper {
     // What the state keeps is plain by now, and each inspection holds the
     // whole project: kept in the provider, one per config would stay.
     state.provider.releaseInspections();
+    if (state.failed.size === 0) state.failureInputs.clear();
     state.resolvesBindingLiterals = [...state.expanded.values()].some(
       ({ readsBindingLiterals }) => readsBindingLiterals,
     );
@@ -966,7 +978,7 @@ export class SweetenerContentMapper {
     if (state.failed.size > 0) {
       for (const path of state.listed)
         ask({ kind: "file", path, text: undefined });
-      for (const input of state.failureInputs) ask(input);
+      for (const input of state.failureInputs.values()) ask(input);
     }
     const asked = [...questions.keys()].sort();
     // What TypeScript asked for that the config does not list: nothing changes
