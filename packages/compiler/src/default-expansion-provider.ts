@@ -39,6 +39,10 @@ import {
   readerDiagnosticRegistry,
   readSyntax,
   type SourceDirective,
+  missingCloserCode,
+  nestingLimitCode,
+  scannerErrorCode,
+  unexpectedCloserCode,
 } from "@sweetener/reader";
 import {
   createIdAllocator,
@@ -570,11 +574,6 @@ function compileTimeImportsKey(file: ParsedFile): string {
   );
 }
 
-/**
- * Whether expanding these depends on a program of every source, which is what
- * resolves a binding literal. A file's inputs and what it says it reads agree on
- * this, so what is kept against them stands for as long as it should.
- */
 const listings = new WeakMap<LoadedSweetProject, ReadonlyMap<string, string>>();
 
 /** A project's listed files, by the paths they resolve to. */
@@ -589,12 +588,20 @@ function listingOf(project: LoadedSweetProject): ReadonlyMap<string, string> {
   return listing;
 }
 
-/** Whether a diagnostic is about the text as text, not about any macro in it. */
-function isScannerOrReaderCode(code: string): boolean {
-  return code.startsWith("SWR1");
-}
+/** What is about the text as text, and not about any macro in it. */
+const scannerCodes: ReadonlySet<string> = new Set([
+  scannerErrorCode,
+  unexpectedCloserCode,
+  missingCloserCode,
+  nestingLimitCode,
+]);
 
-function readBindingLiterals(modules: readonly ParsedFile[]): boolean {
+/**
+ * Whether expanding these depends on a program of every source, which is what
+ * resolves a binding literal. A file's inputs and what it says it reads agree on
+ * this, so what is kept against them stands for as long as it should.
+ */
+function hasBindingLiterals(modules: readonly ParsedFile[]): boolean {
   return modules.some(({ compiled }) => compiled.bindingLiterals.length > 0);
 }
 
@@ -1125,8 +1132,8 @@ export class DefaultProjectExpansionProvider
         compiled,
         diagnostics: Object.freeze([
           ...read.diagnostics,
-          ...parsed.diagnostics,
           ...imports.diagnostics,
+          // Which hold what parsing the definitions found.
           ...compiled.diagnostics,
         ]),
       });
@@ -1494,7 +1501,7 @@ export class DefaultProjectExpansionProvider
     // Read as far as the named files lead, and no further if that will not do.
     if (
       reading !== undefined &&
-      (readBindingLiterals([...byPath.values()]) ||
+      (hasBindingLiterals([...byPath.values()]) ||
         [...byPath.keys()].some(
           (fileName) =>
             listing.has(resolve(fileName)) &&
@@ -1596,7 +1603,7 @@ export class DefaultProjectExpansionProvider
     );
     // Whether TypeScript resolved binding literals, over every source in the
     // project, which then makes every file's expansion depend on all of it.
-    const resolvesBindingLiterals = readBindingLiterals([...byPath.values()]);
+    const resolvesBindingLiterals = hasBindingLiterals([...byPath.values()]);
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
@@ -1610,7 +1617,7 @@ export class DefaultProjectExpansionProvider
     const inputsFor = (
       modules: readonly ParsedFile[],
     ): readonly ExpansionInput[] => {
-      if (readBindingLiterals(modules)) return inputs;
+      if (hasBindingLiterals(modules)) return inputs;
       const consulted = new Set<ExpansionInput>();
       for (const { fileName } of modules) {
         for (const input of consultedBy.get(fileName) ?? [])
@@ -2220,12 +2227,12 @@ export class DefaultProjectExpansionProvider
             ),
           ),
           inputs: inputsFor([file, ...macroModules]),
-          readsBindingLiterals: readBindingLiterals([file, ...macroModules]),
+          readsBindingLiterals: hasBindingLiterals([file, ...macroModules]),
           macrosFailed:
             importFailed ||
             answerableFor(file).some(
               ({ severity, code }) =>
-                severity === "error" && !isScannerOrReaderCode(code),
+                severity === "error" && !scannerCodes.has(code),
             ) ||
             macroModules.some((module) =>
               answerableFor(module).some(

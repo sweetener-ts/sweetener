@@ -1494,6 +1494,37 @@ describe("a file half typed", () => {
   });
 });
 
+describe("JSX text that reads like a comment", () => {
+  test("is its own text, and takes no time to tell", () => {
+    const text = `${"/".repeat(80)}\ntext`;
+    const { config, file } = project({
+      "main.sts": "",
+      "view.stsx": `export const v = <b>${text}</b>;\n`,
+    });
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          jsx: "preserve",
+        },
+        include: ["*.stsx"],
+      }),
+    );
+    const started = performance.now();
+    const answer = opened(config).transform(file("view.stsx"));
+    expect(performance.now() - started).toBeLessThan(5_000);
+    expect(answer.text).toContain(text);
+    const start = answer.text.indexOf(text);
+    expect(
+      answer.mappings.some(
+        ([virtual, length]) => virtual <= start && start < virtual + length,
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("a comment in front of a token", () => {
   test("maps to itself, and leaves the token its own", () => {
     const { config, file } = project({
@@ -1594,6 +1625,24 @@ describe("unsaved text", () => {
         projectHandle: "b",
       }).text,
     ).toContain("export const x = 2;");
+  });
+});
+
+describe("a macro module with errors", () => {
+  test("says each once, itself and in a file using it", () => {
+    const { config, file } = project({
+      "macros.sts": "export syntax twice {\n",
+      "main.sts":
+        'import { twice } from "./macros.sts" for syntax;\nexport const t = 1;\n',
+    });
+    const { transform } = opened(config);
+    for (const name of ["macros.sts", "main.sts"]) {
+      const messages = (transform(file(name)).diagnostics ?? []).map(
+        ({ messageText }) => messageText,
+      );
+      expect(new Set(messages).size).toBe(messages.length);
+      expect(messages.length).toBeGreaterThan(0);
+    }
   });
 });
 

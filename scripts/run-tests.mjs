@@ -80,6 +80,8 @@ async function main() {
     process.execPath,
     [vitestPath, "run", "--reporter=json", `--outputFile=${rawPath}`],
     {
+      // Built just now: see scripts/test-build-content-mapper.mjs.
+      env: { ...process.env, SWEETENER_TESTS_BUILT: "1" },
       cwd: repositoryRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],

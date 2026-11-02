@@ -23,8 +23,23 @@ export interface Segment {
 
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
-/** Text that is nothing but whitespace and comments. */
-const commentsAlone = /^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)+$/u;
+/** Whether text is nothing but whitespace and comments. */
+function isCommentsAlone(text: string): boolean {
+  let at = 0;
+  while (at < text.length) {
+    if (/\s/u.test(text[at]!)) at += 1;
+    else if (text.startsWith("//", at)) {
+      const end = text.indexOf("\n", at);
+      if (end === -1) return true;
+      at = end + 1;
+    } else if (text.startsWith("/*", at)) {
+      const end = text.indexOf("*/", at + 2);
+      if (end === -1) return false;
+      at = end + 2;
+    } else return false;
+  }
+  return true;
+}
 
 /**
  * What bytes that are not UTF-8 decode to. TypeScript holds a verbatim mapping to
@@ -65,7 +80,8 @@ function segmentFor(
   // that token, an error reported on the comment landed on what follows it, and
   // the token's span had a second use. Where the source has it there too, the
   // two are one text; where it does not, it has no place in this file.
-  if (commentsAlone.test(virtual)) {
+  // JSX text may read like a comment, and is its own origin.
+  if (virtual !== sourceText.slice(start, end) && isCommentsAlone(virtual)) {
     const from = start - virtual.length;
     return from >= 0 && sourceText.slice(from, start) === virtual
       ? {

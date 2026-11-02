@@ -50,6 +50,13 @@ import {
 /** What TypeScript prints in front of a code, as every Sweetener surface does. */
 export const diagnosticSource = "SWR";
 
+/** The tsconfig cannot be used, or gives the mapper options it does not take. */
+const unusableConfigCode = 6001;
+/** The compiler failed expanding a file. */
+const expansionFailedCode = 6201;
+/** A file is one no config in reach would have Sweetener expand. */
+const notOptedInCode = 6202;
+
 /**
  * How many configs with no project open keep what they expanded. TypeScript
  * closes a project and opens it again when a file it was told to watch changes,
@@ -380,6 +387,7 @@ function reportedErrors(
   fileName: string,
   encoding: PositionEncoding,
 ): ContentMapperDiagnostic[] {
+  if (file.errors.length === 0) return [];
   const encode = offsetEncoder(file.sourceText, encoding);
   const end = file.sourceText.length;
   return file.errors.map(
@@ -503,7 +511,7 @@ export class SweetenerContentMapper {
               path: [],
               messageText:
                 "Sweetener takes no content-mapper options: its settings are read from the tsconfig's `sweet` section.",
-              code: 6001,
+              code: unusableConfigCode,
             },
           ];
     if (configFileName === "")
@@ -612,14 +620,14 @@ export class SweetenerContentMapper {
       this.#recordFailure(state, [fileName]);
       return failedTransform(
         request,
-        6201,
+        expansionFailedCode,
         `Project expansion failed: ${messageOf(error)}`,
       );
     }
     if (file === undefined)
       return failedTransform(
         request,
-        6202,
+        notOptedInCode,
         !state.project.sweet.macroExtensions.includes(extname(fileName))
           ? `${state.configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
           : `This file is not opted into Sweetener expansion by ${state.configFileName}. List it there, under "files" or "include".`,
@@ -705,7 +713,7 @@ export class SweetenerContentMapper {
       // TypeScript, or it keeps files emptied for a reason no longer true.
       const inputs = project?.configurationInputs ?? [];
       const problem: ConfigProblem = {
-        code: 6001,
+        code: unusableConfigCode,
         messageText,
         identity: fingerprint([
           canonical(configFileName),
