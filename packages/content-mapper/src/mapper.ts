@@ -1,12 +1,12 @@
 import { extname, resolve } from "node:path";
 import {
-  answerNow,
   checkedInputs,
   configurationProblems,
   createDefaultProjectExpansionProvider,
   diskFileSystem,
   fingerprint,
   InputCheckRound,
+  InputRecorder,
   loadStandaloneProject,
   loadSweetProject,
   macroExtensionTarget,
@@ -184,6 +184,12 @@ interface ConfigState {
   readonly failed: Set<string>;
   /** What reading the project asked when a file last failed. */
   failureInputs: readonly ExpansionInput[];
+  /**
+   * Files TypeScript asked about that the config, as last loaded, does not
+   * list, and whether each was on disk then. Loading the config walks
+   * `include`, so a file is looked for again only once that changes.
+   */
+  readonly unlisted: Map<string, boolean>;
 }
 
 /**
@@ -536,12 +542,17 @@ export class SweetenerContentMapper {
     const fileName = canonical(request.fileName);
     // Before anything else: text sent while the config is unusable is what
     // the file says once it is usable again.
-    if (
-      configFileName !== "" &&
-      holdText(this.#overlayFor(configFileName), fileName, request.content)
-    ) {
+    if (configFileName !== "") {
+      const held = holdText(
+        this.#overlayFor(configFileName),
+        fileName,
+        request.content,
+      );
       const state = this.#configs.get(configFileName);
-      if (state !== undefined) state.readFailure = undefined;
+      if (state !== undefined) {
+        if (held) state.readFailure = undefined;
+        if (!state.listed.has(fileName)) this.#lookFor(state, fileName);
+      }
     }
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
@@ -551,7 +562,7 @@ export class SweetenerContentMapper {
       expanded =
         configFileName === ""
           ? this.#standalone(fileName, request.content)
-          : this.#expansionFor(configFileName, fileName);
+          : this.#expansionFor(this.#configs.get(configFileName)!, fileName);
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
       // Thrown back as a failed request, TypeScript would report that the
@@ -727,6 +738,7 @@ export class SweetenerContentMapper {
       this.#configs.delete(configFileName);
       this.#configs.set(configFileName, existing);
       existing.configuration = configuration;
+      existing.unlisted.clear();
       this.#relist(existing, project);
       this.#refresh(existing);
       return existing;
@@ -745,6 +757,7 @@ export class SweetenerContentMapper {
       readFailure: undefined,
       failed: new Set(),
       failureInputs: [],
+      unlisted: new Map(),
     };
     this.#expandOrForget(state, undefined);
     this.#configs.delete(configFileName);
@@ -753,9 +766,10 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * Let go of what no open project needs: a config whose file is gone, with
-   * the text held for it; text held for a file gone from a config still in
-   * use; and the expansions of all but the configs opened last.
+   * Let go of what no open project needs: a config whose file is gone, and
+   * all but the configs opened last, with the text held for them; and text
+   * held for a file that has since changed on disk or gone. That no longer
+   * stands in for the file, and would again if the disk went back.
    */
   #sweep(): void {
     const open = new Set(this.#handles.values());
@@ -769,13 +783,26 @@ export class SweetenerContentMapper {
         this.#overlays.delete(name);
         this.#unusable.delete(name);
       }
+    const closed = [...this.#configs.keys()].filter((name) => !open.has(name));
+    for (const name of closed.slice(0, -keptClosedConfigs)) {
+      this.#configs.delete(name);
+      this.#overlays.delete(name);
+    }
     for (const overlay of this.#overlays.values())
       for (const [fileName, { disk }] of overlay)
-        if (disk !== undefined && !ts.sys.fileExists(fileName))
-          overlay.delete(fileName);
-    const closed = [...this.#configs.keys()].filter((name) => !open.has(name));
-    for (const name of closed.slice(0, -keptClosedConfigs))
-      this.#configs.delete(name);
+        if (ts.sys.readFile(fileName) !== disk) overlay.delete(fileName);
+  }
+
+  /**
+   * Load the config again for a file it did not list: it may be new. The load
+   * may find the config can no longer be used, which is then what the file
+   * hears.
+   */
+  #lookFor(state: ConfigState, fileName: string): void {
+    const onDisk = ts.sys.fileExists(fileName);
+    if (state.unlisted.get(fileName) === onDisk) return;
+    this.#problemsWith(state.configFileName, true);
+    this.#configs.get(state.configFileName)?.unlisted.set(fileName, onDisk);
   }
 
   /**
@@ -895,15 +922,7 @@ export class SweetenerContentMapper {
    * is every file that module reaches, which is cheaper expanded at once than
    * one at a time as TypeScript asks.
    */
-  #expansionFor(configFileName: string, fileName: string): Expanded {
-    if (!this.#configs.get(configFileName)!.listed.has(fileName))
-      this.#problemsWith(configFileName, true);
-    const state = this.#configs.get(configFileName);
-    if (state === undefined)
-      return {
-        file: undefined,
-        project: loadStandaloneProject([fileName]),
-      };
+  #expansionFor(state: ConfigState, fileName: string): Expanded {
     if (
       !state.listed.has(fileName) ||
       !state.project.sweet.macroExtensions.includes(extname(fileName))
@@ -992,8 +1011,9 @@ export class SweetenerContentMapper {
     )
       return kept;
     const answeredAt = nowNanoseconds();
+    const recorder = new InputRecorder(state.provider.fileSystem.system);
     const answers = asked.map((question) =>
-      answerNow(state.provider.fileSystem.system, questions.get(question)!),
+      recorder.ask(questions.get(question)!),
     );
     const identity: Identity = {
       value: fingerprint(answers.map((answer) => JSON.stringify(answer))),

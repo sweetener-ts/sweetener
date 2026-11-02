@@ -914,10 +914,13 @@ export class DefaultProjectExpansionProvider
    * rest are still read, so the macros each named file sees and the names its
    * binding literals resolve are those of the whole project's expansion. Only
    * expanding and printing the others is skipped, which is most of the cost:
-   * an editor expanding again the one file being typed in asks for this. The
+   * an editor expanding again the one file being typed in asks for this. A
+   * macro module a named file reads from is expanded too, since only that
+   * settles how it is read: a slash its own macros make a division reads as a
+   * regular expression until then, and takes the macros after it along. The
    * output's files, and what `inspectSource` answers, are then the named
-   * files' alone; its diagnostics still include what reading every source
-   * raised.
+   * files' alone; its diagnostics still include what reading every source and
+   * expanding those modules raised.
    */
   expandProject(
     project: LoadedSweetProject,
@@ -2252,10 +2255,23 @@ export class DefaultProjectExpansionProvider
     const passReadings = new Map(readings);
     /** Whether a file asked to be read again with the whole project. */
     let rereadProject = false;
+    const settling =
+      expanding === undefined
+        ? undefined
+        : new Set([
+            ...expanding,
+            ...projectFiles
+              .filter(({ fileName }) => expanding.has(resolve(fileName)))
+              .flatMap(({ fileName }) => [...macroSourcesFor(fileName)])
+              .flatMap((sourceId) => {
+                const module = bySource.get(sourceId);
+                return module === undefined ? [] : [resolve(module.fileName)];
+              }),
+          ]);
     for (const projectFile of projectFiles) {
       if (
-        expanding !== undefined &&
-        !expanding.has(resolve(projectFile.fileName))
+        settling !== undefined &&
+        !settling.has(resolve(projectFile.fileName))
       )
         continue;
       let file = projectFile;
@@ -2341,8 +2357,18 @@ export class DefaultProjectExpansionProvider
       invocations: invocationCount,
     });
     this.#lastInputs = { configPath: project.configPath, inputs };
+    // Modules expanded only to settle their reading are not what was asked for.
+    const named = new Set<string>();
+    for (const [fileName, inspection] of this.#inspections)
+      if (expanding === undefined || expanding.has(fileName))
+        named.add(inspection.virtualFileName);
+      else this.#inspections.delete(fileName);
     const output: DefaultProjectExpansionOutput = Object.freeze({
-      files: Object.freeze(virtualFiles),
+      files: Object.freeze(
+        expanding === undefined
+          ? virtualFiles
+          : virtualFiles.filter(({ fileName }) => named.has(fileName)),
+      ),
       diagnostics: Object.freeze(
         diagnostics.map((diagnostic) =>
           asTypeScriptDiagnostic(diagnostic, bySource),

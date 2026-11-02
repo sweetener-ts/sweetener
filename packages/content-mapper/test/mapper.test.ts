@@ -766,6 +766,45 @@ describe("what it lets go of", () => {
     expect(expand).not.toHaveBeenCalled();
   });
 
+  test("forgets the text held for a config it let go of", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const first = project();
+    open(mapper, first.config, "p");
+    mapper.transform({
+      fileName: first.file("macros.sts"),
+      content: macros.replace("$callee($value)", "$callee($value, 1)"),
+      projectHandle: "p",
+    });
+    mapper.closeProject({ projectHandle: "p" });
+    for (let others = 0; others < 9; others += 1) {
+      open(mapper, project().config, "other");
+      mapper.closeProject({ projectHandle: "other" });
+    }
+    open(mapper, first.config, "p");
+    expect(
+      mapper.transform({
+        fileName: first.file("main.sts"),
+        content: main,
+        projectHandle: "p",
+      }).text,
+    ).toContain(`trim("  hello  ")`);
+  });
+
+  test("text held for a file that changed does not come back with the file", () => {
+    const { config, file } = project();
+    const { mapper, transform } = opened(config);
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    writeFileSync(file("macros.sts"), `${macros}// changed\n`);
+    open(mapper, config, "p");
+    writeFileSync(file("macros.sts"), macros);
+    open(mapper, config, "p");
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+  });
+
   test("forgets a config whose file is gone, with the text held for it", () => {
     const { config, directory, file } = project();
     const usable = readFileSync(config, "utf8");
@@ -912,6 +951,82 @@ describe("what it does not expand again", () => {
     const walked = vi.spyOn(ts.sys, "readDirectory");
     reopen(mapper, config);
     expect(walked).toHaveBeenCalled();
+  });
+});
+
+describe("a file the config does not list", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("hears what is wrong with a config that has since broken", () => {
+    const { config, file } = project();
+    const { transform } = opened(config);
+    writeFileSync(config, JSON.stringify({ sweet: { nonsense: 1 } }));
+    writeFileSync(file("new.sts"), "export const n = 1;\n");
+    expect(transform(file("new.sts")).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 6001,
+        messageText: expect.stringContaining("nonsense"),
+      }),
+    ]);
+  });
+
+  test("is looked for once, and again when it is saved", () => {
+    const { config, file } = project();
+    const { transform } = opened(config);
+    const walked = vi.spyOn(ts.sys, "readDirectory");
+    const text = "export const n = 1;\n";
+    expect(transform(file("new.sts"), text).diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+    const walks = walked.mock.calls.length;
+    expect(walks).toBeGreaterThan(0);
+    transform(file("new.sts"), `${text}// typed\n`);
+    expect(walked.mock.calls).toHaveLength(walks);
+    writeFileSync(file("new.sts"), text);
+    expect(transform(file("new.sts"), text).diagnostics).toEqual([]);
+    expect(walked.mock.calls.length).toBeGreaterThan(walks);
+  });
+});
+
+describe("a macro module read as its own macros say", () => {
+  test("stays so for a file using it, through every edit", () => {
+    const { config, file } = project({
+      "base.sts":
+        "export syntax stmt:stmt { rule { stmt($v:expr) } => { $v; } }\n",
+      "macros.sts": `import { stmt } from "./base.sts" for syntax;
+stmt(1) /{/.test("x");
+export syntax foo:expr { rule { foo($v:expr) } => { $v } }
+`,
+      "main.sts":
+        'import { foo } from "./macros.sts" for syntax;\nexport const v = foo(1);\n',
+    });
+    const { transform } = opened(config);
+    expect(transform(file("main.sts")).diagnostics).toEqual([]);
+    const edited = transform(
+      file("main.sts"),
+      'import { foo } from "./macros.sts" for syntax;\nexport const v = foo(2);\n',
+    );
+    expect(edited.diagnostics).toEqual([]);
+    expect(edited.text).toContain("export const v = 2;");
+  });
+});
+
+describe("a private name a macro copies", () => {
+  test("into two classes refuses rename", () => {
+    const { config, file } = project({
+      "macros.sts":
+        "export syntax two:item { rule { two($n:tt) } => { class A { $n = 1; } class B { $n = 2; } } }\n",
+      "main.sts": 'import { two } from "./macros.sts" for syntax;\ntwo(#x);\n',
+    });
+    const { transform } = opened(config);
+    const result = transform(file("main.sts"));
+    const copies = result.mappings.filter(
+      ([, virtualLength]) => virtualLength === 2,
+    );
+    expect(copies).toHaveLength(2);
+    for (const [, , , , kind] of copies) expect(kind).toBe(SpanMapKind.Atom);
   });
 });
 

@@ -1,31 +1,16 @@
 import { scriptKindForFileName } from "@sweetener/compiler";
 import * as ts from "typescript";
 
-function identifierAt(
-  sourceFile: ts.SourceFile,
-  start: number,
-  end: number,
-): ts.Identifier | undefined {
-  let found: ts.Identifier | undefined;
+/** Every name in a file, by where it stands: found once, for all its copies. */
+function namesIn(sourceFile: ts.SourceFile): ReadonlyMap<string, ts.Node> {
+  const names = new Map<string, ts.Node>();
   const visit = (node: ts.Node): void => {
-    if (
-      found !== undefined ||
-      node.getStart(sourceFile) > start ||
-      node.end < end
-    )
-      return;
-    if (
-      ts.isIdentifier(node) &&
-      node.getStart(sourceFile) === start &&
-      node.end === end
-    ) {
-      found = node;
-      return;
-    }
+    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node))
+      names.set(`${node.getStart(sourceFile)}:${node.end}`, node);
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return found;
+  return names;
 }
 
 /**
@@ -46,7 +31,8 @@ export function createBindingAgreement(
   copies: readonly { readonly start: number; readonly end: number }[],
 ) => boolean {
   let checker:
-    { sourceFile: ts.SourceFile; checker: ts.TypeChecker } | undefined;
+    | { names: ReadonlyMap<string, ts.Node>; checker: ts.TypeChecker }
+    | undefined;
   const bound = () => {
     if (checker !== undefined) return checker;
     const fileName = `/sweetener-expansion${extension}`;
@@ -79,14 +65,17 @@ export function createBindingAgreement(
         readFile: (name) => (name === fileName ? virtualText : undefined),
       },
     });
-    checker = { sourceFile, checker: program.getTypeChecker() };
+    checker = {
+      names: namesIn(sourceFile),
+      checker: program.getTypeChecker(),
+    };
     return checker;
   };
   return (copies) => {
-    const { sourceFile, checker: typeChecker } = bound();
+    const { names, checker: typeChecker } = bound();
     let first: ts.Symbol | null = null;
     for (const { start, end } of copies) {
-      const identifier = identifierAt(sourceFile, start, end);
+      const identifier = names.get(`${start}:${end}`);
       // A copy that is not an identifier here -- a property name the parser
       // reads differently, a keyword -- has nothing to compare, and nothing
       // is proven about it.

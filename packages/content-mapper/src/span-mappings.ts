@@ -18,7 +18,7 @@ export interface Segment {
   readonly features: number;
 }
 
-const identifier = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
+const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
 /**
  * How one printed region of the expansion relates to the source it came from.
@@ -91,6 +91,38 @@ function overlaps(
   return second.start < first.end;
 }
 
+function spanKey(segment: Segment): string {
+  return `${segment.originalStart}:${segment.originalEnd}`;
+}
+
+/** The spans that overlap some other span, by `spanKey`. */
+function spansThatCollide(segments: readonly Segment[]): ReadonlySet<string> {
+  const spans = [
+    ...new Map(segments.map((segment) => [spanKey(segment), segment])).values(),
+  ].sort(
+    (left, right) =>
+      left.originalStart - right.originalStart ||
+      left.originalEnd - right.originalEnd,
+  );
+  const colliding = new Set<string>();
+  let reaching: Segment | undefined;
+  for (const span of spans) {
+    if (
+      reaching !== undefined &&
+      overlaps(
+        { start: reaching.originalStart, end: reaching.originalEnd },
+        { start: span.originalStart, end: span.originalEnd },
+      )
+    ) {
+      colliding.add(spanKey(reaching));
+      colliding.add(spanKey(span));
+    }
+    if (reaching === undefined || span.originalEnd > reaching.originalEnd)
+      reaching = span;
+  }
+  return colliding;
+}
+
 /**
  * Keep the segments whose original spans TypeScript can accept together.
  *
@@ -111,10 +143,16 @@ export function compatibleSegments(segments: readonly Segment[]): Segment[] {
         (right.originalEnd - right.originalStart) ||
       left.virtualStart - right.virtualStart,
   );
-  // Distinct accepted spans, ordered by start and pairwise disjoint.
+  const colliding = spansThatCollide(segments);
+  // Distinct accepted spans that collide with another, ordered by start and
+  // pairwise disjoint. Few spans ever do, so inserting among them costs little.
   const accepted: { start: number; end: number }[] = [];
   const kept: Segment[] = [];
   for (const segment of ranked) {
+    if (!colliding.has(spanKey(segment))) {
+      kept.push(segment);
+      continue;
+    }
     const span = { start: segment.originalStart, end: segment.originalEnd };
     let low = 0;
     let high = accepted.length;

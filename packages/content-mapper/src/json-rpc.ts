@@ -64,11 +64,6 @@ export class MessageReader {
     }
   }
 
-  /** Every complete message body the bytes so far contain, in order. */
-  push(chunk: Buffer): string[] {
-    return [...this.messages(chunk)];
-  }
-
   /** Whether bytes of an unfinished message are still waiting. */
   get pending(): boolean {
     return this.#buffered.length > 0;

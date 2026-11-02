@@ -24,8 +24,8 @@ describe("message framing", () => {
     for (let cut = 0; cut <= bytes.length; cut += 1) {
       const reader = new MessageReader();
       const bodies = [
-        ...reader.push(bytes.subarray(0, cut)),
-        ...reader.push(bytes.subarray(cut)),
+        ...reader.messages(bytes.subarray(0, cut)),
+        ...reader.messages(bytes.subarray(cut)),
       ];
       expect(bodies.map((body) => JSON.parse(body))).toEqual([message]);
       expect(reader.pending).toBe(false);
@@ -34,9 +34,11 @@ describe("message framing", () => {
 
   test("several messages in one chunk come out in order", () => {
     const reader = new MessageReader();
-    const bodies = reader.push(
-      Buffer.concat([frame({ id: 1 }), frame({ id: 2 }), frame({ id: 3 })]),
-    );
+    const bodies = [
+      ...reader.messages(
+        Buffer.concat([frame({ id: 1 }), frame({ id: 2 }), frame({ id: 3 })]),
+      ),
+    ];
     expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1, 2, 3]);
   });
 
@@ -49,9 +51,9 @@ describe("message framing", () => {
   });
 
   test("a header without Content-Length is refused", () => {
-    expect(() =>
-      new MessageReader().push(Buffer.from("Content-Type: x\r\n\r\n{}")),
-    ).toThrow(/no Content-Length/u);
+    expect(() => [
+      ...new MessageReader().messages(Buffer.from("Content-Type: x\r\n\r\n{}")),
+    ]).toThrow(/no Content-Length/u);
   });
 });
 
@@ -136,7 +138,7 @@ describe("serve", () => {
     input.write(frame({ jsonrpc: "2.0", id: 1, method: "echo", params: "a" }));
     input.end(frame({ jsonrpc: "2.0", id: 2, method: "echo", params: "b" }));
     await served;
-    const bodies = new MessageReader().push(Buffer.concat(written));
+    const bodies = [...new MessageReader().messages(Buffer.concat(written))];
     expect(bodies.map((body) => JSON.parse(body).result)).toEqual(["a", "b"]);
   });
 
@@ -157,7 +159,7 @@ describe("serve", () => {
       ]),
     );
     await expect(served).rejects.toThrow(/Malformed Content-Length/u);
-    const bodies = new MessageReader().push(Buffer.concat(written));
+    const bodies = [...new MessageReader().messages(Buffer.concat(written))];
     expect(bodies.map((body) => JSON.parse(body).result)).toEqual(["a"]);
   });
 
@@ -177,7 +179,7 @@ describe("serve", () => {
       server.once("close", resolveExit),
     );
     expect(status).toBe(0);
-    const bodies = new MessageReader().push(Buffer.concat(received));
+    const bodies = [...new MessageReader().messages(Buffer.concat(received))];
     expect(bodies).toHaveLength(1);
     expect(JSON.parse(bodies[0]!).error.message).toContain(method);
   });
@@ -210,7 +212,7 @@ JSON.parse = (...args) => {
       server.once("close", resolveExit),
     );
     expect(status).toBe(0);
-    const bodies = new MessageReader().push(Buffer.concat(received));
+    const bodies = [...new MessageReader().messages(Buffer.concat(received))];
     expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
     expect(logged).toContain("stray log");
     expect(logged).toContain("stray dir");

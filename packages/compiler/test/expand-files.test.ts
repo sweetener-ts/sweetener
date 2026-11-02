@@ -117,3 +117,48 @@ export syntax later:expr { rule { later } => { 7 } }
     expect(alone.inspectSource(fileName)?.diagnostics).toEqual([]);
   }
 });
+
+/**
+ * A macro module's own use of a macro can decide how it is read: `stmt(1)` is
+ * a statement, so the slash after it opens a regular expression, not the
+ * division the reader took it for, and read as a division everything after it
+ * is lost. Only expanding the module finds that out, so a file using it has to
+ * have it expanded, and neither sees it in what comes back.
+ */
+test("a file alone settles how the macro modules it reads from are read", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-alone-")));
+  const write = (name: string, text: string) => {
+    writeFileSync(join(directory, name), text);
+    return join(directory, name);
+  };
+  write(
+    "base.sts",
+    "export syntax stmt:stmt { rule { stmt($v:expr) } => { $v; } }\n",
+  );
+  const module = write(
+    "m.sts",
+    `import { stmt } from "./base.sts" for syntax;
+stmt(1) /{/.test("x");
+export syntax foo:expr { rule { foo($v:expr) } => { $v } }
+`,
+  );
+  const user = write(
+    "a.sts",
+    'import { foo } from "./m.sts" for syntax;\nexport const v = foo(1);\n',
+  );
+  const config = write(
+    "tsconfig.json",
+    JSON.stringify({
+      compilerOptions: { noEmit: true, target: "ES2022", module: "ESNext" },
+      files: ["base.sts", "m.sts", "a.sts"],
+    }),
+  );
+  const project = loadSweetProject(config);
+  const alone = createDefaultProjectExpansionProvider();
+  const output = alone.expandProject(project, { files: new Set([user]) });
+  const inspection = alone.inspectSource(user);
+  expect(inspection?.generated.text).toContain("export const v = 1;");
+  expect(inspection?.diagnostics).toEqual([]);
+  expect(output.files).toHaveLength(1);
+  expect(alone.inspectSource(module)).toBeUndefined();
+});

@@ -108,7 +108,8 @@ export class LanguageServerClient {
     });
     const reader = new MessageReader();
     this.#child.stdout!.on("data", (chunk: Buffer) => {
-      for (const body of reader.push(chunk)) this.#receive(JSON.parse(body));
+      for (const body of reader.messages(chunk))
+        this.#receive(JSON.parse(body));
     });
     this.#child.stderr!.on("data", (chunk: Buffer) =>
       this.#stderr.push(chunk.toString()),
