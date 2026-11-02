@@ -1966,9 +1966,7 @@ export const loud = shout("a");
     );
   }
   const expected = [
-    expect.stringMatching(
-      /helpers\.stsx:2:54: Missing closing delimiter \)$/u,
-    ),
+    expect.stringMatching(/helpers\.stsx:2:54: Missing closing delimiter \)$/u),
   ];
 
   test("reports an error in a module TypeScript never transforms here", () => {
