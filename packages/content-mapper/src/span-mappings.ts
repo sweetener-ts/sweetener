@@ -83,7 +83,9 @@ function segmentFor(
   // JSX text may read like a comment, and is its own origin.
   if (virtual !== sourceText.slice(start, end) && isCommentsAlone(virtual)) {
     const from = start - virtual.length;
-    return from >= 0 && sourceText.slice(from, start) === virtual
+    return from >= 0 &&
+      sourceText.slice(from, start) === virtual &&
+      !undecodable.test(virtual)
       ? {
           virtualStart: region.generatedStart,
           virtualEnd: region.generatedEnd,

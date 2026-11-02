@@ -10,8 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export default function setup() {
-  if (process.env["SWEETENER_TESTS_BUILT"] === "1") return;
+function build() {
   const { status, stdout, stderr, error } = spawnSync(
     "tsc6",
     ["-b", "packages/content-mapper"],
@@ -30,4 +29,11 @@ export default function setup() {
     throw new Error(
       `The content mapper did not build, and its end-to-end tests run what is built:\n${stdout}${stderr}`,
     );
+}
+
+export default function setup(project) {
+  if (process.env["SWEETENER_TESTS_BUILT"] === "1") return;
+  build();
+  // Vitest watching runs tests again from here, not from the top.
+  project.onTestsRerun(build);
 }

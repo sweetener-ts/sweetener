@@ -113,6 +113,21 @@ describe("tsc", () => {
     ]);
   });
 
+  test("checks a file with bytes that are not UTF-8 in a comment", () => {
+    const { directory, file } = mappedProject({ "main.sts": "export {};\n" });
+    writeFileSync(
+      file("bad.sts"),
+      Buffer.concat([
+        Buffer.from("// caf"),
+        Buffer.from([0xe9]),
+        Buffer.from("\nexport const b: string = 2;\n"),
+      ]),
+    );
+    expect(check(directory).lines).toEqual([
+      "src/bad.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    ]);
+  });
+
   test("checks a file holding bytes that are not UTF-8", () => {
     const { directory, file } = mappedProject({
       "main.sts": "export const n: string = 1;\n",

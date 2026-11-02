@@ -361,7 +361,7 @@ export function createSweetenerSession(
    */
   const expand = (state: ConfigState): Map<string, FileExpansion> => {
     const expandedAt = nowNanoseconds();
-    const expanded = provider.expandProject(state.project);
+    provider.expandProject(state.project);
     const check = checkedInputs(provider.fileSystem, expandedAt);
     const canonicalNames = new Map<string, string>();
     const canonicalOf = (fileName: string): string => {
@@ -384,9 +384,6 @@ export function createSweetenerSession(
       return [{ name, inspection }];
     });
     const configuration = state.project.configurationInputs;
-    const fileList = expanded.resolvesBindingLiterals
-      ? state.fileList
-      : undefined;
     const made = new Map<string, FileExpansion>();
     for (const { name, inspection } of inspections) {
       const key = canonicalOf(name);
@@ -409,7 +406,8 @@ export function createSweetenerSession(
       );
       const fileExpansion: FileExpansion = {
         consulted: check(inspection.inputs),
-        fileList,
+        // Only what reads a binding literal depends on a program of every source.
+        fileList: inspection.readsBindingLiterals ? state.fileList : undefined,
         inspection,
         virtualFilename: canonicalOf(inspection.virtualFileName),
         sourceNames,

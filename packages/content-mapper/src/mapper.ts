@@ -204,10 +204,18 @@ interface ConfigState {
   /** The identity last given, kept while what it was made from holds. */
   identity: Identity | undefined;
   /**
-   * Files whose expansion failed the last time it was tried. They say nothing
+   * Files whose expansion failed the last time it was tried, and what that read,
+   * which is when to try again: they failed on it. They say nothing
    * of what they read, so what would mend them is not known: see `#identityOf`.
    */
-  readonly failed: Set<string>;
+  readonly failed: Map<string, readonly CheckedInput[]>;
+  /** What the expansion that last threw read, and when it began. */
+  threw: { readonly inputs: readonly ExpansionInput[]; readonly at: bigint };
+  /**
+   * Whether a file it asked about was taken at the config's word, `include` having
+   * been walked too recently to look again, so the next open should.
+   */
+  walkAgain: boolean;
   /** What was read by the expansions that failed, while any file has. */
   readonly failureInputs: Map<string, ExpansionInput>;
   /**
@@ -573,12 +581,12 @@ export class SweetenerContentMapper {
         ErrorCode.InvalidParams,
         `Unknown project handle ${JSON.stringify(request.projectHandle)}`,
       );
-    const fileName = canonical(request.fileName);
+    const opened = this.#configs.get(configFileName);
+    const fileName = this.#asListed(opened, canonical(request.fileName));
     // Before anything else: text sent while the config is unusable is what
     // the file says once it is usable again.
     if (holdText(this.#overlay, fileName, request.content))
       this.#round = new InputCheckRound();
-    const opened = this.#configs.get(configFileName);
     const referenced =
       opened === undefined || opened.listed.has(fileName)
         ? undefined
@@ -594,6 +602,11 @@ export class SweetenerContentMapper {
         ErrorCode.InternalError,
         `${configFileName} has a project open and neither a state nor a problem`,
       );
+    // Text other than what was expanded is news, whatever the disk says: it may
+    // be the disk that changed, under a file others read.
+    const kept = state.expanded.get(fileName);
+    if (kept !== undefined && kept.sourceText !== request.content)
+      this.#round = new InputCheckRound();
     let file: ExpandedFile | undefined;
     try {
       file = this.#expansionFor(state, fileName);
@@ -690,6 +703,7 @@ export class SweetenerContentMapper {
       !force &&
       kept !== undefined &&
       kept.literalReaders.size === 0 &&
+      !kept.walkAgain &&
       [...kept.unlisted].every(
         ([name, onDisk]) => ts.sys.fileExists(name) === onDisk,
       ) &&
@@ -760,6 +774,7 @@ export class SweetenerContentMapper {
     const existing = this.#configs.get(configFileName);
     if (existing !== undefined && existing.signature === signature) {
       existing.configuration = configuration;
+      existing.walkAgain = false;
       existing.loadedAt = loadedAt;
       this.#relist(existing, project);
       this.#refresh(existing);
@@ -779,7 +794,9 @@ export class SweetenerContentMapper {
       // referenced project lists would be refused for a change to this config.
       references: new Set(existing?.references),
       identity: undefined,
-      failed: new Set(),
+      failed: new Map(),
+      threw: { inputs: [], at: 0n },
+      walkAgain: false,
       failureInputs: new Map(),
       unlisted: new Map(),
       nowListed: 0,
@@ -851,6 +868,31 @@ export class SweetenerContentMapper {
   }
 
   /**
+   * A file as the project spells it, where the disk does not tell cases apart and
+   * TypeScript was told it by an import that does not: `./Util.sts` for `util.sts`
+   * is one file, whose own error is TypeScript's to report.
+   */
+  #asListed(state: ConfigState | undefined, fileName: string): string {
+    if (
+      state === undefined ||
+      ts.sys.useCaseSensitiveFileNames ||
+      state.listed.has(fileName)
+    )
+      return fileName;
+    const folded = fileName.toLowerCase();
+    const projects = [
+      state,
+      ...this.#referencesOf(state).flatMap(
+        (reference) => this.#configs.get(reference) ?? [],
+      ),
+    ];
+    for (const project of projects)
+      for (const name of project.listed)
+        if (name.toLowerCase() === folded) return name;
+    return fileName;
+  }
+
+  /**
    * What answers for a file this project does not list, if it does not list it
    * but a project it references could. TypeScript reads a referenced project's
    * sources through the one referencing it, and asks that one's handle for them,
@@ -909,6 +951,7 @@ export class SweetenerContentMapper {
       !statIsSettled(stats, state.loadedAt);
     if (onDisk && (walkedAWhileAgo || newlyWritten))
       this.#problemsWith(state.configFileName, true);
+    else if (onDisk) state.walkAgain = true;
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
       loaded.unlisted.set(fileName, onDisk);
@@ -916,8 +959,9 @@ export class SweetenerContentMapper {
 
   /**
    * Expand again what no longer holds, before anything is said of what the
-   * project depends on, and try again what failed: mended, it says what it
-   * read, and TypeScript never asks for a file it does not transform.
+   * project depends on, and try again what failed if what it read has changed:
+   * mended, it says what it read, and TypeScript never asks for a file it does
+   * not transform.
    */
   #refresh(state: ConfigState): void {
     const round = new InputCheckRound();
@@ -927,7 +971,12 @@ export class SweetenerContentMapper {
     if (stale.length > 0) this.#expandOrForget(state, stale);
     this.#expandEachOf(
       state,
-      [...state.failed].filter((name) => !stale.includes(name)),
+      [...state.failed]
+        .filter(
+          ([name, consulted]) =>
+            !stale.includes(name) && !round.hold(consulted),
+        )
+        .map(([name]) => name),
     );
   }
 
@@ -1017,13 +1066,19 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * Leaves these files to be expanded alone when asked for.
+   * Leaves these files to be expanded alone when asked for, or when what the last
+   * expansion to throw read says something different. What that read is added to
+   * what counts: a batch that throws may not have reached what another file read.
    */
   #recordFailure(state: ConfigState, fileNames: Iterable<string>): void {
+    const { inputs, at } = state.threw;
+    const consulted = checkedInputs(state.provider.fileSystem, at)(inputs);
+    for (const input of inputs)
+      state.failureInputs.set(`${input.kind}\0${input.path}`, input);
     for (const name of fileNames) {
       state.expanded.delete(name);
       state.literalReaders.delete(name);
-      state.failed.add(name);
+      state.failed.set(name, consulted);
     }
   }
 
@@ -1037,23 +1092,14 @@ export class SweetenerContentMapper {
     onlyNarrowly = false,
   ): void {
     const expandedAt = nowNanoseconds();
+    // What the state keeps is plain by now, and each inspection holds the whole
+    // project: kept in the provider, one per config would stay.
     try {
       state.provider.expandProject(state.project, {
         files: new Set(fileNames),
         onlyNarrowly,
       });
-    } catch (error) {
-      // What it read is what could mend it. Added to: a batch that throws may
-      // not have reached what another file read.
-      for (const input of state.provider.readInputs())
-        state.failureInputs.set(`${input.kind}\0${input.path}`, input);
-      state.provider.releaseInspections();
-      throw error;
-    }
-    const check = checkedInputs(state.provider.fileSystem, expandedAt);
-    // What the state keeps is plain by now, and each inspection holds the whole
-    // project: kept in the provider, one per config would stay.
-    try {
+      const check = checkedInputs(state.provider.fileSystem, expandedAt);
       for (const fileName of fileNames) {
         state.failed.delete(fileName);
         const inspection = state.provider.inspectSource(fileName);
@@ -1069,6 +1115,10 @@ export class SweetenerContentMapper {
           expandedFile(fileName, inspection, check(inspection.inputs)),
         );
       }
+    } catch (error) {
+      // What it read is what could mend it, gone once the provider lets go.
+      state.threw = { inputs: state.provider.readInputs(), at: expandedAt };
+      throw error;
     } finally {
       state.provider.releaseInspections();
     }
@@ -1169,12 +1219,18 @@ export class SweetenerContentMapper {
     const asked = [...questions.keys()].sort();
     // What TypeScript asked for that the config does not list: nothing changes
     // for it otherwise when one is saved, and it keeps the file emptied.
-    const unlisted = [
-      String(state.nowListed),
-      ...[...state.unlisted]
-        .map(([name, onDisk]) => `${name}\0${String(onDisk)}`)
-        .sort(),
+    const readers = [
+      state,
+      ...this.#referencesOf(state).flatMap(
+        (reference) => this.#configs.get(reference) ?? [],
+      ),
     ];
+    const unlisted = readers.flatMap((reader) => [
+      String(reader.nowListed),
+      ...[...reader.unlisted]
+        .map(([name, onDisk]) => `${name} ${String(onDisk)}`)
+        .sort(),
+    ]);
     const askedKey = fingerprint([...asked, ...unlisted]);
     const kept = state.identity;
     if (
@@ -1202,7 +1258,7 @@ export class SweetenerContentMapper {
           ...answers
             .filter(({ kind }) => kind !== "subdirectories")
             .map(({ path }) => canonical(path)),
-          ...state.unlisted.keys(),
+          ...readers.flatMap((reader) => [...reader.unlisted.keys()]),
         ]),
       ].sort(),
       consulted: checkedInputs(state.provider.fileSystem, answeredAt)(answers),

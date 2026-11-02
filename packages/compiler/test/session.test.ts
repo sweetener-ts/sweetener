@@ -579,6 +579,46 @@ describe("public compiler session", () => {
     await session.close();
   });
 
+  test("keeps a file that reads no binding literal when a file joins the project", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sweet-session-"));
+    const write = (name: string, text: string) => {
+      writeFileSync(join(directory, name), text);
+      return join(directory, name);
+    };
+    write("local.ts", "export const Circle = 1;\n");
+    write(
+      "literal.sts",
+      'import { Circle } from "./local";\nexport syntax kind:expr { literal Circle as Circle; rule { kind(Circle) } => { "circle" } fallback rule { kind($v:expr) } => { "other" } }\n',
+    );
+    const plain = write("plain.sts", "export const p = 1;\n");
+    const config = write(
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          noEmit: true,
+        },
+        include: ["*.sts", "*.ts"],
+      }),
+    );
+    const provider = createDefaultProjectExpansionProvider();
+    const session = createSweetenerSession({ provider });
+    const request = {
+      filename: plain,
+      code: readFileSync(plain, "utf8"),
+      configFile: config,
+    };
+    const first = await session.transform(request);
+    write("joined.sts", "export const j = 1;\n");
+    const expand = vi.spyOn(provider, "expandProject");
+    const second = await session.transform(request);
+    expect(second.code).toBe(first.code);
+    expect(expand).not.toHaveBeenCalled();
+    await session.close();
+  });
+
   test("expands again when a file joins a project whose macros name binding literals", async () => {
     // TypeScript resolves a binding literal over every source in the project,
     // so there each file's expansion depends on which files there are.

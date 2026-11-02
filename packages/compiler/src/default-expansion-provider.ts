@@ -863,9 +863,8 @@ export interface DefaultSourceExpansionInspection extends SourceExpansionInspect
    * the file itself, the macro modules it reads macros from, and every lookup
    * made resolving their imports. While each gets the same answer, expanding
    * the file again gives the same output and the same diagnostics -- unless
-   * the expansion resolved binding literals, when these are all of the
-   * project's inputs and its file list counts too (see
-   * `resolvesBindingLiterals`).
+   * the file reads binding literals, when these are all of the project's inputs
+   * and its file list counts too (see `readsBindingLiterals`).
    */
   readonly inputs: readonly ExpansionInput[];
   /** Whether this file, or a macro module it reads from, has binding literals. */
