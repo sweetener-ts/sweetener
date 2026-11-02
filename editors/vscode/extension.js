@@ -40,7 +40,18 @@ async function activate(context) {
         return;
       }
       if (api === registeredWith) return;
-      registration?.dispose();
+      // Cleared first: disposing against an old client may throw, and that is no
+      // reason to go on trying it, or not to register with the new one.
+      const previous = registration;
+      registration = undefined;
+      try {
+        previous?.dispose();
+      } catch (error) {
+        console.error(
+          `Sweetener could not let go of its old registration with ${typescriptExtension}:`,
+          error,
+        );
+      }
       registration = api.registerContentMappers("sweetener", [
         { extensions: [".sts", ".stsx"] },
       ]);

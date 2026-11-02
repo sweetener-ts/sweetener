@@ -13,6 +13,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DefaultProjectExpansionProvider,
+  InputCheckRound,
   loadSweetProject,
   typescript as ts,
 } from "@sweetener/compiler";
@@ -775,7 +776,7 @@ describe("a compiler failure", () => {
     });
     vi.spyOn(
       DefaultProjectExpansionProvider.prototype,
-      "readEverySource",
+      "failedReadingEverySource",
     ).mockReturnValue(true);
     const { transform } = opened(config);
     // All together, then one alone, for the rest to need no more than they lead to.
@@ -1483,6 +1484,61 @@ describe("a private name a macro copies", () => {
   });
 });
 
+describe("a file half typed", () => {
+  test("keeps its text and its mappings, for the parser to go on past", () => {
+    const { config, file } = project();
+    const typing = `${main}export const half = trim(;\n`;
+    const answer = opened(config).transform(file("main.sts"), typing);
+    expect(answer.text).toContain(`trim("  hello  ")`);
+    expect(answer.mappings.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a comment in front of a token", () => {
+  test("maps to itself, and leaves the token its own", () => {
+    const { config, file } = project({
+      "main.sts": "export const a = 1;\n// a comment\nexport const w = 1;\n",
+    });
+    const { mappings } = opened(config).transform(file("main.sts"));
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]?.[4]).toBe(SpanMapKind.Verbatim);
+  });
+});
+
+describe("a file with a macro among several", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("a project sharing one list of inputs checks it once a run", () => {
+    const { config, file } = project({
+      "local.ts": "export const Circle = 1;\n",
+      "macros.sts": [
+        'import { Circle } from "./local";',
+        "export syntax kind:expr {",
+        "  literal Circle as Circle;",
+        '  rule { kind(Circle) } => { "circle" }',
+        '  fallback rule { kind($value:expr) } => { "other" }',
+        "}",
+        "",
+      ].join("\n"),
+      "a.sts":
+        'import { kind } from "./macros.sts" for syntax;\nexport const a = kind(1);\n',
+      "b.sts":
+        'import { kind } from "./macros.sts" for syntax;\nexport const b = kind(1);\n',
+    });
+    const { transform } = opened(config);
+    const hold = vi.spyOn(InputCheckRound.prototype, "hold");
+    const rounds = new Set<unknown>();
+    hold.mockImplementation(function (this: InputCheckRound) {
+      rounds.add(this);
+      return true;
+    });
+    for (const name of ["a.sts", "b.sts", "macros.sts"]) transform(file(name));
+    expect(rounds.size).toBe(1);
+  });
+});
+
 describe("a file whose own macros could not run", () => {
   test.each([
     [
@@ -1870,7 +1926,7 @@ describe("errors raised against a macro's template", () => {
     const fromUse = transform(file("main.sts")).diagnostics ?? [];
     expect(
       fromUse.filter(({ messageText }) =>
-        messageText.startsWith(`${file("macros.sts")}(`),
+        messageText.startsWith(`${file("macros.sts")}:`),
       ),
     ).toHaveLength(1);
     expect(transform(file("macros.sts")).diagnostics).toEqual([]);
@@ -1911,7 +1967,7 @@ export const loud = shout("a");
   }
   const expected = [
     expect.stringMatching(
-      /helpers\.stsx\(2,54\): Missing closing delimiter \)$/u,
+      /helpers\.stsx:2:54: Missing closing delimiter \)$/u,
     ),
   ];
 

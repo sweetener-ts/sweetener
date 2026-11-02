@@ -23,7 +23,8 @@ export const tsc = join(
   "tsc",
 );
 
-// TypeScript starts what is built, not what is written: see `pnpm test`.
+// TypeScript starts what is built, not what is written, which
+// scripts/test-build-content-mapper.mjs brings up to date for a test run.
 if (!existsSync(join(packageRoot, "dist", "src", "server.js")))
   throw new Error(
     "@sweetener/content-mapper is not built, and these tests run what is: run pnpm build",

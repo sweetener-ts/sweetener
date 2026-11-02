@@ -190,6 +190,16 @@ describe("tsc", () => {
     expect(lines.some((line) => line.includes("main.sts(1,1)"))).toBe(true);
   });
 
+  test("reports an unused expect-error directive where it is written", () => {
+    const { directory } = mappedProject({
+      "main.sts":
+        "export const a = 1;\n// @ts-expect-error\nexport const w = 1;\n",
+    });
+    expect(check(directory).lines).toEqual([
+      "src/main.sts(2,1): error TS2578: Unused '@ts-expect-error' directive.",
+    ]);
+  });
+
   test("accepts an option only TypeScript 7 knows", () => {
     const { directory } = mappedProject(
       { "macros.sts": macros, "main.sts": main },

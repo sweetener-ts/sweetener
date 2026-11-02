@@ -40,13 +40,13 @@ function describeDiagnostic(diagnostic: ts.Diagnostic): string {
   const code =
     diagnostic.code === undefined ? "" : `${diagnosticCode(diagnostic)}: `;
   const head = `${severity}${code}${message}`;
-  const at = position(diagnostic.file, diagnostic.start);
+  const at = diagnosticPosition(diagnostic.file, diagnostic.start);
   const lines = [at === undefined ? head : `${at} ${head}`];
   // The other place a diagnostic points — the rule that wanted different
   // syntax, the binding already holding a name — is most of the answer.
   for (const related of diagnostic.relatedInformation ?? []) {
     const text = ts.flattenDiagnosticMessageText(related.messageText, "\n");
-    const relatedAt = position(related.file, related.start);
+    const relatedAt = diagnosticPosition(related.file, related.start);
     lines.push(
       relatedAt === undefined ? `  ${text}` : `  ${relatedAt} ${text}`,
     );
@@ -54,7 +54,8 @@ function describeDiagnostic(diagnostic: ts.Diagnostic): string {
   return lines.join("\n");
 }
 
-function position(
+/** `file:line:column`, as every surface names a place in a source. */
+export function diagnosticPosition(
   file: ts.SourceFile | undefined,
   start: number | undefined,
 ): string | undefined {

@@ -23,6 +23,9 @@ export interface Segment {
 
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
+/** Text that is nothing but whitespace and comments. */
+const commentsAlone = /^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)+$/u;
+
 /**
  * What bytes that are not UTF-8 decode to. TypeScript holds a verbatim mapping to
  * the bytes themselves, which two such texts can differ in while reading alike:
@@ -58,6 +61,23 @@ function segmentFor(
   if (virtual.trim().length === 0) return undefined;
   if ((region.primary.sourceId as number) !== sourceId) return undefined;
   const { start, end } = region.primary.span;
+  // A comment printed on its own has the token after it for an origin. Read as
+  // that token, an error reported on the comment landed on what follows it, and
+  // the token's span had a second use. Where the source has it there too, the
+  // two are one text; where it does not, it has no place in this file.
+  if (commentsAlone.test(virtual)) {
+    const from = start - virtual.length;
+    return from >= 0 && sourceText.slice(from, start) === virtual
+      ? {
+          virtualStart: region.generatedStart,
+          virtualEnd: region.generatedEnd,
+          originalStart: from,
+          originalEnd: start,
+          kind: SpanMapKind.Verbatim,
+          features: SpanMapFeature.All,
+        }
+      : undefined;
+  }
   const original = sourceText.slice(start, end);
   const written = region.kind === "source" || region.kind === "copied";
   const [kind, features] =

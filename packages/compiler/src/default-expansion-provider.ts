@@ -575,6 +575,25 @@ function compileTimeImportsKey(file: ParsedFile): string {
  * resolves a binding literal. A file's inputs and what it says it reads agree on
  * this, so what is kept against them stands for as long as it should.
  */
+const listings = new WeakMap<LoadedSweetProject, ReadonlyMap<string, string>>();
+
+/** A project's listed files, by the paths they resolve to. */
+function listingOf(project: LoadedSweetProject): ReadonlyMap<string, string> {
+  let listing = listings.get(project);
+  if (listing === undefined) {
+    listing = new Map(
+      project.typescript.fileNames.map((name) => [resolve(name), name]),
+    );
+    listings.set(project, listing);
+  }
+  return listing;
+}
+
+/** Whether a diagnostic is about the text as text, not about any macro in it. */
+function isScannerOrReaderCode(code: string): boolean {
+  return code.startsWith("SWR1");
+}
+
 function readBindingLiterals(modules: readonly ParsedFile[]): boolean {
   return modules.some(({ compiled }) => compiled.bindingLiterals.length > 0);
 }
@@ -845,8 +864,11 @@ export interface DefaultSourceExpansionInspection extends SourceExpansionInspect
   /** Whether this file, or a macro module it reads from, has binding literals. */
   readonly readsBindingLiterals: boolean;
   /**
-   * Whether this file, as read, or a macro module it reads from has errors, which
-   * stops those macros running: what was generated is then this file as written.
+   * Whether a macro this file uses could not run: it defines one with errors, or
+   * imports one from what is not there or has errors. What was generated is then
+   * this file as written. A delimiter not closed, as typing leaves one, is no such
+   * thing where it is in this file: it stops no macro module, and TypeScript's
+   * parser goes on past it.
    */
   readonly macrosFailed: boolean;
 }
@@ -862,6 +884,8 @@ export class DefaultProjectExpansionProvider
   #recorder: InputRecorder | undefined;
   /** Whether the expansion last begun has had to read every source. */
   #readEverySource = false;
+  /** Whether it has finished reading what it read. */
+  #finishedReading = false;
   /** The config the last expansion to finish was of, and what it asked. */
   #lastInputs:
     | {
@@ -960,9 +984,9 @@ export class DefaultProjectExpansionProvider
         : new Set([...options.files].map((fileName) => resolve(fileName)));
     const recorder = new InputRecorder(this.#fileSystem.system);
     this.#recorder = recorder;
-    this.#readEverySource = named === undefined;
     const settled = (reading: ReadonlySet<string> | undefined) => {
       this.#readEverySource = reading === undefined;
+      this.#finishedReading = false;
       const history: ReadingHistory = new Map();
       return settleReadings<
         DefaultProjectExpansionOutput | undefined,
@@ -990,7 +1014,7 @@ export class DefaultProjectExpansionProvider
     if (narrow === undefined && options.onlyNarrowly === true) {
       this.#readEverySource = true;
       throw new Error(
-        "Expanding these files needs every source, which was not read",
+        "Expanding these files needs every source, and reading those has just failed",
       );
     }
     const output = narrow ?? settled(undefined);
@@ -1137,13 +1161,12 @@ export class DefaultProjectExpansionProvider
       diagnostics.push(...file.diagnostics);
       return file;
     };
+    const listing = listingOf(project);
     const sweetFiles = selectSweetSources({
       fileNames:
         reading === undefined
           ? project.typescript.fileNames
-          : project.typescript.fileNames.filter((fileName) =>
-              reading.has(resolve(fileName)),
-            ),
+          : [...reading].flatMap((name) => listing.get(name) ?? []),
       macroExtensions: project.sweet.macroExtensions,
       readSource: (fileName) => consult(fileName, fileName),
     });
@@ -1468,14 +1491,13 @@ export class DefaultProjectExpansionProvider
             }),
           );
     }
-    const listed = new Set(project.typescript.fileNames.map((f) => resolve(f)));
     // Read as far as the named files lead, and no further if that will not do.
     if (
       reading !== undefined &&
       (readBindingLiterals([...byPath.values()]) ||
         [...byPath.keys()].some(
           (fileName) =>
-            listed.has(resolve(fileName)) &&
+            listing.has(resolve(fileName)) &&
             !project.sweet.macroExtensions.includes(parse(fileName).ext),
         ))
     )
@@ -1578,6 +1600,7 @@ export class DefaultProjectExpansionProvider
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
+    this.#finishedReading = true;
     /**
      * What a file's expansion consulted on disk: what it and each module it
      * reads macros from consulted, every lookup resolving their imports among
@@ -2200,7 +2223,11 @@ export class DefaultProjectExpansionProvider
           readsBindingLiterals: readBindingLiterals([file, ...macroModules]),
           macrosFailed:
             importFailed ||
-            [file, ...macroModules].some((module) =>
+            answerableFor(file).some(
+              ({ severity, code }) =>
+                severity === "error" && !isScannerOrReaderCode(code),
+            ) ||
+            macroModules.some((module) =>
               answerableFor(module).some(
                 ({ severity }) => severity === "error",
               ),
@@ -2353,7 +2380,7 @@ export class DefaultProjectExpansionProvider
       reading === undefined
         ? projectFiles
         : [...byPath.values()].filter(({ fileName }) =>
-            listed.has(resolve(fileName)),
+            listing.has(resolve(fileName)),
           );
     for (const projectFile of expandable) {
       if (
@@ -2498,12 +2525,13 @@ export class DefaultProjectExpansionProvider
   }
 
   /**
-   * Whether the expansion last begun read every source, whatever files it was
-   * named: failing, it says nothing of those files in particular, and expanding
-   * any of them again would read and fail the same.
+   * Whether the expansion last begun failed reading every source, whatever files
+   * it was named: that says nothing of those files in particular, and any other
+   * file that needs every source would read and fail the same. One that got past
+   * reading failed on a file of its own.
    */
-  readEverySource(): boolean {
-    return this.#readEverySource;
+  failedReadingEverySource(): boolean {
+    return this.#readEverySource && !this.#finishedReading;
   }
 
   /**

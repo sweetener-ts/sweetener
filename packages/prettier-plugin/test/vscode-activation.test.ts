@@ -188,6 +188,27 @@ describe("activation", () => {
     expect(registered).toHaveLength(2);
   });
 
+  test("registers with a new one though letting go of the old throws", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const registered: unknown[] = [];
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": typescript7(registered, {
+        dispose() {
+          throw new Error("the client is gone");
+        },
+      }),
+    };
+    const { extension, changed } = load(installed);
+    await extension.activate({ subscriptions: [] });
+    installed["TypeScriptTeam.native-preview"] = typescript7(
+      registered,
+      watching,
+    );
+    await changed();
+    expect(registered).toHaveLength(2);
+    logged.mockRestore();
+  });
+
   test("lets go of the old registration when registering with a new one", async () => {
     let disposals = 0;
     const registered: unknown[] = [];
