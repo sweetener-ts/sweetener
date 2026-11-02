@@ -90,13 +90,21 @@ describe("tsc", () => {
     );
   });
 
+  test("accepts an option only TypeScript 7 knows", () => {
+    const { directory } = mappedProject(
+      { "macros.sts": macros, "main.sts": main },
+      { checkers: 2 },
+    );
+    expect(check(directory)).toEqual({ status: 0, lines: [] });
+  });
+
   test("reports what expansion could not do under Sweetener's name", () => {
     const { directory } = mappedProject({
       "macros.sts": macros,
       "main.sts": `import { (|>) } from "./macros.sts" for syntax;\nexport const bad = 5 |> ;\n`,
     });
     expect(check(directory).lines).toContain(
-      "src/main.sts(2,22): error sweetener4021: Operator |> was left unexpanded: the expression it is written in could not be read, so none of its rules were tried.",
+      "src/main.sts(2,22): error SWR4021: Operator |> was left unexpanded: the expression it is written in could not be read, so none of its rules were tried.",
     );
   });
 });

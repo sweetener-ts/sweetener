@@ -106,10 +106,13 @@ rather than changing what the other binding means.
 
 When the mapper cannot expand a file, the file comes back empty with one error
 at its top saying why: `SWR6001` when the tsconfig's `sweet` section has a
-problem (also reported at the `contentMappers` entry), `SWR6202` when the file
+problem (also reported at the `contentMappers` entry, which `tsc` prints only
+where no file has an error), `SWR6202` when the file
 is not part of the Sweetener project, or its extension is mapped here but
 missing from `sweet.macroExtensions`, and `SWR6201` when expansion itself
-failed.
+failed, which is said of the file it failed on and leaves the others expanded.
+An option TypeScript 6's parser does not know is left to TypeScript 7 to judge:
+Sweetener reads a tsconfig through 6, and expansion goes on without it.
 
 The mapper expands the whole project when TypeScript first opens it, which is
 what a `tsc` run then asks for file by file. After that, each file's expansion

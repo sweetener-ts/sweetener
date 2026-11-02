@@ -102,7 +102,7 @@ describe("initialize", () => {
     ).toEqual({
       protocolVersion: 1,
       positionEncoding: "utf-16",
-      diagnosticSource: "sweetener",
+      diagnosticSource: "SWR",
     });
     expect(
       new SweetenerContentMapper().initialize({ positionEncodings: ["utf-8"] })
@@ -524,6 +524,148 @@ describe("transform", () => {
   });
 });
 
+describe("a config it cannot use", () => {
+  test("hears a change to a config the broken one extends, and watches it", () => {
+    const { config, directory } = project();
+    const base = join(directory, "base.json");
+    writeFileSync(
+      config,
+      JSON.stringify({ extends: "./base", include: ["*.sts"] }),
+    );
+    writeFileSync(base, "{ not json");
+    const { result: before } = opened(config);
+    expect(before.optionDiagnostics).toHaveLength(1);
+    expect(before.watchedFiles).toEqual(expect.arrayContaining([base, config]));
+    writeFileSync(base, "{ still not");
+    expect(opened(config).result.configIdentity).not.toBe(
+      before.configIdentity,
+    );
+  });
+
+  test("leaves an option TypeScript 6 does not know to the TypeScript running", () => {
+    const { config, file } = project();
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { target: "ES2022", module: "ESNext", checkers: 2 },
+        include: ["*.sts"],
+      }),
+    );
+    const { result, transform } = opened(config);
+    expect(result.optionDiagnostics).toEqual([]);
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+  });
+});
+
+describe("dependencies", () => {
+  test("watches what a saved macro module newly imports, at the open that finds it", () => {
+    const { config, directory, file } = project();
+    const { mapper, result } = opened(config);
+    const helper = join(directory, "helper.sts");
+    writeFileSync(helper, "export syntax one:expr { rule { one } => { 1 } }\n");
+    writeFileSync(
+      file("macros.sts"),
+      `import { one } from "./helper.sts" for syntax;\n${macros}`,
+    );
+    const open = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    const saved = open();
+    expect(saved.watchedFiles).toContain(helper);
+    expect(saved.configIdentity).not.toBe(result.configIdentity);
+    // Nothing changed since: TypeScript has no reason to transform it all again.
+    expect(open().configIdentity).toBe(saved.configIdentity);
+  });
+
+  const literals = {
+    "local.ts": "export const Circle = 1;\n",
+    "macros.sts": [
+      'import { Circle } from "./local";',
+      "export syntax kind:expr {",
+      "  literal Circle as Circle;",
+      '  rule { kind(Circle) } => { "circle" }',
+      '  fallback rule { kind($value:expr) } => { "other" }',
+      "}",
+      "",
+    ].join("\n"),
+    "main.sts":
+      'import { kind } from "./macros.sts" for syntax;\nimport { Circle } from "./local";\nexport const answer = kind(Circle);\n',
+  };
+
+  test("watches every source where binding literals read them all", () => {
+    const { config, file } = project(literals);
+    const { result } = opened(config);
+    expect(result.watchedFiles).toEqual(
+      expect.arrayContaining([file("main.sts"), file("local.ts")]),
+    );
+  });
+});
+
+describe("a compiler failure", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Has expansion throw wherever it is asked to expand `culprit`. */
+  function failingOn(culprit: string) {
+    const expand = DefaultProjectExpansionProvider.prototype.expandProject;
+    return vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
+      .mockImplementation(function (
+        this: DefaultProjectExpansionProvider,
+        project,
+        options,
+      ) {
+        if (options?.files === undefined || options.files.has(culprit))
+          throw new Error("the compiler broke");
+        return expand.call(this, project, options);
+      });
+  }
+
+  test("is the file's that caused it, and the others expand", () => {
+    const { config, file } = project({ "other.sts": "export const o = 1;\n" });
+    const failing = failingOn(file("other.sts"));
+    const { result, transform } = opened(config);
+    expect(result.optionDiagnostics).toEqual([]);
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+    expect(transform(file("other.sts")).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 6201,
+        messageText: "Project expansion failed: the compiler broke",
+      }),
+    ]);
+    // Fixed by what TypeScript sends next, with no reopen to carry it.
+    failing.mockRestore();
+    const fixed = transform(file("other.sts"), "export const o = 2;\n");
+    expect(fixed.diagnostics).toEqual([]);
+    expect(fixed.text).toContain("export const o = 2;");
+  });
+
+  test("reading the sources is tried once, until text changes", () => {
+    const { config, file } = project();
+    const failing = vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
+      .mockImplementation(() => {
+        throw new Error("reading broke");
+      });
+    const { transform } = opened(config);
+    const expansions = failing.mock.calls.length;
+    for (const name of ["main.sts", "macros.sts"])
+      expect(transform(file(name)).diagnostics).toEqual([
+        expect.objectContaining({
+          code: 6201,
+          messageText: "Project expansion failed: reading broke",
+        }),
+      ]);
+    expect(failing.mock.calls).toHaveLength(expansions);
+    failing.mockRestore();
+    expect(transform(file("main.sts"), `${main}\n`).diagnostics).toEqual([]);
+  });
+});
+
 describe("what it does not expand again", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -618,6 +760,25 @@ describe("what it does not expand again", () => {
     expect(
       reads.mock.calls.filter(([path]) => path === config).length,
     ).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("errors raised against a macro's template", () => {
+  test("are reported by the file using it, which alone raises them", () => {
+    const { config, file } = project({
+      "macros.sts":
+        "export syntax pick:stmt { rule { pick $k:tt; } => { $k / (g) / 2; } }\n",
+      "main.sts":
+        'import { pick } from "./macros.sts" for syntax;\nconst x = 1, g = 2;\npick x;\nfunction f() { pick return; }\n',
+    });
+    const { transform } = opened(config);
+    const fromUse = transform(file("main.sts")).diagnostics ?? [];
+    expect(
+      fromUse.filter(({ messageText }) =>
+        messageText.startsWith(`${file("macros.sts")}(`),
+      ),
+    ).toHaveLength(1);
+    expect(transform(file("macros.sts")).diagnostics).toEqual([]);
   });
 });
 

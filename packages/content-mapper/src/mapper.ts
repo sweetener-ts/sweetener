@@ -42,9 +42,11 @@ import {
   encodeSegments,
   offsetEncoder,
   segmentsForExpansion,
+  type Segment,
 } from "./span-mappings.js";
 
-export const diagnosticSource = "sweetener";
+/** What TypeScript prints in front of a code, as every Sweetener surface does. */
+export const diagnosticSource = "SWR";
 
 /** The name a tsconfig's `contentMappers` entry gives this package by. */
 const mapperPackage = "@sweetener/content-mapper";
@@ -83,9 +85,31 @@ function requireParams(params: unknown, method: string) {
   return params;
 }
 
-/** One file's expansion, and what it asked of the files to make it. */
+/** An error an expansion raised, as a transform reports it. */
+interface RaisedError {
+  readonly messageText: string;
+  readonly code: number;
+  /** The file it is placed in, by the name the mapper writes it. */
+  readonly location: string | undefined;
+  readonly start: number | undefined;
+  readonly length: number;
+  /** `file(line,column)`, to name it from another file. */
+  readonly where: string;
+}
+
+/**
+ * What a transform answers for one file, and what it asked of the files to be
+ * made. Plain values rather than the expansion's inspection, whose lazy parts
+ * hold on to the whole project it read: kept across edits, each would keep a
+ * copy of every source's syntax for as long as the mapper lives.
+ */
 interface ExpandedFile {
-  readonly inspection: DefaultSourceExpansionInspection;
+  readonly text: string;
+  readonly extension: VirtualExtension;
+  readonly sourceText: string;
+  readonly segments: readonly Segment[];
+  readonly errors: readonly RaisedError[];
+  readonly inputs: readonly ExpansionInput[];
   /** Checked against the overlay's file system, whose answers made it. */
   readonly consulted: readonly CheckedInput[];
 }
@@ -146,6 +170,12 @@ interface ConfigState {
   claimedFrom: string | undefined;
   /** The identity last given, kept while what it was made from holds. */
   identity: Identity | undefined;
+  /**
+   * Why reading the project's sources fails, where it does: every file's
+   * expansion reads them all, so each would fail the same way and at the same
+   * cost. Tried again once text changes or the project opens again.
+   */
+  readFailure: string | undefined;
 }
 
 /**
@@ -171,11 +201,23 @@ function listedFiles(project: LoadedSweetProject): ReadonlySet<string> {
   return new Set(project.typescript.fileNames.map(canonical));
 }
 
-/** Remembers the text TypeScript holds for a file, if it is not the file's. */
-function holdText(overlay: Overlay, fileName: string, content: string): void {
+/**
+ * Remembers the text TypeScript holds for a file, if it is not the file's, and
+ * says whether that changes what is held.
+ */
+function holdText(
+  overlay: Overlay,
+  fileName: string,
+  content: string,
+): boolean {
+  const before = overlay.get(fileName)?.text;
   const disk = ts.sys.readFile(fileName);
-  if (content === disk) overlay.delete(fileName);
-  else overlay.set(fileName, { text: content, disk });
+  if (content === disk) {
+    overlay.delete(fileName);
+    return before !== undefined;
+  }
+  overlay.set(fileName, { text: content, disk });
+  return before !== content;
 }
 
 /** What was thrown, in a sentence fit for the author to read. */
@@ -208,11 +250,6 @@ function overlayProvider(overlay: Overlay): DefaultProjectExpansionProvider {
     stat: diskFileSystem.stat,
     held: (path) => overlay.has(canonical(path)),
   });
-}
-
-/** The question an input asked, without its answer. */
-function questionOf(input: ExpansionInput): string {
-  return `${input.kind}\0${canonical(input.path)}`;
 }
 
 /** The answer `system` gives now to the question `input` asked. */
@@ -350,11 +387,22 @@ function claimedExtensions(
   return claimed.size === 0 ? undefined : claimed;
 }
 
+/**
+ * What TypeScript 6's parser says about a compiler option -- unknown, or a
+ * value it does not take -- which it leaves unset. The compiler running here
+ * is TypeScript 7, which has options 6 does not and validates its config
+ * itself, so these are its to report: `checkers` would otherwise have every
+ * file refused over an option TypeScript accepts.
+ */
+const optionErrorsForTypeScript = new Set([5023, 5024, 5025, 6046]);
+
 function configurationProblems(project: LoadedSweetProject): string[] {
   return [
-    ...project.typescript.errors.map((diagnostic) =>
-      ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-    ),
+    ...project.typescript.errors
+      .filter(({ code }) => !optionErrorsForTypeScript.has(code))
+      .map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+      ),
     ...project.problems.map(
       ({ code, path, message }) => `${code} ${path} ${message}`,
     ),
@@ -365,8 +413,16 @@ function configurationProblems(project: LoadedSweetProject): string[] {
 interface Expanded {
   readonly file: ExpandedFile | undefined;
   readonly project: LoadedSweetProject;
-  /** See `ConfigState.claimed`. */
-  readonly claimed: ReadonlySet<string> | undefined;
+  /** Undefined for a file with no tsconfig. */
+  readonly state: ConfigState | undefined;
+}
+
+/** Why a config cannot be used, and how TypeScript hears that changes. */
+interface ConfigProblem {
+  readonly code: number;
+  readonly messageText: string;
+  readonly identity: string;
+  readonly watchedFiles: readonly string[];
 }
 
 /**
@@ -399,6 +455,123 @@ function describeLocation(diagnostic: ts.Diagnostic): string {
   return `${diagnostic.file.fileName}(${line + 1},${character + 1})`;
 }
 
+/** What an inspection has for a transform, free of the expansion behind it. */
+function expandedFile(
+  fileName: string,
+  inspection: DefaultSourceExpansionInspection,
+  consulted: readonly CheckedInput[],
+): ExpandedFile {
+  const extension = virtualExtensions.get(extname(inspection.virtualFileName));
+  if (extension === undefined)
+    throw new Error(
+      `Sweetener expanded ${fileName} to ${inspection.virtualFileName}, which TypeScript cannot take as a content-mapper output`,
+    );
+  const text = inspection.generated.text;
+  return {
+    text,
+    extension,
+    sourceText: inspection.sourceText,
+    segments: segmentsForExpansion({
+      index: inspection.index,
+      generatedText: text,
+      sourceText: inspection.sourceText,
+      sourceId: inspection.sourceId as number,
+      agree: createBindingAgreement(text, extension),
+    }),
+    // The protocol carries errors only, with no severity, so a warning would
+    // arrive as an error and fail a build that should pass.
+    errors: inspection.diagnostics
+      .filter(({ category }) => category === ts.DiagnosticCategory.Error)
+      .map((diagnostic) => ({
+        messageText: ts.flattenDiagnosticMessageText(
+          diagnostic.messageText,
+          "\n",
+        ),
+        code: diagnostic.code,
+        location:
+          diagnostic.file === undefined
+            ? undefined
+            : canonical(diagnostic.file.fileName),
+        start: diagnostic.start,
+        length: diagnostic.length ?? 0,
+        where: describeLocation(diagnostic),
+      })),
+    inputs: inspection.inputs,
+    consulted,
+  };
+}
+
+/**
+ * Whether TypeScript hears this error from the file it is placed in: the file
+ * goes through this mapper, its extension being one the config's entry claims,
+ * and its own expansion raises the error. One a use of a macro raised against
+ * the macro's template, say, is raised only by the file using it.
+ */
+function reportedByItsFile(
+  error: RaisedError,
+  state: ConfigState | undefined,
+): boolean {
+  const { location } = error;
+  if (
+    state === undefined ||
+    location === undefined ||
+    !state.listed.has(location) ||
+    state.claimed?.has(extname(location)) !== true
+  )
+    return false;
+  return (
+    state.expanded
+      .get(location)
+      ?.errors.some(
+        (other) =>
+          other.code === error.code &&
+          other.start === error.start &&
+          other.length === error.length &&
+          other.messageText === error.messageText,
+      ) === true
+  );
+}
+
+/**
+ * What went wrong expanding this file, where TypeScript can show it: at its
+ * place for an error placed here, at the top of the file naming where it
+ * happened for one nothing else will report, such as one in a macro module
+ * inside a package.
+ */
+function reportedErrors(
+  file: ExpandedFile,
+  fileName: string,
+  encoding: PositionEncoding,
+  state: ConfigState | undefined,
+): ContentMapperDiagnostic[] {
+  const encode = offsetEncoder(file.sourceText, encoding);
+  const end = file.sourceText.length;
+  return file.errors.flatMap((error): ContentMapperDiagnostic[] => {
+    const { messageText, code, location, where } = error;
+    if (location === fileName && error.start !== undefined) {
+      const from = Math.min(error.start, end);
+      const to = Math.min(from + error.length, end);
+      return [
+        {
+          messageText,
+          start: encode(from),
+          length: encode(to) - encode(from),
+          code,
+        },
+      ];
+    }
+    if (reportedByItsFile(error, state)) return [];
+    return [
+      {
+        messageText: where === "" ? messageText : `${where}: ${messageText}`,
+        start: 0,
+        length: 0,
+        code,
+      },
+    ];
+  });
+}
+
 /**
  * Sweetener as a TypeScript content mapper.
  *
@@ -424,10 +597,7 @@ export class SweetenerContentMapper {
   /** Each open project handle, and the config it names ("" for none). */
   readonly #handles = new Map<string, string>();
   /** Configs Sweetener cannot use, and what is wrong with each. */
-  readonly #unusable = new Map<
-    string,
-    { readonly code: number; readonly messageText: string }
-  >();
+  readonly #unusable = new Map<string, ConfigProblem>();
   #encoding: PositionEncoding | undefined;
 
   handlers(): ReadonlyMap<string, RequestHandler> {
@@ -510,15 +680,20 @@ export class SweetenerContentMapper {
     if (problems !== undefined)
       // TypeScript shows a failed request only as a failure, never why, so
       // what is wrong with the config is said where TypeScript shows the
-      // mapper's own configuration problems -- at its `contentMappers` entry --
-      // and each file it would have expanded says the same.
+      // mapper's own configuration problems -- at its `contentMappers` entry,
+      // which `tsc` prints only where no file has an error -- and each file
+      // it would have expanded says the same.
       return {
-        configIdentity: digest([
-          canonical(configFileName),
-          ts.sys.readFile(configFileName) ?? "<missing>",
-        ]),
-        watchedFiles: [canonical(configFileName)],
-        optionDiagnostics: [...optionDiagnostics, { path: [], ...problems }],
+        configIdentity: problems.identity,
+        watchedFiles: problems.watchedFiles,
+        optionDiagnostics: [
+          ...optionDiagnostics,
+          {
+            path: [],
+            messageText: problems.messageText,
+            code: problems.code,
+          },
+        ],
       };
     const state = this.#configs.get(configFileName)!;
     // Each config in the chain was read loading the project just now, so
@@ -555,8 +730,13 @@ export class SweetenerContentMapper {
     const fileName = canonical(request.fileName);
     // Before anything else: text sent while the config is unusable is what
     // the file says once it is usable again.
-    if (configFileName !== "")
-      holdText(this.#overlayFor(configFileName), fileName, request.content);
+    if (
+      configFileName !== "" &&
+      holdText(this.#overlayFor(configFileName), fileName, request.content)
+    ) {
+      const state = this.#configs.get(configFileName);
+      if (state !== undefined) state.readFailure = undefined;
+    }
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
       return failedTransform(request, unusable.code, unusable.messageText);
@@ -580,7 +760,7 @@ export class SweetenerContentMapper {
         `Project expansion failed: ${messageOf(error)}`,
       );
     }
-    const { file, project } = expanded;
+    const { file, project, state } = expanded;
     if (file === undefined)
       return failedTransform(
         request,
@@ -591,32 +771,16 @@ export class SweetenerContentMapper {
             ? `${configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
             : `This file is not opted into Sweetener expansion by ${configFileName}. List it there, under "files" or "include".`,
       );
-    const inspected = file.inspection;
-    const extension = virtualExtensions.get(extname(inspected.virtualFileName));
-    if (extension === undefined)
-      throw new Error(
-        `Sweetener expanded ${fileName} to ${inspected.virtualFileName}, which TypeScript cannot take as a content-mapper output`,
-      );
-    const text = inspected.generated.text;
-    const segments = segmentsForExpansion({
-      index: inspected.index,
-      generatedText: text,
-      sourceText: request.content,
-      sourceId: inspected.sourceId as number,
-      agree: createBindingAgreement(text, extension),
-    });
     return {
-      text,
-      extension,
-      mappings: encodeSegments(segments, text, request.content, encoding),
-      diagnostics: this.#diagnostics(
-        inspected.diagnostics,
-        fileName,
-        request.content,
+      text: file.text,
+      extension: file.extension,
+      mappings: encodeSegments(
+        file.segments,
+        file.text,
+        file.sourceText,
         encoding,
-        project,
-        expanded.claimed,
       ),
+      diagnostics: reportedErrors(file, fileName, encoding, state),
     };
   }
 
@@ -654,9 +818,7 @@ export class SweetenerContentMapper {
    * Sweetener cannot use it. Nothing is expanded from a config with problems;
    * one that later loses them starts afresh.
    */
-  #problemsWith(
-    configFileName: string,
-  ): { readonly code: number; readonly messageText: string } | undefined {
+  #problemsWith(configFileName: string): ConfigProblem | undefined {
     let loaded:
       { readonly project: LoadedSweetProject } | { readonly failure: string };
     try {
@@ -668,37 +830,35 @@ export class SweetenerContentMapper {
       "failure" in loaded
         ? [loaded.failure]
         : configurationProblems(loaded.project);
-    if (problems.length > 0 || !("project" in loaded))
-      return this.#markUnusable(
-        configFileName,
-        6001,
-        `Sweetener cannot use ${configFileName}: ${problems.join("; ")}`,
-      );
-    this.#unusable.delete(configFileName);
-    try {
-      this.#stateFor(configFileName, loaded.project);
-    } catch (error) {
-      process.stderr.write(
-        `Sweetener failed to expand ${configFileName}:\n${describeError(error)}\n`,
-      );
-      return this.#markUnusable(
-        configFileName,
-        6201,
-        `Project expansion failed: ${messageOf(error)}`,
-      );
+    if (problems.length > 0 || !("project" in loaded)) {
+      const messageText = `Sweetener cannot use ${configFileName}: ${problems.join("; ")}`;
+      // Whichever config in the chain it was, a change to it has to reach
+      // TypeScript, or it keeps files emptied for a reason no longer true.
+      const inputs =
+        "project" in loaded ? loaded.project.configurationInputs : [];
+      const problem: ConfigProblem = {
+        code: 6001,
+        messageText,
+        identity: digest([
+          canonical(configFileName),
+          messageText,
+          ts.sys.readFile(configFileName) ?? "<missing>",
+          ...inputs.map((input) => JSON.stringify(input)),
+        ]),
+        watchedFiles: [
+          ...new Set([
+            canonical(configFileName),
+            ...inputs.map(({ path }) => canonical(path)),
+          ]),
+        ].sort(),
+      };
+      this.#unusable.set(configFileName, problem);
+      this.#configs.delete(configFileName);
+      return problem;
     }
+    this.#unusable.delete(configFileName);
+    this.#stateFor(configFileName, loaded.project);
     return undefined;
-  }
-
-  #markUnusable(
-    configFileName: string,
-    code: number,
-    messageText: string,
-  ): { readonly code: number; readonly messageText: string } {
-    const problem = { code, messageText };
-    this.#unusable.set(configFileName, problem);
-    this.#configs.delete(configFileName);
-    return problem;
   }
 
   #overlayFor(configFileName: string): Overlay {
@@ -713,13 +873,22 @@ export class SweetenerContentMapper {
   /**
    * The state for a config, kept from before if the config still says the
    * same thing, and otherwise made fresh by expanding the whole project --
-   * which is what a `tsc` run is about to ask for, one file at a time.
+   * which is what a `tsc` run is about to ask for, one file at a time. What
+   * opens the project has only what is expanded to say what it depends on, so
+   * a kept state's stale files are expanded again first: saved, a macro module
+   * may import something new, which is to be watched from here.
    */
   #stateFor(configFileName: string, project: LoadedSweetProject): ConfigState {
     const signature = signatureOf(project);
     const existing = this.#configs.get(configFileName);
     if (existing !== undefined && existing.signature === signature) {
+      existing.readFailure = undefined;
       this.#relist(existing, project);
+      const round = new InputCheckRound();
+      const stale = [...existing.expanded]
+        .filter(([, file]) => !round.hold(file.consulted))
+        .map(([name]) => name);
+      if (stale.length > 0) this.#expandOrForget(existing, stale);
       return existing;
     }
     const overlay = this.#overlayFor(configFileName);
@@ -735,8 +904,9 @@ export class SweetenerContentMapper {
       claimed: undefined,
       claimedFrom: undefined,
       identity: undefined,
+      readFailure: undefined,
     };
-    this.#expand(state, undefined);
+    this.#expandOrForget(state, undefined);
     this.#configs.set(configFileName, state);
     return state;
   }
@@ -755,8 +925,34 @@ export class SweetenerContentMapper {
     state.listed = listed;
     for (const name of state.expanded.keys())
       if (!listed.has(name)) state.expanded.delete(name);
-    if (state.resolvesBindingLiterals) this.#expand(state, undefined);
-    else if (added.length > 0) this.#expand(state, added);
+    if (state.resolvesBindingLiterals) this.#expandOrForget(state, undefined);
+    else if (added.length > 0) this.#expandOrForget(state, added);
+  }
+
+  /**
+   * Expand these files together, or every one. Where that fails, each is left
+   * to be expanded alone when it is asked for, so what is wrong with one is
+   * not said of all -- unless it is reading the sources that fails, which
+   * every one of them does.
+   */
+  #expandOrForget(
+    state: ConfigState,
+    fileNames: readonly string[] | undefined,
+  ): void {
+    try {
+      this.#expand(state, fileNames);
+    } catch (error) {
+      process.stderr.write(
+        `Sweetener failed to expand ${state.configFileName}:\n${describeError(error)}\n`,
+      );
+      for (const name of fileNames ?? [...state.expanded.keys()])
+        state.expanded.delete(name);
+      try {
+        state.provider.expandProject(state.project, { files: new Set() });
+      } catch (reading) {
+        state.readFailure = messageOf(reading);
+      }
+    }
   }
 
   /**
@@ -782,10 +978,10 @@ export class SweetenerContentMapper {
         state.expanded.delete(fileName);
         continue;
       }
-      state.expanded.set(fileName, {
-        inspection,
-        consulted: check(inspection.inputs),
-      });
+      state.expanded.set(
+        fileName,
+        expandedFile(fileName, inspection, check(inspection.inputs)),
+      );
     }
   }
 
@@ -805,29 +1001,30 @@ export class SweetenerContentMapper {
       !state.listed.has(fileName) ||
       !state.project.sweet.macroExtensions.includes(extname(fileName))
     )
-      return {
-        file: undefined,
-        project: state.project,
-        claimed: state.claimed,
-      };
+      return { file: undefined, project: state.project, state };
+    if (state.readFailure !== undefined) throw new Error(state.readFailure);
     // One round for the request: each file is read once, however many
     // expansions asked of it.
     const round = new InputCheckRound();
     const fresh = (file: ExpandedFile) => round.hold(file.consulted);
     const cached = state.expanded.get(fileName);
     if (cached !== undefined && fresh(cached))
-      return { file: cached, project: state.project, claimed: state.claimed };
-    const stale = [
-      fileName,
-      ...[...state.expanded]
-        .filter(([name, file]) => name !== fileName && !fresh(file))
-        .map(([name]) => name),
-    ];
-    this.#expand(state, stale);
+      return { file: cached, project: state.project, state };
+    const others = [...state.expanded]
+      .filter(([name, file]) => name !== fileName && !fresh(file))
+      .map(([name]) => name);
+    if (others.length > 0) {
+      this.#expandOrForget(state, [fileName, ...others]);
+      if (state.readFailure !== undefined) throw new Error(state.readFailure);
+    }
+    // Alone if there were no others, or if expanding them with it failed: a
+    // failure then is this file's to report.
+    if (others.length === 0 || !state.expanded.has(fileName))
+      this.#expand(state, [fileName]);
     return {
       file: state.expanded.get(fileName),
       project: state.project,
-      claimed: state.claimed,
+      state,
     };
   }
 
@@ -843,13 +1040,33 @@ export class SweetenerContentMapper {
    * reads none of them again.
    */
   #identityOf(state: ConfigState): Identity {
+    const names = new Map<string, string>();
+    const nameOf = (path: string): string => {
+      let name = names.get(path);
+      if (name === undefined) {
+        name = canonical(path);
+        names.set(path, name);
+      }
+      return name;
+    };
     const questions = new Map<string, ExpansionInput>();
-    for (const input of state.project.configurationInputs)
-      questions.set(questionOf(input), input);
-    for (const [fileName, file] of state.expanded)
-      for (const input of file.inspection.inputs)
-        if (input.kind !== "file" || canonical(input.path) !== fileName)
-          questions.set(questionOf(input), input);
+    const ask = (input: ExpansionInput) =>
+      questions.set(`${input.kind}\0${nameOf(input.path)}`, input);
+    for (const input of state.project.configurationInputs) ask(input);
+    // Where binding literals are resolved every file shares one list of the
+    // whole project's inputs, walked once. Each of those files read the others,
+    // so only a file with a list of its own leaves anything out of it.
+    const readers = new Map<readonly ExpansionInput[], string[]>();
+    for (const [fileName, { inputs }] of state.expanded) {
+      const listReaders = readers.get(inputs);
+      if (listReaders === undefined) readers.set(inputs, [fileName]);
+      else listReaders.push(fileName);
+    }
+    for (const [inputs, fileNames] of readers) {
+      const only = fileNames.length === 1 ? fileNames[0] : undefined;
+      for (const input of inputs)
+        if (input.kind !== "file" || nameOf(input.path) !== only) ask(input);
+    }
     const asked = [...questions.keys()].sort();
     const askedKey = digest(asked);
     const kept = state.identity;
@@ -889,70 +1106,11 @@ export class SweetenerContentMapper {
     const inspection = provider.inspectSource(fileName);
     return {
       file:
-        inspection === undefined ? undefined : { inspection, consulted: [] },
-      project,
-      claimed: undefined,
-    };
-  }
-
-  /**
-   * What went wrong expanding this file, where TypeScript can show it.
-   *
-   * The protocol carries errors only, with no severity, so a warning would
-   * arrive as an error and fail a build that should pass; warnings stay out.
-   * An error expansion places in another file of this project that
-   * TypeScript transforms through this mapper -- one whose extension the
-   * config's entry claims -- is that file's to report. One placed in a file
-   * TypeScript never transforms here -- a macro module inside a package, or a
-   * source whose extension the entry leaves out -- is reported here at the
-   * top of the file, naming where it happened, since no one else can.
-   */
-  #diagnostics(
-    diagnostics: readonly ts.Diagnostic[],
-    fileName: string,
-    content: string,
-    encoding: PositionEncoding,
-    project: LoadedSweetProject,
-    claimed: ReadonlySet<string> | undefined,
-  ): ContentMapperDiagnostic[] {
-    const encode = offsetEncoder(content, encoding);
-    const projectFiles = new Set(project.typescript.fileNames.map(canonical));
-    const reported: ContentMapperDiagnostic[] = [];
-    for (const diagnostic of diagnostics) {
-      if (diagnostic.category !== ts.DiagnosticCategory.Error) continue;
-      const messageText = ts.flattenDiagnosticMessageText(
-        diagnostic.messageText,
-        "\n",
-      );
-      const location =
-        diagnostic.file === undefined
+        inspection === undefined
           ? undefined
-          : canonical(diagnostic.file.fileName);
-      if (location === fileName && diagnostic.start !== undefined) {
-        const start = Math.min(diagnostic.start, content.length);
-        const end = Math.min(start + (diagnostic.length ?? 0), content.length);
-        reported.push({
-          messageText,
-          start: encode(start),
-          length: encode(end) - encode(start),
-          code: diagnostic.code,
-        });
-        continue;
-      }
-      if (
-        location !== undefined &&
-        projectFiles.has(location) &&
-        claimed?.has(extname(location)) === true
-      )
-        continue;
-      const where = describeLocation(diagnostic);
-      reported.push({
-        messageText: where === "" ? messageText : `${where}: ${messageText}`,
-        start: 0,
-        length: 0,
-        code: diagnostic.code,
-      });
-    }
-    return reported;
+          : expandedFile(fileName, inspection, []),
+      project,
+      state: undefined,
+    };
   }
 }
