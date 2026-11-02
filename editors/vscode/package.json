@@ -13,6 +13,11 @@
     "Programming Languages"
   ],
   "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
   "activationEvents": [
     "onLanguage:sweetener-typescript",
     "onLanguage:sweetener-typescriptreact"

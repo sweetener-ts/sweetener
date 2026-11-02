@@ -12,7 +12,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { check, LanguageServerClient, mappedProject } from "./typescript7.js";
 
 /**
- * The mapper under the TypeScript it was written for: the 7.1 nightly this
+ * The mapper under the TypeScript it was written for: the 7.1 beta this
  * package pins, starting `dist/src/server.js` the way it would for a user.
  */
 
@@ -110,6 +110,28 @@ describe("tsc", () => {
     expect(check(directory).lines).toEqual([
       "src/main.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
     ]);
+  });
+
+  test("checks a file holding bytes that are not UTF-8", () => {
+    const { directory, file } = mappedProject({
+      "main.sts": "export const n: string = 1;\n",
+    });
+    writeFileSync(
+      file("bad.sts"),
+      Buffer.concat([
+        Buffer.from('export const s = "'),
+        Buffer.from([0xff, 0xfe]),
+        Buffer.from('";\nexport const t: string = 1;\n'),
+      ]),
+    );
+    const { lines } = check(directory);
+    expect(lines.filter((line) => line.includes("18073"))).toEqual([]);
+    expect(lines).toContain(
+      "src/main.sts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    );
+    expect(lines).toContain(
+      "src/bad.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    );
   });
 
   test("accepts an option only TypeScript 7 knows", () => {

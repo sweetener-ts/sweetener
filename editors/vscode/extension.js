@@ -22,7 +22,10 @@ async function activate(context) {
   let registering = false;
   let saidNoSupport = false;
   const register = async () => {
-    if (registered || registering) return;
+    // Registering starts TypeScript's server and, through a tsconfig, a mapper
+    // out of node_modules: not for a folder not trusted. Highlighting needs none
+    // of that, which is why this extension is supported there at all.
+    if (registered || registering || !vscode.workspace.isTrusted) return;
     const extension = vscode.extensions.getExtension(typescriptExtension);
     if (extension === undefined) return;
     registering = true;
@@ -57,6 +60,7 @@ async function activate(context) {
   // than at the next window.
   context.subscriptions.push(
     vscode.extensions.onDidChange(() => void register()),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => void register()),
   );
   await register();
 }

@@ -33,7 +33,6 @@ import {
   type ContentMapperDiagnostic,
   type InitializeParams,
   type InitializeResult,
-  type OpenProjectParams,
   type OpenProjectResult,
   type PositionEncoding,
   type TransformParams,
@@ -149,9 +148,10 @@ type Overlay = Map<
  *
  * TypeScript closes and reopens a project when a file it was told to watch
  * changes, so this outlives any one project handle and is found again by the
- * config's name. An edit to any other file reaches here as a transform alone. It is replaced when the config itself
- * says something different; a change to which files it lists keeps what is
- * expanded, since a file's expansion reads only what its inputs say.
+ * config's name. An edit to any other file reaches here as a transform alone.
+ * It is replaced when the config itself says something different; a change to
+ * which files it lists keeps what is expanded, since a file's expansion reads
+ * only what its inputs say.
  *
  * Each expanded file keeps what its expansion asked of the files: its own
  * text, the macro modules it imported for syntax and every lookup made
@@ -471,8 +471,7 @@ export class SweetenerContentMapper {
     // only to the content mapper would make the editor disagree with the
     // build, so they are refused rather than read or ignored.
     const optionDiagnostics =
-      (params as Partial<OpenProjectParams>).options === undefined ||
-      (params as Partial<OpenProjectParams>).options === null
+      params["options"] === undefined || params["options"] === null
         ? []
         : [
             {
@@ -556,6 +555,18 @@ export class SweetenerContentMapper {
     let file: ExpandedFile | undefined;
     try {
       file = this.#expansionFor(state, fileName);
+      // A file changed on disk while it was read is expanded from the disk, and
+      // TypeScript holds what it sent: mapped to anything else, the answer is
+      // refused. What it sent stands in front of that change now.
+      if (file !== undefined && file.sourceText !== request.content) {
+        holdText(this.#overlayFor(configFileName), fileName, request.content);
+        this.#expand(state, [fileName]);
+        file = state.expanded.get(fileName);
+        if (file !== undefined && file.sourceText !== request.content)
+          throw new Error(
+            `${fileName} went on changing on disk while it was expanded`,
+          );
+      }
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
       // Thrown back as a failed request, TypeScript would report that the
@@ -650,23 +661,19 @@ export class SweetenerContentMapper {
       return undefined;
     }
     const loadedAt = nowNanoseconds();
-    let loaded:
-      { readonly project: LoadedSweetProject } | { readonly failure: string };
+    let project: LoadedSweetProject | undefined;
+    let problems: readonly string[];
     try {
-      loaded = { project: loadSweetProject(configFileName) };
+      project = loadSweetProject(configFileName);
+      problems = configurationProblems(project, errorsForTypeScript);
     } catch (error) {
-      loaded = { failure: messageOf(error) };
+      problems = [messageOf(error)];
     }
-    const problems =
-      "failure" in loaded
-        ? [loaded.failure]
-        : configurationProblems(loaded.project, errorsForTypeScript);
-    if (problems.length > 0 || !("project" in loaded)) {
+    if (project === undefined || problems.length > 0) {
       const messageText = `Sweetener cannot use ${configFileName}: ${problems.join("; ")}`;
       // Whichever config in the chain it was, a change to it has to reach
       // TypeScript, or it keeps files emptied for a reason no longer true.
-      const inputs =
-        "project" in loaded ? loaded.project.configurationInputs : [];
+      const inputs = project?.configurationInputs ?? [];
       const problem: ConfigProblem = {
         code: 6001,
         messageText,
@@ -690,11 +697,8 @@ export class SweetenerContentMapper {
     this.#unusable.delete(configFileName);
     this.#stateFor(
       configFileName,
-      loaded.project,
-      checkedInputs(
-        diskFileSystem,
-        loadedAt,
-      )(loaded.project.configurationInputs),
+      project,
+      checkedInputs(diskFileSystem, loadedAt)(project.configurationInputs),
       loadedAt,
     );
     return undefined;

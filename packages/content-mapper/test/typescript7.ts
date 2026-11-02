@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -13,7 +14,7 @@ import { frame, MessageReader } from "../src/json-rpc.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** The TypeScript 7.1 nightly this package is tested against. */
+/** The TypeScript 7.1 this package is tested against. */
 export const tsc = join(
   packageRoot,
   "node_modules",
@@ -21,6 +22,12 @@ export const tsc = join(
   "bin",
   "tsc",
 );
+
+// TypeScript starts what is built, not what is written: see `pnpm test`.
+if (!existsSync(join(packageRoot, "dist", "src", "server.js")))
+  throw new Error(
+    "@sweetener/content-mapper is not built, and these tests run what is: run pnpm build",
+  );
 
 /**
  * A project on disk that uses this package the way a user's would: through

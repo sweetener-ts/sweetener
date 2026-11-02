@@ -24,6 +24,13 @@ export interface Segment {
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
 /**
+ * What bytes that are not UTF-8 decode to. TypeScript holds a verbatim mapping to
+ * the bytes themselves, which two such texts can differ in while reading alike:
+ * it refuses the mapping, and all of the file with it.
+ */
+const undecodable = /\ufffd/u;
+
+/**
  * How one printed region of the expansion relates to the source it came from.
  *
  * Every region the printer wrote has an origin, and the origin graph leads
@@ -54,7 +61,7 @@ function segmentFor(
   const original = sourceText.slice(start, end);
   const written = region.kind === "source" || region.kind === "copied";
   const [kind, features] =
-    written && virtual === original
+    written && virtual === original && !undecodable.test(virtual)
       ? [SpanMapKind.Verbatim, SpanMapFeature.All]
       : written && identifier.test(virtual) && identifier.test(original)
         ? // Hygiene renamed a name the author wrote. It is still the name
@@ -326,7 +333,10 @@ function joinedAsWritten(
       last.virtualEnd <= segment.virtualStart &&
       last.originalEnd <= segment.originalStart &&
       generatedText.slice(last.virtualEnd, segment.virtualStart) ===
-        sourceText.slice(last.originalEnd, segment.originalStart)
+        sourceText.slice(last.originalEnd, segment.originalStart) &&
+      !undecodable.test(
+        sourceText.slice(last.originalEnd, segment.originalStart),
+      )
     )
       joined[joined.length - 1] = {
         ...last,

@@ -1485,6 +1485,33 @@ describe("a private name a macro copies", () => {
   });
 });
 
+describe("a file that changes on disk as it is expanded", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("is answered for the text TypeScript sent", () => {
+    const { config, file } = project();
+    const { transform } = opened(config);
+    const expand = DefaultProjectExpansionProvider.prototype.expandProject;
+    const sent = `${main}export const sent = 1;\n`;
+    vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    ).mockImplementationOnce(function (
+      this: DefaultProjectExpansionProvider,
+      project,
+      options,
+    ) {
+      writeFileSync(file("main.sts"), `${main}export const saved = 1;\n`);
+      return expand.call(this, project, options);
+    });
+    const answer = transform(file("main.sts"), sent);
+    expect(answer.text).toContain("sent = 1");
+    expect(answer.text).not.toContain("saved = 1");
+  });
+});
+
 describe("a file TypeScript does not transform", () => {
   test.each([".mts", ".cts"])(
     "a directive in a %s fails nothing, and costs no other file",

@@ -27,11 +27,19 @@ afterEach(() => {
 
 const watching = { dispose() {} };
 
-function load(extensions: Record<string, unknown>) {
+function load(extensions: Record<string, unknown>, trusted = true) {
   const changed: (() => void)[] = [];
+  const workspace = {
+    isTrusted: trusted,
+    onDidGrantWorkspaceTrust: (listener: () => void) => {
+      changed.push(listener);
+      return watching;
+    },
+  };
   moduleWithLoader._load = function (request, ...rest) {
     if (request === "vscode")
       return {
+        workspace,
         extensions: {
           getExtension: (id: string) => extensions[id],
           onDidChange: (listener: () => void) => {
@@ -45,6 +53,9 @@ function load(extensions: Record<string, unknown>) {
   return {
     extension: require(resolve(extensionRoot, "extension.js")) as {
       activate(context: { subscriptions: unknown[] }): Promise<void>;
+    },
+    trust: () => {
+      workspace.isTrusted = true;
     },
     changed: async () => {
       for (const listener of changed) listener();
@@ -87,7 +98,7 @@ describe("activation", () => {
     expect(registered).toEqual([
       ["sweetener", [{ extensions: [".sts", ".stsx"] }]],
     ]);
-    expect(context.subscriptions).toEqual([watching, disposable]);
+    expect(context.subscriptions).toEqual([watching, watching, disposable]);
     // Once: another extension changing registers nothing again.
     await changed();
     expect(registered).toHaveLength(1);
@@ -96,7 +107,7 @@ describe("activation", () => {
   test("does nothing where TypeScript 7 is missing", async () => {
     const context = { subscriptions: [] as unknown[] };
     await load({}).extension.activate(context);
-    expect(context.subscriptions).toEqual([watching]);
+    expect(context.subscriptions).toEqual([watching, watching]);
   });
 
   test("says once that a TypeScript 7 with no content mappers will not do", async () => {
@@ -107,9 +118,26 @@ describe("activation", () => {
     const context = { subscriptions: [] as unknown[] };
     await extension.activate(context);
     await changed();
-    expect(context.subscriptions).toEqual([watching]);
+    expect(context.subscriptions).toEqual([watching, watching]);
     expect(logged).toHaveBeenCalledOnce();
     logged.mockRestore();
+  });
+
+  test("stays supported in a folder not trusted, and leaves TypeScript alone until it is", async () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(extensionRoot, "package.json"), "utf8"),
+    ) as { capabilities: { untrustedWorkspaces: { supported: boolean } } };
+    expect(manifest.capabilities.untrustedWorkspaces.supported).toBe(true);
+    const registered: unknown[] = [];
+    const { extension, changed, trust } = load(
+      { "TypeScriptTeam.native-preview": typescript7(registered, {}) },
+      false,
+    );
+    await extension.activate({ subscriptions: [] });
+    expect(registered).toEqual([]);
+    trust();
+    await changed();
+    expect(registered).toHaveLength(1);
   });
 
   test("registers with TypeScript 7 once it is installed", async () => {

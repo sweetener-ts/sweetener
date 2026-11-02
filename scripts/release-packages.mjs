@@ -2,7 +2,7 @@
 
 // What the workspace publishes, and under which name.
 //
-// The repository builds twenty-one packages and publishes nine. The layering
+// The repository builds twenty-two packages and publishes ten. The layering
 // is real and `check:boundaries` enforces it, but that enforcement happens
 // here rather than on the registry: published separately, eleven of those
 // layers would be names nobody installs deliberately, pinned to each other at
