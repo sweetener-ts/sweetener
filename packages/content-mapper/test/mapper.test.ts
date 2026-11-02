@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DefaultProjectExpansionProvider,
@@ -754,26 +754,34 @@ describe("a compiler failure", () => {
     expect(used.text).toContain(`trim("  hello  ", 1)`);
   });
 
-  test("stops trying where every file reads the project that fails", () => {
+  test("does not read every source again for each file once that has failed", () => {
     const { config, file } = project({ "other.sts": "export const o = 1;\n" });
     const expand = DefaultProjectExpansionProvider.prototype.expandProject;
-    const failing = vi
-      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
-      .mockImplementation(function (
-        this: DefaultProjectExpansionProvider,
-        project,
-      ) {
-        expand.call(this, project, {});
+    const whole: unknown[] = [];
+    vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    ).mockImplementation(function (
+      this: DefaultProjectExpansionProvider,
+      project,
+      options,
+    ) {
+      if (options?.onlyNarrowly !== true) {
+        whole.push(options?.files);
+        expand.call(this, project, options);
         throw new Error("the compiler broke");
-      });
+      }
+      return expand.call(this, project, options);
+    });
     vi.spyOn(
       DefaultProjectExpansionProvider.prototype,
       "readEverySource",
     ).mockReturnValue(true);
-    opened(config);
-    // The whole project, then one file, for the rest to be taken as the same.
-    expect(failing.mock.calls).toHaveLength(2);
-    expect(file("other.sts")).toBeDefined();
+    const { transform } = opened(config);
+    // All together, then one alone, for the rest to need no more than they lead to.
+    expect(whole).toHaveLength(2);
+    expect(transform(file("main.sts")).diagnostics).toEqual([]);
+    expect(transform(file("other.sts")).diagnostics).toEqual([]);
   });
 
   test("a fix to anything the project lists reaches a file that failed", () => {
@@ -928,31 +936,6 @@ describe("what it lets go of", () => {
     expect(expand).not.toHaveBeenCalled();
   });
 
-  test("forgets the text held for a config it let go of", () => {
-    const mapper = new SweetenerContentMapper();
-    mapper.initialize({ positionEncodings: ["utf-16"] });
-    const first = project();
-    open(mapper, first.config, "p");
-    mapper.transform({
-      fileName: first.file("macros.sts"),
-      content: macros.replace("$callee($value)", "$callee($value, 1)"),
-      projectHandle: "p",
-    });
-    mapper.closeProject({ projectHandle: "p" });
-    for (let others = 0; others < 9; others += 1) {
-      open(mapper, project().config, "other");
-      mapper.closeProject({ projectHandle: "other" });
-    }
-    open(mapper, first.config, "p");
-    expect(
-      mapper.transform({
-        fileName: first.file("main.sts"),
-        content: main,
-        projectHandle: "p",
-      }).text,
-    ).toContain(`trim("  hello  ")`);
-  });
-
   test("text held for a file that changed does not come back with the file", () => {
     const { config, file } = project();
     const { mapper, transform } = opened(config);
@@ -965,35 +948,6 @@ describe("what it lets go of", () => {
     writeFileSync(file("macros.sts"), macros);
     open(mapper, config, "p");
     expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
-  });
-
-  test("counts a config it cannot use among those it lets go of", () => {
-    const mapper = new SweetenerContentMapper();
-    mapper.initialize({ positionEncodings: ["utf-16"] });
-    const first = project();
-    const usable = readFileSync(first.config, "utf8");
-    open(mapper, first.config, "p");
-    mapper.transform({
-      fileName: first.file("macros.sts"),
-      content: macros.replace("$callee($value)", "$callee($value, 1)"),
-      projectHandle: "p",
-    });
-    writeFileSync(first.config, "{ not json");
-    open(mapper, first.config, "p");
-    mapper.closeProject({ projectHandle: "p" });
-    for (let others = 0; others < 9; others += 1) {
-      open(mapper, project().config, "other");
-      mapper.closeProject({ projectHandle: "other" });
-    }
-    writeFileSync(first.config, usable);
-    open(mapper, first.config, "p");
-    expect(
-      mapper.transform({
-        fileName: first.file("main.sts"),
-        content: main,
-        projectHandle: "p",
-      }).text,
-    ).toContain(`trim("  hello  ")`);
   });
 
   test("lets go of configs by when they were opened, whichever could be used", () => {
@@ -1026,25 +980,21 @@ describe("what it lets go of", () => {
     ).toContain(`trim("  hello  ", 1)`);
   });
 
-  test("forgets a config whose file is gone, with the text held for it", () => {
-    const { config, directory, file } = project();
+  test("forgets a config whose file is gone", () => {
+    const { config, file } = project();
     const usable = readFileSync(config, "utf8");
-    const { mapper, transform } = opened(config);
-    transform(
-      file("macros.sts"),
-      macros.replace("$callee($value)", "$callee($value, 1)"),
-    );
+    const { mapper } = opened(config);
     mapper.closeProject({ projectHandle: "p" });
     rmSync(config);
     open(mapper, project().config, "other");
-    writeFileSync(join(directory, "tsconfig.json"), usable);
+    const expand = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    writeFileSync(config, usable);
     open(mapper, config, "p");
-    const result = mapper.transform({
-      fileName: file("main.sts"),
-      content: main,
-      projectHandle: "p",
-    });
-    expect(result.text).toContain(`trim("  hello  ")`);
+    expect(expand).toHaveBeenCalled();
+    expect(file("main.sts")).toBeDefined();
   });
 });
 
@@ -1199,7 +1149,10 @@ describe("what it does not expand again", () => {
     const asked = expansions();
     writeFileSync(file("added.sts"), "export const a = 1;\n");
     reopen(mapper, config);
-    expect(asked()).toEqual(["all"]);
+    // Every file it could be asked for, which is all a program of them depends on.
+    expect(asked()).toEqual([
+      [file("added.sts"), file("macros.sts"), file("main.sts")],
+    ]);
   });
 
   test("does not load a config again while it says the same", () => {
@@ -1548,6 +1501,46 @@ describe("a file whose own macros could not run", () => {
   });
 });
 
+describe("unsaved text", () => {
+  test("is the file's, for every project that reads it", () => {
+    const shared = project({
+      "macros.sts": "export syntax one:expr { rule { one } => { 1 } }\n",
+    });
+    const other = project();
+    const use = `import { one } from "${relative(other.directory, shared.file("macros.sts"))}" for syntax;\nexport const x = one;\n`;
+    writeFileSync(other.file("use.sts"), use);
+    writeFileSync(
+      other.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["use.sts"],
+      }),
+    );
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const open = (config: string, handle: string) =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: handle,
+        compilerOptions: {},
+      });
+    open(shared.config, "a");
+    open(other.config, "b");
+    mapper.transform({
+      fileName: shared.file("macros.sts"),
+      content: "export syntax one:expr { rule { one } => { 2 } }\n",
+      projectHandle: "a",
+    });
+    expect(
+      mapper.transform({
+        fileName: other.file("use.sts"),
+        content: use,
+        projectHandle: "b",
+      }).text,
+    ).toContain("export const x = 2;");
+  });
+});
+
 describe("a file reading a macro module with errors", () => {
   test("comes back empty, with the reason, not as source to parse", () => {
     const { config, file } = project({
@@ -1686,6 +1679,48 @@ describe("a project that references another", () => {
         messageText: expect.stringContaining(lib.config),
       }),
     ]);
+  });
+
+  test("a config changing does not lose what it references", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const app = referencing([lib.directory]);
+    const { transform } = opened(app.config);
+    writeFileSync(
+      app.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2020" },
+        include: ["main.sts"],
+        references: [{ path: lib.directory }],
+      }),
+    );
+    writeFileSync(app.file("new.sts"), "export {};\n");
+    transform(app.file("new.sts"));
+    expect(transform(lib.file("util.sts")).diagnostics).toEqual([]);
+  });
+
+  test("a project of plain files costs nothing to reference", () => {
+    const lib = project({
+      "plain.ts": "export const p = 1;\n",
+      "macros.sts": "",
+      "main.sts": "",
+    });
+    writeFileSync(
+      lib.config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          composite: true,
+        },
+        include: ["*.ts"],
+      }),
+    );
+    const reads = vi.spyOn(ts.sys, "readFile");
+    opened(referencing([lib.directory]).config);
+    expect(reads.mock.calls.map(([path]) => path)).not.toContain(
+      lib.file("plain.ts"),
+    );
   });
 
   test("names the config that lists a file when it will not expand it", () => {

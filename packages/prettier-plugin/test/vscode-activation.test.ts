@@ -116,17 +116,33 @@ describe("activation", () => {
     expect(context.subscriptions).toHaveLength(3);
   });
 
-  test("says once that a TypeScript 7 with no content mappers will not do", async () => {
-    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { extension, changed } = load({
-      "TypeScriptTeam.native-preview": { activate: async () => ({}) },
-    });
-    const context = { subscriptions: [] as unknown[] };
-    await extension.activate(context);
-    await changed();
-    expect(context.subscriptions).toHaveLength(3);
-    expect(logged).toHaveBeenCalledOnce();
-    logged.mockRestore();
+  test.each([
+    ["exports something else", {}],
+    ["exports nothing", undefined],
+  ])(
+    "says once that a TypeScript 7 that %s will not do",
+    async (_, exported) => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { extension, changed } = load({
+        "TypeScriptTeam.native-preview": { activate: async () => exported },
+      });
+      const context = { subscriptions: [] as unknown[] };
+      await extension.activate(context);
+      await changed();
+      expect(context.subscriptions).toHaveLength(3);
+      expect(logged).toHaveBeenCalledOnce();
+      logged.mockRestore();
+    },
+  );
+
+  test("runs on a web host, where its grammar is all there is", () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(extensionRoot, "package.json"), "utf8"),
+    ) as { main: string; browser: string };
+    expect(manifest.browser).toBe(manifest.main);
+    expect(
+      readFileSync(resolve(extensionRoot, "extension.js"), "utf8"),
+    ).not.toMatch(/require\("(?!vscode")/u);
   });
 
   test("stays supported in a folder not trusted, and leaves TypeScript alone until it is", async () => {

@@ -57,6 +57,13 @@ export const diagnosticSource = "SWR";
  */
 const keptClosedConfigs = 8;
 
+/**
+ * How many files' unsaved text is kept, the oldest letting go first: TypeScript
+ * says nothing of a buffer closed in a project it no longer has open, so this
+ * could otherwise only grow.
+ */
+const keptUnsavedFiles = 256;
+
 /** How long after walking `include` a file it did not list is taken at its word. */
 const lookAgainNanoseconds = 2_000_000_000n;
 
@@ -179,7 +186,7 @@ interface ConfigState {
    * depend on the whole file list.
    */
   resolvesBindingLiterals: boolean;
-  /** Expands through the config's overlay, in front of the disk. */
+  /** Expands through the overlay, in front of the disk. */
   readonly provider: DefaultProjectExpansionProvider;
   readonly expanded: Map<string, ExpandedFile>;
   /**
@@ -229,8 +236,13 @@ function listedFiles(project: LoadedSweetProject): ReadonlySet<string> {
 /** Remembers the text TypeScript holds for a file, if it is not the file's. */
 function holdText(overlay: Overlay, fileName: string, content: string): void {
   const disk = ts.sys.readFile(fileName);
-  if (content === disk) overlay.delete(fileName);
-  else overlay.set(fileName, { text: content, disk });
+  overlay.delete(fileName);
+  if (content === disk) return;
+  overlay.set(fileName, { text: content, disk });
+  for (const oldest of overlay.keys()) {
+    if (overlay.size <= keptUnsavedFiles) break;
+    overlay.delete(oldest);
+  }
 }
 
 /** A source's text as it stands: TypeScript's unsaved text, or the disk's. */
@@ -405,14 +417,14 @@ function reportedErrors(
 export class SweetenerContentMapper {
   readonly #configs = new Map<string, ConfigState>();
   /**
-   * TypeScript's unsaved text, by config. It stands in for the file until the
-   * file changes: TypeScript re-sends a buffer it holds, but once a file is
-   * saved or rewritten, the text it last sent for it may be older than the
-   * disk -- and the file that imports it may well be asked for first. It
-   * outlives a config's state: TypeScript re-sends a buffer only when it
-   * changes, whatever became of the config meanwhile.
+   * TypeScript's unsaved text, which belongs to a file whichever projects read
+   * it. It stands in for the file until the file changes: TypeScript re-sends a
+   * buffer it holds, but once a file is saved or rewritten, the text it last sent
+   * for it may be older than the disk -- and the file that imports it may well be
+   * asked for first. It outlives any config's state: TypeScript re-sends a buffer
+   * only when it changes, whatever became of the config meanwhile.
    */
-  readonly #overlays = new Map<string, Overlay>();
+  readonly #overlay: Overlay = new Map();
   /** Every config that has been opened and not let go of, last opened last. */
   readonly #opened = new Set<string>();
   /** Each open project handle, and the config it names. */
@@ -547,32 +559,18 @@ export class SweetenerContentMapper {
     const fileName = canonical(request.fileName);
     // Before anything else: text sent while the config is unusable is what
     // the file says once it is usable again.
-    holdText(this.#overlayFor(configFileName), fileName, request.content);
+    holdText(this.#overlay, fileName, request.content);
     const opened = this.#configs.get(configFileName);
     const referenced =
       opened === undefined || opened.listed.has(fileName)
         ? undefined
         : this.#owningReference(opened, fileName);
-    if (referenced !== undefined) {
-      if ("messageText" in referenced)
-        return failedTransform(
-          request,
-          referenced.code,
-          referenced.messageText,
-        );
-      holdText(
-        this.#overlayFor(referenced.configFileName),
-        fileName,
-        request.content,
-      );
-    }
+    if (referenced !== undefined && "messageText" in referenced)
+      return failedTransform(request, referenced.code, referenced.messageText);
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
       return failedTransform(request, unusable.code, unusable.messageText);
-    const state =
-      referenced !== undefined && !("messageText" in referenced)
-        ? referenced
-        : this.#configs.get(configFileName);
+    const state = referenced ?? this.#configs.get(configFileName);
     if (state === undefined)
       throw new ResponseError(
         ErrorCode.InternalError,
@@ -585,11 +583,7 @@ export class SweetenerContentMapper {
       // TypeScript holds what it sent: mapped to anything else, the answer is
       // refused. What it sent stands in front of that change now.
       if (file !== undefined && file.sourceText !== request.content) {
-        holdText(
-          this.#overlayFor(state.configFileName),
-          fileName,
-          request.content,
-        );
+        holdText(this.#overlay, fileName, request.content);
         this.#expand(state, [fileName]);
         file = state.expanded.get(fileName);
         if (file !== undefined && file.sourceText !== request.content)
@@ -730,15 +724,6 @@ export class SweetenerContentMapper {
     return undefined;
   }
 
-  #overlayFor(configFileName: string): Overlay {
-    let overlay = this.#overlays.get(configFileName);
-    if (overlay === undefined) {
-      overlay = new Map();
-      this.#overlays.set(configFileName, overlay);
-    }
-    return overlay;
-  }
-
   /**
    * The state for a config, kept from before if the config still says the
    * same thing, and otherwise made fresh by expanding the whole project --
@@ -762,7 +747,6 @@ export class SweetenerContentMapper {
       this.#refresh(existing);
       return;
     }
-    const overlay = this.#overlayFor(configFileName);
     const state: ConfigState = {
       configFileName,
       signature,
@@ -771,24 +755,26 @@ export class SweetenerContentMapper {
       loadedAt,
       listed: listedFiles(project),
       resolvesBindingLiterals: false,
-      provider: overlayProvider(overlay),
+      provider: overlayProvider(this.#overlay),
       expanded: new Map(),
-      references: new Set(),
+      // Read again at the next open; until then, as they were, or a file a
+      // referenced project lists would be refused for a change to this config.
+      references: new Set(existing?.references),
       identity: undefined,
       failed: new Set(),
       failureInputs: new Map(),
       unlisted: new Map(),
       nowListed: 0,
     };
-    this.#expandOrForget(state, undefined);
+    this.#expandOrForget(state, this.#expandable(state));
     this.#configs.set(configFileName, state);
   }
 
   /**
-   * Let go of what no open project needs: a config whose file is gone, and
-   * all but the configs opened last, with the text held for them; and text
-   * held for a file that has since changed on disk or gone. That no longer
-   * stands in for the file, and would again if the disk went back.
+   * Let go of what no open project needs: a config whose file is gone, and all
+   * but the configs opened last; and text held for a file that has since changed
+   * on disk or gone. That no longer stands in for the file, and would again if
+   * the disk went back.
    */
   #sweep(): void {
     // What an open project references is read through it, and is as open as it.
@@ -801,16 +787,14 @@ export class SweetenerContentMapper {
     const forget = (name: string) => {
       this.#opened.delete(name);
       this.#configs.delete(name);
-      this.#overlays.delete(name);
       this.#unusable.delete(name);
     };
     for (const name of this.#opened)
       if (!open.has(name) && !ts.sys.fileExists(name)) forget(name);
     const closed = [...this.#opened].filter((name) => !open.has(name));
     for (const name of closed.slice(0, -keptClosedConfigs)) forget(name);
-    for (const overlay of this.#overlays.values())
-      for (const [fileName, { disk }] of overlay)
-        if (ts.sys.readFile(fileName) !== disk) overlay.delete(fileName);
+    for (const [fileName, { disk }] of this.#overlay)
+      if (ts.sys.readFile(fileName) !== disk) this.#overlay.delete(fileName);
   }
 
   /**
@@ -946,7 +930,8 @@ export class SweetenerContentMapper {
     state.listed = listed;
     for (const name of state.expanded.keys())
       if (!listed.has(name)) state.expanded.delete(name);
-    if (state.resolvesBindingLiterals) this.#expandOrForget(state, undefined);
+    if (state.resolvesBindingLiterals)
+      this.#expandOrForget(state, this.#expandable(state));
     else if (added.length > 0) this.#expandOrForget(state, added);
   }
 
@@ -956,82 +941,107 @@ export class SweetenerContentMapper {
    */
   #expandOrForget(
     state: ConfigState,
-    fileNames: readonly string[] | undefined,
+    fileNames: readonly string[],
+    onlyNarrowly = false,
   ): void {
+    if (fileNames.length === 0) return;
     try {
-      this.#expand(state, fileNames);
+      this.#expand(state, fileNames, onlyNarrowly);
     } catch (error) {
-      const names = fileNames ?? [...state.listed];
-      if (names.length > 1) {
-        this.#expandEachOf(state, names);
+      if (fileNames.length > 1) {
+        this.#expandEachOf(state, fileNames);
         return;
       }
       process.stderr.write(
-        `Sweetener failed to expand ${names[0] ?? state.configFileName}:\n${describeError(error)}\n`,
+        `Sweetener failed to expand ${fileNames[0] ?? state.configFileName}:\n${describeError(error)}\n`,
       );
-      this.#recordFailure(state, names);
+      this.#recordFailure(state, fileNames);
     }
   }
 
   /**
-   * Expand each of these alone, until one fails having read every source, as a
-   * project with binding literals does for any file: each of the others would
-   * read and fail the same, at the cost of the whole project each.
+   * Expand each of these alone. Once one fails having read every source, as any
+   * file reaching a binding literal does, each that would too is not tried, at
+   * the cost of the whole project each: those that need only what they lead to
+   * still are.
    */
   #expandEachOf(state: ConfigState, fileNames: readonly string[]): void {
-    for (const [index, name] of fileNames.entries()) {
-      this.#expandOrForget(state, [name]);
-      if (state.failed.has(name) && state.provider.readEverySource()) {
-        this.#recordFailure(state, fileNames.slice(index + 1));
-        return;
-      }
+    let readingFails = false;
+    for (const name of fileNames) {
+      this.#expandOrForget(state, [name], readingFails);
+      readingFails ||=
+        state.failed.has(name) && state.provider.readEverySource();
     }
   }
 
   /**
-   * Leaves these files to be expanded alone when asked for, and keeps what
-   * reading their project asked of the files, which is what could mend them.
+   * What to expand when nothing has been yet: what TypeScript can ask for. A
+   * listed plain file is read only to see whether it has a directive, and through
+   * a mapper that is nothing to anyone, so a project of them, referenced, costs
+   * nothing.
+   */
+  #expandable(state: ConfigState): string[] {
+    return [...state.listed].filter((name) =>
+      state.project.sweet.macroExtensions.includes(extname(name)),
+    );
+  }
+
+  /**
+   * Leaves these files to be expanded alone when asked for.
    */
   #recordFailure(state: ConfigState, fileNames: Iterable<string>): void {
     for (const name of fileNames) {
       state.expanded.delete(name);
       state.failed.add(name);
     }
-    // Added to: a batch that throws may not have reached what another file read.
-    for (const input of state.provider.readInputs())
-      state.failureInputs.set(`${input.kind}\0${input.path}`, input);
   }
 
   /**
    * Expand these files together, or every one, against the project's text as
    * it stands: TypeScript's for a file it sent, the disk's for any other.
    */
-  #expand(state: ConfigState, fileNames: readonly string[] | undefined): void {
+  #expand(
+    state: ConfigState,
+    fileNames: readonly string[],
+    onlyNarrowly = false,
+  ): void {
     const expandedAt = nowNanoseconds();
-    state.provider.expandProject(state.project, {
-      files: fileNames === undefined ? undefined : new Set(fileNames),
-    });
-    const check = checkedInputs(state.provider.fileSystem, expandedAt);
-    for (const fileName of fileNames ??
-      state.project.typescript.fileNames.map(canonical)) {
-      state.failed.delete(fileName);
-      // TypeScript cannot hand one to a mapper, and reads it as written, so its
-      // expansion and what that read are nothing to anyone here.
-      if (!state.project.sweet.macroExtensions.includes(extname(fileName)))
-        continue;
-      const inspection = state.provider.inspectSource(fileName);
-      if (inspection === undefined) {
-        state.expanded.delete(fileName);
-        continue;
-      }
-      state.expanded.set(
-        fileName,
-        expandedFile(fileName, inspection, check(inspection.inputs)),
-      );
+    try {
+      state.provider.expandProject(state.project, {
+        files: new Set(fileNames),
+        onlyNarrowly,
+      });
+    } catch (error) {
+      // What it read is what could mend it. Added to: a batch that throws may
+      // not have reached what another file read.
+      for (const input of state.provider.readInputs())
+        state.failureInputs.set(`${input.kind}\0${input.path}`, input);
+      state.provider.releaseInspections();
+      throw error;
     }
-    // What the state keeps is plain by now, and each inspection holds the
-    // whole project: kept in the provider, one per config would stay.
-    state.provider.releaseInspections();
+    const check = checkedInputs(state.provider.fileSystem, expandedAt);
+    // What the state keeps is plain by now, and each inspection holds the whole
+    // project: kept in the provider, one per config would stay.
+    try {
+      for (const fileName of fileNames) {
+        state.failed.delete(fileName);
+        // TypeScript cannot hand one to a mapper, and reads it as written, so
+        // its expansion and what that read are nothing to anyone here.
+        if (!state.project.sweet.macroExtensions.includes(extname(fileName)))
+          continue;
+        const inspection = state.provider.inspectSource(fileName);
+        if (inspection === undefined) {
+          state.expanded.delete(fileName);
+          continue;
+        }
+        state.expanded.set(
+          fileName,
+          expandedFile(fileName, inspection, check(inspection.inputs)),
+        );
+      }
+    } finally {
+      state.provider.releaseInspections();
+    }
     if (state.failed.size === 0) state.failureInputs.clear();
     state.resolvesBindingLiterals = [...state.expanded.values()].some(
       ({ readsBindingLiterals }) => readsBindingLiterals,

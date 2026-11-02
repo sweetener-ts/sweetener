@@ -11,6 +11,9 @@ serve(
   process.stdin,
   protocolOutput,
 ).catch((error: unknown) => {
+  // TypeScript closing the pipe mid reply is how a session may well end.
+  const { code } = error as NodeJS.ErrnoException;
+  if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return;
   process.stderr.write(`${describeError(error)}\n`);
   process.exitCode = 1;
 });

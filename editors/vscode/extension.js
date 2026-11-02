@@ -31,7 +31,6 @@ async function activate(context) {
     if (extension === undefined) return;
     try {
       const api = await extension.activate();
-      if (api === registeredWith) return;
       if (typeof api?.registerContentMappers !== "function") {
         if (!saidNoSupport)
           console.error(
@@ -40,6 +39,7 @@ async function activate(context) {
         saidNoSupport = true;
         return;
       }
+      if (api === registeredWith) return;
       registration?.dispose();
       registration = api.registerContentMappers("sweetener", [
         { extensions: [".sts", ".stsx"] },

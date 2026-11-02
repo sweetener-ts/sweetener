@@ -264,7 +264,7 @@ registerHooks({
     expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
   });
 
-  test("the server ends without a stack trace when its stdout is closed", async () => {
+  test("the server ends quietly when its stdout is closed", async () => {
     const server = spawn(
       process.execPath,
       [fileURLToPath(new URL("../dist/src/server.js", import.meta.url))],
@@ -277,8 +277,8 @@ registerHooks({
     const status = await new Promise((resolveExit) =>
       server.once("close", resolveExit),
     );
-    expect(logged).not.toContain("Unhandled 'error' event");
-    expect(status).toBe(1);
+    expect(logged).toBe("");
+    expect(status).toBe(0);
   });
 
   test("an output that fails rejects, and is not left to crash the process", async () => {

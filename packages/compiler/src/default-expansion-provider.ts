@@ -945,7 +945,14 @@ export class DefaultProjectExpansionProvider
    */
   expandProject(
     project: LoadedSweetProject,
-    options: { readonly files?: ReadonlySet<string> | undefined } = {},
+    options: {
+      readonly files?: ReadonlySet<string> | undefined;
+      /**
+       * Throw rather than read every source, for a caller that has just seen
+       * that fail and has no use for another try at it.
+       */
+      readonly onlyNarrowly?: boolean | undefined;
+    } = {},
   ): DefaultProjectExpansionOutput {
     const named =
       options.files === undefined
@@ -979,8 +986,14 @@ export class DefaultProjectExpansionProvider
           ),
       );
     };
-    const output =
-      (named === undefined ? undefined : settled(named)) ?? settled(undefined);
+    const narrow = named === undefined ? undefined : settled(named);
+    if (narrow === undefined && options.onlyNarrowly === true) {
+      this.#readEverySource = true;
+      throw new Error(
+        "Expanding these files needs every source, which was not read",
+      );
+    }
+    const output = narrow ?? settled(undefined);
     if (output === undefined)
       throw new Error(
         "Expanding every source of a project gave no output, which only a narrowed read does",
@@ -2494,13 +2507,15 @@ export class DefaultProjectExpansionProvider
   }
 
   /**
-   * Lets go of what the last expansion can answer about its files. Each
-   * inspection's lazy parts hold on to the whole project it read, so a caller
-   * that has taken what it wants, and keeps this provider for the next
-   * expansion, does not keep a copy of every source's syntax meanwhile.
+   * Lets go of what the last expansion can answer about its files, and of what
+   * it read. Each inspection's lazy parts hold on to the whole project, and what
+   * was read holds its text, so a caller that has taken what it wants, and keeps
+   * this provider for the next expansion, keeps neither meanwhile.
    */
   releaseInspections(): void {
     this.#inspections.clear();
+    this.#recorder = undefined;
+    this.#lastInputs = undefined;
   }
 
   debugState(): unknown {
