@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -558,6 +559,34 @@ describe("a config it cannot use", () => {
   });
 });
 
+describe("a macro module it may not look at", () => {
+  test("opens the project all the same", () => {
+    const { config, directory, file } = project({
+      "main.sts":
+        'import { one } from "./lib/macros.sts" for syntax;\nexport const a = one;\n',
+    });
+    const lib = join(directory, "lib");
+    mkdirSync(lib);
+    writeFileSync(
+      join(lib, "macros.sts"),
+      "export syntax one:expr { rule { one } => { 1 } }\n",
+    );
+    const { mapper, transform } = opened(config);
+    expect(transform(file("main.sts")).text).toContain("export const a = 1;");
+    chmodSync(lib, 0o000);
+    try {
+      const reopened = mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+      expect(reopened.configIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    } finally {
+      chmodSync(lib, 0o755);
+    }
+  });
+});
+
 describe("dependencies", () => {
   test("watches what a saved macro module newly imports, at the open that finds it", () => {
     const { config, directory, file } = project();
@@ -610,7 +639,10 @@ describe("a compiler failure", () => {
     vi.restoreAllMocks();
   });
 
-  /** Has expansion throw wherever it is asked to expand `culprit`. */
+  /**
+   * Has expansion throw wherever it is asked to expand `culprit`, past reading
+   * the project, as a failure printing it would.
+   */
   function failingOn(culprit: string) {
     const expand = DefaultProjectExpansionProvider.prototype.expandProject;
     return vi
@@ -620,8 +652,10 @@ describe("a compiler failure", () => {
         project,
         options,
       ) {
-        if (options?.files === undefined || options.files.has(culprit))
+        if (options?.files === undefined || options.files.has(culprit)) {
+          expand.call(this, project, { files: new Set<string>() });
           throw new Error("the compiler broke");
+        }
         return expand.call(this, project, options);
       });
   }
@@ -632,12 +666,15 @@ describe("a compiler failure", () => {
     const { result, transform } = opened(config);
     expect(result.optionDiagnostics).toEqual([]);
     expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+    const attempts = failing.mock.calls.length;
     expect(transform(file("other.sts")).diagnostics).toEqual([
       expect.objectContaining({
         code: 6201,
         messageText: "Project expansion failed: the compiler broke",
       }),
     ]);
+    // Once for the file: what it read is known without reading the project again.
+    expect(failing.mock.calls).toHaveLength(attempts + 1);
     // Fixed by what TypeScript sends next, with no reopen to carry it.
     failing.mockRestore();
     const fixed = transform(file("other.sts"), "export const o = 2;\n");
@@ -805,6 +842,35 @@ describe("what it lets go of", () => {
     expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
   });
 
+  test("counts a config it cannot use among those it lets go of", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const first = project();
+    const usable = readFileSync(first.config, "utf8");
+    open(mapper, first.config, "p");
+    mapper.transform({
+      fileName: first.file("macros.sts"),
+      content: macros.replace("$callee($value)", "$callee($value, 1)"),
+      projectHandle: "p",
+    });
+    writeFileSync(first.config, "{ not json");
+    open(mapper, first.config, "p");
+    mapper.closeProject({ projectHandle: "p" });
+    for (let others = 0; others < 9; others += 1) {
+      open(mapper, project().config, "other");
+      mapper.closeProject({ projectHandle: "other" });
+    }
+    writeFileSync(first.config, usable);
+    open(mapper, first.config, "p");
+    expect(
+      mapper.transform({
+        fileName: first.file("main.sts"),
+        content: main,
+        projectHandle: "p",
+      }).text,
+    ).toContain(`trim("  hello  ")`);
+  });
+
   test("forgets a config whose file is gone, with the text held for it", () => {
     const { config, directory, file } = project();
     const usable = readFileSync(config, "utf8");
@@ -959,6 +1025,17 @@ describe("a file the config does not list", () => {
     vi.restoreAllMocks();
   });
 
+  test("several are each looked for once", () => {
+    const { config, file } = project();
+    const { transform } = opened(config);
+    const walked = vi.spyOn(ts.sys, "readDirectory");
+    const names = ["new1.sts", "new2.sts", "new3.sts"];
+    for (const name of names) transform(file(name), "export {};\n");
+    const walks = walked.mock.calls.length;
+    for (const name of names) transform(file(name), "export {};\n");
+    expect(walked.mock.calls).toHaveLength(walks);
+  });
+
   test("hears what is wrong with a config that has since broken", () => {
     const { config, file } = project();
     const { transform } = opened(config);
@@ -1010,6 +1087,72 @@ export syntax foo:expr { rule { foo($v:expr) } => { $v } }
     );
     expect(edited.diagnostics).toEqual([]);
     expect(edited.text).toContain("export const v = 2;");
+  });
+});
+
+describe("a name a macro copies to stand for two", () => {
+  const rename = SpanMapFeature.Rename;
+  /** The features of each mapping of the two characters of `foo`'s source. */
+  function featuresOf(macro: string, use: string) {
+    const { config, file } = project({
+      "macros.sts": macro,
+      "main.sts": `import { m } from "./macros.sts" for syntax;\nconst foo = 1;\n${use}\n`,
+    });
+    const source = readFileSync(file("main.sts"), "utf8");
+    const argument = source.indexOf("foo", source.indexOf("m(foo"));
+    const { mappings } = opened(config).transform(file("main.sts"));
+    const copy = mappings.find(
+      ([, , originalStart]) => originalStart === argument,
+    );
+    if (copy === undefined) throw new Error("the argument has no mapping");
+    return copy[5] ?? SpanMapFeature.All;
+  }
+
+  test.each([
+    ["a shorthand property", "({ $x })", "export const o = m(foo);"],
+    [
+      "a destructuring pattern",
+      "(() => { const { $x } = { foo: 1 }; return $x; })()",
+      "export const o = m(foo);",
+    ],
+  ])("refuses rename once, in %s", (_, template, use) => {
+    const features = featuresOf(
+      `export syntax m:expr { rule { m($x:ident) } => { ${template} } }\n`,
+      use,
+    );
+    expect(features & rename).toBe(0);
+  });
+
+  test("refuses rename in an export specifier", () => {
+    const features = featuresOf(
+      "export syntax m:item { rule { m($x:ident); } => { export { $x }; } }\n",
+      "m(foo);",
+    );
+    expect(features & rename).toBe(0);
+  });
+
+  test("keeps rename for a plain copy, and for a shorthand the author wrote", () => {
+    expect(
+      featuresOf(
+        "export syntax m:expr { rule { m($x:ident) } => { [$x] } }\n",
+        "export const o = m(foo);",
+      ) & rename,
+    ).toBe(rename);
+    const { config, file } = project({
+      "main.sts": "const foo = 1;\nexport const o = { foo };\n",
+    });
+    const { mappings } = opened(config).transform(file("main.sts"));
+    expect(mappings.every((mapping) => mapping[5] === undefined)).toBe(true);
+  });
+});
+
+describe("text the author wrote", () => {
+  test("is one mapping where nothing between it differs", () => {
+    const { config, file } = project({
+      "main.sts": "export const a = 1;\nexport const b = a + 1;\n",
+    });
+    const { mappings } = opened(config).transform(file("main.sts"));
+    expect(mappings).toHaveLength(1);
   });
 });
 
@@ -1145,7 +1288,7 @@ describe("binding agreement", () => {
       const start = text.indexOf("x", from);
       return { start, end: start + 1 };
     };
-    const agree = createBindingAgreement(text, ".ts");
+    const { agree } = createBindingAgreement(text, ".ts");
     const property = at(text.indexOf("ext.x") + 4);
     const global = at(text.indexOf("\nx;") + 1);
     expect(agree([property, global])).toBe(false);
@@ -1156,10 +1299,7 @@ describe("binding agreement", () => {
     const first = text.indexOf("\nx;") + 1;
     const second = text.lastIndexOf("\nx;") + 1;
     expect(
-      createBindingAgreement(
-        text,
-        ".ts",
-      )([
+      createBindingAgreement(text, ".ts").agree([
         { start: first, end: first + 1 },
         { start: second, end: second + 1 },
       ]),

@@ -79,8 +79,15 @@ export interface ExpansionFileSystem {
 /** The disk, read the way TypeScript reads it. */
 export const diskFileSystem: ExpansionFileSystem = Object.freeze({
   system: ts.sys,
-  stat: (path: string) =>
-    statSync(path, { bigint: true, throwIfNoEntry: false }),
+  // None where it cannot give one -- no entry, or one it may not look at --
+  // as a read of the same path gives no text. A stat only spares reading.
+  stat: (path: string) => {
+    try {
+      return statSync(path, { bigint: true, throwIfNoEntry: false });
+    } catch {
+      return undefined;
+    }
+  },
 });
 
 /** A file system supplied in place of the disk, such as one held in memory. */
@@ -178,7 +185,6 @@ export class InputRecorder {
     );
   }
 
-  /** Every answer recorded so far. */
   /** The question `input` asked, with the answer it gets here. */
   ask(input: ExpansionInput): ExpansionInput {
     switch (input.kind) {
@@ -193,6 +199,7 @@ export class InputRecorder {
     }
   }
 
+  /** Every answer recorded so far. */
   get inputs(): readonly ExpansionInput[] {
     return Object.freeze([
       ...this.#files.values(),

@@ -284,6 +284,65 @@ describe("the language server", () => {
     ]);
   });
 
+  test("will not write an expanded rename into a macro's input", async () => {
+    const shorthand = `export syntax obj:expr { rule { obj($x:ident) } => { ({ $x }) } }\n`;
+    const use = `import { obj } from "./macros.sts" for syntax;\nconst foo = 1;\nexport const o = obj(foo);\n`;
+    const { directory, file } = mappedProject({
+      "macros.sts": shorthand,
+      "main.sts": use,
+    });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), use);
+    expect(await client.diagnostics(file("main.sts"))).toEqual([]);
+    const edit = (await client.request("textDocument/rename", {
+      textDocument: { uri: pathToFileURL(file("main.sts")).href },
+      position: { line: 1, character: 6 },
+      newName: "renamed",
+    })) as {
+      changes?: Record<string, { newText: string }[]>;
+      documentChanges?: { edits: { newText: string }[] }[];
+    } | null;
+    const written = [
+      ...Object.values(edit?.changes ?? {}).flat(),
+      ...(edit?.documentChanges ?? []).flatMap(({ edits }) => edits),
+    ].map(({ newText }) => newText);
+    expect(written.filter((text) => text.includes(":"))).toEqual([]);
+  });
+
+  test("formats a file as TypeScript does, writing each edit once", async () => {
+    const text = "function f( x:number ){  return x+1  }\nexport { f };\n";
+    const { directory, file } = mappedProject({ "main.sts": text });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), text);
+    await client.diagnostics(file("main.sts"));
+    const edits = (await client.request("textDocument/formatting", {
+      textDocument: { uri: pathToFileURL(file("main.sts")).href },
+      options: { tabSize: 2, insertSpaces: true },
+    })) as {
+      newText: string;
+      range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
+    }[];
+    const lines = text.split("\n");
+    const at = ({ line, character }: { line: number; character: number }) =>
+      lines.slice(0, line).reduce((sum, each) => sum + each.length + 1, 0) +
+      character;
+    const formatted = [...edits]
+      .sort((left, right) => at(right.range.start) - at(left.range.start))
+      .reduce(
+        (result, { newText, range }) =>
+          result.slice(0, at(range.start)) +
+          newText +
+          result.slice(at(range.end)),
+        text,
+      );
+    expect(formatted).toBe(
+      "function f(x: number) { return x + 1 }\nexport { f };\n",
+    );
+  });
+
   test("a saved change to a macro re-expands the files that use it", async () => {
     const { directory, file } = mappedProject({
       "macros.sts": macros,

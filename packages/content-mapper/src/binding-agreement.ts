@@ -14,28 +14,58 @@ function namesIn(sourceFile: ts.SourceFile): ReadonlyMap<string, ts.Node> {
 }
 
 /**
- * Asks, of names copied from one source token, whether every copy means the
- * same thing.
- *
+ * Whether a name stands for two: `{ x }` is a property `x` holding `x`, and
+ * `export { x }` is a local `x` exported as `x`. Renaming either one, TypeScript
+ * keeps the other by spelling both, `x: renamed`, which is right for a file
+ * that wrote it so.
+ */
+function abbreviatesTwo(name: ts.Node): boolean {
+  const { parent } = name;
+  return (
+    (ts.isShorthandPropertyAssignment(parent) && parent.name === name) ||
+    ((ts.isExportSpecifier(parent) || ts.isImportSpecifier(parent)) &&
+      parent.propertyName === undefined) ||
+    (ts.isBindingElement(parent) &&
+      ts.isObjectBindingPattern(parent.parent) &&
+      parent.name === name &&
+      parent.propertyName === undefined)
+  );
+}
+
+/** What can be asked of names at places in one expanded file. */
+export interface BindingAgreement {
+  /** Whether names copied from one source token all mean the same thing. */
+  agree(copies: readonly TextPlace[]): boolean;
+  /** Whether the name at a place stands for two: see `abbreviatesTwo`. */
+  abbreviates(copy: TextPlace): boolean;
+}
+
+interface TextPlace {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
  * Binds the expanded file on its own -- no lib, no imports followed -- which
  * is enough to tell one local declaration from another: an import resolves to
  * its own alias, the same for every copy. A name that resolves to nothing
  * proves nothing: a global, and a property of something untyped, both resolve
- * to nothing here, and a copy of each is not one binding. Only a file with a
- * token copied more than once pays for the program.
+ * to nothing here, and a copy of each is not one binding. A file parses only
+ * if a macro copied a name in it, and binds only if one was copied twice.
  */
 export function createBindingAgreement(
   virtualText: string,
   extension: string,
-): (
-  copies: readonly { readonly start: number; readonly end: number }[],
-) => boolean {
-  let checker:
-    | { names: ReadonlyMap<string, ts.Node>; checker: ts.TypeChecker }
+): BindingAgreement {
+  const fileName = `/sweetener-expansion${extension}`;
+  let parsed:
+    | {
+        readonly sourceFile: ts.SourceFile;
+        readonly names: ReadonlyMap<string, ts.Node>;
+      }
     | undefined;
-  const bound = () => {
-    if (checker !== undefined) return checker;
-    const fileName = `/sweetener-expansion${extension}`;
+  const parse = () => {
+    if (parsed !== undefined) return parsed;
     const sourceFile = ts.createSourceFile(
       fileName,
       virtualText,
@@ -43,6 +73,13 @@ export function createBindingAgreement(
       true,
       scriptKindForFileName(fileName),
     );
+    parsed = { sourceFile, names: namesIn(sourceFile) };
+    return parsed;
+  };
+  let checker: ts.TypeChecker | undefined;
+  const bound = () => {
+    if (checker !== undefined) return checker;
+    const { sourceFile } = parse();
     const options: ts.CompilerOptions = {
       noLib: true,
       noResolve: true,
@@ -50,41 +87,46 @@ export function createBindingAgreement(
       jsx: ts.JsxEmit.Preserve,
       types: [],
     };
-    const program = ts.createProgram({
-      rootNames: [fileName],
-      options,
-      host: {
-        getSourceFile: (name) => (name === fileName ? sourceFile : undefined),
-        getDefaultLibFileName: () => "/lib.d.ts",
-        writeFile: () => {},
-        getCurrentDirectory: () => "/",
-        getCanonicalFileName: (name) => name,
-        useCaseSensitiveFileNames: () => true,
-        getNewLine: () => "\n",
-        fileExists: (name) => name === fileName,
-        readFile: (name) => (name === fileName ? virtualText : undefined),
-      },
-    });
-    checker = {
-      names: namesIn(sourceFile),
-      checker: program.getTypeChecker(),
-    };
+    checker = ts
+      .createProgram({
+        rootNames: [fileName],
+        options,
+        host: {
+          getSourceFile: (name) => (name === fileName ? sourceFile : undefined),
+          getDefaultLibFileName: () => "/lib.d.ts",
+          writeFile: () => {},
+          getCurrentDirectory: () => "/",
+          getCanonicalFileName: (name) => name,
+          useCaseSensitiveFileNames: () => true,
+          getNewLine: () => "\n",
+          fileExists: (name) => name === fileName,
+          readFile: (name) => (name === fileName ? virtualText : undefined),
+        },
+      })
+      .getTypeChecker();
     return checker;
   };
-  return (copies) => {
-    const { names, checker: typeChecker } = bound();
-    let first: ts.Symbol | null = null;
-    for (const { start, end } of copies) {
-      const identifier = names.get(`${start}:${end}`);
-      // A copy that is not an identifier here -- a property name the parser
-      // reads differently, a keyword -- has nothing to compare, and nothing
-      // is proven about it.
-      if (identifier === undefined) return false;
-      const symbol = typeChecker.getSymbolAtLocation(identifier);
-      if (symbol === undefined) return false;
-      if (first === null) first = symbol;
-      else if (symbol !== first) return false;
-    }
-    return true;
+  return {
+    agree: (copies) => {
+      const { names } = parse();
+      const typeChecker = bound();
+      let first: ts.Symbol | null = null;
+      for (const { start, end } of copies) {
+        const name = names.get(`${start}:${end}`);
+        // A copy that is not a name here -- a keyword, or a property name the
+        // parser reads differently -- has nothing to compare, and nothing is
+        // proven about it.
+        if (name === undefined) return false;
+        const symbol = typeChecker.getSymbolAtLocation(name);
+        if (symbol === undefined) return false;
+        if (first === null) first = symbol;
+        else if (symbol !== first) return false;
+      }
+      return true;
+    },
+    abbreviates: ({ start, end }) => {
+      const name = parse().names.get(`${start}:${end}`);
+      return name !== undefined && abbreviatesTwo(name);
+    },
   };
 }

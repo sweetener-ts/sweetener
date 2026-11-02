@@ -100,9 +100,11 @@ A type error inside a macro's output is reported on the invocation that wrote
 it. A name the author wrote and a macro copied keeps its own position, so hover
 and go-to-definition on it answer about that name. Rename goes through a name
 a macro copied when every copy refers to one binding. Where a macro copies one
-name to different bindings, a rename cannot start there, and one started at
-either declaration leaves the copy alone, where TypeScript then reports it,
-rather than changing what the other binding means.
+name to different bindings, or to where it stands for two (`{ $x }`, or
+`export { $x }`), a rename cannot start there, and one started at a declaration
+leaves the copy alone, where TypeScript then reports it. The alternative was
+changing what the other binding means, or TypeScript writing `foo: renamed` into
+the macro's input.
 
 When the mapper cannot expand a file, the file comes back empty with one error
 at its top saying why: `SWR6001` when the tsconfig's `sweet` section has a

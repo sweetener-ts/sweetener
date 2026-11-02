@@ -5,6 +5,7 @@ import {
   type PositionEncoding,
   type SpanMapping,
 } from "./protocol.js";
+import type { BindingAgreement } from "./binding-agreement.js";
 
 type OriginQueryIndex = SourceExpansionInspection["index"];
 
@@ -16,6 +17,8 @@ export interface Segment {
   readonly originalEnd: number;
   readonly kind: SpanMapKind;
   readonly features: number;
+  /** Whether a macro copied this from its input, to somewhere else. */
+  readonly copied?: boolean | undefined;
 }
 
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
@@ -65,6 +68,7 @@ function segmentFor(
     originalEnd: end,
     kind,
     features,
+    copied: region.kind === "copied",
   };
 }
 
@@ -206,7 +210,7 @@ export function compatibleSegments(segments: readonly Segment[]): Segment[] {
  */
 function withoutAmbiguousRename(
   segments: Segment[],
-  agree: (copies: readonly { start: number; end: number }[]) => boolean,
+  agreement: BindingAgreement,
   generatedText: string,
 ): Segment[] {
   const copies = new Map<string, Segment[]>();
@@ -218,23 +222,26 @@ function withoutAmbiguousRename(
       )
     )
       continue;
-    const key = `${segment.originalStart}:${segment.originalEnd}`;
+    const key = spanKey(segment);
     const group = copies.get(key);
     if (group === undefined) copies.set(key, [segment]);
     else group.push(segment);
   }
   const ambiguous = new Set<Segment>();
-  for (const group of copies.values())
-    if (
-      group.length > 1 &&
-      !agree(
-        group.map(({ virtualStart, virtualEnd }) => ({
-          start: virtualStart,
-          end: virtualEnd,
-        })),
-      )
-    )
+  const place = ({ virtualStart, virtualEnd }: Segment) => ({
+    start: virtualStart,
+    end: virtualEnd,
+  });
+  for (const group of copies.values()) {
+    if (group.length > 1 && !agreement.agree(group.map(place)))
       for (const segment of group) ambiguous.add(segment);
+    // Where a macro copied a name to stand for two, TypeScript would spell out
+    // both in its place, `foo: renamed`, and write that into the macro's
+    // input: `obj(foo: renamed)`. One copy is enough for that.
+    for (const segment of group)
+      if (segment.copied === true && agreement.abbreviates(place(segment)))
+        ambiguous.add(segment);
+  }
   const writing = SpanMapFeature.Rename | SpanMapFeature.LinkedEditing;
   return segments.map((segment) =>
     ambiguous.has(segment)
@@ -247,16 +254,55 @@ function withoutAmbiguousRename(
   );
 }
 
+/**
+ * Join neighbouring segments of text the author wrote, where what stands
+ * between them is the same on both sides.
+ *
+ * Each token has its own segment, which leaves the whitespace between them
+ * mapped to nothing and the place two tokens touch inside both. TypeScript
+ * mapping an edit there made it twice, and lost any edit to the whitespace, so
+ * formatting `x:number` wrote `x:  number`. Joined, the text is one segment, as
+ * it is one text.
+ */
+function joinedAsWritten(
+  segments: readonly Segment[],
+  generatedText: string,
+  sourceText: string,
+): Segment[] {
+  const joined: Segment[] = [];
+  const joins = (segment: Segment) =>
+    segment.kind === SpanMapKind.Verbatim &&
+    segment.features === SpanMapFeature.All &&
+    segment.copied !== true;
+  for (const segment of segments) {
+    const last = joined.at(-1);
+    if (
+      last !== undefined &&
+      joins(last) &&
+      joins(segment) &&
+      last.virtualEnd <= segment.virtualStart &&
+      last.originalEnd <= segment.originalStart &&
+      generatedText.slice(last.virtualEnd, segment.virtualStart) ===
+        sourceText.slice(last.originalEnd, segment.originalStart)
+    )
+      joined[joined.length - 1] = {
+        ...last,
+        virtualEnd: segment.virtualEnd,
+        originalEnd: segment.originalEnd,
+      };
+    else joined.push(segment);
+  }
+  return joined;
+}
+
 /** The segments for one expanded file, in virtual order. */
 export function segmentsForExpansion(options: {
   readonly index: OriginQueryIndex;
   readonly generatedText: string;
   readonly sourceText: string;
   readonly sourceId: number;
-  /** Whether names at these places in the expansion share one binding. */
-  readonly agree: (
-    copies: readonly { start: number; end: number }[],
-  ) => boolean;
+  /** What the names at places in the expansion mean. */
+  readonly agreement: BindingAgreement;
 }): Segment[] {
   const segments: Segment[] = [];
   for (const region of options.index.regions()) {
@@ -268,10 +314,16 @@ export function segmentsForExpansion(options: {
     );
     if (segment !== undefined) segments.push(segment);
   }
-  return withoutAmbiguousRename(
-    compatibleSegments(segments),
-    options.agree,
-    options.generatedText,
+  return compatibleSegments(
+    joinedAsWritten(
+      withoutAmbiguousRename(
+        compatibleSegments(segments),
+        options.agreement,
+        options.generatedText,
+      ),
+      options.generatedText,
+      options.sourceText,
+    ),
   );
 }
 

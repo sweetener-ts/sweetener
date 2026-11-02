@@ -842,6 +842,11 @@ export class DefaultProjectExpansionProvider
   readonly #system: ts.System;
   readonly #fileSystem: ExpansionFileSystem;
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
+  /**
+   * What the expansion last begun asked of the file system to read the
+   * project, once it has read it all.
+   */
+  #readInputs: readonly ExpansionInput[] | undefined;
   /** The config the last expansion to finish was of, and what it asked. */
   #lastInputs:
     | {
@@ -926,6 +931,7 @@ export class DefaultProjectExpansionProvider
     project: LoadedSweetProject,
     options: { readonly files?: ReadonlySet<string> | undefined } = {},
   ): DefaultProjectExpansionOutput {
+    this.#readInputs = undefined;
     const recorder = new InputRecorder(this.#fileSystem.system);
     const history: ReadingHistory = new Map();
     return settleReadings<
@@ -1511,6 +1517,7 @@ export class DefaultProjectExpansionProvider
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
+    this.#readInputs = inputs;
     /**
      * What a file's expansion consulted on disk: what it and each module it
      * reads macros from consulted, every lookup resolving their imports among
@@ -2400,6 +2407,15 @@ export class DefaultProjectExpansionProvider
     return this.#lastInputs?.configPath === project.configPath
       ? this.#lastInputs.inputs
       : Object.freeze([]);
+  }
+
+  /**
+   * What the expansion last begun asked of the file system to read the project,
+   * however it went on from there: an expansion that throws has no output to
+   * say so. Nothing if it never finished reading.
+   */
+  readInputs(): readonly ExpansionInput[] | undefined {
+    return this.#readInputs;
   }
 
   /**

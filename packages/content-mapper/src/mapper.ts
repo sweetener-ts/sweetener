@@ -333,7 +333,7 @@ function expandedFile(
       generatedText: text,
       sourceText: inspection.sourceText,
       sourceId: inspection.sourceId as number,
-      agree: createBindingAgreement(text, extension),
+      agreement: createBindingAgreement(text, extension),
     }),
     // Errors only, which is what an inspection's diagnostics are: the protocol
     // has no severity, so a warning would arrive as an error and fail a build
@@ -573,7 +573,7 @@ export class SweetenerContentMapper {
       );
       const state = this.#configs.get(configFileName);
       if (state !== undefined && state.readFailure === undefined)
-        this.#recordFailure(state, [fileName]);
+        this.#recordFailure(state, [fileName], error);
       return failedTransform(
         request,
         6201,
@@ -693,6 +693,8 @@ export class SweetenerContentMapper {
           ]),
         ].sort(),
       };
+      // Last in the map is last opened, as `#sweep` takes it.
+      this.#unusable.delete(configFileName);
       this.#unusable.set(configFileName, problem);
       this.#configs.delete(configFileName);
       return problem;
@@ -730,7 +732,7 @@ export class SweetenerContentMapper {
     configFileName: string,
     project: LoadedSweetProject,
     configuration: readonly CheckedInput[],
-  ): ConfigState {
+  ): void {
     const signature = projectSignature(project);
     const existing = this.#configs.get(configFileName);
     if (existing !== undefined && existing.signature === signature) {
@@ -738,10 +740,9 @@ export class SweetenerContentMapper {
       this.#configs.delete(configFileName);
       this.#configs.set(configFileName, existing);
       existing.configuration = configuration;
-      existing.unlisted.clear();
       this.#relist(existing, project);
       this.#refresh(existing);
-      return existing;
+      return;
     }
     const overlay = this.#overlayFor(configFileName);
     const state: ConfigState = {
@@ -762,7 +763,6 @@ export class SweetenerContentMapper {
     this.#expandOrForget(state, undefined);
     this.#configs.delete(configFileName);
     this.#configs.set(configFileName, state);
-    return state;
   }
 
   /**
@@ -783,10 +783,13 @@ export class SweetenerContentMapper {
         this.#overlays.delete(name);
         this.#unusable.delete(name);
       }
-    const closed = [...this.#configs.keys()].filter((name) => !open.has(name));
+    const closed = [...this.#unusable.keys(), ...this.#configs.keys()].filter(
+      (name) => !open.has(name),
+    );
     for (const name of closed.slice(0, -keptClosedConfigs)) {
       this.#configs.delete(name);
       this.#overlays.delete(name);
+      this.#unusable.delete(name);
     }
     for (const overlay of this.#overlays.values())
       for (const [fileName, { disk }] of overlay)
@@ -829,6 +832,8 @@ export class SweetenerContentMapper {
   #relist(state: ConfigState, project: LoadedSweetProject): void {
     state.project = project;
     const listed = listedFiles(project);
+    for (const name of state.unlisted.keys())
+      if (listed.has(name)) state.unlisted.delete(name);
     const added = [...listed].filter((name) => !state.listed.has(name));
     if (added.length === 0 && listed.size === state.listed.size) return;
     state.listed = listed;
@@ -854,27 +859,28 @@ export class SweetenerContentMapper {
       process.stderr.write(
         `Sweetener failed to expand ${state.configFileName}:\n${describeError(error)}\n`,
       );
-      this.#recordFailure(state, fileNames ?? state.listed);
+      this.#recordFailure(state, fileNames ?? state.listed, error);
     }
   }
 
   /**
-   * Leaves these files to be expanded alone when asked for, and finds out what
-   * else can be said: what reading the project asks of the files, which is what
-   * could mend them, and whether reading is itself what fails.
+   * Leaves these files to be expanded alone when asked for, and keeps what
+   * else can be said: what reading the project asked of the files, which is
+   * what could mend them, or if it never got that far, that reading is what
+   * fails.
    */
-  #recordFailure(state: ConfigState, fileNames: Iterable<string>): void {
+  #recordFailure(
+    state: ConfigState,
+    fileNames: Iterable<string>,
+    error: unknown,
+  ): void {
     for (const name of fileNames) {
       state.expanded.delete(name);
       state.failed.add(name);
     }
-    try {
-      state.failureInputs = state.provider.expandProject(state.project, {
-        files: new Set(),
-      }).inputs;
-    } catch (reading) {
-      state.readFailure = messageOf(reading);
-    }
+    const inputs = state.provider.readInputs();
+    if (inputs === undefined) state.readFailure = messageOf(error);
+    else state.failureInputs = inputs;
   }
 
   /**
