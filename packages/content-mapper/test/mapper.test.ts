@@ -232,6 +232,19 @@ describe("openProject", () => {
     expect(opened(config).result.configIdentity).not.toBe(before);
   });
 
+  test("takes options of null as none given", () => {
+    const { config } = project();
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const result = mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      options: null,
+      compilerOptions: {},
+    });
+    expect(result.optionDiagnostics).toEqual([]);
+  });
+
   test("refuses options, which belong in the tsconfig's sweet section", () => {
     const { config } = project();
     const mapper = new SweetenerContentMapper();
@@ -653,7 +666,7 @@ describe("a compiler failure", () => {
         options,
       ) {
         if (options?.files === undefined || options.files.has(culprit)) {
-          expand.call(this, project, { files: new Set<string>() });
+          expand.call(this, project, options);
           throw new Error("the compiler broke");
         }
         return expand.call(this, project, options);
@@ -730,7 +743,7 @@ describe("a compiler failure", () => {
     expect(open().configIdentity).not.toBe(failed.configIdentity);
   });
 
-  test("reading the sources is tried once, until text changes", () => {
+  test("a failure every file meets is said by each, and over once text changes", () => {
     const { config, file } = project();
     const failing = vi
       .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
@@ -738,7 +751,6 @@ describe("a compiler failure", () => {
         throw new Error("reading broke");
       });
     const { transform } = opened(config);
-    const expansions = failing.mock.calls.length;
     for (const name of ["main.sts", "macros.sts"])
       expect(transform(file(name)).diagnostics).toEqual([
         expect.objectContaining({
@@ -746,7 +758,6 @@ describe("a compiler failure", () => {
           messageText: "Project expansion failed: reading broke",
         }),
       ]);
-    expect(failing.mock.calls).toHaveLength(expansions);
     failing.mockRestore();
     expect(transform(file("main.sts"), `${main}\n`).diagnostics).toEqual([]);
   });
@@ -869,6 +880,36 @@ describe("what it lets go of", () => {
         projectHandle: "p",
       }).text,
     ).toContain(`trim("  hello  ")`);
+  });
+
+  test("lets go of configs by when they were opened, whichever could be used", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    for (let older = 0; older < 8; older += 1) {
+      open(mapper, project().config, "other");
+      mapper.closeProject({ projectHandle: "other" });
+    }
+    const recent = project();
+    const usable = readFileSync(recent.config, "utf8");
+    open(mapper, recent.config, "p");
+    mapper.transform({
+      fileName: recent.file("macros.sts"),
+      content: macros.replace("$callee($value)", "$callee($value, 1)"),
+      projectHandle: "p",
+    });
+    writeFileSync(recent.config, "{ not json");
+    open(mapper, recent.config, "p");
+    mapper.closeProject({ projectHandle: "p" });
+    open(mapper, project().config, "last");
+    writeFileSync(recent.config, usable);
+    open(mapper, recent.config, "p");
+    expect(
+      mapper.transform({
+        fileName: recent.file("main.sts"),
+        content: main,
+        projectHandle: "p",
+      }).text,
+    ).toContain(`trim("  hello  ", 1)`);
   });
 
   test("forgets a config whose file is gone, with the text held for it", () => {
@@ -1049,6 +1090,31 @@ describe("a file the config does not list", () => {
     ]);
   });
 
+  test("changes the identity when it is saved, and is watched", () => {
+    const { config, file } = project({ "other.txt": "" });
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        files: ["macros.sts", "main.sts"],
+      }),
+    );
+    const { mapper, transform } = opened(config);
+    const text = "export const n = 1;\n";
+    transform(file("elsewhere.sts"), text);
+    const open = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    const before = open();
+    expect(before.watchedFiles).toContain(file("elsewhere.sts"));
+    expect(open().configIdentity).toBe(before.configIdentity);
+    writeFileSync(file("elsewhere.sts"), text);
+    expect(open().configIdentity).not.toBe(before.configIdentity);
+  });
+
   test("is looked for once, and again when it is saved", () => {
     const { config, file } = project();
     const { transform } = opened(config);
@@ -1092,7 +1158,7 @@ export syntax foo:expr { rule { foo($v:expr) } => { $v } }
 
 describe("a name a macro copies to stand for two", () => {
   const rename = SpanMapFeature.Rename;
-  /** The features of each mapping of the two characters of `foo`'s source. */
+  /** The features of the mapping of `foo` in a macro's input. */
   function featuresOf(macro: string, use: string) {
     const { config, file } = project({
       "macros.sts": macro,
@@ -1131,6 +1197,23 @@ describe("a name a macro copies to stand for two", () => {
     expect(features & rename).toBe(0);
   });
 
+  test("refuses rename from every copy, the one it could reach included", () => {
+    const { config, file } = project({
+      "macros.sts":
+        "export syntax m:expr { rule { m($x:ident) } => { (() => { const { $x } = { foo: 1 }; return $x; })() } }\n",
+      "main.sts":
+        'import { m } from "./macros.sts" for syntax;\nconst foo = 1;\nexport const o = m(foo);\n',
+    });
+    const source = readFileSync(file("main.sts"), "utf8");
+    const argument = source.indexOf("foo", source.indexOf("m(foo"));
+    const copies = opened(config)
+      .transform(file("main.sts"))
+      .mappings.filter(([, , originalStart]) => originalStart === argument);
+    expect(copies).toHaveLength(2);
+    for (const copy of copies)
+      expect((copy[5] ?? SpanMapFeature.All) & rename).toBe(0);
+  });
+
   test("keeps rename for a plain copy, and for a shorthand the author wrote", () => {
     expect(
       featuresOf(
@@ -1143,6 +1226,45 @@ describe("a name a macro copies to stand for two", () => {
     });
     const { mappings } = opened(config).transform(file("main.sts"));
     expect(mappings.every((mapping) => mapping[5] === undefined)).toBe(true);
+  });
+});
+
+describe("text a macro copied", () => {
+  const macro = (name: string, template: string) =>
+    `export syntax ${name}:expr { rule { ${name}($v:expr) } => { ${template} } }\n`;
+  /** The mappings of what the macro took as its input, not of its template. */
+  function copiesOf(macros: string, use: string) {
+    const { config, file } = project({
+      "macros.sts": macros,
+      "main.sts": `import { t } from "./macros.sts" for syntax;\nconst x = 1;\nexport const o = ${use};\n`,
+    });
+    return opened(config)
+      .transform(file("main.sts"))
+      .mappings.filter(
+        (mapping) => (mapping[5] ?? SpanMapFeature.All) !== SpanMapFeature.None,
+      );
+  }
+
+  test("more than once takes no exact edit, unless a name", () => {
+    const atoms = copiesOf(macro("t", "[$v, $v]"), "t(x+1)").filter(
+      ([, , , , kind]) => kind === SpanMapKind.Atom,
+    );
+    // `+` and `1`, twice each: `x` stays verbatim, for rename to go through.
+    expect(atoms).toHaveLength(4);
+  });
+
+  test("once is text like any other", () => {
+    const { config, file } = project({
+      "macros.sts": macro("t", "$v"),
+      "main.sts":
+        'import { t } from "./macros.sts" for syntax;\nconst x = 1;\nexport const o = t(x+1);\n',
+    });
+    const copied = opened(config)
+      .transform(file("main.sts"))
+      .mappings.filter(([, virtualLength]) => virtualLength === 3);
+    expect(copied.map(([, , , , kind]) => kind)).toEqual([
+      SpanMapKind.Verbatim,
+    ]);
   });
 });
 

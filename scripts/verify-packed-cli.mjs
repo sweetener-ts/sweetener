@@ -359,9 +359,9 @@ try {
       }
       // The template copies `21` twice, and TypeScript types each copy, so
       // the one mistake is reported once per copy -- at the same place in the
-      // source, which is the thing being checked. The path is left out: a
-      // temporary directory is spelled differently depending on whether the
-      // symlink above it was followed.
+      // source, which is the thing being checked. The path is left out: tsc
+      // prints it relative to the project, which is nothing at all unless a
+      // symlink above the temporary directory makes it a way round.
       const expected =
         "main.sts(3,38): error TS2322: Type 'number' is not assignable to type 'string'.";
       const lines = report
@@ -370,7 +370,9 @@ try {
         .filter((line) => line.length > 0);
       if (
         lines.length === 0 ||
-        !lines.every((line) => line.endsWith(`/mapped/${expected}`))
+        !lines.every(
+          (line) => line === expected || line.endsWith(`/mapped/${expected}`),
+        )
       )
         problems.push(
           `TypeScript 7 checking through the packed content mapper reported ${JSON.stringify(report.trim())}, not ${JSON.stringify(expected)}`,

@@ -124,27 +124,34 @@ The mapper expands the whole project when TypeScript first opens it, which is
 what a `tsc` run then asks for file by file. After that, each file's expansion
 is kept together with what it read: itself, the macro modules it imports for
 syntax, and every lookup made resolving their imports. An edit expands again
-only the files whose reads changed, so typing in a file expands that file and
-nothing else, and saving a macro module expands exactly the files that use it.
-Every source is still read and parsed again to do it, which is most of what an
-edit costs: on copies of the language tour, about 15 ms at 50 files, 90 ms at
-500 and 250 ms at 1,500.
+only the files whose reads changed, reading only those and their macro modules,
+so typing in a file costs what that file leads to and not the project: on copies
+of the language tour, about 5 ms at 50 files, 15 ms at 500 and 30 ms at 1,500. A
+project whose macros name binding literals resolves them over a program of every
+source, so a file that reaches one reads them all.
 
 Where it differs from `sweetener check`:
 
-- An unsaved edit to a macro module reaches the files that use it one edit
-  late: at the next edit anywhere in the workspace, or once the module is
+- An unsaved edit to a macro module reaches the files that use it late: at the
+  module's next edit, when one of those files is edited, or once the module is
   saved. TypeScript transforms a file again only when its own text or the
-  project's identity changes, and it asks for the identity before it
-  transforms the module that was edited.
+  project's identity changes, and it asks for the identity when a file it
+  watches changes, before it transforms that file.
 - Expansion reads the tsconfig on disk, as `sweetener check` and every build
   integration do. An unsaved edit to the tsconfig, or an option given to `tsc`
   on its command line, reaches TypeScript but not expansion: TypeScript sends
   its options, but `sweet` is not among them, and which files are listed is
   not either.
-- A macro module a file newly imports is watched from the next edit. TypeScript
-  asks what to watch before it sends the text that adds the import, so a change
-  to that module from outside the editor goes unheard until then.
+- What to watch is asked only when a project opens, which a change to a file
+  already watched causes. So a macro module a file has just begun to import, or a
+  file saved for the first time after it was opened unsaved, is not watched yet.
+  A change to that module from outside the editor is heard when the file using
+  it is next edited, and the saved file says it is not opted in until it is
+  edited or the project next opens: TypeScript takes no event for a file open in
+  the editor.
+- A macro that copies a name to where it stands for two, or tokens more than
+  once, keeps TypeScript's formatter out: Format Document leaves such a file as
+  it is. `@sweetener/prettier-plugin` formats it.
 - The protocol carries errors only. Sweetener's warnings, such as an item the
   reader passed through unread, are left out rather than reported as errors.
 - `sweetener check` adds what expansion knows to TypeScript's "cannot find

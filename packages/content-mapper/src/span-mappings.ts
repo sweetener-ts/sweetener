@@ -233,14 +233,18 @@ function withoutAmbiguousRename(
     end: virtualEnd,
   });
   for (const group of copies.values()) {
-    if (group.length > 1 && !agreement.agree(group.map(place)))
-      for (const segment of group) ambiguous.add(segment);
     // Where a macro copied a name to stand for two, TypeScript would spell out
-    // both in its place, `foo: renamed`, and write that into the macro's
-    // input: `obj(foo: renamed)`. One copy is enough for that.
-    for (const segment of group)
-      if (segment.copied === true && agreement.abbreviates(place(segment)))
-        ambiguous.add(segment);
+    // both in its place, `foo: renamed`, and write that into the macro's input:
+    // `obj(foo: renamed)`. One copy is enough for that. A rename from any other
+    // copy of it would change the input all the same, and so what that one reads.
+    if (
+      (group.length > 1 && !agreement.agree(group.map(place))) ||
+      group.some(
+        (segment) =>
+          segment.copied === true && agreement.abbreviates(place(segment)),
+      )
+    )
+      for (const segment of group) ambiguous.add(segment);
   }
   const writing = SpanMapFeature.Rename | SpanMapFeature.LinkedEditing;
   return segments.map((segment) =>
@@ -251,6 +255,35 @@ function withoutAmbiguousRename(
           features: segment.features & ~writing,
         }
       : segment,
+  );
+}
+
+/**
+ * Keep an edit from going through text a macro copied more than once.
+ *
+ * Verbatim, each copy maps positions one to one, so an edit TypeScript makes to
+ * each -- formatting them, say -- comes back as several at one place in the
+ * source: `twice(1+2)` was written `twice(1  +  2)`. As an atom it still answers
+ * hover and the like, and TypeScript writes no formatting at all where one edit
+ * cannot be mapped exactly, which leaves such a file alone rather than damaged.
+ * A name stays as it is: rename goes only through verbatim text, and is decided
+ * by what the name means.
+ */
+function withoutCopiedEdits(
+  segments: readonly Segment[],
+  generatedText: string,
+): Segment[] {
+  const uses = new Map<string, number>();
+  for (const segment of segments)
+    uses.set(spanKey(segment), (uses.get(spanKey(segment)) ?? 0) + 1);
+  return segments.map((segment) =>
+    segment.kind !== SpanMapKind.Verbatim ||
+    uses.get(spanKey(segment)) === 1 ||
+    identifier.test(
+      generatedText.slice(segment.virtualStart, segment.virtualEnd),
+    )
+      ? segment
+      : { ...segment, kind: SpanMapKind.Atom },
   );
 }
 
@@ -272,8 +305,7 @@ function joinedAsWritten(
   const joined: Segment[] = [];
   const joins = (segment: Segment) =>
     segment.kind === SpanMapKind.Verbatim &&
-    segment.features === SpanMapFeature.All &&
-    segment.copied !== true;
+    segment.features === SpanMapFeature.All;
   for (const segment of segments) {
     const last = joined.at(-1);
     if (
@@ -316,9 +348,12 @@ export function segmentsForExpansion(options: {
   }
   return compatibleSegments(
     joinedAsWritten(
-      withoutAmbiguousRename(
-        compatibleSegments(segments),
-        options.agreement,
+      withoutCopiedEdits(
+        withoutAmbiguousRename(
+          compatibleSegments(segments),
+          options.agreement,
+          options.generatedText,
+        ),
         options.generatedText,
       ),
       options.generatedText,

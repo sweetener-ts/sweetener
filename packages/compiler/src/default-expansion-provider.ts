@@ -915,17 +915,18 @@ export class DefaultProjectExpansionProvider
    * each read takes the text the first one found, and the inputs are every
    * question any of them asked.
    *
-   * `files`, where given, names by absolute path the sources to expand; the
-   * rest are still read, so the macros each named file sees and the names its
-   * binding literals resolve are those of the whole project's expansion. Only
-   * expanding and printing the others is skipped, which is most of the cost:
-   * an editor expanding again the one file being typed in asks for this. A
-   * macro module a named file reads from is expanded too, since only that
-   * settles how it is read: a slash its own macros make a division reads as a
-   * regular expression until then, and takes the macros after it along. The
-   * output's files, and what `inspectSource` answers, are then the named
-   * files' alone; its diagnostics still include what reading every source and
-   * expanding those modules raised.
+   * `files`, where given, names by absolute path the sources to expand, and
+   * only they and the macro modules they read from are read, so the cost is
+   * theirs and not the project's: an editor expanding again the one file being
+   * typed in asks for this. Binding literals resolve over a program of every
+   * source, and a listed file with a directive reads differently from the same
+   * file imported, so where the named files reach either, every source is read
+   * as for the whole project. A macro module a named file reads from is expanded
+   * too, since only that settles how it is read: a slash its own macros make a
+   * division reads as a regular expression until then, and takes the macros
+   * after it along. The output's files, and what `inspectSource` answers, are
+   * then the named files' alone; its diagnostics and inputs are those of what
+   * was read and expanded.
    */
   expandProject(
     project: LoadedSweetProject,
@@ -933,27 +934,38 @@ export class DefaultProjectExpansionProvider
   ): DefaultProjectExpansionOutput {
     this.#readInputs = undefined;
     const recorder = new InputRecorder(this.#fileSystem.system);
-    const history: ReadingHistory = new Map();
-    return settleReadings<
-      DefaultProjectExpansionOutput,
-      ReadonlyMap<string, TokenReadings>
-    >(
-      new Map(),
-      (readings) =>
-        [...readings].flatMap(([fileName, file]) =>
-          [...askedReadings(file)].map((reading) => `${fileName} ${reading}`),
-        ),
-      (readings, final, reads) =>
-        this.#expandProjectReading(
-          project,
-          recorder,
-          readings,
-          final,
-          reads,
-          history,
-          options.files,
-        ),
-    );
+    const settled = (reading: ReadonlySet<string> | undefined) => {
+      const history: ReadingHistory = new Map();
+      return settleReadings<
+        DefaultProjectExpansionOutput | undefined,
+        ReadonlyMap<string, TokenReadings>
+      >(
+        new Map(),
+        (readings) =>
+          [...readings].flatMap(([fileName, file]) =>
+            [...askedReadings(file)].map((asked) => `${fileName} ${asked}`),
+          ),
+        (readings, final, reads) =>
+          this.#expandProjectReading(
+            project,
+            recorder,
+            readings,
+            final,
+            reads,
+            history,
+            options.files,
+            reading,
+          ),
+      );
+    };
+    const output =
+      (options.files === undefined ? undefined : settled(options.files)) ??
+      settled(undefined);
+    if (output === undefined)
+      throw new Error(
+        "Expanding every source of a project gave no output, which only a narrowed read does",
+      );
+    return output;
   }
 
   #expandProjectReading(
@@ -964,8 +976,9 @@ export class DefaultProjectExpansionProvider
     projectReads: number,
     history: ReadingHistory,
     expanding: ReadonlySet<string> | undefined,
+    reading: ReadonlySet<string> | undefined,
   ): ReadAttempt<
-    DefaultProjectExpansionOutput,
+    DefaultProjectExpansionOutput | undefined,
     ReadonlyMap<string, TokenReadings>
   > {
     this.#inspections.clear();
@@ -1092,7 +1105,12 @@ export class DefaultProjectExpansionProvider
       return file;
     };
     const sweetFiles = selectSweetSources({
-      fileNames: project.typescript.fileNames,
+      fileNames:
+        reading === undefined
+          ? project.typescript.fileNames
+          : project.typescript.fileNames.filter((fileName) =>
+              reading.has(resolve(fileName)),
+            ),
       macroExtensions: project.sweet.macroExtensions,
       readSource: (fileName) => consult(fileName, fileName),
     });
@@ -1417,6 +1435,18 @@ export class DefaultProjectExpansionProvider
             }),
           );
     }
+    const listed = new Set(project.typescript.fileNames.map((f) => resolve(f)));
+    // Read as far as the named files lead, and no further if that will not do.
+    if (
+      reading !== undefined &&
+      [...byPath.values()].some(
+        ({ fileName, compiled }) =>
+          compiled.bindingLiterals.length > 0 ||
+          (listed.has(resolve(fileName)) &&
+            !project.sweet.macroExtensions.includes(parse(fileName).ext)),
+      )
+    )
+      return { kind: "settled", settled: undefined };
     const moduleSources: MacroModuleSource[] = [...byPath.values()].map(
       (file) => ({
         path: file.fileName,
@@ -2275,7 +2305,14 @@ export class DefaultProjectExpansionProvider
                 return module === undefined ? [] : [resolve(module.fileName)];
               }),
           ]);
-    for (const projectFile of projectFiles) {
+    // Read narrowly, the modules among them came by way of an import.
+    const expandable =
+      reading === undefined
+        ? projectFiles
+        : [...byPath.values()].filter(({ fileName }) =>
+            listed.has(resolve(fileName)),
+          );
+    for (const projectFile of expandable) {
       if (
         settling !== undefined &&
         !settling.has(resolve(projectFile.fileName))

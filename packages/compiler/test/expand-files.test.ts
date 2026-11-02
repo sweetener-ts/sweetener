@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 import { expect, test } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
@@ -14,7 +15,7 @@ const repository = fileURLToPath(new URL("../../..", import.meta.url));
  * Expanding one file on its own is how an editor keeps up with typing, so it
  * has to say exactly what expanding the whole project says about that file:
  * the same text, the same source behind every printed region, the same
- * diagnostics, and the same inputs to keep it against.
+ * diagnostics, and inputs that are among those the whole project read.
  */
 test("expanding one file alone matches expanding the project", () => {
   const configs = [
@@ -51,7 +52,11 @@ test("expanding one file alone matches expanding the project", () => {
         actual!.diagnostics.map(({ code, start }) => [code, start]),
         fileName,
       ).toEqual(expected.diagnostics.map(({ code, start }) => [code, start]));
-      expect(actual!.inputs, fileName).toEqual(expected.inputs);
+      // What it read, which is all a whole project's expansion read only where
+      // binding literals are resolved.
+      expect(expected.inputs, fileName).toEqual(
+        expect.arrayContaining([...actual!.inputs]),
+      );
       expect(output.files.map((file) => file.fileName)).toEqual([
         expected.virtualFileName,
       ]);
@@ -161,4 +166,94 @@ export syntax foo:expr { rule { foo($v:expr) } => { $v } }
   expect(inspection?.diagnostics).toEqual([]);
   expect(output.files).toHaveLength(1);
   expect(alone.inspectSource(module)).toBeUndefined();
+});
+
+/**
+ * What an edit costs is what the edited file leads to: a source it has nothing
+ * to do with, however many there are, is not read.
+ */
+test("a file alone reads only what it leads to", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-alone-")));
+  const write = (name: string, text: string) => {
+    writeFileSync(join(directory, name), text);
+    return join(directory, name);
+  };
+  const module = write(
+    "m.sts",
+    "export syntax foo:expr { rule { foo($v:expr) } => { $v } }\n",
+  );
+  const user = write(
+    "a.sts",
+    'import { foo } from "./m.sts" for syntax;\nexport const v = foo(1);\n',
+  );
+  const other = write("other.sts", "export const o = 1;\n");
+  const config = write(
+    "tsconfig.json",
+    JSON.stringify({
+      compilerOptions: { noEmit: true, target: "ES2022", module: "ESNext" },
+      files: ["m.sts", "a.sts", "other.sts"],
+    }),
+  );
+  const project = loadSweetProject(config);
+  const reads: string[] = [];
+  const alone = createDefaultProjectExpansionProvider({
+    system: {
+      ...ts.sys,
+      readFile: (path) => {
+        reads.push(path);
+        return ts.sys.readFile(path);
+      },
+    },
+  });
+  alone.expandProject(project, { files: new Set([user]) });
+  expect(reads).toContain(module);
+  expect(reads).not.toContain(other);
+  expect(alone.inspectSource(user)?.generated.text).toContain(
+    "export const v = 1;",
+  );
+});
+
+/**
+ * Binding literals resolve over a program of every source, so a file reaching
+ * one reads them all.
+ */
+test("a file alone that reaches a binding literal reads the project", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-alone-")));
+  const write = (name: string, text: string) => {
+    writeFileSync(join(directory, name), text);
+    return join(directory, name);
+  };
+  write("local.ts", "export const Circle = 1;\n");
+  write(
+    "m.sts",
+    `import { Circle } from "./local";
+export syntax kind:expr {
+  literal Circle as Circle;
+  rule { kind(Circle) } => { "circle" }
+  fallback rule { kind($value:expr) } => { "other" }
+}
+`,
+  );
+  const user = write(
+    "a.sts",
+    'import { kind } from "./m.sts" for syntax;\nimport { Circle } from "./local";\nexport const v = kind(Circle);\n',
+  );
+  const config = write(
+    "tsconfig.json",
+    JSON.stringify({
+      compilerOptions: {
+        noEmit: true,
+        target: "ES2022",
+        module: "ESNext",
+        moduleResolution: "Bundler",
+      },
+      files: ["local.ts", "m.sts", "a.sts"],
+    }),
+  );
+  const project = loadSweetProject(config);
+  const alone = createDefaultProjectExpansionProvider();
+  const output = alone.expandProject(project, { files: new Set([user]) });
+  expect(output.resolvesBindingLiterals).toBe(true);
+  expect(output.files).toHaveLength(1);
+  expect(alone.inspectSource(user)?.generated.text).toContain('"circle"');
 });

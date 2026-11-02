@@ -262,7 +262,7 @@ describe("the language server", () => {
     ]);
   });
 
-  test("an unsaved change to a macro reaches a file that uses it at the next edit anywhere", async () => {
+  test("an unsaved change to a macro reaches a file that uses it at the next edit of the module", async () => {
     const { directory, file } = mappedProject({
       "macros.sts": macros,
       "main.sts": main,
@@ -341,6 +341,46 @@ describe("the language server", () => {
     expect(formatted).toBe(
       "function f(x: number) { return x + 1 }\nexport { f };\n",
     );
+  });
+
+  test("will not double an edit through text a macro copied", async () => {
+    const twice = `export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }\n`;
+    const use = `import { twice } from "./macros.sts" for syntax;\nexport const o = twice(  1+2  );\n`;
+    const { directory, file } = mappedProject({
+      "macros.sts": twice,
+      "main.sts": use,
+    });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), use);
+    await client.diagnostics(file("main.sts"));
+    const edits = (await client.request("textDocument/formatting", {
+      textDocument: { uri: pathToFileURL(file("main.sts")).href },
+      options: { tabSize: 2, insertSpaces: true },
+    })) as { range: { start: unknown; end: unknown } }[] | null;
+    const places = (edits ?? []).map(({ range }) => JSON.stringify(range));
+    expect(new Set(places).size).toBe(places.length);
+  });
+
+  test("hears a file saved that the project did not list, when the project next opens", async () => {
+    const { directory, file } = mappedProject({
+      "macros.sts": macros,
+      "main.sts": main,
+    });
+    const text = "export const n = 1;\n";
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), main);
+    client.open(file("macros.sts"), macros);
+    await client.diagnostics(file("main.sts"));
+    client.open(file("new.sts"), text);
+    expect(await client.diagnostics(file("new.sts"))).toEqual([
+      expect.stringContaining("6202"),
+    ]);
+    // TypeScript takes no event for a file open in the editor, which it holds
+    // itself. A change to a file it watches opens the project.
+    writeFileSync(file("new.sts"), text);
+    client.change(file("macros.sts"), 2, `${macros}\n`);
+    await client.diagnostics(file("macros.sts"));
+    expect(await client.diagnostics(file("new.sts"))).toEqual([]);
   });
 
   test("a saved change to a macro re-expands the files that use it", async () => {
