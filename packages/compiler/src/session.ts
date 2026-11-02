@@ -113,11 +113,6 @@ export interface SweetenerSession {
 }
 
 /**
- * Everything about a project that its files' expansions are given, short of
- * which files there are: each file's expansion depends on its own sources,
- * not on the rest of the list.
- */
-/**
  * A config as last loaded, kept while every file it was loaded from says what
  * it said, so a transform does not parse the config and walk `include` again.
  * Whether it lists a source is then decided by the source's path alone --

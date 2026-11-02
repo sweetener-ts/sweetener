@@ -114,6 +114,10 @@ failed, which is said of the file it failed on and leaves the others expanded.
 An option TypeScript 6's parser does not know is left to TypeScript 7 to judge:
 Sweetener reads a tsconfig through 6, and expansion goes on without it.
 
+An error in a macro module is reported in the module and at the top of each
+file using it, naming where it is: an editor asks about the files that are open,
+and it is why that file did not expand. `tsc` then prints it once per file.
+
 The mapper expands the whole project when TypeScript first opens it, which is
 what a `tsc` run then asks for file by file. After that, each file's expansion
 is kept together with what it read: itself, the macro modules it imports for

@@ -11,9 +11,6 @@
 
 export const protocolVersion = 1 as const;
 
-/** The name a tsconfig's `contentMappers` entry gives this package by. */
-export const packageName = "@sweetener/content-mapper" as const;
-
 export type PositionEncoding = "utf-8" | "utf-16";
 
 export interface InitializeParams {

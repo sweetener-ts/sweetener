@@ -9,3 +9,4 @@ export * from "./session.js";
 export * from "./source-kind.js";
 export * from "./strip-types.js";
 export * from "./unresolved-names.js";
+export { scriptKindForFileName } from "@sweetener/typescript-host";

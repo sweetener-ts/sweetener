@@ -295,7 +295,11 @@ export function loadStandaloneProject(
   });
 }
 
-/** Everything about a project's config that decides what expansion does. */
+/**
+ * Everything about a project that its files' expansions are given, short of
+ * which files there are: each file's expansion depends on its own sources,
+ * not on the rest of the list.
+ */
 export function projectSignature(project: LoadedSweetProject): string {
   return JSON.stringify({
     sweet: project.sweet,

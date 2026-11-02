@@ -20,6 +20,7 @@ const typescriptExtension = "TypeScriptTeam.native-preview";
 async function activate(context) {
   let registered = false;
   let registering = false;
+  let saidNoSupport = false;
   const register = async () => {
     if (registered || registering) return;
     const extension = vscode.extensions.getExtension(typescriptExtension);
@@ -27,7 +28,14 @@ async function activate(context) {
     registering = true;
     try {
       const api = await extension.activate();
-      if (typeof api?.registerContentMappers !== "function") return;
+      if (typeof api?.registerContentMappers !== "function") {
+        if (!saidNoSupport)
+          console.error(
+            `This version of ${typescriptExtension} has no content mappers, so .sts and .stsx will not reach TypeScript's language server. Update it.`,
+          );
+        saidNoSupport = true;
+        return;
+      }
       context.subscriptions.push(
         api.registerContentMappers("sweetener", [
           { extensions: [".sts", ".stsx"] },

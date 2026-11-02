@@ -272,3 +272,20 @@ test("reads a held file to check it, and confirms the rest by stat", () => {
   unsaved.set(held, "typed\n");
   expect(new InputCheckRound().hold(checked)).toBe(false);
 });
+
+test("lets go of its inspections when asked", () => {
+  const source = `${root}/a.sts`;
+  const provider = createDefaultProjectExpansionProvider({
+    system: memorySystem(new Map([[source, "export const a = 1;\n"]])),
+  });
+  provider.expandProject(
+    memoryProject([source], {
+      allowNonTsExtensions: true,
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    }),
+  );
+  expect(provider.inspectSource(source)).toBeDefined();
+  provider.releaseInspections();
+  expect(provider.inspectSource(source)).toBeUndefined();
+});

@@ -93,15 +93,23 @@ describe("activation", () => {
     expect(registered).toHaveLength(1);
   });
 
-  test("does nothing where TypeScript 7 is missing or has no content mappers", async () => {
-    for (const installed of [
-      {},
-      { "TypeScriptTeam.native-preview": { activate: async () => ({}) } },
-    ]) {
-      const context = { subscriptions: [] as unknown[] };
-      await load(installed).extension.activate(context);
-      expect(context.subscriptions).toEqual([watching]);
-    }
+  test("does nothing where TypeScript 7 is missing", async () => {
+    const context = { subscriptions: [] as unknown[] };
+    await load({}).extension.activate(context);
+    expect(context.subscriptions).toEqual([watching]);
+  });
+
+  test("says once that a TypeScript 7 with no content mappers will not do", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { extension, changed } = load({
+      "TypeScriptTeam.native-preview": { activate: async () => ({}) },
+    });
+    const context = { subscriptions: [] as unknown[] };
+    await extension.activate(context);
+    await changed();
+    expect(context.subscriptions).toEqual([watching]);
+    expect(logged).toHaveBeenCalledOnce();
+    logged.mockRestore();
   });
 
   test("registers with TypeScript 7 once it is installed", async () => {

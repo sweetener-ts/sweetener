@@ -2376,6 +2376,16 @@ export class DefaultProjectExpansionProvider
       : Object.freeze([]);
   }
 
+  /**
+   * Lets go of what the last expansion can answer about its files. Each
+   * inspection's lazy parts hold on to the whole project it read, so a caller
+   * that has taken what it wants, and keeps this provider for the next
+   * expansion, does not keep a copy of every source's syntax meanwhile.
+   */
+  releaseInspections(): void {
+    this.#inspections.clear();
+  }
+
   debugState(): unknown {
     return this.#debug;
   }

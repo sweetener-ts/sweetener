@@ -1,11 +1,5 @@
+import { scriptKindForFileName } from "@sweetener/compiler";
 import * as ts from "typescript";
-
-const scriptKinds: ReadonlyMap<string, ts.ScriptKind> = new Map([
-  [".ts", ts.ScriptKind.TS],
-  [".tsx", ts.ScriptKind.TSX],
-  [".js", ts.ScriptKind.JS],
-  [".jsx", ts.ScriptKind.JSX],
-]);
 
 function identifierAt(
   sourceFile: ts.SourceFile,
@@ -55,18 +49,13 @@ export function createBindingAgreement(
     { sourceFile: ts.SourceFile; checker: ts.TypeChecker } | undefined;
   const bound = () => {
     if (checker !== undefined) return checker;
-    const scriptKind = scriptKinds.get(extension);
-    if (scriptKind === undefined)
-      throw new Error(
-        `Sweetener cannot bind an expansion written as ${extension}`,
-      );
     const fileName = `/sweetener-expansion${extension}`;
     const sourceFile = ts.createSourceFile(
       fileName,
       virtualText,
       ts.ScriptTarget.Latest,
       true,
-      scriptKind,
+      scriptKindForFileName(fileName),
     );
     const options: ts.CompilerOptions = {
       noLib: true,
