@@ -140,7 +140,8 @@ Where it differs from `sweetener check`:
   watches changes, before it transforms that file. Likewise, closing a macro
   module without saving reaches a file using it when that file is next edited.
 - A referenced project's files expand by the tsconfig that lists them, whichever
-  project TypeScript reads them through.
+  project TypeScript reads them through. Opening a project expands the projects
+  it references, however far, since what they read decides what to watch.
 - Expansion reads the tsconfig on disk, as `sweetener check` and every build
   integration do. An unsaved edit to the tsconfig, or an option given to `tsc`
   on its command line, reaches TypeScript but not expansion: TypeScript sends

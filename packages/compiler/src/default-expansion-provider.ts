@@ -845,8 +845,8 @@ export interface DefaultSourceExpansionInspection extends SourceExpansionInspect
   /** Whether this file, or a macro module it reads from, has binding literals. */
   readonly readsBindingLiterals: boolean;
   /**
-   * Whether a macro module it reads from has errors, which stops those macros
-   * running: what was generated is then this file as written.
+   * Whether this file, as read, or a macro module it reads from has errors, which
+   * stops those macros running: what was generated is then this file as written.
    */
   readonly macrosFailed: boolean;
 }
@@ -860,6 +860,8 @@ export class DefaultProjectExpansionProvider
   readonly #inspections = new Map<string, DefaultSourceExpansionInspection>();
   /** What the expansion last begun has asked of the file system so far. */
   #recorder: InputRecorder | undefined;
+  /** Whether the expansion last begun has had to read every source. */
+  #readEverySource = false;
   /** The config the last expansion to finish was of, and what it asked. */
   #lastInputs:
     | {
@@ -951,7 +953,9 @@ export class DefaultProjectExpansionProvider
         : new Set([...options.files].map((fileName) => resolve(fileName)));
     const recorder = new InputRecorder(this.#fileSystem.system);
     this.#recorder = recorder;
+    this.#readEverySource = named === undefined;
     const settled = (reading: ReadonlySet<string> | undefined) => {
+      this.#readEverySource = reading === undefined;
       const history: ReadingHistory = new Map();
       return settleReadings<
         DefaultProjectExpansionOutput | undefined,
@@ -1645,6 +1649,8 @@ export class DefaultProjectExpansionProvider
       askedBefore: ReadonlyMap<number, ReadonlySet<TokenReading>> = new Map(),
     ): ReadAttempt<undefined, TokenReadings> => {
       const held: Diagnostic[] = [];
+      /** Whether a macro this file imports for syntax could not be found. */
+      let importFailed = false;
       /**
        * The slashes and `<`s of the file's text found read the other way, by
        * offset.
@@ -1752,6 +1758,9 @@ export class DefaultProjectExpansionProvider
           resolve: resolveFound,
         });
         held.push(...resolvedImports.diagnostics);
+        importFailed ||= resolvedImports.diagnostics.some(
+          ({ severity }) => severity === "error",
+        );
         const importerBindings =
           importsByModule.get(importer.compiled) ?? new Map();
         importsByModule.set(importer.compiled, importerBindings);
@@ -2176,9 +2185,13 @@ export class DefaultProjectExpansionProvider
           ),
           inputs: inputsFor([file, ...macroModules]),
           readsBindingLiterals: readBindingLiterals([file, ...macroModules]),
-          macrosFailed: macroModules.some((module) =>
-            answerableFor(module).some(({ severity }) => severity === "error"),
-          ),
+          macrosFailed:
+            importFailed ||
+            [file, ...macroModules].some((module) =>
+              answerableFor(module).some(
+                ({ severity }) => severity === "error",
+              ),
+            ),
           // The rest of what was reported, and what is held about a name this
           // file left standing. `expand` and a build tool's transform read an
           // inspection and then stop; there is no checker behind either, so
@@ -2469,6 +2482,15 @@ export class DefaultProjectExpansionProvider
    */
   readInputs(): readonly ExpansionInput[] {
     return this.#recorder?.inputs ?? Object.freeze([]);
+  }
+
+  /**
+   * Whether the expansion last begun read every source, whatever files it was
+   * named: failing, it says nothing of those files in particular, and expanding
+   * any of them again would read and fail the same.
+   */
+  readEverySource(): boolean {
+    return this.#readEverySource;
   }
 
   /**

@@ -20,16 +20,15 @@ const typescriptExtension = "TypeScriptTeam.native-preview";
 async function activate(context) {
   // Which of its activations has them: updated or enabled again, it is another.
   let registeredWith;
-  let registering = false;
+  let registration;
   let saidNoSupport = false;
-  const register = async () => {
+  const attempt = async () => {
     // Registering starts TypeScript's server and, through a tsconfig, a mapper
     // out of node_modules: not for a folder not trusted. Highlighting needs none
     // of that, which is why this extension is supported there at all.
-    if (registering || !vscode.workspace.isTrusted) return;
+    if (!vscode.workspace.isTrusted) return;
     const extension = vscode.extensions.getExtension(typescriptExtension);
     if (extension === undefined) return;
-    registering = true;
     try {
       const api = await extension.activate();
       if (api === registeredWith) return;
@@ -41,11 +40,10 @@ async function activate(context) {
         saidNoSupport = true;
         return;
       }
-      context.subscriptions.push(
-        api.registerContentMappers("sweetener", [
-          { extensions: [".sts", ".stsx"] },
-        ]),
-      );
+      registration?.dispose();
+      registration = api.registerContentMappers("sweetener", [
+        { extensions: [".sts", ".stsx"] },
+      ]);
       registeredWith = api;
     } catch (error) {
       // Highlighting goes on without it; a failure here is no failure of this
@@ -54,15 +52,27 @@ async function activate(context) {
         `Sweetener could not reach ${typescriptExtension}, so .sts and .stsx will not reach TypeScript's language server:`,
         error,
       );
-    } finally {
-      registering = false;
     }
+  };
+  // One at a time, and once more for what arrived during one.
+  let running = false;
+  let again = false;
+  const register = async () => {
+    again = true;
+    if (running) return;
+    running = true;
+    while (again) {
+      again = false;
+      await attempt();
+    }
+    running = false;
   };
   // Installed or enabled after this one starts, it is taken up then, rather
   // than at the next window.
   context.subscriptions.push(
     vscode.extensions.onDidChange(() => void register()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void register()),
+    { dispose: () => registration?.dispose() },
   );
   await register();
 }

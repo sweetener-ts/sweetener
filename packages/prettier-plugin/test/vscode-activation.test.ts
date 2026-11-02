@@ -97,7 +97,14 @@ describe("activation", () => {
     expect(registered).toEqual([
       ["sweetener", [{ extensions: [".sts", ".stsx"] }]],
     ]);
-    expect(context.subscriptions).toEqual([watching, watching, disposable]);
+    expect(context.subscriptions).toHaveLength(3);
+    // Going away takes the registration with it.
+    let disposed = false;
+    disposable.dispose = () => {
+      disposed = true;
+    };
+    (context.subscriptions[2] as { dispose(): void }).dispose();
+    expect(disposed).toBe(true);
     // Once: another extension changing registers nothing again.
     await changed();
     expect(registered).toHaveLength(1);
@@ -106,7 +113,7 @@ describe("activation", () => {
   test("does nothing where TypeScript 7 is missing", async () => {
     const context = { subscriptions: [] as unknown[] };
     await load({}).extension.activate(context);
-    expect(context.subscriptions).toEqual([watching, watching]);
+    expect(context.subscriptions).toHaveLength(3);
   });
 
   test("says once that a TypeScript 7 with no content mappers will not do", async () => {
@@ -117,7 +124,7 @@ describe("activation", () => {
     const context = { subscriptions: [] as unknown[] };
     await extension.activate(context);
     await changed();
-    expect(context.subscriptions).toEqual([watching, watching]);
+    expect(context.subscriptions).toHaveLength(3);
     expect(logged).toHaveBeenCalledOnce();
     logged.mockRestore();
   });
@@ -129,7 +136,7 @@ describe("activation", () => {
     expect(manifest.capabilities.untrustedWorkspaces.supported).toBe(true);
     const registered: unknown[] = [];
     const { extension, changed, trust } = load(
-      { "TypeScriptTeam.native-preview": typescript7(registered, {}) },
+      { "TypeScriptTeam.native-preview": typescript7(registered, watching) },
       false,
     );
     await extension.activate({ subscriptions: [] });
@@ -139,15 +146,65 @@ describe("activation", () => {
     expect(registered).toHaveLength(1);
   });
 
+  test("hears a change that arrives while it is registering", async () => {
+    const registered: unknown[] = [];
+    let finish: () => void = () => {};
+    const first = typescript7(registered, watching);
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": {
+        activate: () =>
+          new Promise((settle) => {
+            finish = () => {
+              void first.activate().then(settle);
+            };
+          }),
+      },
+    };
+    const { extension, changed } = load(installed);
+    const activated = extension.activate({ subscriptions: [] });
+    installed["TypeScriptTeam.native-preview"] = typescript7(
+      registered,
+      watching,
+    );
+    await changed();
+    finish();
+    await activated;
+    expect(registered).toHaveLength(2);
+  });
+
+  test("lets go of the old registration when registering with a new one", async () => {
+    let disposals = 0;
+    const registered: unknown[] = [];
+    const counted = {
+      dispose() {
+        disposals += 1;
+      },
+    };
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": typescript7(registered, counted),
+    };
+    const { extension, changed } = load(installed);
+    await extension.activate({ subscriptions: [] });
+    installed["TypeScriptTeam.native-preview"] = typescript7(
+      registered,
+      counted,
+    );
+    await changed();
+    expect(disposals).toBe(1);
+  });
+
   test("registers again with a TypeScript 7 updated while it runs", async () => {
     const registered: unknown[] = [];
     const installed: Record<string, unknown> = {
-      "TypeScriptTeam.native-preview": typescript7(registered, {}),
+      "TypeScriptTeam.native-preview": typescript7(registered, watching),
     };
     const { extension, changed } = load(installed);
     await extension.activate({ subscriptions: [] });
     expect(registered).toHaveLength(1);
-    installed["TypeScriptTeam.native-preview"] = typescript7(registered, {});
+    installed["TypeScriptTeam.native-preview"] = typescript7(
+      registered,
+      watching,
+    );
     await changed();
     expect(registered).toHaveLength(2);
   });
@@ -158,7 +215,10 @@ describe("activation", () => {
     const registered: unknown[] = [];
     await extension.activate({ subscriptions: [] });
     expect(registered).toEqual([]);
-    installed["TypeScriptTeam.native-preview"] = typescript7(registered, {});
+    installed["TypeScriptTeam.native-preview"] = typescript7(
+      registered,
+      watching,
+    );
     await changed();
     expect(registered).toHaveLength(1);
   });

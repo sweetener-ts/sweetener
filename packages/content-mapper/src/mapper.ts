@@ -1,4 +1,4 @@
-import { extname, resolve, sep } from "node:path";
+import { dirname, extname, resolve, sep } from "node:path";
 import {
   checkedInputs,
   configurationProblems,
@@ -24,12 +24,12 @@ import {
   describeError,
   ErrorCode,
   isObject,
+  messageOf,
   ResponseError,
   type RequestHandler,
 } from "./json-rpc.js";
 import {
   protocolVersion,
-  type CloseProjectParams,
   type ContentMapperDiagnostic,
   type InitializeParams,
   type InitializeResult,
@@ -183,8 +183,9 @@ interface ConfigState {
   readonly provider: DefaultProjectExpansionProvider;
   readonly expanded: Map<string, ExpandedFile>;
   /**
-   * The configs of projects this one references, whose files it has been asked
-   * for: what those read counts for the identity here too.
+   * The configs of the projects this one references, read at each open:
+   * TypeScript reads their sources through this project, so what those read
+   * counts for its identity.
    */
   readonly references: Set<string>;
   /** The identity last given, kept while what it was made from holds. */
@@ -230,11 +231,6 @@ function holdText(overlay: Overlay, fileName: string, content: string): void {
   const disk = ts.sys.readFile(fileName);
   if (content === disk) overlay.delete(fileName);
   else overlay.set(fileName, { text: content, disk });
-}
-
-/** What was thrown, in a sentence fit for the author to read. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A source's text as it stands: TypeScript's unsaved text, or the disk's. */
@@ -468,7 +464,7 @@ export class SweetenerContentMapper {
 
   openProject(raw: unknown): OpenProjectResult {
     this.#requireInitialized();
-    const params = requireParams(raw, "openProject") as Record<string, unknown>;
+    const params = requireParams(raw, "openProject");
     const handle = requireString(params, "projectHandle", "openProject");
     const configFileName = requireString(
       params,
@@ -503,6 +499,9 @@ export class SweetenerContentMapper {
     this.#opened.delete(configFileName);
     this.#opened.add(configFileName);
     const problems = this.#problemsWith(configFileName);
+    const opened = this.#configs.get(configFileName);
+    if (opened !== undefined)
+      this.#openReferences(opened, new Set([configFileName]));
     this.#sweep();
     if (problems !== undefined)
       // TypeScript shows a failed request only as a failure, never why, so
@@ -533,7 +532,7 @@ export class SweetenerContentMapper {
 
   transform(raw: unknown): TransformResult {
     const encoding = this.#requireInitialized();
-    const params = requireParams(raw, "transform") as Record<string, unknown>;
+    const params = requireParams(raw, "transform");
     const request: TransformParams = {
       fileName: requireString(params, "fileName", "transform"),
       content: requireString(params, "content", "transform"),
@@ -553,19 +552,27 @@ export class SweetenerContentMapper {
     const referenced =
       opened === undefined || opened.listed.has(fileName)
         ? undefined
-        : this.#referencedOwner(opened, fileName);
-    if (referenced !== undefined)
+        : this.#owningReference(opened, fileName);
+    if (referenced !== undefined) {
+      if ("messageText" in referenced)
+        return failedTransform(
+          request,
+          referenced.code,
+          referenced.messageText,
+        );
       holdText(
         this.#overlayFor(referenced.configFileName),
         fileName,
         request.content,
       );
-    else if (opened !== undefined && !opened.listed.has(fileName))
-      this.#lookFor(opened, fileName);
+    }
     const unusable = this.#unusable.get(configFileName);
     if (unusable !== undefined)
       return failedTransform(request, unusable.code, unusable.messageText);
-    const state = referenced ?? this.#configs.get(configFileName);
+    const state =
+      referenced !== undefined && !("messageText" in referenced)
+        ? referenced
+        : this.#configs.get(configFileName);
     if (state === undefined)
       throw new ResponseError(
         ErrorCode.InternalError,
@@ -610,8 +617,8 @@ export class SweetenerContentMapper {
         request,
         6202,
         !state.project.sweet.macroExtensions.includes(extname(fileName))
-          ? `${configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
-          : `This file is not opted into Sweetener expansion by ${configFileName}. List it there, under "files" or "include".`,
+          ? `${state.configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
+          : `This file is not opted into Sweetener expansion by ${state.configFileName}. List it there, under "files" or "include".`,
       );
     return {
       text: file.text,
@@ -627,12 +634,8 @@ export class SweetenerContentMapper {
   }
 
   closeProject(raw: unknown): null {
-    const params = requireParams(
-      raw,
-      "closeProject",
-    ) as Partial<CloseProjectParams>;
     const handle = requireString(
-      params as Record<string, unknown>,
+      requireParams(raw, "closeProject"),
       "projectHandle",
       "closeProject",
     );
@@ -788,7 +791,13 @@ export class SweetenerContentMapper {
    * stands in for the file, and would again if the disk went back.
    */
   #sweep(): void {
+    // What an open project references is read through it, and is as open as it.
     const open = new Set(this.#handles.values());
+    for (const name of [...open]) {
+      const state = this.#configs.get(name);
+      if (state !== undefined)
+        for (const reference of this.#referencesOf(state)) open.add(reference);
+    }
     const forget = (name: string) => {
       this.#opened.delete(name);
       this.#configs.delete(name);
@@ -805,33 +814,74 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * The state of a project this one references, however far, that lists a file:
-   * TypeScript reads a referenced project's sources through the one that
-   * references it, and asks this project's handle for them. They expand by the
-   * config that lists them.
+   * Read the projects this one references, however far: each loaded and brought
+   * up to date once, here, since what they read counts for this one's identity
+   * and transforms are not the place to find that out.
    */
-  #referencedOwner(
-    state: ConfigState,
-    fileName: string,
-    seen: Set<string> = new Set([state.configFileName]),
-  ): ConfigState | undefined {
+  #openReferences(state: ConfigState, seen: Set<string>): void {
+    state.references.clear();
     for (const reference of state.project.typescript.projectReferences ?? []) {
       const configFileName = ts.resolveProjectReferencePath(reference);
+      state.references.add(configFileName);
       if (seen.has(configFileName)) continue;
       seen.add(configFileName);
       this.#opened.delete(configFileName);
       this.#opened.add(configFileName);
-      if (this.#problemsWith(configFileName) !== undefined) continue;
+      this.#problemsWith(configFileName);
       const referenced = this.#configs.get(configFileName);
-      if (referenced === undefined) continue;
-      const owner = referenced.listed.has(fileName)
-        ? referenced
-        : this.#referencedOwner(referenced, fileName, seen);
-      if (owner !== undefined) {
-        state.references.add(configFileName);
-        return owner;
-      }
+      if (referenced !== undefined) this.#openReferences(referenced, seen);
     }
+  }
+
+  /** The configs this one references, however far, as last opened. */
+  #referencesOf(state: ConfigState): string[] {
+    const seen = new Set([state.configFileName]);
+    const pending = [state];
+    for (const current of pending)
+      for (const reference of current.references) {
+        if (seen.has(reference)) continue;
+        seen.add(reference);
+        const referenced = this.#configs.get(reference);
+        if (referenced !== undefined) pending.push(referenced);
+      }
+    seen.delete(state.configFileName);
+    return [...seen];
+  }
+
+  /**
+   * What answers for a file this project does not list, if it does not list it
+   * but a project it references could. TypeScript reads a referenced project's
+   * sources through the one referencing it, and asks that one's handle for them,
+   * and they expand by the config that lists them. A config that lists it yet,
+   * as far as is known, is looked for in the same way as this one's own; one that
+   * cannot be used, whose folder holds the file, is what the file should hear of.
+   */
+  #owningReference(
+    state: ConfigState,
+    fileName: string,
+  ): ConfigState | ConfigProblem | undefined {
+    const within = (configFileName: string) =>
+      fileName.startsWith(`${canonical(dirname(configFileName))}/`);
+    const references = this.#referencesOf(state);
+    const lister = () =>
+      references
+        .map((reference) => this.#configs.get(reference))
+        .find((referenced) => referenced?.listed.has(fileName) === true);
+    let owner = lister();
+    if (owner === undefined) {
+      for (const reference of references) {
+        const referenced = this.#configs.get(reference);
+        if (referenced !== undefined && within(reference))
+          this.#lookFor(referenced, fileName);
+      }
+      owner = lister();
+    }
+    if (owner !== undefined) return owner;
+    const broken = references.find(
+      (reference) => this.#unusable.has(reference) && within(reference),
+    );
+    if (broken !== undefined) return this.#unusable.get(broken);
+    this.#lookFor(state, fileName);
     return undefined;
   }
 
@@ -871,8 +921,10 @@ export class SweetenerContentMapper {
       .filter(([, file]) => !round.hold(file.consulted))
       .map(([name]) => name);
     if (stale.length > 0) this.#expandOrForget(state, stale);
-    for (const name of [...state.failed])
-      if (!stale.includes(name)) this.#expandOrForget(state, [name]);
+    this.#expandEachOf(
+      state,
+      [...state.failed].filter((name) => !stale.includes(name)),
+    );
   }
 
   /**
@@ -911,13 +963,28 @@ export class SweetenerContentMapper {
     } catch (error) {
       const names = fileNames ?? [...state.listed];
       if (names.length > 1) {
-        for (const name of names) this.#expandOrForget(state, [name]);
+        this.#expandEachOf(state, names);
         return;
       }
       process.stderr.write(
         `Sweetener failed to expand ${names[0] ?? state.configFileName}:\n${describeError(error)}\n`,
       );
       this.#recordFailure(state, names);
+    }
+  }
+
+  /**
+   * Expand each of these alone, until one fails having read every source, as a
+   * project with binding literals does for any file: each of the others would
+   * read and fail the same, at the cost of the whole project each.
+   */
+  #expandEachOf(state: ConfigState, fileNames: readonly string[]): void {
+    for (const [index, name] of fileNames.entries()) {
+      this.#expandOrForget(state, [name]);
+      if (state.failed.has(name) && state.provider.readEverySource()) {
+        this.#recordFailure(state, fileNames.slice(index + 1));
+        return;
+      }
     }
   }
 
@@ -1028,7 +1095,7 @@ export class SweetenerContentMapper {
     const questions = new Map<string, ExpansionInput>();
     const ask = (input: ExpansionInput) =>
       questions.set(`${input.kind}\0${nameOf(input.path)}`, input);
-    const askOf = (of: ConfigState, seen: Set<string>): void => {
+    const askOf = (of: ConfigState): void => {
       for (const input of of.project.configurationInputs) ask(input);
       // Where binding literals are resolved every file shares one list of the
       // whole project's inputs, walked once. Each of those files read the
@@ -1049,15 +1116,19 @@ export class SweetenerContentMapper {
           ask({ kind: "file", path, text: undefined });
         for (const input of of.failureInputs.values()) ask(input);
       }
-      for (const reference of of.references) {
-        const referenced = this.#configs.get(reference);
-        if (referenced !== undefined && !seen.has(reference)) {
-          seen.add(reference);
-          askOf(referenced, seen);
-        }
-      }
     };
-    askOf(state, new Set([state.configFileName]));
+    askOf(state);
+    for (const reference of this.#referencesOf(state)) {
+      const referenced = this.#configs.get(reference);
+      if (referenced !== undefined) askOf(referenced);
+      // One that cannot be used is mended in its config, or in one it extends.
+      else
+        for (const path of [
+          reference,
+          ...(this.#unusable.get(reference)?.watchedFiles ?? []),
+        ])
+          ask({ kind: "file", path, text: undefined });
+    }
     const asked = [...questions.keys()].sort();
     // What TypeScript asked for that the config does not list: nothing changes
     // for it otherwise when one is saved, and it keeps the file emptied.

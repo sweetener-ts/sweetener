@@ -160,6 +160,11 @@ function failure(id: MessageId | null, code: number, message: string) {
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
+/** What was thrown, in a sentence fit for the author to read. */
+export function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** What was thrown, with where it was thrown from if it says. */
 export function describeError(error: unknown): string {
   return error instanceof Error

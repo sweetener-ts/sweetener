@@ -754,6 +754,28 @@ describe("a compiler failure", () => {
     expect(used.text).toContain(`trim("  hello  ", 1)`);
   });
 
+  test("stops trying where every file reads the project that fails", () => {
+    const { config, file } = project({ "other.sts": "export const o = 1;\n" });
+    const expand = DefaultProjectExpansionProvider.prototype.expandProject;
+    const failing = vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
+      .mockImplementation(function (
+        this: DefaultProjectExpansionProvider,
+        project,
+      ) {
+        expand.call(this, project, {});
+        throw new Error("the compiler broke");
+      });
+    vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "readEverySource",
+    ).mockReturnValue(true);
+    opened(config);
+    // The whole project, then one file, for the rest to be taken as the same.
+    expect(failing.mock.calls).toHaveLength(2);
+    expect(file("other.sts")).toBeDefined();
+  });
+
   test("a fix to anything the project lists reaches a file that failed", () => {
     const { config, file } = project({ "other.sts": "export const o = 1;\n" });
     const failing = failingOn(file("other.sts"));
@@ -1508,6 +1530,24 @@ describe("a private name a macro copies", () => {
   });
 });
 
+describe("a file whose own macros could not run", () => {
+  test.each([
+    [
+      "one it defines has errors",
+      "export operator (|>):expr { fixity infix; associativity left; precedence 40; rule { $value:nosuch |> $f:ident } => { $f($value) } }\nconst f = (n: number) => n;\nexport const x = 1 |> f;\n",
+    ],
+    [
+      "the module it imports them from is not there",
+      'import { (|>) } from "./nope.sts" for syntax;\nconst f = (n: number) => n;\nexport const x = 1 |> f;\n',
+    ],
+  ])("comes back empty where %s", (_, source) => {
+    const { config, file } = project({ "a.sts": source });
+    const answer = opened(config).transform(file("a.sts"));
+    expect(answer.text).toBe("");
+    expect(answer.diagnostics?.length).toBeGreaterThan(0);
+  });
+});
+
 describe("a file reading a macro module with errors", () => {
   test("comes back empty, with the reason, not as source to parse", () => {
     const { config, file } = project({
@@ -1528,14 +1568,128 @@ describe("a project that references another", () => {
     vi.restoreAllMocks();
   });
 
-  function referencing() {
-    const app = project({ "main.sts": "export const m = 1;\n" });
-    const lib = project({
-      "macros.sts": "export syntax one:expr { rule { one } => { 1 } }\n",
-      "main.sts": "",
-      "util.sts":
-        'import { one } from "./macros.sts" for syntax;\nexport const u = one;\n',
+  const library = {
+    "macros.sts": "export syntax one:expr { rule { one } => { 1 } }\n",
+    "main.sts": "",
+    "util.sts":
+      'import { one } from "./macros.sts" for syntax;\nexport const u = one;\n',
+  };
+  function configureLibrary(config: string, extra: object = {}) {
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          composite: true,
+        },
+        include: ["*.sts"],
+        ...extra,
+      }),
+    );
+  }
+  function referencing(references: readonly string[], text = "export {};\n") {
+    const app = project({ "main.sts": text });
+    writeFileSync(
+      app.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["main.sts"],
+        references: references.map((path) => ({ path })),
+      }),
+    );
+    return app;
+  }
+  const open = (mapper: SweetenerContentMapper, config: string) =>
+    mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
     });
+
+  test("expands its files by the config that lists them", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const answer = opened(referencing([lib.directory]).config).transform(
+      lib.file("util.sts"),
+    );
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const u = 1;");
+  });
+
+  test("watches what those files read from the first open, whose identity stands", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const app = referencing([lib.directory]);
+    const { mapper, result, transform } = opened(app.config);
+    expect(result.watchedFiles).toEqual(
+      expect.arrayContaining([lib.file("macros.sts"), lib.config]),
+    );
+    transform(lib.file("util.sts"));
+    expect(open(mapper, app.config).configIdentity).toBe(result.configIdentity);
+    writeFileSync(
+      lib.file("macros.sts"),
+      "export syntax one:expr { rule { one } => { 2 } }\n",
+    );
+    expect(open(mapper, app.config).configIdentity).not.toBe(
+      result.configIdentity,
+    );
+    expect(transform(lib.file("util.sts")).text).toContain(
+      "export const u = 2;",
+    );
+  });
+
+  test("keeps every project it references, however many", () => {
+    const libraries = Array.from({ length: 12 }, () => {
+      const lib = project(library);
+      configureLibrary(lib.config);
+      return lib;
+    });
+    const app = referencing(libraries.map(({ directory }) => directory));
+    const { mapper, result } = opened(app.config);
+    const expand = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    const again = open(mapper, app.config);
+    expect(expand).not.toHaveBeenCalled();
+    expect(again.configIdentity).toBe(result.configIdentity);
+    for (const { file } of libraries)
+      expect(again.watchedFiles).toContain(file("macros.sts"));
+  });
+
+  test("brings them up to date at the open, and only there", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const app = referencing([lib.directory]);
+    const { transform } = opened(app.config);
+    const stats = vi.spyOn(ts.sys, "readDirectory");
+    const expand = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    transform(lib.file("util.sts"));
+    transform(lib.file("util.sts"));
+    expect(expand).not.toHaveBeenCalled();
+    expect(stats).not.toHaveBeenCalled();
+  });
+
+  test("says what is wrong with a referenced config, and watches it", () => {
+    const lib = project(library);
+    configureLibrary(lib.config, { sweet: { macroExtensions: 7 } });
+    const app = referencing([lib.directory]);
+    const { result, transform } = opened(app.config);
+    expect(result.watchedFiles).toContain(lib.config);
+    expect(transform(lib.file("util.sts")).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 6001,
+        messageText: expect.stringContaining(lib.config),
+      }),
+    ]);
+  });
+
+  test("names the config that lists a file when it will not expand it", () => {
+    const lib = project({ ...library, "b.stsx": "export const b = 1;\n" });
     writeFileSync(
       lib.config,
       JSON.stringify({
@@ -1544,59 +1698,52 @@ describe("a project that references another", () => {
           target: "ES2022",
           composite: true,
         },
-        include: ["*.sts"],
+        files: ["b.stsx", "util.sts", "macros.sts"],
+        sweet: { macroExtensions: [".sts"] },
       }),
     );
+    const { transform } = opened(referencing([lib.directory]).config);
+    const answer = transform(lib.file("b.stsx"));
+    expect(answer.diagnostics?.[0]?.messageText).toContain(
+      `${lib.config} maps .stsx`,
+    );
+  });
+
+  test("lets go of a reference the config no longer has", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const app = referencing([lib.directory]);
+    const { mapper, result } = opened(app.config);
+    expect(result.watchedFiles).toContain(lib.file("macros.sts"));
     writeFileSync(
       app.config,
       JSON.stringify({
         compilerOptions: { module: "ESNext", target: "ES2022" },
         include: ["main.sts"],
-        references: [{ path: lib.directory }],
       }),
     );
-    return { app, lib };
-  }
-
-  test("expands its files by the config that lists them", () => {
-    const { app, lib } = referencing();
-    const { transform } = opened(app.config);
-    const answer = transform(lib.file("util.sts"));
-    expect(answer.diagnostics).toEqual([]);
-    expect(answer.text).toContain("export const u = 1;");
+    expect(open(mapper, app.config).watchedFiles).not.toContain(
+      lib.file("macros.sts"),
+    );
   });
 
-  test("hears a change to what those files read", () => {
-    const { app, lib } = referencing();
-    const { mapper, result, transform } = opened(app.config);
-    transform(lib.file("util.sts"));
-    const open = () =>
-      mapper.openProject({
-        configFileName: app.config,
-        projectHandle: "p",
-        compilerOptions: {},
-      });
-    const reading = open();
-    expect(reading.configIdentity).not.toBe(result.configIdentity);
-    expect(reading.watchedFiles).toContain(lib.file("macros.sts"));
-    writeFileSync(
-      lib.file("macros.sts"),
-      "export syntax one:expr { rule { one } => { 2 } }\n",
-    );
-    expect(open().configIdentity).not.toBe(reading.configIdentity);
-    expect(transform(lib.file("util.sts")).text).toContain(
-      "export const u = 2;",
-    );
+  test("finds a file newly written in a project it references", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const { transform } = opened(referencing([lib.directory]).config);
+    writeFileSync(lib.file("later.sts"), "export const l = 1;\n");
+    const answer = transform(lib.file("later.sts"));
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const l = 1;");
   });
 
   test("still refuses what no project in the chain lists", () => {
-    const { app, lib } = referencing();
-    const { transform } = opened(app.config);
-    writeFileSync(lib.file("outside.txt.sts"), "export {};\n");
-    const stray = project().file("stray.sts");
-    expect(transform(stray, "export {};\n").diagnostics).toEqual([
-      expect.objectContaining({ code: 6202 }),
-    ]);
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const { transform } = opened(referencing([lib.directory]).config);
+    expect(
+      transform(project().file("stray.sts"), "export {};\n").diagnostics,
+    ).toEqual([expect.objectContaining({ code: 6202 })]);
   });
 });
 
