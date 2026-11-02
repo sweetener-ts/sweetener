@@ -46,7 +46,6 @@
       "packages/content-mapper": {
         "packageJson": {
           "dependencies": [
-            "npm:@typescript/typescript6@6.0.2",
             "npm:typescript@7.1.0-beta"
           ]
         }

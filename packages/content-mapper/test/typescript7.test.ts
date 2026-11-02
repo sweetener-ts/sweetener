@@ -1,4 +1,5 @@
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -132,6 +133,61 @@ describe("tsc", () => {
     expect(lines).toContain(
       "src/bad.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
     );
+  });
+
+  test("reads a referenced project's files through the project using them", () => {
+    const { directory } = mappedProject({
+      "main.sts": `import { u } from "../lib/util.sts";\nexport const s: string = u;\n`,
+    });
+    mkdirSync(join(directory, "lib"));
+    writeFileSync(join(directory, "lib", "util.sts"), "export const u = 1;\n");
+    const mapper = {
+      contentMappers: [
+        { package: "@sweetener/content-mapper", extensions: [".sts"] },
+      ],
+    };
+    writeFileSync(
+      join(directory, "lib", "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          composite: true,
+          skipLibCheck: true,
+        },
+        ...mapper,
+        include: ["*.sts"],
+      }),
+    );
+    writeFileSync(
+      join(directory, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          noEmit: true,
+          skipLibCheck: true,
+        },
+        ...mapper,
+        references: [{ path: "./lib" }],
+        include: ["src"],
+      }),
+    );
+    expect(check(directory).lines).toEqual([
+      "src/main.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    ]);
+  });
+
+  test("gives one error for a macro module with errors, not one per use", () => {
+    const { directory } = mappedProject({
+      "macros.sts": macros.replace("$value:expr", "$value:nonsense"),
+      "main.sts": main,
+    });
+    const { lines } = check(directory);
+    expect(lines.filter((line) => line.includes("TS1109"))).toEqual([]);
+    expect(lines.some((line) => line.includes("main.sts(1,1)"))).toBe(true);
   });
 
   test("accepts an option only TypeScript 7 knows", () => {
@@ -326,6 +382,29 @@ describe("the language server", () => {
       "5:35 2554 Expected 1 arguments, but got 2.",
       "5:43 2554 Expected 1 arguments, but got 2.",
     ]);
+  });
+
+  test("a macro module closed unsaved reaches a file using it at that file's next edit", async () => {
+    const { directory, file } = mappedProject({
+      "macros.sts": macros,
+      "main.sts": main,
+    });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("main.sts"), main);
+    client.open(file("macros.sts"), macros);
+    await client.diagnostics(file("main.sts"));
+    client.change(
+      file("macros.sts"),
+      2,
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    await client.diagnostics(file("macros.sts"));
+    client.notify("textDocument/didClose", {
+      textDocument: { uri: pathToFileURL(file("macros.sts")).href },
+    });
+    await client.diagnostics(file("main.sts"));
+    client.change(file("main.sts"), 2, `${main}\n`);
+    expect(await client.diagnostics(file("main.sts"))).toEqual([]);
   });
 
   test("will not write an expanded rename into a macro's input", async () => {

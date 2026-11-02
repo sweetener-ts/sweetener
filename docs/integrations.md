@@ -137,7 +137,10 @@ Where it differs from `sweetener check`:
   module's next edit, when one of those files is edited, or once the module is
   saved. TypeScript transforms a file again only when its own text or the
   project's identity changes, and it asks for the identity when a file it
-  watches changes, before it transforms that file.
+  watches changes, before it transforms that file. Likewise, closing a macro
+  module without saving reaches a file using it when that file is next edited.
+- A referenced project's files expand by the tsconfig that lists them, whichever
+  project TypeScript reads them through.
 - Expansion reads the tsconfig on disk, as `sweetener check` and every build
   integration do. An unsaved edit to the tsconfig, or an option given to `tsc`
   on its command line, reaches TypeScript but not expansion: TypeScript sends

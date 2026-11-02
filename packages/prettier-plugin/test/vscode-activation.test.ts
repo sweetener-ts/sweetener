@@ -65,14 +65,13 @@ function load(extensions: Record<string, unknown>, trusted = true) {
 }
 
 function typescript7(registered: unknown[], disposable: unknown) {
-  return {
-    activate: async () => ({
-      registerContentMappers: (id: string, contributions: unknown) => {
-        registered.push([id, contributions]);
-        return disposable;
-      },
-    }),
+  const api = {
+    registerContentMappers: (id: string, contributions: unknown) => {
+      registered.push([id, contributions]);
+      return disposable;
+    },
   };
+  return { activate: async () => api };
 }
 
 describe("activation", () => {
@@ -138,6 +137,19 @@ describe("activation", () => {
     trust();
     await changed();
     expect(registered).toHaveLength(1);
+  });
+
+  test("registers again with a TypeScript 7 updated while it runs", async () => {
+    const registered: unknown[] = [];
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": typescript7(registered, {}),
+    };
+    const { extension, changed } = load(installed);
+    await extension.activate({ subscriptions: [] });
+    expect(registered).toHaveLength(1);
+    installed["TypeScriptTeam.native-preview"] = typescript7(registered, {});
+    await changed();
+    expect(registered).toHaveLength(2);
   });
 
   test("registers with TypeScript 7 once it is installed", async () => {

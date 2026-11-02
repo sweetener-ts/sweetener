@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 import {
   DefaultProjectExpansionProvider,
   loadSweetProject,
+  typescript as ts,
 } from "@sweetener/compiler";
-import * as ts from "typescript";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBindingAgreement } from "../src/binding-agreement.js";
 import { ResponseError } from "../src/json-rpc.js";
@@ -729,6 +729,29 @@ describe("a compiler failure", () => {
     const fixed = transform(file("other.sts"), "export const o = 2;\n");
     expect(fixed.diagnostics).toEqual([]);
     expect(fixed.text).toContain("export const o = 2;");
+  });
+
+  test("a file that goes on failing costs the others nothing", () => {
+    const { config, file } = project({ "other.sts": "export const o = 1;\n" });
+    const failing = failingOn(file("other.sts"));
+    const { mapper, transform } = opened(config);
+    expect(transform(file("main.sts")).diagnostics).toEqual([]);
+    transform(file("other.sts"));
+    writeFileSync(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+    // What the open expanded stands: it was not lost with the file that failed.
+    const expansions = failing.mock.calls.length;
+    const used = transform(file("main.sts"));
+    expect(failing.mock.calls).toHaveLength(expansions);
+    expect(used.diagnostics).toEqual([]);
+    expect(used.text).toContain(`trim("  hello  ", 1)`);
   });
 
   test("a fix to anything the project lists reaches a file that failed", () => {
@@ -1482,6 +1505,117 @@ describe("a private name a macro copies", () => {
     );
     expect(copies).toHaveLength(2);
     for (const [, , , , kind] of copies) expect(kind).toBe(SpanMapKind.Atom);
+  });
+});
+
+describe("a file reading a macro module with errors", () => {
+  test("comes back empty, with the reason, not as source to parse", () => {
+    const { config, file } = project({
+      "macros.sts": "export syntax a:expr { rule { a $x:nosuch } => { 1 } }\n",
+      "main.sts":
+        'import { a } from "./macros.sts" for syntax;\nexport const r = a 1;\n',
+    });
+    const answer = opened(config).transform(file("main.sts"));
+    expect(answer.text).toBe("");
+    expect(answer.mappings).toEqual([]);
+    expect(answer.diagnostics).toHaveLength(1);
+    expect(answer.diagnostics?.[0]?.start).toBe(0);
+  });
+});
+
+describe("a project that references another", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function referencing() {
+    const app = project({ "main.sts": "export const m = 1;\n" });
+    const lib = project({
+      "macros.sts": "export syntax one:expr { rule { one } => { 1 } }\n",
+      "main.sts": "",
+      "util.sts":
+        'import { one } from "./macros.sts" for syntax;\nexport const u = one;\n',
+    });
+    writeFileSync(
+      lib.config,
+      JSON.stringify({
+        compilerOptions: {
+          module: "ESNext",
+          target: "ES2022",
+          composite: true,
+        },
+        include: ["*.sts"],
+      }),
+    );
+    writeFileSync(
+      app.config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["main.sts"],
+        references: [{ path: lib.directory }],
+      }),
+    );
+    return { app, lib };
+  }
+
+  test("expands its files by the config that lists them", () => {
+    const { app, lib } = referencing();
+    const { transform } = opened(app.config);
+    const answer = transform(lib.file("util.sts"));
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const u = 1;");
+  });
+
+  test("hears a change to what those files read", () => {
+    const { app, lib } = referencing();
+    const { mapper, result, transform } = opened(app.config);
+    transform(lib.file("util.sts"));
+    const open = () =>
+      mapper.openProject({
+        configFileName: app.config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    const reading = open();
+    expect(reading.configIdentity).not.toBe(result.configIdentity);
+    expect(reading.watchedFiles).toContain(lib.file("macros.sts"));
+    writeFileSync(
+      lib.file("macros.sts"),
+      "export syntax one:expr { rule { one } => { 2 } }\n",
+    );
+    expect(open().configIdentity).not.toBe(reading.configIdentity);
+    expect(transform(lib.file("util.sts")).text).toContain(
+      "export const u = 2;",
+    );
+  });
+
+  test("still refuses what no project in the chain lists", () => {
+    const { app, lib } = referencing();
+    const { transform } = opened(app.config);
+    writeFileSync(lib.file("outside.txt.sts"), "export {};\n");
+    const stray = project().file("stray.sts");
+    expect(transform(stray, "export {};\n").diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+  });
+});
+
+describe("a file with a directive", () => {
+  test("is not counted, since TypeScript reads it as written", () => {
+    const { config, file } = project({
+      "only.sts": "export syntax one:expr { rule { one } => { 1 } }\n",
+      "directive.ts":
+        '"use sweetener";\nimport { one } from "./only.sts" for syntax;\nexport const d = one;\n',
+    });
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts", "*.ts"],
+      }),
+    );
+    const { result } = opened(config);
+    expect(result.watchedFiles).not.toContain(file("only.sts"));
   });
 });
 

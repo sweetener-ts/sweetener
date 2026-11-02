@@ -22,8 +22,7 @@
     }
   },
   "dependencies": {
-    "@sweetener/compiler": "workspace:*",
-    "typescript": "npm:@typescript/typescript6@6.0.2"
+    "@sweetener/compiler": "workspace:*"
   },
   "devDependencies": {
     "typescript7": "npm:typescript@7.1.0-beta"

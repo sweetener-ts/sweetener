@@ -1,5 +1,4 @@
-import { scriptKindForFileName } from "@sweetener/compiler";
-import * as ts from "typescript";
+import { scriptKindForFileName, typescript as ts } from "@sweetener/compiler";
 
 /** Every name in a file, by where it stands: found once, for all its copies. */
 function namesIn(sourceFile: ts.SourceFile): ReadonlyMap<string, ts.Node> {

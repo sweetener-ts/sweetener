@@ -844,6 +844,11 @@ export interface DefaultSourceExpansionInspection extends SourceExpansionInspect
   readonly inputs: readonly ExpansionInput[];
   /** Whether this file, or a macro module it reads from, has binding literals. */
   readonly readsBindingLiterals: boolean;
+  /**
+   * Whether a macro module it reads from has errors, which stops those macros
+   * running: what was generated is then this file as written.
+   */
+  readonly macrosFailed: boolean;
 }
 
 /** Default, synchronous project frontend used by both the API and executable. */
@@ -2171,6 +2176,9 @@ export class DefaultProjectExpansionProvider
           ),
           inputs: inputsFor([file, ...macroModules]),
           readsBindingLiterals: readBindingLiterals([file, ...macroModules]),
+          macrosFailed: macroModules.some((module) =>
+            answerableFor(module).some(({ severity }) => severity === "error"),
+          ),
           // The rest of what was reported, and what is held about a name this
           // file left standing. `expand` and a build tool's transform read an
           // inspection and then stop; there is no checker behind either, so
