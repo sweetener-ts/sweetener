@@ -14,22 +14,43 @@ const vscode = require("vscode");
  * Nothing is mapped by this registration itself: which content mapper
  * handles a file is still the tsconfig's to say.
  */
-const typescriptExtensions = ["TypeScriptTeam.native-preview"];
+const typescriptExtension = "TypeScriptTeam.native-preview";
 
 /** @param {vscode.ExtensionContext} context */
 async function activate(context) {
-  for (const id of typescriptExtensions) {
-    const extension = vscode.extensions.getExtension(id);
-    if (extension === undefined) continue;
-    const api = await extension.activate();
-    if (typeof api?.registerContentMappers !== "function") continue;
-    context.subscriptions.push(
-      api.registerContentMappers("sweetener", [
-        { extensions: [".sts", ".stsx"] },
-      ]),
-    );
-    return;
-  }
+  let registered = false;
+  let registering = false;
+  const register = async () => {
+    if (registered || registering) return;
+    const extension = vscode.extensions.getExtension(typescriptExtension);
+    if (extension === undefined) return;
+    registering = true;
+    try {
+      const api = await extension.activate();
+      if (typeof api?.registerContentMappers !== "function") return;
+      context.subscriptions.push(
+        api.registerContentMappers("sweetener", [
+          { extensions: [".sts", ".stsx"] },
+        ]),
+      );
+      registered = true;
+    } catch (error) {
+      // Highlighting goes on without it; a failure here is no failure of this
+      // extension's, and is said where someone looking into it will read.
+      console.error(
+        `Sweetener could not reach ${typescriptExtension}, so .sts and .stsx will not reach TypeScript's language server:`,
+        error,
+      );
+    } finally {
+      registering = false;
+    }
+  };
+  // Installed or enabled after this one starts, it is taken up then, rather
+  // than at the next window.
+  context.subscriptions.push(
+    vscode.extensions.onDidChange(() => void register()),
+  );
+  await register();
 }
 
 function deactivate() {}

@@ -295,6 +295,34 @@ export function loadStandaloneProject(
   });
 }
 
+/** Everything about a project's config that decides what expansion does. */
+export function projectSignature(project: LoadedSweetProject): string {
+  return JSON.stringify({
+    sweet: project.sweet,
+    options: project.typescript.options,
+  });
+}
+
+/**
+ * What is wrong with a project's config, in sentences. `ignoring` names
+ * TypeScript's codes a caller has its own answer for.
+ */
+export function configurationProblems(
+  project: LoadedSweetProject,
+  ignoring: ReadonlySet<number> = new Set(),
+): string[] {
+  return [
+    ...project.typescript.errors
+      .filter(({ code }) => !ignoring.has(code))
+      .map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+      ),
+    ...project.problems.map(
+      ({ code, path, message }) => `${code} ${path} ${message}`,
+    ),
+  ];
+}
+
 export function loadSweetProject(configPath: string): LoadedSweetProject {
   const absolute = resolve(configPath);
   const recorder = new InputRecorder(ts.sys);

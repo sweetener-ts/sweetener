@@ -8288,8 +8288,8 @@ function* walk(
         next.raw === "=>" &&
         readTypeParenthesis(node) !== "type";
       const bodyCategory: SyntaxCategory =
-        // A group sitting among JSX children holds an expression: a braced
-        // container, or a nested element.
+        // A braced container and a nested element are taken above; any other
+        // group sitting among JSX children is walked as an expression.
         node.tag === "group" && category === "jsxChild"
           ? "expr"
           : // An interface body is a member list wherever the interface is

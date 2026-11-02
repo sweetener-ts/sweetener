@@ -136,6 +136,9 @@ Where it differs from `sweetener check`:
   on its command line, reaches TypeScript but not expansion: TypeScript sends
   its options, but `sweet` is not among them, and which files are listed is
   not either.
+- A macro module a file newly imports is watched from the next edit. TypeScript
+  asks what to watch before it sends the text that adds the import, so a change
+  to that module from outside the editor goes unheard until then.
 - The protocol carries errors only. Sweetener's warnings, such as an item the
   reader passed through unread, are left out rather than reported as errors.
 - `sweetener check` adds what expansion knows to TypeScript's "cannot find

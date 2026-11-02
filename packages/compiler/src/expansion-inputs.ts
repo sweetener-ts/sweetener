@@ -311,6 +311,28 @@ function fileHolds(checked: CheckedInput, input: ExpansionFileInput): boolean {
   return true;
 }
 
+/** The question `input` asked, with the answer `system` gives to it now. */
+export function answerNow(
+  system: ExpansionSystem,
+  input: ExpansionInput,
+): ExpansionInput {
+  const { path } = input;
+  switch (input.kind) {
+    case "file":
+      return { kind: "file", path, text: fileText(system, path) };
+    case "directory":
+      return { kind: "directory", path, exists: system.directoryExists(path) };
+    case "subdirectories":
+      return {
+        kind: "subdirectories",
+        path,
+        names: system.getDirectories(path),
+      };
+    case "realpath":
+      return { kind: "realpath", path, target: realpathOf(system, path) };
+  }
+}
+
 /** Whether one question still gets the answer it got. */
 function inputHolds(record: CheckedInput): boolean {
   const { input } = record;

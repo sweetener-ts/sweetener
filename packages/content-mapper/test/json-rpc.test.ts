@@ -182,6 +182,41 @@ describe("serve", () => {
     expect(JSON.parse(bodies[0]!).error.message).toContain(method);
   });
 
+  test("stray writes to stdout do not reach the protocol", async () => {
+    // Whatever writes them, once the server is reading its first message.
+    const stray = `const parse = JSON.parse;
+JSON.parse = (...args) => {
+  JSON.parse = parse;
+  console.log("stray log");
+  console.dir("stray dir");
+  process.stdout.write("stray write\\n");
+  return parse(...args);
+};`;
+    const server = spawn(
+      process.execPath,
+      [
+        "--import",
+        `data:text/javascript,${encodeURIComponent(stray)}`,
+        fileURLToPath(new URL("../dist/src/server.js", import.meta.url)),
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const received: Buffer[] = [];
+    let logged = "";
+    server.stdout.on("data", (chunk: Buffer) => received.push(chunk));
+    server.stderr.on("data", (chunk: Buffer) => (logged += chunk.toString()));
+    server.stdin.end(frame({ jsonrpc: "2.0", id: 1, method: "unknown" }));
+    const status = await new Promise((resolveExit) =>
+      server.once("close", resolveExit),
+    );
+    expect(status).toBe(0);
+    const bodies = new MessageReader().push(Buffer.concat(received));
+    expect(bodies.map((body) => JSON.parse(body).id)).toEqual([1]);
+    expect(logged).toContain("stray log");
+    expect(logged).toContain("stray dir");
+    expect(logged).toContain("stray write");
+  });
+
   test("an input that ends inside a message rejects", async () => {
     const input = new PassThrough();
     const served = serve(new Map(), input, new PassThrough());

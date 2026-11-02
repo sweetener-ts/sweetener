@@ -4,13 +4,18 @@ import { basename, dirname, join, parse, resolve } from "node:path";
 import type { OriginMap } from "@sweetener/printer";
 import { composeSourceMap } from "@sweetener/typescript-host";
 import type { RawSourceMap } from "@sweetener/typescript-host";
-import * as ts from "typescript";
+import type * as ts from "typescript";
 import {
   createDefaultProjectExpansionProvider,
   type DefaultProjectExpansionProvider,
   type DefaultSourceExpansionInspection,
 } from "./default-expansion-provider.js";
-import { loadSweetProject, type LoadedSweetProject } from "./configuration.js";
+import {
+  loadSweetProject,
+  type LoadedSweetProject,
+  configurationProblems,
+  projectSignature,
+} from "./configuration.js";
 import {
   checkedInputs,
   diskFileSystem,
@@ -112,13 +117,6 @@ export interface SweetenerSession {
  * which files there are: each file's expansion depends on its own sources,
  * not on the rest of the list.
  */
-function signatureOf(project: LoadedSweetProject): string {
-  return JSON.stringify({
-    sweet: project.sweet,
-    options: project.typescript.options,
-  });
-}
-
 /**
  * A config as last loaded, kept while every file it was loaded from says what
  * it said, so a transform does not parse the config and walk `include` again.
@@ -220,7 +218,8 @@ function discoverConfig(fileName: string): string {
   }
 }
 
-function fingerprint(parts: readonly string[]): string {
+/** A digest of these parts, each kept apart from the next by its length. */
+export function fingerprint(parts: readonly string[]): string {
   const hash = createHash("sha256");
   for (const part of parts) {
     hash.update(String(part.length));
@@ -290,21 +289,14 @@ export function createSweetenerSession(
     // then looks merely left out of it. The command line refuses such a
     // project before expanding, and so does an adapter: expanding anyway would
     // report a configFile pointing at nothing as the source not being opted in.
-    const configurationErrors = [
-      ...project.typescript.errors.map((diagnostic) =>
-        ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
-      ),
-      ...project.problems.map(
-        ({ code, path, message }) => `${code} ${path} ${message}`,
-      ),
-    ];
+    const configurationErrors = configurationProblems(project);
     if (configurationErrors.length > 0) {
       configs.delete(configFile);
       throw new Error(
         `Sweetener cannot use ${configFile}: ${configurationErrors.join("; ")}`,
       );
     }
-    const signature = signatureOf(project);
+    const signature = projectSignature(project);
     const previous = configs.get(configFile);
     // Which sources opt in is read from the file system expansion reads, so
     // the session and the expansion agree on it; each is kept by where it

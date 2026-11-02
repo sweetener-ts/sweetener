@@ -644,6 +644,32 @@ describe("a compiler failure", () => {
     expect(fixed.text).toContain("export const o = 2;");
   });
 
+  test("a fix to anything the project lists reaches a file that failed", () => {
+    const { config, file } = project({ "other.sts": "export const o = 1;\n" });
+    const failing = failingOn(file("other.sts"));
+    const { mapper, transform } = opened(config);
+    const open = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    transform(file("main.sts"));
+    transform(file("other.sts"));
+    const failed = open();
+    expect(failed.watchedFiles).toContain(file("main.sts"));
+    // A file nothing else reads, which nothing else would count.
+    writeFileSync(file("main.sts"), `${main}// fixed\n`);
+    const changed = open();
+    expect(changed.configIdentity).not.toBe(failed.configIdentity);
+    // Mended, the project is back to what its expansions read.
+    failing.mockRestore();
+    transform(file("other.sts"));
+    const mended = open();
+    expect(mended.watchedFiles).not.toContain(file("other.sts"));
+    expect(mended.configIdentity).not.toBe(changed.configIdentity);
+  });
+
   test("reading the sources is tried once, until text changes", () => {
     const { config, file } = project();
     const failing = vi
@@ -663,6 +689,79 @@ describe("a compiler failure", () => {
     expect(failing.mock.calls).toHaveLength(expansions);
     failing.mockRestore();
     expect(transform(file("main.sts"), `${main}\n`).diagnostics).toEqual([]);
+  });
+});
+
+describe("what it lets go of", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const open = (
+    mapper: SweetenerContentMapper,
+    config: string,
+    handle: string,
+  ) =>
+    mapper.openProject({
+      configFileName: config,
+      projectHandle: handle,
+      compilerOptions: {},
+    });
+
+  test("keeps the configs opened last, and not the ones before", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const configs = Array.from({ length: 10 }, () => project().config);
+    for (const config of configs) {
+      open(mapper, config, "p");
+      mapper.closeProject({ projectHandle: "p" });
+    }
+    const expand = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    open(mapper, configs.at(-1)!, "last");
+    expect(expand).not.toHaveBeenCalled();
+    open(mapper, configs[0]!, "first");
+    expect(expand).toHaveBeenCalledOnce();
+  });
+
+  test("keeps a config with a project open however long ago it opened", () => {
+    const mapper = new SweetenerContentMapper();
+    mapper.initialize({ positionEncodings: ["utf-16"] });
+    const [first, ...rest] = Array.from({ length: 10 }, () => project().config);
+    open(mapper, first!, "held");
+    for (const config of rest) {
+      open(mapper, config, "p");
+      mapper.closeProject({ projectHandle: "p" });
+    }
+    const expand = vi.spyOn(
+      DefaultProjectExpansionProvider.prototype,
+      "expandProject",
+    );
+    open(mapper, first!, "held");
+    expect(expand).not.toHaveBeenCalled();
+  });
+
+  test("forgets a config whose file is gone, with the text held for it", () => {
+    const { config, directory, file } = project();
+    const usable = readFileSync(config, "utf8");
+    const { mapper, transform } = opened(config);
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    mapper.closeProject({ projectHandle: "p" });
+    rmSync(config);
+    open(mapper, project().config, "other");
+    writeFileSync(join(directory, "tsconfig.json"), usable);
+    open(mapper, config, "p");
+    const result = mapper.transform({
+      fileName: file("main.sts"),
+      content: main,
+      projectHandle: "p",
+    });
+    expect(result.text).toContain(`trim("  hello  ")`);
   });
 });
 

@@ -45,7 +45,7 @@ export default tseslint.config(
     files: ["editors/vscode/**/*.js"],
     languageOptions: {
       sourceType: "commonjs",
-      globals: { require: "readonly", module: "writable" },
+      globals: { require: "readonly", module: "writable", console: "readonly" },
     },
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
