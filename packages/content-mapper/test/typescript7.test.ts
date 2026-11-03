@@ -267,6 +267,51 @@ describe("tsc", () => {
     ]);
   });
 
+  describe("a JavaScript target", () => {
+    const javaScriptProject = (files: Record<string, string>) => {
+      const { directory } = mappedProject(files);
+      writeFileSync(
+        join(directory, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "CommonJS",
+            moduleResolution: "Bundler",
+            allowJs: true,
+            checkJs: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: [],
+          },
+          sweet: { macroExtensions: [".sjs"] },
+          contentMappers: [
+            { package: "@sweetener/content-mapper", extensions: [".sjs"] },
+          ],
+          include: ["src"],
+        }),
+      );
+      return directory;
+    };
+
+    test("stays CommonJS where it uses what CommonJS provides", () => {
+      const directory = javaScriptProject({
+        "lib.sjs": "module.exports = { a: 1 };\n",
+        "main.sjs":
+          'const lib = require("./lib.sjs");\n/** @type {string} */\nconst n = lib.a;\n',
+      });
+      const { lines } = check(directory);
+      expect(lines).toEqual([expect.stringContaining("TS2322")]);
+    });
+
+    test("is a module otherwise, whose names are its own", () => {
+      const directory = javaScriptProject({
+        "a.sjs": "const q = 1;\n",
+        "b.sjs": "const q = 2;\n",
+      });
+      expect(check(directory).lines).toEqual([]);
+    });
+  });
+
   test("reads a file whose only import was for syntax as a module", () => {
     const use = `${main.split("\n")[0]!}\nconst q = 1;\nawait q;\n`;
     const { directory } = mappedProject({

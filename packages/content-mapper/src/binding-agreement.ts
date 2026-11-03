@@ -31,11 +31,8 @@ function abbreviatesTwo(name: ts.Node): boolean {
   );
 }
 
-/**
- * Whether TypeScript reads a text as a module whatever its config says. Every
- * Sweetener source is one, which `sweetener check` says by its `moduleDetection`.
- */
-export function readsAsModule(text: string, extension: string): boolean {
+/** Whether TypeScript reads a text as a module whatever its config says. */
+function readsAsModule(text: string, extension: string): boolean {
   return (
     /\b(?:import|export)\b/u.test(text) &&
     ts.isExternalModule(
@@ -44,6 +41,22 @@ export function readsAsModule(text: string, extension: string): boolean {
         text,
         ts.ScriptTarget.Latest,
       ),
+    )
+  );
+}
+
+/**
+ * Whether a text needs saying it is a module, as every Sweetener source is, which
+ * `sweetener check` says by its `moduleDetection`. Not JavaScript using what
+ * CommonJS provides: TypeScript goes by those names, whose meaning an `export`
+ * would take away, where `moduleDetection` leaves it.
+ */
+export function needsModuleMarker(text: string, extension: string): boolean {
+  return (
+    !readsAsModule(text, extension) &&
+    !(
+      /^\.[cm]?jsx?$/u.test(extension) &&
+      /\b(?:exports|module|require)\b/u.test(text)
     )
   );
 }

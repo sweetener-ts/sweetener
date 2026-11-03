@@ -139,6 +139,9 @@ Where it differs from `sweetener check`:
   project's identity changes, and it asks for the identity when a file it
   watches changes, before it transforms that file. Likewise, closing a macro
   module without saving reaches a file using it when that file is next edited.
+  TypeScript says that only of a module in a project it has open: for any other,
+  the unsaved text stands until the file changes on disk or the language server
+  restarts.
 - A referenced project's files expand by the tsconfig that lists them, whichever
   project TypeScript reads them through. Opening a project expands the projects
   it references, however far, since what they read decides what to watch.

@@ -20,7 +20,10 @@ import {
   type LoadedSweetProject,
   typescript as ts,
 } from "@sweetener/compiler";
-import { createBindingAgreement, readsAsModule } from "./binding-agreement.js";
+import {
+  createBindingAgreement,
+  needsModuleMarker,
+} from "./binding-agreement.js";
 import {
   describeError,
   ErrorCode,
@@ -31,9 +34,11 @@ import {
 } from "./json-rpc.js";
 import {
   protocolVersion,
+  type CloseProjectParams,
   type ContentMapperDiagnostic,
   type InitializeParams,
   type InitializeResult,
+  type OpenProjectParams,
   type OpenProjectResult,
   type PositionEncoding,
   type TransformParams,
@@ -426,9 +431,9 @@ function expandedFile(
   // Its imports for syntax are gone, and without another import or an export
   // TypeScript reads it as a script, whose names every other script shares.
   const text =
-    inspection.macrosFailed || readsAsModule(generated, extension)
-      ? generated
-      : `${generated}\nexport {};\n`;
+    !inspection.macrosFailed && needsModuleMarker(generated, extension)
+      ? `${generated}\nexport {};\n`
+      : generated;
   const { sourceText } = inspection;
   const regions = inspection.macrosFailed
     ? []
@@ -594,18 +599,21 @@ export class SweetenerContentMapper {
   openProject(raw: unknown): OpenProjectResult {
     this.#requireInitialized();
     const params = requireParams(raw, "openProject");
-    const handle = requireString(params, "projectHandle", "openProject");
-    const configFileName = requireString(
-      params,
-      "configFileName",
-      "openProject",
-    );
+    const {
+      projectHandle: handle,
+      configFileName,
+      options,
+    } = {
+      projectHandle: requireString(params, "projectHandle", "openProject"),
+      configFileName: requireString(params, "configFileName", "openProject"),
+      options: params["options"],
+    } satisfies Omit<OpenProjectParams, "compilerOptions">;
     // Sweetener reads its settings from the tsconfig's `sweet` section, which
     // the command line and every build integration read too. Options given
     // only to the content mapper would make the editor disagree with the
     // build, so they are refused rather than read or ignored.
     const optionDiagnostics =
-      params["options"] === undefined || params["options"] === null
+      options === undefined || options === null
         ? []
         : [
             {
@@ -753,11 +761,13 @@ export class SweetenerContentMapper {
   }
 
   closeProject(raw: unknown): null {
-    const handle = requireString(
-      requireParams(raw, "closeProject"),
-      "projectHandle",
-      "closeProject",
-    );
+    const { projectHandle: handle } = {
+      projectHandle: requireString(
+        requireParams(raw, "closeProject"),
+        "projectHandle",
+        "closeProject",
+      ),
+    } satisfies CloseProjectParams;
     // The config's state stays: TypeScript reopens a project as soon as it
     // has closed it, and what was expanded is still good for the next one.
     if (!this.#handles.delete(handle))
