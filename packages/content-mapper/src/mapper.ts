@@ -1,4 +1,4 @@
-import { dirname, extname, resolve, sep } from "node:path";
+import { extname, resolve, sep } from "node:path";
 import {
   checkedInputs,
   configurationProblems,
@@ -67,11 +67,12 @@ const notOptedInCode = 6202;
 const keptClosedConfigs = 8;
 
 /**
- * How many files' unsaved text is kept, the oldest letting go first: TypeScript
- * says nothing of a buffer closed in a project it no longer has open, so this
- * could otherwise only grow.
+ * How much unsaved text is kept, in UTF-16 units, the oldest letting go first:
+ * TypeScript says nothing of a buffer closed in a project it no longer has open,
+ * and re-sends no buffer that has not changed, so what lets go too soon is read
+ * from the older disk. Far more than a rename across a project leaves unsaved.
  */
-const keptUnsavedFiles = 256;
+export const keptUnsavedText = 256 * 1024 * 1024;
 
 /** How long after walking `include` a file it did not list is taken at its word. */
 const lookAgainNanoseconds = 2_000_000_000n;
@@ -147,6 +148,8 @@ interface ExpandedFile {
   readonly errors: readonly RaisedError[];
   /** What it asked, checked against the file system whose answers made it. */
   readonly consulted: readonly CheckedInput[];
+  /** When the expansion began, which says what a file's times can vouch for. */
+  readonly expandedAt: bigint;
 }
 
 /**
@@ -267,6 +270,21 @@ class FailedExpansion extends Error {
   }
 }
 
+const foldedListings = new WeakMap<
+  ReadonlySet<string>,
+  ReadonlyMap<string, string>
+>();
+
+/** A project's listed files by their names in lower case, made once per list. */
+function foldedNames(listed: ReadonlySet<string>): ReadonlyMap<string, string> {
+  let folded = foldedListings.get(listed);
+  if (folded === undefined) {
+    folded = new Map([...listed].map((name) => [name.toLowerCase(), name]));
+    foldedListings.set(listed, folded);
+  }
+  return folded;
+}
+
 /** A file's segments, whose failure is the failure of expanding it. */
 function segmentsOf(file: ExpandedFile): readonly Segment[] {
   try {
@@ -275,7 +293,7 @@ function segmentsOf(file: ExpandedFile): readonly Segment[] {
     throw new FailedExpansion(
       error,
       file.consulted.map(({ input }) => input),
-      nowNanoseconds(),
+      file.expandedAt,
     );
   }
 }
@@ -305,7 +323,7 @@ function listedFiles(project: LoadedSweetProject): ReadonlySet<string> {
  * Remembers the text TypeScript holds for a file, if it is not the file's, and
  * says whether that changes what is held.
  */
-function holdText(
+export function holdText(
   overlay: Overlay,
   fileName: string,
   content: string,
@@ -316,9 +334,12 @@ function holdText(
   overlay.delete(key);
   if (content === disk) return before !== undefined;
   overlay.set(key, { fileName, text: content, disk });
-  for (const oldest of overlay.keys()) {
-    if (overlay.size <= keptUnsavedFiles) break;
+  let kept = 0;
+  for (const { text } of overlay.values()) kept += text.length;
+  for (const [oldest, { text }] of overlay) {
+    if (kept <= keptUnsavedText) break;
     overlay.delete(oldest);
+    kept -= text.length;
   }
   return before !== content;
 }
@@ -392,6 +413,7 @@ function expandedFile(
   fileName: string,
   inspection: DefaultSourceExpansionInspection,
   consulted: readonly CheckedInput[],
+  expandedAt: bigint,
 ): ExpandedFile {
   const extension = extname(inspection.virtualFileName);
   if (!isVirtualExtension(extension))
@@ -450,6 +472,7 @@ function expandedFile(
         "",
     })),
     consulted,
+    expandedAt,
   };
 }
 
@@ -694,7 +717,7 @@ export class SweetenerContentMapper {
               `${fileName} went on changing on disk while it was expanded`,
             ),
             file.consulted.map(({ input }) => input),
-            nowNanoseconds(),
+            file.expandedAt,
           );
       }
       if (file !== undefined) segments = segmentsOf(file);
@@ -780,7 +803,7 @@ export class SweetenerContentMapper {
       ) &&
       this.#round.hold(kept.configuration)
     ) {
-      this.#refresh(kept);
+      this.#refresh(kept, this.#round);
       return undefined;
     }
     const loadedAt = nowNanoseconds();
@@ -848,7 +871,8 @@ export class SweetenerContentMapper {
       existing.walkAgain = false;
       existing.loadedAt = loadedAt;
       this.#relist(existing, project);
-      this.#refresh(existing);
+      // Loaded because something changed, which what is held may not have heard.
+      this.#refresh(existing, new InputCheckRound());
       return;
     }
     const state: ConfigState = {
@@ -961,9 +985,10 @@ export class SweetenerContentMapper {
     )
       return fileName;
     const folded = fileName.toLowerCase();
-    for (const project of this.#withReferences(state))
-      for (const name of project.listed)
-        if (name.toLowerCase() === folded) return name;
+    for (const project of this.#withReferences(state)) {
+      const name = foldedNames(project.listed).get(folded);
+      if (name !== undefined) return name;
+    }
     return fileName;
   }
 
@@ -972,17 +997,14 @@ export class SweetenerContentMapper {
    * but a project it references could. TypeScript reads a referenced project's
    * sources through the one referencing it, and asks that one's handle for them,
    * and they expand by the config that lists them. A config that lists it yet,
-   * as far as is known, is looked for in the same way as this one's own; one that
-   * cannot be used, whose folder holds the file, is what the file should hear of.
+   * as far as is known, is looked for in the same way as this one's own; `include`
+   * may reach anywhere, so any of them may list it. One that cannot be used may
+   * too, and what is wrong with it is what the file should hear of.
    */
   #owningReference(
     state: ConfigState,
     fileName: string,
   ): ConfigState | ConfigProblem | undefined {
-    const within = (configFileName: string) => {
-      const folder = canonical(dirname(configFileName));
-      return fileName.startsWith(folder.endsWith("/") ? folder : `${folder}/`);
-    };
     const references = this.#referencesOf(state);
     const lister = () =>
       references
@@ -992,14 +1014,13 @@ export class SweetenerContentMapper {
     if (owner === undefined) {
       for (const reference of references) {
         const referenced = this.#configs.get(reference);
-        if (referenced !== undefined && within(reference))
-          this.#lookFor(referenced, fileName);
+        if (referenced !== undefined) this.#lookFor(referenced, fileName);
       }
       owner = lister();
     }
     if (owner !== undefined) return owner;
-    const broken = references.find(
-      (reference) => this.#unusable.has(reference) && within(reference),
+    const broken = references.find((reference) =>
+      this.#unusable.has(reference),
     );
     if (broken !== undefined) return this.#unusable.get(broken);
     this.#lookFor(state, fileName);
@@ -1029,7 +1050,6 @@ export class SweetenerContentMapper {
         newlyWritten ||
         (unheardOf && state.lookedIn !== this.#round))
     ) {
-      this.#round = new InputCheckRound();
       this.#problemsWith(state.configFileName, true);
       const looked = this.#configs.get(state.configFileName);
       if (looked !== undefined) looked.lookedIn = this.#round;
@@ -1045,18 +1065,18 @@ export class SweetenerContentMapper {
    * mended, it says what it read, and TypeScript never asks for a file it does
    * not transform.
    */
-  #refresh(state: ConfigState): void {
-    const round = this.#round;
-    const stale = [...state.expanded]
-      .filter(([, file]) => !round.hold(file.consulted))
-      .map(([name]) => name);
-    if (stale.length > 0) this.#expandOrForget(state, stale);
+  #refresh(state: ConfigState, round: InputCheckRound): void {
+    const stale = new Set(
+      [...state.expanded]
+        .filter(([, file]) => !round.hold(file.consulted))
+        .map(([name]) => name),
+    );
+    if (stale.size > 0) this.#expandOrForget(state, [...stale]);
     this.#expandEachOf(
       state,
       [...state.failed]
         .filter(
-          ([name, consulted]) =>
-            !stale.includes(name) && !round.hold(consulted),
+          ([name, consulted]) => !stale.has(name) && !round.hold(consulted),
         )
         .map(([name]) => name),
     );
@@ -1116,7 +1136,7 @@ export class SweetenerContentMapper {
         return;
       }
       process.stderr.write(
-        `Sweetener failed to expand ${fileNames[0] ?? state.configFileName}:\n${describeError(error)}\n`,
+        `Sweetener failed to expand ${fileNames.join(", ")}:\n${describeError(error)}\n`,
       );
       this.#recordFailure(state, fileNames, error);
     }
@@ -1202,7 +1222,12 @@ export class SweetenerContentMapper {
         else state.literalReaders.delete(fileName);
         state.expanded.set(
           fileName,
-          expandedFile(fileName, inspection, check(inspection.inputs)),
+          expandedFile(
+            fileName,
+            inspection,
+            check(inspection.inputs),
+            expandedAt,
+          ),
         );
       }
     } catch (error) {

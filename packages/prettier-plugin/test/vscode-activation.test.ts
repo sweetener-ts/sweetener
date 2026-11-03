@@ -156,6 +156,35 @@ describe("activation", () => {
     expect(registered).toEqual([]);
   });
 
+  test("lets go of a TypeScript 7 replaced by one with no content mappers", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const registered: unknown[] = [];
+    let disposed = 0;
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": typescript7(registered, {
+        dispose() {
+          disposed += 1;
+        },
+      }),
+    };
+    const supported = installed["TypeScriptTeam.native-preview"];
+    const unsupported = { activate: async () => ({}) };
+    const { extension, changed } = load(installed);
+    await extension.activate({ subscriptions: [] });
+    installed["TypeScriptTeam.native-preview"] = unsupported;
+    await changed();
+    expect(disposed).toBe(1);
+    expect(logged).toHaveBeenCalledTimes(1);
+    // Back again, it is registered with, and going again is said again.
+    installed["TypeScriptTeam.native-preview"] = supported;
+    await changed();
+    expect(registered).toHaveLength(2);
+    installed["TypeScriptTeam.native-preview"] = unsupported;
+    await changed();
+    expect(logged).toHaveBeenCalledTimes(2);
+    logged.mockRestore();
+  });
+
   test("lets go of a TypeScript 7 uninstalled, and registers with one put back", async () => {
     const registered: unknown[] = [];
     let disposed = 0;

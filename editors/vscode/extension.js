@@ -58,8 +58,10 @@ async function activate(context) {
             `This version of ${typescriptExtension} has no content mappers, so .sts and .stsx will not reach TypeScript's language server. Update it.`,
           );
         saidNoSupport = true;
+        release();
         return;
       }
+      saidNoSupport = false;
       if (api === registeredWith) return;
       release();
       registration = api.registerContentMappers("sweetener", [

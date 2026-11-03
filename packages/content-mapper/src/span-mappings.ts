@@ -25,7 +25,22 @@ export interface Segment {
   readonly copied?: boolean | undefined;
 }
 
-const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
+/** Whether text is one name, as TypeScript's scanner reads names. */
+function isName(text: string): boolean {
+  const name = text.startsWith("#") ? text.slice(1) : text;
+  let first = true;
+  for (const character of name) {
+    const code = character.codePointAt(0)!;
+    if (
+      first
+        ? !ts.isIdentifierStart(code, ts.ScriptTarget.Latest)
+        : !ts.isIdentifierPart(code, ts.ScriptTarget.Latest)
+    )
+      return false;
+    first = false;
+  }
+  return !first;
+}
 
 /**
  * The comments in text that is nothing but those and whitespace, as TypeScript
@@ -149,7 +164,7 @@ function segmentsFor(
   const [kind, features] =
     written && virtual === original && !undecodable.test(virtual)
       ? [SpanMapKind.Verbatim, SpanMapFeature.All]
-      : written && identifier.test(virtual) && identifier.test(original)
+      : written && isName(virtual) && isName(original)
         ? // Hygiene renamed a name the author wrote. It is still the name
           // they wrote, so rename and references follow it.
           [SpanMapKind.Alias, SpanMapFeature.All]
@@ -320,9 +335,7 @@ function withoutAmbiguousRename(
   for (const segment of segments) {
     if (
       segment.kind === SpanMapKind.Atom ||
-      !identifier.test(
-        generatedText.slice(segment.virtualStart, segment.virtualEnd),
-      )
+      !isName(generatedText.slice(segment.virtualStart, segment.virtualEnd))
     )
       continue;
     const key = spanKey(segment);
@@ -380,9 +393,7 @@ function withoutCopiedEdits(
   return segments.map((segment) =>
     segment.kind !== SpanMapKind.Verbatim ||
     uses.get(spanKey(segment)) === 1 ||
-    identifier.test(
-      generatedText.slice(segment.virtualStart, segment.virtualEnd),
-    )
+    isName(generatedText.slice(segment.virtualStart, segment.virtualEnd))
       ? segment
       : { ...segment, kind: SpanMapKind.Atom },
   );

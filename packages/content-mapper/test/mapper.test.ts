@@ -20,7 +20,11 @@ import {
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createBindingAgreement } from "../src/binding-agreement.js";
 import { ResponseError } from "../src/json-rpc.js";
-import { SweetenerContentMapper } from "../src/mapper.js";
+import {
+  holdText,
+  keptUnsavedText,
+  SweetenerContentMapper,
+} from "../src/mapper.js";
 import {
   compatibleSegments,
   offsetEncoder,
@@ -2080,6 +2084,83 @@ describe("a project that references another", () => {
     expect(answer.text).toContain("export const l = 1;");
   });
 
+  test("finds a file newly written where a project it references reaches out of its folder", () => {
+    const { directory, file } = project();
+    mkdirSync(join(directory, "src"));
+    mkdirSync(join(directory, "config"));
+    mkdirSync(join(directory, "app"));
+    writeFileSync(
+      file("config/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          composite: true,
+          module: "ESNext",
+          target: "ES2022",
+        },
+        include: ["../src/**/*"],
+      }),
+    );
+    writeFileSync(file("src/first.sts"), "export const f = 1;\n");
+    writeFileSync(file("app/main.sts"), "export const m = 1;\n");
+    writeFileSync(
+      file("app/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+        references: [{ path: "../config" }],
+      }),
+    );
+    const { transform } = opened(file("app/tsconfig.json"));
+    writeFileSync(file("src/later.sts"), "export const l = 1;\n");
+    expect(transform(file("src/later.sts")).diagnostics).toEqual([]);
+  });
+
+  test("hears what is wrong with one it references that reaches out of its folder", () => {
+    const { directory, file } = project();
+    mkdirSync(join(directory, "config"));
+    mkdirSync(join(directory, "app"));
+    writeFileSync(
+      file("config/tsconfig.json"),
+      JSON.stringify({ sweet: { nonsense: 1 }, include: ["../*.sts"] }),
+    );
+    writeFileSync(file("app/main.sts"), "export const m = 1;\n");
+    writeFileSync(
+      file("app/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+        references: [{ path: "../config" }],
+      }),
+    );
+    const { transform } = opened(file("app/tsconfig.json"));
+    expect(transform(file("main.sts")).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 6001,
+        messageText: expect.stringContaining("nonsense"),
+      }),
+    ]);
+  });
+
+  test("walks each project it references once for many files at once", () => {
+    const lib = project(library);
+    configureLibrary(lib.config);
+    const other = project();
+    const strays = project();
+    const names = ["one.sts", "two.sts", "three.sts"];
+    for (const name of names) writeFileSync(strays.file(name), "export {};\n");
+    const app = referencing([lib.directory, other.directory]);
+    // Opened long enough after every file was written for its stat to say so.
+    const later = Date.now() + 60_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => later);
+    const { transform } = opened(app.config);
+    const walked = vi.spyOn(ts.sys, "readDirectory");
+    for (const name of names) transform(strays.file(name));
+    // Each of the three projects for the first, and for no other.
+    expect(walked).toHaveBeenCalledTimes(3);
+    walked.mockRestore();
+    clock.mockRestore();
+  });
+
   test("still refuses what no project in the chain lists", () => {
     const lib = project(library);
     configureLibrary(lib.config);
@@ -2087,6 +2168,28 @@ describe("a project that references another", () => {
     expect(
       transform(project().file("stray.sts"), "export {};\n").diagnostics,
     ).toEqual([expect.objectContaining({ code: 6202 })]);
+  });
+});
+
+describe("unsaved text", () => {
+  const held = (text: string) => ({
+    fileName: "/held.sts",
+    text,
+    disk: undefined,
+  });
+
+  test("is kept for far more files than a rename across a project leaves", () => {
+    const overlay = new Map([["/first.sts", held("export const f = 1;\n")]]);
+    for (let at = 0; at < 2000; at += 1)
+      holdText(overlay, `/never/written/${String(at)}.sts`, "x".repeat(4000));
+    expect(overlay.has("/first.sts")).toBe(true);
+  });
+
+  test("lets go of the oldest once there is too much of it", () => {
+    const overlay = new Map([["/first.sts", held("first")]]);
+    holdText(overlay, "/never/written/a.sts", "x".repeat(keptUnsavedText));
+    expect(overlay.has("/first.sts")).toBe(false);
+    expect(overlay.has("/never/written/a.sts")).toBe(true);
   });
 });
 
