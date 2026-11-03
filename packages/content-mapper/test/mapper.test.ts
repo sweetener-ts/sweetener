@@ -2180,6 +2180,52 @@ describe("a project that references another", () => {
     expect(transform(file("app/two.sts")).diagnostics).toEqual([]);
   });
 
+  test("finds a new file named by where a link leads, the first time it is asked", () => {
+    const { directory, file } = project();
+    mkdirSync(join(directory, "real"));
+    symlinkSync(join(directory, "real"), join(directory, "link"), "dir");
+    writeFileSync(file("real/one.sts"), "export const o = 1;\n");
+    writeFileSync(
+      file("real/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+      }),
+    );
+    const { transform } = opened(file("link/tsconfig.json"));
+    writeFileSync(file("real/new.sts"), "export const n = 1;\n");
+    const answer = transform(file("real/new.sts"));
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const n = 1;");
+  });
+
+  test("does not blame a broken reference for a file it does not list", () => {
+    const { directory, file } = project();
+    for (const folder of ["app", "broken"]) mkdirSync(join(directory, folder));
+    writeFileSync(file("outside.sts"), "export {};\n");
+    writeFileSync(
+      file("broken/tsconfig.json"),
+      JSON.stringify({ sweet: { nonsense: 1 }, include: ["*.sts"] }),
+    );
+    writeFileSync(file("broken/own.sts"), "export {};\n");
+    writeFileSync(file("app/one.sts"), "export {};\n");
+    writeFileSync(
+      file("app/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+        references: [{ path: "../broken" }],
+      }),
+    );
+    const { transform } = opened(file("app/tsconfig.json"));
+    expect(transform(file("outside.sts")).diagnostics).toEqual([
+      expect.objectContaining({ code: 6202 }),
+    ]);
+    expect(transform(file("broken/own.sts")).diagnostics).toEqual([
+      expect.objectContaining({ code: 6001 }),
+    ]);
+  });
+
   test("still refuses what no project in the chain lists", () => {
     const lib = project(library);
     configureLibrary(lib.config);
@@ -2202,6 +2248,21 @@ describe("unsaved text", () => {
     for (let at = 0; at < 2000; at += 1)
       holdText(overlay, `/never/written/${String(at)}.sts`, "x".repeat(4000));
     expect(overlay.has("/first.sts")).toBe(true);
+  });
+
+  test("counts what the disk held against the limit too", () => {
+    const overlay = new Map([
+      [
+        "/first.sts",
+        {
+          fileName: "/first.sts",
+          text: "first",
+          disk: "y".repeat(keptUnsavedText),
+        },
+      ],
+    ]);
+    holdText(overlay, "/never/written/a.sts", "second");
+    expect(overlay.has("/first.sts")).toBe(false);
   });
 
   test("lets go of the oldest once there is too much of it", () => {

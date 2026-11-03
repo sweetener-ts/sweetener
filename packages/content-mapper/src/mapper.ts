@@ -163,14 +163,29 @@ type Overlay = Map<
   }
 >;
 
+/** A name as the disk tells names apart. */
+function folded(name: string): string {
+  return ts.sys.useCaseSensitiveFileNames ? name : name.toLowerCase();
+}
+
 /**
  * What text held for a file is found by. Where the disk does not tell cases
  * apart, an import may spell a macro module in a case TypeScript does not, and
  * reads the same file.
  */
 function heldKey(fileName: string): string {
-  const name = canonical(fileName);
-  return ts.sys.useCaseSensitiveFileNames ? name : name.toLowerCase();
+  return folded(canonical(fileName));
+}
+
+/** How much of the limit on unsaved text an entry takes: both its texts. */
+function heldLength({
+  text,
+  disk,
+}: {
+  readonly text: string;
+  readonly disk: string | undefined;
+}): number {
+  return text.length + (disk?.length ?? 0);
 }
 
 /**
@@ -229,8 +244,6 @@ interface ConfigState {
    * first asked about is looked for, and many of them at once by one walk.
    */
   lookedIn: InputCheckRound | undefined;
-  /** What was read by the expansions that failed, while any file has. */
-  readonly failureInputs: Map<string, ExpansionInput>;
   /**
    * Files TypeScript asked about that the config, as last loaded, does not
    * list, and whether each was on disk then. Loading the config walks
@@ -265,11 +278,6 @@ const foldedListings = new WeakMap<
   ReadonlySet<string>,
   ReadonlyMap<string, string>
 >();
-
-/** A name as the disk tells names apart. */
-function folded(name: string): string {
-  return ts.sys.useCaseSensitiveFileNames ? name : name.toLowerCase();
-}
 
 /**
  * A project's listed files by each way TypeScript may come to name one: in another
@@ -341,12 +349,12 @@ export function holdText(
   if (content === disk) return before !== undefined;
   overlay.set(key, { fileName, text: content, disk });
   let kept = 0;
-  for (const { text } of overlay.values()) kept += text.length;
-  for (const [oldest, { text }] of overlay) {
+  for (const held of overlay.values()) kept += heldLength(held);
+  for (const [oldest, held] of overlay) {
     // Not what was just sent, which TypeScript is about to be answered from.
     if (kept <= keptUnsavedText || oldest === key) break;
     overlay.delete(oldest);
-    kept -= text.length;
+    kept -= heldLength(held);
   }
   return before !== content;
 }
@@ -393,6 +401,8 @@ interface ConfigProblem {
   readonly messageText: string;
   readonly identity: string;
   readonly watchedFiles: readonly string[];
+  /** What it lists despite that, where it could be read that far. */
+  readonly listed: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -690,16 +700,32 @@ export class SweetenerContentMapper {
         ErrorCode.InvalidParams,
         `Unknown project handle ${JSON.stringify(request.projectHandle)}`,
       );
-    const opened = this.#configs.get(configFileName);
-    const fileName = this.#asListed(opened, canonical(request.fileName));
+    let fileName = this.#asListed(
+      this.#configs.get(configFileName),
+      canonical(request.fileName),
+    );
     // Before anything else: text sent while the config is unusable is what
     // the file says once it is usable again.
     if (holdText(this.#overlay, fileName, request.content))
       this.#round = new InputCheckRound();
-    const referenced =
-      opened === undefined || opened.listed.has(fileName)
+    const answering = () => {
+      const opened = this.#configs.get(configFileName);
+      return opened === undefined || opened.listed.has(fileName)
         ? undefined
         : this.#owningReference(opened, fileName);
+    };
+    let referenced = answering();
+    // Looking for it may have listed it, as a link or another case spells it.
+    const listedAs = this.#asListed(
+      this.#configs.get(configFileName),
+      fileName,
+    );
+    if (listedAs !== fileName) {
+      this.#overlay.delete(heldKey(fileName));
+      holdText(this.#overlay, listedAs, request.content);
+      fileName = listedAs;
+      referenced = answering();
+    }
     if (referenced !== undefined && "messageText" in referenced)
       return failedTransform(request, referenced.code, referenced.messageText);
     const unusable = this.#unusable.get(configFileName);
@@ -836,6 +862,7 @@ export class SweetenerContentMapper {
             ...inputs.map(({ path }) => canonical(path)),
           ]),
         ].sort(),
+        listed: project === undefined ? undefined : listedFiles(project),
       };
       this.#unusable.set(configFileName, problem);
       this.#configs.delete(configFileName);
@@ -883,7 +910,6 @@ export class SweetenerContentMapper {
       identity: undefined,
       failed: new Map(),
       lookedIn: undefined,
-      failureInputs: new Map(),
       unlisted: new Map(),
       nowListed: 0,
     };
@@ -991,8 +1017,9 @@ export class SweetenerContentMapper {
    * sources through the one referencing it, and asks that one's handle for them,
    * and they expand by the config that lists them. A config that lists it yet,
    * as far as is known, is looked for in the same way as this one's own; `include`
-   * may reach anywhere, so any of them may list it. One that cannot be used may
-   * too, and what is wrong with it is what the file should hear of.
+   * may reach anywhere, so any of them may list it. What is wrong with one that
+   * cannot be used is what the file should hear of if that lists it, or, where the
+   * config could not be read that far, if its folder holds the file.
    */
   #owningReference(
     state: ConfigState,
@@ -1015,10 +1042,17 @@ export class SweetenerContentMapper {
     this.#lookFor(state, fileName);
     if (this.#configs.get(state.configFileName)?.listed.has(fileName) === true)
       return undefined;
-    const broken = references.find((reference) =>
-      this.#unusable.has(reference),
-    );
-    return broken === undefined ? undefined : this.#unusable.get(broken);
+    return references
+      .map((reference) => ({
+        reference,
+        problem: this.#unusable.get(reference),
+      }))
+      .find(({ reference, problem }) =>
+        problem?.listed === undefined
+          ? problem !== undefined &&
+            fileName.startsWith(`${canonical(dirname(reference))}/`)
+          : problem.listed.has(fileName),
+      )?.problem;
   }
 
   /**
@@ -1044,7 +1078,10 @@ export class SweetenerContentMapper {
       if (looked !== undefined) looked.lookedIn = this.#round;
     }
     const loaded = this.#configs.get(state.configFileName);
-    if (loaded !== undefined && !loaded.listed.has(fileName))
+    if (
+      loaded !== undefined &&
+      !loaded.listed.has(this.#asListed(loaded, fileName))
+    )
       loaded.unlisted.set(fileName, onDisk);
   }
 
@@ -1101,7 +1138,6 @@ export class SweetenerContentMapper {
     // One gone from the project is no longer anything to mend.
     for (const name of state.failed.keys())
       if (!listed.has(name)) state.failed.delete(name);
-    if (state.failed.size === 0) state.failureInputs.clear();
     this.#expandOrForget(state, [
       ...new Set([...state.literalReaders, ...added]),
     ]);
@@ -1158,9 +1194,7 @@ export class SweetenerContentMapper {
 
   /**
    * Leaves these files to be expanded alone when asked for, or when what the
-   * expansion that failed read says something different. What that read is added
-   * to what counts: a batch that throws may not have reached what another file
-   * read.
+   * expansion that failed read says something different.
    */
   #recordFailure(
     state: ConfigState,
@@ -1172,8 +1206,6 @@ export class SweetenerContentMapper {
         ? failure
         : { inputs: [], at: nowNanoseconds() };
     const consulted = checkedInputs(state.provider.fileSystem, at)(inputs);
-    for (const input of inputs)
-      state.failureInputs.set(`${input.kind}\0${input.path}`, input);
     for (const name of fileNames) {
       state.expanded.delete(name);
       state.literalReaders.delete(name);
@@ -1225,7 +1257,6 @@ export class SweetenerContentMapper {
     } finally {
       state.provider.releaseInspections();
     }
-    if (state.failed.size === 0) state.failureInputs.clear();
   }
 
   /**
@@ -1301,7 +1332,8 @@ export class SweetenerContentMapper {
       if (of.failed.size > 0) {
         for (const path of of.listed)
           ask({ kind: "file", path, text: undefined });
-        for (const input of of.failureInputs.values()) ask(input);
+        for (const consulted of of.failed.values())
+          for (const { input } of consulted) ask(input);
       }
     };
     askOf(state);

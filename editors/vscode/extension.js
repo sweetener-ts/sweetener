@@ -21,7 +21,15 @@ async function activate(context) {
   // Which of its activations has them: updated or enabled again, it is another.
   let registeredWith;
   let registration;
-  let saidNoSupport = false;
+  // Said once until it works: an empty Problems panel reads as a file with no
+  // errors, so what is wrong is said where someone will see it.
+  let warned = false;
+  const warn = (message, ...detail) => {
+    console.error(message, ...detail);
+    if (warned) return;
+    warned = true;
+    void vscode.window.showWarningMessage(message);
+  };
   let disposed = false;
   // Cleared first: disposing against an old client may throw, and that is no
   // reason to go on trying it, or not to register with a new one.
@@ -53,25 +61,24 @@ async function activate(context) {
       // Gone while that ran: nothing would let go of a registration made now.
       if (disposed) return;
       if (typeof api?.registerContentMappers !== "function") {
-        if (!saidNoSupport)
-          console.error(
+        if (!warned)
+          warn(
             `This version of ${typescriptExtension} has no content mappers, so .sts and .stsx will not reach TypeScript's language server. Update it.`,
           );
-        saidNoSupport = true;
         release();
         return;
       }
-      saidNoSupport = false;
       if (api === registeredWith) return;
       release();
       registration = api.registerContentMappers("sweetener", [
         { extensions: [".sts", ".stsx"] },
       ]);
       registeredWith = api;
+      warned = false;
     } catch (error) {
       // Highlighting goes on without it; a failure here is no failure of this
       // extension's, and is said where someone looking into it will read.
-      console.error(
+      warn(
         `Sweetener could not reach ${typescriptExtension}, so .sts and .stsx will not reach TypeScript's language server:`,
         error,
       );

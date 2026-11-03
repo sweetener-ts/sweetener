@@ -39,10 +39,6 @@ import {
   readerDiagnosticRegistry,
   readSyntax,
   type SourceDirective,
-  missingCloserCode,
-  nestingLimitCode,
-  scannerErrorCode,
-  unexpectedCloserCode,
 } from "@sweetener/reader";
 import {
   createIdAllocator,
@@ -587,14 +583,6 @@ function listingOf(project: LoadedSweetProject): ReadonlyMap<string, string> {
   }
   return listing;
 }
-
-/** What is about the text as text, and not about any macro in it. */
-const scannerCodes: ReadonlySet<string> = new Set([
-  scannerErrorCode,
-  unexpectedCloserCode,
-  missingCloserCode,
-  nestingLimitCode,
-]);
 
 /**
  * Whether expanding these depends on a program of every source, which is what
@@ -2223,7 +2211,9 @@ export class DefaultProjectExpansionProvider
             importFailed ||
             answerableFor(file).some(
               ({ severity, code }) =>
-                severity === "error" && !scannerCodes.has(code),
+                severity === "error" &&
+                // What is about the text as text, not any macro in it.
+                readerDiagnosticRegistry.get(code) === undefined,
             ) ||
             macroModules.some((module) =>
               answerableFor(module).some(

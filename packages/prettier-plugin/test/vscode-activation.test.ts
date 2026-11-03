@@ -29,6 +29,7 @@ const watching = { dispose() {} };
 
 function load(extensions: Record<string, unknown>, trusted = true) {
   const changed: (() => void)[] = [];
+  const warnings: string[] = [];
   const workspace = {
     isTrusted: trusted,
     onDidGrantWorkspaceTrust: (listener: () => void) => {
@@ -40,6 +41,12 @@ function load(extensions: Record<string, unknown>, trusted = true) {
     if (request === "vscode")
       return {
         workspace,
+        window: {
+          showWarningMessage: (message: string) => {
+            warnings.push(message);
+            return Promise.resolve(undefined);
+          },
+        },
         extensions: {
           getExtension: (id: string) => extensions[id],
           onDidChange: (listener: () => void) => {
@@ -51,6 +58,7 @@ function load(extensions: Record<string, unknown>, trusted = true) {
     return originalLoad.call(this, request, ...rest);
   };
   return {
+    warnings,
     extension: require(resolve(extensionRoot, "extension.js")) as {
       activate(context: { subscriptions: unknown[] }): Promise<void>;
     },
@@ -182,6 +190,17 @@ describe("activation", () => {
     installed["TypeScriptTeam.native-preview"] = unsupported;
     await changed();
     expect(logged).toHaveBeenCalledTimes(2);
+    logged.mockRestore();
+  });
+
+  test("says where it will be seen when TypeScript 7 will not do", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { extension, changed, warnings } = load({
+      "TypeScriptTeam.native-preview": { activate: async () => ({}) },
+    });
+    await extension.activate({ subscriptions: [] });
+    await changed();
+    expect(warnings).toEqual([expect.stringContaining("Update it.")]);
     logged.mockRestore();
   });
 
