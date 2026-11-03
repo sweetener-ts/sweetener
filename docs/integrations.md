@@ -106,8 +106,8 @@ leaves the copy alone, where TypeScript then reports it. The alternative was
 changing what the other binding means, or TypeScript writing `foo: renamed` into
 the macro's input.
 
-When the mapper cannot expand a file, the file comes back empty with one error
-at its top saying why: `SWR6001` when the tsconfig's `sweet` section has a
+When the mapper cannot expand a file, the file comes back as an empty module with
+one error at its top saying why: `SWR6001` when the tsconfig's `sweet` section has a
 problem (also reported at the `contentMappers` entry, which `tsc` prints only
 where no file has an error), `SWR6202` when the file
 is not part of the Sweetener project, or its extension is mapped here but
@@ -142,9 +142,10 @@ Where it differs from `sweetener check`:
   TypeScript says that only of a module in a project it has open: for any other,
   the unsaved text stands until the file changes on disk or the language server
   restarts.
-- An import of a value that spells out the extension, `from "./lib.sts"`, resolves
-  through the mapper, and `sweetener check` reports it as `TS2307`. Written
-  `from "./lib"`, it resolves in both.
+- Between two macro files, an import of a value written `from "./lib.sts"`
+  resolves through the mapper, and `sweetener check` reports it as `TS2307` unless
+  source declarations give it `lib.d.sts.ts`. Written `from "./lib"`, it resolves
+  under `sweetener check`, and TypeScript reports it as `TS2307` through the mapper.
 - A referenced project's files expand by the tsconfig that lists them, whichever
   project TypeScript reads them through. Opening a project expands the projects
   it references, however far, since what they read decides what to watch.

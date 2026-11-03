@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -496,7 +497,7 @@ describe("transform", () => {
       JSON.stringify({ files: ["macros.sts", "main.sts"] }),
     );
     expect(opened(config).transform(outside)).toEqual({
-      text: "",
+      text: "\nexport {};\n",
       extension: ".ts",
       mappings: [],
       diagnostics: [
@@ -1755,7 +1756,7 @@ describe("a file whose own macros could not run", () => {
   ])("comes back empty where %s", (_, source) => {
     const { config, file } = project({ "a.sts": source });
     const answer = opened(config).transform(file("a.sts"));
-    expect(answer.text).toBe("");
+    expect(answer.text).toBe("\nexport {};\n");
     expect(answer.diagnostics?.length).toBeGreaterThan(0);
   });
 });
@@ -1826,7 +1827,7 @@ describe("a file reading a macro module with errors", () => {
         'import { a } from "./macros.sts" for syntax;\nexport const r = a 1;\n',
     });
     const answer = opened(config).transform(file("main.sts"));
-    expect(answer.text).toBe("");
+    expect(answer.text).toBe("\nexport {};\n");
     expect(answer.mappings).toEqual([]);
     expect(answer.diagnostics).toHaveLength(1);
     expect(answer.diagnostics?.[0]?.start).toBe(0);
@@ -2126,6 +2127,59 @@ describe("a project that references another", () => {
     clock.mockRestore();
   });
 
+  test("finds a file reached by where a link leads, in a project opened through it", () => {
+    const { directory, file } = project();
+    for (const folder of ["real/app", "real/lib/src"])
+      mkdirSync(join(directory, folder), { recursive: true });
+    symlinkSync(join(directory, "real"), join(directory, "link"), "dir");
+    writeFileSync(
+      file("real/lib/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          composite: true,
+          module: "ESNext",
+          target: "ES2022",
+        },
+        include: ["src"],
+      }),
+    );
+    writeFileSync(file("real/lib/src/x.sts"), "export const x = 1;\n");
+    writeFileSync(file("real/app/main.sts"), "export const m = 1;\n");
+    writeFileSync(
+      file("real/app/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+        references: [{ path: "../lib" }],
+      }),
+    );
+    const { transform } = opened(file("link/app/tsconfig.json"));
+    const answer = transform(file("real/lib/src/x.sts"));
+    expect(answer.diagnostics).toEqual([]);
+    expect(answer.text).toContain("export const x = 1;");
+  });
+
+  test("finds a new file of its own, whatever is wrong with one it references", () => {
+    const { directory, file } = project();
+    for (const folder of ["app", "broken"]) mkdirSync(join(directory, folder));
+    writeFileSync(
+      file("broken/tsconfig.json"),
+      JSON.stringify({ sweet: { nonsense: 1 } }),
+    );
+    writeFileSync(file("app/one.sts"), "export const o = 1;\n");
+    writeFileSync(
+      file("app/tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022" },
+        include: ["*.sts"],
+        references: [{ path: "../broken" }],
+      }),
+    );
+    const { transform } = opened(file("app/tsconfig.json"));
+    writeFileSync(file("app/two.sts"), "export const t = 1;\n");
+    expect(transform(file("app/two.sts")).diagnostics).toEqual([]);
+  });
+
   test("still refuses what no project in the chain lists", () => {
     const lib = project(library);
     configureLibrary(lib.config);
@@ -2152,9 +2206,24 @@ describe("unsaved text", () => {
 
   test("lets go of the oldest once there is too much of it", () => {
     const overlay = new Map([["/first.sts", held("first")]]);
-    holdText(overlay, "/never/written/a.sts", "x".repeat(keptUnsavedText));
+    // Over the limit alone, what was just sent is what TypeScript goes on from.
+    holdText(overlay, "/never/written/a.sts", "x".repeat(keptUnsavedText + 1));
     expect(overlay.has("/first.sts")).toBe(false);
     expect(overlay.has("/never/written/a.sts")).toBe(true);
+  });
+});
+
+describe("a project's identity", () => {
+  test("reads the same for the same project in another folder", () => {
+    const identity = () => {
+      const { config } = project({ "other.sts": "export const o = 1;\n" });
+      return opened(config).mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      }).configIdentity;
+    };
+    expect(identity()).toBe(identity());
   });
 });
 

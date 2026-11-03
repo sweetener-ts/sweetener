@@ -321,6 +321,17 @@ describe("tsc", () => {
     });
   });
 
+  test("resolves a value import spelled with the extension, and not without", () => {
+    const { directory } = mappedProject({
+      "lib.sts": "export const a = 1;\n",
+      "with.sts": 'import { a } from "./lib.sts";\nexport const b = a;\n',
+      "without.sts": 'import { a } from "./lib";\nexport const c = a;\n',
+    });
+    expect(check(directory).lines).toEqual([
+      expect.stringMatching(/^src\/without\.sts\(1,19\): error TS2307/u),
+    ]);
+  });
+
   test("reads a file whose only import was for syntax as a module", () => {
     const use = `${main.split("\n")[0]!}\nconst q = 1;\nawait q;\n`;
     const { directory } = mappedProject({
@@ -571,6 +582,20 @@ describe("the language server", () => {
       ...(edit?.documentChanges ?? []).flatMap(({ edits }) => edits),
     ].map(({ newText }) => newText);
     expect(written.filter((text) => text.includes(":"))).toEqual([]);
+  });
+
+  test("tells a file importing from one that failed what it lacks, not that it is no module", async () => {
+    const importer = 'import { a } from "./failed.sts";\nexport const b = a;\n';
+    const { directory, file } = mappedProject({
+      "failed.sts":
+        'import { (|>) } from "./nope.sts" for syntax;\nexport const a = 1;\n',
+      "user.sts": importer,
+    });
+    client = await LanguageServerClient.start(directory);
+    client.open(file("user.sts"), importer);
+    const reported = await client.diagnostics(file("user.sts"));
+    expect(reported.join("\n")).not.toContain("2306");
+    expect(reported.join("\n")).toContain("2305");
   });
 
   test("formats a file as TypeScript does, writing each edit once", async () => {

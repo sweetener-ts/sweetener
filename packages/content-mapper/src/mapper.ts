@@ -1,4 +1,4 @@
-import { extname, resolve, sep } from "node:path";
+import { dirname, extname, relative, resolve, sep } from "node:path";
 import {
   checkedInputs,
   configurationProblems,
@@ -266,14 +266,29 @@ const foldedListings = new WeakMap<
   ReadonlyMap<string, string>
 >();
 
-/** A project's listed files by their names in lower case, made once per list. */
-function foldedNames(listed: ReadonlySet<string>): ReadonlyMap<string, string> {
-  let folded = foldedListings.get(listed);
-  if (folded === undefined) {
-    folded = new Map([...listed].map((name) => [name.toLowerCase(), name]));
-    foldedListings.set(listed, folded);
+/** A name as the disk tells names apart. */
+function folded(name: string): string {
+  return ts.sys.useCaseSensitiveFileNames ? name : name.toLowerCase();
+}
+
+/**
+ * A project's listed files by each way TypeScript may come to name one: in another
+ * case, or by where a link leads. Made once per list, and only for a file it does
+ * not find as written.
+ */
+function spellingsOf(listed: ReadonlySet<string>): ReadonlyMap<string, string> {
+  let spellings = foldedListings.get(listed);
+  if (spellings === undefined) {
+    const found = new Map<string, string>();
+    for (const name of listed) {
+      const real = ts.sys.realpath?.(name);
+      if (real !== undefined) found.set(folded(canonical(real)), name);
+    }
+    for (const name of listed) found.set(folded(name), name);
+    spellings = found;
+    foldedListings.set(listed, spellings);
   }
-  return folded;
+  return spellings;
 }
 
 /** A file's segments, whose failure is the failure of expanding it. */
@@ -328,7 +343,8 @@ export function holdText(
   let kept = 0;
   for (const { text } of overlay.values()) kept += text.length;
   for (const [oldest, { text }] of overlay) {
-    if (kept <= keptUnsavedText) break;
+    // Not what was just sent, which TypeScript is about to be answered from.
+    if (kept <= keptUnsavedText || oldest === key) break;
     overlay.delete(oldest);
     kept -= text.length;
   }
@@ -380,9 +396,18 @@ interface ConfigProblem {
 }
 
 /**
- * A file Sweetener could not expand, as TypeScript should see it: empty,
- * with one error at its start saying why. Empty rather than the source as
- * written, whose macro syntax would bury the reason under parse errors.
+ * What says a text is a module, as every Sweetener source is. Its imports for
+ * syntax are gone, and without another import or an export TypeScript reads it
+ * as a script, whose names every other script shares.
+ */
+const moduleMarker = "\nexport {};\n";
+
+/**
+ * A file Sweetener could not expand, as TypeScript should see it: empty but for
+ * being a module, with one error at its start saying why. Empty rather than the
+ * source as written, whose macro syntax would bury the reason under parse errors;
+ * a module, so a file importing from it hears of what it lacks, and not that it
+ * is no module.
  */
 function failedTransform(
   request: TransformParams,
@@ -391,7 +416,7 @@ function failedTransform(
 ): TransformResult {
   const target = macroExtensionTarget(extname(request.fileName));
   return {
-    text: "",
+    text: moduleMarker,
     extension:
       target !== undefined && isVirtualExtension(target) ? target : ".ts",
     mappings: [],
@@ -414,12 +439,9 @@ function expandedFile(
   // Where its macros did not run, what was generated is the file as written, and
   // their syntax would bury the reason under TypeScript's parse errors.
   const generated = inspection.macrosFailed ? "" : inspection.generated.text;
-  // Its imports for syntax are gone, and without another import or an export
-  // TypeScript reads it as a script, whose names every other script shares.
-  const text =
-    !inspection.macrosFailed && needsModuleMarker(generated, extension)
-      ? `${generated}\nexport {};\n`
-      : generated;
+  const text = needsModuleMarker(generated, extension)
+    ? `${generated}${moduleMarker}`
+    : generated;
   const { sourceText } = inspection;
   const regions = inspection.macrosFailed
     ? []
@@ -942,22 +964,24 @@ export class SweetenerContentMapper {
   }
 
   /**
-   * A file as the project spells it, where the disk does not tell cases apart and
-   * TypeScript was told it by an import that does not: `./Util.sts` for `util.sts`
-   * is one file, whose own error is TypeScript's to report.
+   * A file as the project spells it. Where the disk does not tell cases apart and
+   * TypeScript was told it by an import that does not, `./Util.sts` for `util.sts`
+   * is one file, whose own error is TypeScript's to report. Reached through a link,
+   * as a package in `node_modules` is, TypeScript names it by where the link leads,
+   * which is not how a project opened through a link lists it.
    */
   #asListed(state: ConfigState | undefined, fileName: string): string {
-    if (
-      state === undefined ||
-      ts.sys.useCaseSensitiveFileNames ||
-      state.listed.has(fileName)
-    )
-      return fileName;
-    const folded = fileName.toLowerCase();
-    for (const project of this.#withReferences(state)) {
-      const name = foldedNames(project.listed).get(folded);
-      if (name !== undefined) return name;
-    }
+    if (state === undefined || state.listed.has(fileName)) return fileName;
+    const projects = this.#withReferences(state);
+    const real = ts.sys.realpath?.(fileName);
+    for (const spelling of [
+      fileName,
+      real === undefined ? "" : canonical(real),
+    ])
+      for (const project of projects) {
+        const name = spellingsOf(project.listed).get(folded(spelling));
+        if (name !== undefined) return name;
+      }
     return fileName;
   }
 
@@ -988,12 +1012,13 @@ export class SweetenerContentMapper {
       owner = lister();
     }
     if (owner !== undefined) return owner;
+    this.#lookFor(state, fileName);
+    if (this.#configs.get(state.configFileName)?.listed.has(fileName) === true)
+      return undefined;
     const broken = references.find((reference) =>
       this.#unusable.has(reference),
     );
-    if (broken !== undefined) return this.#unusable.get(broken);
-    this.#lookFor(state, fileName);
-    return undefined;
+    return broken === undefined ? undefined : this.#unusable.get(broken);
   }
 
   /**
@@ -1295,10 +1320,14 @@ export class SweetenerContentMapper {
     // What TypeScript asked for that the config does not list: nothing changes
     // for it otherwise when one is saved, and it keeps the file emptied.
     const readers = this.#withReferences(state);
+    // Relative to the config: TypeScript keeps this in `.tsbuildinfo`, which is
+    // good for another checkout of the same project only if it reads the same.
+    const folder = dirname(state.configFileName);
+    const fromConfig = (path: string) => relative(folder, path);
     const unlisted = readers.flatMap((reader) => [
       String(reader.nowListed),
       ...[...reader.unlisted]
-        .map(([name, onDisk]) => `${name} ${String(onDisk)}`)
+        .map(([name, onDisk]) => `${fromConfig(name)}\0${String(onDisk)}`)
         .sort(),
     ]);
     const askedKey = fingerprint([...asked, ...unlisted]);
@@ -1316,7 +1345,17 @@ export class SweetenerContentMapper {
     );
     const identity: Identity = {
       value: fingerprint([
-        ...answers.map((answer) => JSON.stringify(answer)),
+        ...answers
+          .map((answer) =>
+            JSON.stringify({
+              ...answer,
+              path: fromConfig(answer.path),
+              ...(answer.kind === "realpath"
+                ? { target: fromConfig(answer.target) }
+                : {}),
+            }),
+          )
+          .sort(),
         ...unlisted,
       ]),
       asked: askedKey,
