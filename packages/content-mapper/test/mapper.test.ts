@@ -364,6 +364,25 @@ describe("transform", () => {
     expectAcceptable(result, main);
   });
 
+  test("a comment a template wrote is not the one the author wrote like it", () => {
+    const main = `/* note */\nimport { noted } from "./noted.sts" for syntax;\nexport const n = noted();\n`;
+    const { config, file } = project({
+      "noted.sts": `export syntax noted:expr { rule { noted() } => { [1, /* note */ 2] } }\n`,
+      "commented.sts": main,
+    });
+    const result = opened(config).transform(file("commented.sts"));
+    const copies = [...result.text.matchAll(/\/\* note \*\//gu)].map(
+      (match) => match.index,
+    );
+    expect(copies).toHaveLength(2);
+    const mapped = result.mappings.filter(([virtual, length]) =>
+      copies.some((copy) => copy >= virtual && copy < virtual + length),
+    );
+    expect(mapped).toHaveLength(1);
+    expect(mapped[0]?.[2]).toBe(0);
+    expectAcceptable(result, main);
+  });
+
   test("a macro module expands to what it leaves at runtime", () => {
     const { config, file } = project();
     const result = opened(config).transform(file("macros.sts"));
@@ -1202,54 +1221,27 @@ describe("what it does not expand again", () => {
     expect(asked()).toEqual([[file("other.sts")]]);
   });
 
-  test("a binding literal gone stops the config being loaded at every open", () => {
-    const module = (literal: boolean) =>
-      [
-        'import { Circle } from "./local";',
-        "export syntax kind:expr {",
-        ...(literal ? ["  literal Circle as Circle;"] : []),
-        '  rule { kind(Circle) } => { "circle" }',
-        '  fallback rule { kind($value:expr) } => { "other" }',
-        "}",
-        "",
-      ].join("\n");
-    const { config, file } = project({
-      "local.ts": "export const Circle = 1;\n",
-      "macros.sts": module(true),
-      "main.sts":
-        'import { kind } from "./macros.sts" for syntax;\nexport const a = kind(1);\n',
-    });
-    const { mapper } = opened(config);
-    writeFileSync(file("macros.sts"), module(false));
-    reopen(mapper, config);
-    const walked = vi.spyOn(ts.sys, "readDirectory");
-    reopen(mapper, config);
-    expect(walked).not.toHaveBeenCalled();
-  });
-
-  test("a file made expands when it is asked for, and keeps what the others expanded to", () => {
+  test("a file made expands at the next open, and keeps what the others expanded to", () => {
     const { config, file } = project();
     const { mapper, transform } = opened(config);
     const asked = expansions();
     writeFileSync(file("added.sts"), "export const a = 1;\n");
     reopen(mapper, config);
-    expect(asked()).toEqual([]);
-    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
-    expect(asked()).toEqual([]);
-    expect(transform(file("added.sts")).text).toContain("export const a = 1;");
     expect(asked()).toEqual([[file("added.sts")]]);
+    expect(transform(file("main.sts")).text).toContain(`trim("  hello  ")`);
+    expect(transform(file("added.sts")).text).toContain("export const a = 1;");
+    expect(asked()).toHaveLength(1);
   });
 
-  test("a file gone is expanded once to find so, and the others stay", () => {
+  test("a file gone is let go of, and the others stay", () => {
     const { config, directory, file } = project({ "gone.sts": "export {};\n" });
     const { mapper, transform } = opened(config);
     const asked = expansions();
     rmSync(join(directory, "gone.sts"));
     reopen(mapper, config);
-    expect(asked()).toEqual([[file("gone.sts")]]);
     transform(file("main.sts"));
     reopen(mapper, config);
-    expect(asked()).toHaveLength(1);
+    expect(asked()).toEqual([]);
   });
 
   test("a config that changes is loaded again and lists what it now does", () => {
@@ -1293,33 +1285,6 @@ describe("what it does not expand again", () => {
     expect(asked()).toEqual([
       [file("added.sts"), file("macros.sts"), file("main.sts")],
     ]);
-  });
-
-  test("does not load a config again while it says the same", () => {
-    const { config } = project();
-    const { mapper } = opened(config);
-    const walked = vi.spyOn(ts.sys, "readDirectory");
-    reopen(mapper, config);
-    expect(walked).not.toHaveBeenCalled();
-  });
-
-  test("loads the config again where binding literals read the file list", () => {
-    const { config } = project({
-      "local.ts": "export const Circle = 1;\n",
-      "macros.sts": [
-        'import { Circle } from "./local";',
-        "export syntax kind:expr {",
-        "  literal Circle as Circle;",
-        '  rule { kind(Circle) } => { "circle" }',
-        '  fallback rule { kind($value:expr) } => { "other" }',
-        "}",
-        "",
-      ].join("\n"),
-    });
-    const { mapper } = opened(config);
-    const walked = vi.spyOn(ts.sys, "readDirectory");
-    reopen(mapper, config);
-    expect(walked).toHaveBeenCalled();
   });
 });
 

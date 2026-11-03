@@ -31,34 +31,53 @@ function abbreviatesTwo(name: ts.Node): boolean {
   );
 }
 
-/** Whether TypeScript reads a text as a module whatever its config says. */
-function readsAsModule(text: string, extension: string): boolean {
-  return (
-    /\b(?:import|export)\b/u.test(text) &&
-    ts.isExternalModule(
-      ts.createSourceFile(
-        `/sweetener-expansion${extension}`,
-        text,
-        ts.ScriptTarget.Latest,
-      ),
+/** Whether a name in this place is CommonJS's: `require()`, `exports.x`, `module.exports`. */
+function usesCommonJs(node: ts.Node): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "require"
+  )
+    return true;
+  if (
+    (ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)) &&
+    ts.isIdentifier(node.expression)
+  ) {
+    const member = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : undefined;
+    if (
+      node.expression.text === "exports" ||
+      (node.expression.text === "module" && member === "exports")
     )
-  );
+      return true;
+  }
+  return ts.forEachChild(node, usesCommonJs) ?? false;
 }
 
 /**
  * Whether a text needs saying it is a module, as every Sweetener source is, which
  * `sweetener check` says by its `moduleDetection`. Not JavaScript using what
- * CommonJS provides: TypeScript goes by those names, whose meaning an `export`
- * would take away, where `moduleDetection` leaves it.
+ * CommonJS provides: TypeScript goes by that use, whose meaning an `export` would
+ * take away, where `moduleDetection` leaves it. Only text with one of the words
+ * in question is parsed to see.
  */
 export function needsModuleMarker(text: string, extension: string): boolean {
-  return (
-    !readsAsModule(text, extension) &&
-    !(
-      /^\.[cm]?jsx?$/u.test(extension) &&
-      /\b(?:exports|module|require)\b/u.test(text)
-    )
+  const javaScript = /^\.[cm]?jsx?$/u.test(extension);
+  if (
+    !/\b(?:import|export)\b/u.test(text) &&
+    !(javaScript && /\b(?:exports|module|require)\b/u.test(text))
+  )
+    return true;
+  const parsed = ts.createSourceFile(
+    `/sweetener-expansion${extension}`,
+    text,
+    ts.ScriptTarget.Latest,
   );
+  return !ts.isExternalModule(parsed) && !(javaScript && usesCommonJs(parsed));
 }
 
 /** What can be asked of names at places in one expanded file. */

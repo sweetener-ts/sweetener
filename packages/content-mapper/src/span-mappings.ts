@@ -152,15 +152,18 @@ function segmentsFor(
   // its own origin.
   const original = sourceText.slice(start, end);
   const comments = virtual === original ? undefined : commentsAlone(virtual);
-  if (comments !== undefined)
-    return commentSegments(
-      comments,
-      virtual,
-      region.generatedStart,
-      sourceText,
-      start,
-    );
   const written = writtenByAuthor(origins, region.origin);
+  if (comments !== undefined)
+    // A template's comment may read like one the author wrote, and is not it.
+    return written
+      ? commentSegments(
+          comments,
+          virtual,
+          region.generatedStart,
+          sourceText,
+          start,
+        )
+      : [];
   const [kind, features] =
     written && virtual === original && !undecodable.test(virtual)
       ? [SpanMapKind.Verbatim, SpanMapFeature.All]

@@ -12,6 +12,7 @@ import {
   macroExtensionTarget,
   nowNanoseconds,
   statIsSettled,
+  supportedMacroExtensions,
   projectSignature,
   type CheckedInput,
   type DefaultProjectExpansionProvider,
@@ -79,19 +80,11 @@ const keptClosedConfigs = 8;
  */
 export const keptUnsavedText = 256 * 1024 * 1024;
 
-/** How long after walking `include` a file it did not list is taken at its word. */
-const lookAgainNanoseconds = 2_000_000_000n;
-
-const virtualExtensions: ReadonlySet<string> = new Set<VirtualExtension>([
-  ".ts",
-  ".tsx",
-  ".mts",
-  ".cts",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-]);
+const virtualExtensions: ReadonlySet<string> = new Set(
+  supportedMacroExtensions.flatMap(
+    (extension) => macroExtensionTarget(extension) ?? [],
+  ),
+);
 
 function isVirtualExtension(extension: string): extension is VirtualExtension {
   return virtualExtensions.has(extension);
@@ -205,8 +198,6 @@ interface ConfigState {
   readonly signature: string;
   /** As last loaded: the file list may have changed since the state was made. */
   project: LoadedSweetProject;
-  /** What it was loaded from: while these hold, the config says the same. */
-  configuration: readonly CheckedInput[];
   /** When the config was last loaded, which is when `include` was walked. */
   loadedAt: bigint;
   /** The project's files, by the names the mapper writes them. */
@@ -233,11 +224,6 @@ interface ConfigState {
    * of what they read, so what would mend them is not known: see `#identityOf`.
    */
   readonly failed: Map<string, readonly CheckedInput[]>;
-  /**
-   * Whether a file it asked about was taken at the config's word, `include` having
-   * been walked too recently to look again, so the next open should.
-   */
-  walkAgain: boolean;
   /**
    * The round in which it last looked for a file it had not heard of: a file
    * first asked about is looked for, and many of them at once by one walk.
@@ -792,30 +778,13 @@ export class SweetenerContentMapper {
    * Sweetener cannot use it. Nothing is expanded from a config with problems;
    * one that later loses them starts afresh.
    *
-   * A config is not loaded again while everything it was loaded from says the
-   * same, which spares walking `include` at every open: a file it does not
-   * list yet is found when TypeScript asks for it (`force`), and again when one
-   * it asked about comes or goes on disk. Binding literals resolve over the
-   * whole file list, so a project that has them loads it.
+   * It loads the config each time, which walks `include`: about 3 ms over 1,500
+   * files and 60 ms over 10,000, at an event that takes a watched file changing.
    */
   #problemsWith(
     configFileName: string,
-    force = false,
+    round: InputCheckRound = this.#round,
   ): ConfigProblem | undefined {
-    const kept = this.#configs.get(configFileName);
-    if (
-      !force &&
-      kept !== undefined &&
-      kept.literalReaders.size === 0 &&
-      !kept.walkAgain &&
-      [...kept.unlisted].every(
-        ([name, onDisk]) => ts.sys.fileExists(name) === onDisk,
-      ) &&
-      this.#round.hold(kept.configuration)
-    ) {
-      this.#refresh(kept, this.#round);
-      return undefined;
-    }
     const loadedAt = nowNanoseconds();
     let project: LoadedSweetProject | undefined;
     let problems: readonly string[];
@@ -851,12 +820,7 @@ export class SweetenerContentMapper {
       return problem;
     }
     this.#unusable.delete(configFileName);
-    this.#stateFor(
-      configFileName,
-      project,
-      checkedInputs(diskFileSystem, loadedAt)(project.configurationInputs),
-      loadedAt,
-    );
+    this.#stateFor(configFileName, project, loadedAt, round);
     return undefined;
   }
 
@@ -871,25 +835,21 @@ export class SweetenerContentMapper {
   #stateFor(
     configFileName: string,
     project: LoadedSweetProject,
-    configuration: readonly CheckedInput[],
     loadedAt: bigint,
+    round: InputCheckRound,
   ): void {
     const signature = projectSignature(project);
     const existing = this.#configs.get(configFileName);
     if (existing !== undefined && existing.signature === signature) {
-      existing.configuration = configuration;
-      existing.walkAgain = false;
       existing.loadedAt = loadedAt;
       this.#relist(existing, project);
-      // Loaded because something changed, which what is held may not have heard.
-      this.#refresh(existing, new InputCheckRound());
+      this.#refresh(existing, round);
       return;
     }
     const state: ConfigState = {
       configFileName,
       signature,
       project,
-      configuration,
       loadedAt,
       listed: listedFiles(project),
       literalReaders: new Set(),
@@ -900,7 +860,6 @@ export class SweetenerContentMapper {
       references: new Set(existing?.references),
       identity: undefined,
       failed: new Map(),
-      walkAgain: false,
       lookedIn: undefined,
       failureInputs: new Map(),
       unlisted: new Map(),
@@ -1041,29 +1000,24 @@ export class SweetenerContentMapper {
    * Load the config again for a file it did not list, which may be a file it
    * would list now, a folder renamed into place keeping its files' times. Asked
    * at once about many files outside it, as a project importing them does, it
-   * walks `include` for the first; after that for one newly written, or once
-   * `include` was last walked a while ago, so typing in one is no more often.
-   * The load may find the config can no longer be used, which is then what the
-   * file hears.
+   * walks `include` for the first, and after that for one written since it was
+   * last walked. A file it has heard of is left for the next open, so typing in
+   * one walks nothing. The load may find the config can no longer be used, which
+   * is then what the file hears.
    */
   #lookFor(state: ConfigState, fileName: string): void {
     const stats = diskFileSystem.stat?.(fileName);
     const onDisk = stats?.isFile() === true;
-    const walkedAWhileAgo =
-      nowNanoseconds() - state.loadedAt >= lookAgainNanoseconds;
-    const unheardOf = state.unlisted.get(fileName) !== onDisk;
-    const newlyWritten =
-      stats !== undefined && unheardOf && !statIsSettled(stats, state.loadedAt);
     if (
       onDisk &&
-      (walkedAWhileAgo ||
-        newlyWritten ||
-        (unheardOf && state.lookedIn !== this.#round))
+      state.unlisted.get(fileName) !== onDisk &&
+      (state.lookedIn !== this.#round || !statIsSettled(stats, state.loadedAt))
     ) {
-      this.#problemsWith(state.configFileName, true);
+      // Something has changed that what is held may not have heard.
+      this.#problemsWith(state.configFileName, new InputCheckRound());
       const looked = this.#configs.get(state.configFileName);
       if (looked !== undefined) looked.lookedIn = this.#round;
-    } else if (onDisk) state.walkAgain = true;
+    }
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
       loaded.unlisted.set(fileName, onDisk);

@@ -142,6 +142,9 @@ Where it differs from `sweetener check`:
   TypeScript says that only of a module in a project it has open: for any other,
   the unsaved text stands until the file changes on disk or the language server
   restarts.
+- An import of a value that spells out the extension, `from "./lib.sts"`, resolves
+  through the mapper, and `sweetener check` reports it as `TS2307`. Written
+  `from "./lib"`, it resolves in both.
 - A referenced project's files expand by the tsconfig that lists them, whichever
   project TypeScript reads them through. Opening a project expands the projects
   it references, however far, since what they read decides what to watch.

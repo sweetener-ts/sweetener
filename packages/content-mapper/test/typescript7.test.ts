@@ -303,6 +303,15 @@ describe("tsc", () => {
       expect(lines).toEqual([expect.stringContaining("TS2322")]);
     });
 
+    test("is a module though a comment, a string or a name says the word", () => {
+      const directory = javaScriptProject({
+        "a.sjs": "// this module\nconst q = 1;\n",
+        "b.sjs": 'const q = "require(x)";\nconst module = q;\n',
+        "c.sjs": "const module = 1;\nconst q = module;\n",
+      });
+      expect(check(directory).lines).toEqual([]);
+    });
+
     test("is a module otherwise, whose names are its own", () => {
       const directory = javaScriptProject({
         "a.sjs": "const q = 1;\n",
