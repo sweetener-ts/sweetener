@@ -914,6 +914,74 @@ describe("a compiler failure", () => {
     read.mockRestore();
   });
 
+  test("a file that goes on changing on disk is tried again at the next open", () => {
+    const { config, file } = project({ "other.sts": "export {};\n" });
+    const { mapper, transform } = opened(config);
+    const name = file("main.sts");
+    const read = ts.sys.readFile.bind(ts.sys);
+    let reads = 0;
+    const changing = vi
+      .spyOn(ts.sys, "readFile")
+      .mockImplementation((path, encoding) =>
+        path === name ? `${main}// ${String(reads++)}\n` : read(path, encoding),
+      );
+    expect(transform(name, `${main}\n`).diagnostics).toEqual([
+      expect.objectContaining({
+        code: 6201,
+        messageText: expect.stringContaining("went on changing"),
+      }),
+    ]);
+    changing.mockRestore();
+    // Mended, every source no longer counts for what might mend it.
+    const { watchedFiles } = mapper.openProject({
+      configFileName: config,
+      projectHandle: "p",
+      compilerOptions: {},
+    });
+    expect(watchedFiles).not.toContain(file("other.sts"));
+  });
+
+  test("a failed file the config no longer lists has nothing left to mend", () => {
+    const { config, file } = project({
+      "bad.sts": "export {};\n",
+      "other.sts": "export {};\n",
+    });
+    const expand = DefaultProjectExpansionProvider.prototype.expandProject;
+    const failing = vi
+      .spyOn(DefaultProjectExpansionProvider.prototype, "expandProject")
+      .mockImplementation(function (
+        this: DefaultProjectExpansionProvider,
+        ...args: Parameters<typeof expand>
+      ) {
+        if (args[1]?.files?.has(file("bad.sts")) === true)
+          throw new Error("the compiler broke");
+        return expand.apply(this, args);
+      });
+    const { mapper } = opened(config);
+    const open = () =>
+      mapper.openProject({
+        configFileName: config,
+        projectHandle: "p",
+        compilerOptions: {},
+      });
+    expect(open().watchedFiles).toContain(file("other.sts"));
+    writeFileSync(
+      config,
+      JSON.stringify({
+        compilerOptions: { module: "ESNext", target: "ES2022", strict: true },
+        contentMappers: [
+          { package: "@sweetener/content-mapper", extensions: [".sts"] },
+        ],
+        include: ["*.sts"],
+        exclude: ["bad.sts"],
+      }),
+    );
+    const { watchedFiles } = open();
+    failing.mockRestore();
+    expect(watchedFiles).not.toContain(file("bad.sts"));
+    expect(watchedFiles).not.toContain(file("other.sts"));
+  });
+
   test("a failure every file meets is said by each, and over once text changes", () => {
     const { config, file } = project();
     const failing = vi
@@ -1542,6 +1610,20 @@ describe("a listed file named in another case", () => {
     );
     expect(answer.diagnostics).toEqual([]);
     expect(answer.text).toContain("export const u = 1;");
+  });
+
+  test("reads the text held for a macro module however an import spells it", () => {
+    if (ts.sys.useCaseSensitiveFileNames) return;
+    const { config, file } = project({
+      "user.sts": main.replace("./macros.sts", "./Macros.sts"),
+    });
+    const { transform } = opened(config);
+    transform(file("user.sts"));
+    transform(
+      file("macros.sts"),
+      macros.replace("$callee($value)", "$callee($value, 1)"),
+    );
+    expect(transform(file("user.sts")).text).toContain(`trim("  hello  ", 1)`);
   });
 });
 

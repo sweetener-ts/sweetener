@@ -845,12 +845,6 @@ export interface DefaultProjectExpansionOutput extends ProjectExpansionOutput {
    * resolves it read and looked for, its libraries among them.
    */
   readonly inputs: readonly ExpansionInput[];
-  /**
-   * Whether a macro named a binding literal, which TypeScript resolves over
-   * every source in the project. Each file's expansion then depends on the
-   * project's whole file list and every one of `inputs`, not only on its own.
-   */
-  readonly resolvesBindingLiterals: boolean;
 }
 
 export interface DefaultSourceExpansionInspection extends SourceExpansionInspection {
@@ -1600,9 +1594,6 @@ export class DefaultProjectExpansionProvider
         moduleFile.sourceId,
       ]),
     );
-    // Whether TypeScript resolved binding literals, over every source in the
-    // project, which then makes every file's expansion depend on all of it.
-    const resolvesBindingLiterals = hasBindingLiterals([...byPath.values()]);
     // Nothing is read from here on: every source is loaded and the program
     // resolving binding literals, if any, is built.
     const inputs = recorder.inputs;
@@ -2495,7 +2486,6 @@ export class DefaultProjectExpansionProvider
         ),
       ),
       inputs,
-      resolvesBindingLiterals,
       unresolvedNameExplanations: Object.freeze(
         unresolvedNameExplanations.map((diagnostic) =>
           // The name travels with the sentence. Every name one macro writes is

@@ -1,4 +1,4 @@
-import { scriptKindForFileName, typescript as ts } from "@sweetener/compiler";
+import { typescript as ts } from "@sweetener/compiler";
 
 /** Every name in a file, by where it stands: found once, for all its copies. */
 function namesIn(sourceFile: ts.SourceFile): ReadonlyMap<string, ts.Node> {
@@ -70,7 +70,6 @@ export function createBindingAgreement(
       virtualText,
       ts.ScriptTarget.Latest,
       true,
-      scriptKindForFileName(fileName),
     );
     parsed = { sourceFile, names: namesIn(sourceFile) };
     return parsed;

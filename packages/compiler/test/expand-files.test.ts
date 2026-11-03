@@ -256,7 +256,7 @@ export syntax kind:expr {
   const project = loadSweetProject(config);
   const alone = createDefaultProjectExpansionProvider();
   const output = alone.expandProject(project, { files: new Set([user]) });
-  expect(output.resolvesBindingLiterals).toBe(true);
+  expect(alone.inspectSource(user)?.readsBindingLiterals).toBe(true);
   expect(output.files).toHaveLength(1);
   expect(alone.inspectSource(user)?.generated.text).toContain('"circle"');
 });

@@ -153,8 +153,22 @@ interface ExpandedFile {
  */
 type Overlay = Map<
   string,
-  { readonly text: string; readonly disk: string | undefined }
+  {
+    readonly fileName: string;
+    readonly text: string;
+    readonly disk: string | undefined;
+  }
 >;
+
+/**
+ * What text held for a file is found by. Where the disk does not tell cases
+ * apart, an import may spell a macro module in a case TypeScript does not, and
+ * reads the same file.
+ */
+function heldKey(fileName: string): string {
+  const name = canonical(fileName);
+  return ts.sys.useCaseSensitiveFileNames ? name : name.toLowerCase();
+}
 
 /**
  * One tsconfig, and what has been expanded from it.
@@ -209,8 +223,11 @@ interface ConfigState {
    * of what they read, so what would mend them is not known: see `#identityOf`.
    */
   readonly failed: Map<string, readonly CheckedInput[]>;
-  /** What the expansion that last threw read, and when it began. */
-  threw: { readonly inputs: readonly ExpansionInput[]; readonly at: bigint };
+  /**
+   * What the expansion that threw read, and when it began, until that is recorded:
+   * it holds the text of everything read, and is not to outlive the failure.
+   */
+  threw: ThrownExpansion;
   /**
    * Whether a file it asked about was taken at the config's word, `include` having
    * been walked too recently to look again, so the next open should.
@@ -230,6 +247,14 @@ interface ConfigState {
    */
   nowListed: number;
 }
+
+/** What an expansion that threw had read, and when it began. */
+interface ThrownExpansion {
+  readonly inputs: readonly ExpansionInput[];
+  readonly at: bigint;
+}
+
+const nothingThrown: ThrownExpansion = { inputs: [], at: 0n };
 
 /**
  * A project's identity, and the answers it was made from: what the config
@@ -256,11 +281,12 @@ function holdText(
   fileName: string,
   content: string,
 ): boolean {
-  const before = overlay.get(fileName)?.text;
+  const key = heldKey(fileName);
+  const before = overlay.get(key)?.text;
   const disk = ts.sys.readFile(fileName);
-  overlay.delete(fileName);
+  overlay.delete(key);
   if (content === disk) return before !== undefined;
-  overlay.set(fileName, { text: content, disk });
+  overlay.set(key, { fileName, text: content, disk });
   for (const oldest of overlay.keys()) {
     if (overlay.size <= keptUnsavedFiles) break;
     overlay.delete(oldest);
@@ -271,7 +297,7 @@ function holdText(
 /** A source's text as it stands: TypeScript's unsaved text, or the disk's. */
 function currentText(overlay: Overlay, fileName: string): string | undefined {
   const disk = ts.sys.readFile(fileName);
-  const sent = overlay.get(canonical(fileName));
+  const sent = overlay.get(heldKey(fileName));
   return sent !== undefined && sent.disk === disk ? sent.text : disk;
 }
 
@@ -286,12 +312,12 @@ function overlayProvider(overlay: Overlay): DefaultProjectExpansionProvider {
       ...ts.sys,
       readFile: (fileName) => currentText(overlay, fileName),
       fileExists: (fileName) =>
-        overlay.has(canonical(fileName))
+        overlay.has(heldKey(fileName))
           ? currentText(overlay, fileName) !== undefined
           : ts.sys.fileExists(fileName),
     },
     stat: diskFileSystem.stat,
-    held: (path) => overlay.has(canonical(path)),
+    held: (path) => overlay.has(heldKey(path)),
   });
 }
 
@@ -617,10 +643,16 @@ export class SweetenerContentMapper {
         holdText(this.#overlay, fileName, request.content);
         this.#expand(state, [fileName]);
         file = state.expanded.get(fileName);
-        if (file !== undefined && file.sourceText !== request.content)
+        if (file !== undefined && file.sourceText !== request.content) {
+          // Its expansion did not throw, and what it read is what to look at.
+          state.threw = {
+            inputs: file.consulted.map(({ input }) => input),
+            at: nowNanoseconds(),
+          };
           throw new Error(
             `${fileName} went on changing on disk while it was expanded`,
           );
+        }
       }
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
@@ -795,7 +827,7 @@ export class SweetenerContentMapper {
       references: new Set(existing?.references),
       identity: undefined,
       failed: new Map(),
-      threw: { inputs: [], at: 0n },
+      threw: nothingThrown,
       walkAgain: false,
       failureInputs: new Map(),
       unlisted: new Map(),
@@ -828,8 +860,8 @@ export class SweetenerContentMapper {
       if (!open.has(name) && !ts.sys.fileExists(name)) forget(name);
     const closed = [...this.#opened].filter((name) => !open.has(name));
     for (const name of closed.slice(0, -keptClosedConfigs)) forget(name);
-    for (const [fileName, { disk }] of this.#overlay)
-      if (ts.sys.readFile(fileName) !== disk) this.#overlay.delete(fileName);
+    for (const [key, { fileName, disk }] of this.#overlay)
+      if (ts.sys.readFile(fileName) !== disk) this.#overlay.delete(key);
   }
 
   /**
@@ -1009,6 +1041,10 @@ export class SweetenerContentMapper {
         state.expanded.delete(name);
         state.literalReaders.delete(name);
       }
+    // One gone from the project is no longer anything to mend.
+    for (const name of state.failed.keys())
+      if (!listed.has(name)) state.failed.delete(name);
+    if (state.failed.size === 0) state.failureInputs.clear();
     if (state.literalReaders.size > 0)
       this.#expandOrForget(state, this.#expandable(state));
     else if (added.length > 0) this.#expandOrForget(state, added);
@@ -1080,6 +1116,7 @@ export class SweetenerContentMapper {
       state.literalReaders.delete(name);
       state.failed.set(name, consulted);
     }
+    state.threw = nothingThrown;
   }
 
   /**
@@ -1092,6 +1129,7 @@ export class SweetenerContentMapper {
     onlyNarrowly = false,
   ): void {
     const expandedAt = nowNanoseconds();
+    state.threw = nothingThrown;
     // What the state keeps is plain by now, and each inspection holds the whole
     // project: kept in the provider, one per config would stay.
     try {
