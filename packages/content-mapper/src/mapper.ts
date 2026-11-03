@@ -20,7 +20,7 @@ import {
   type LoadedSweetProject,
   typescript as ts,
 } from "@sweetener/compiler";
-import { createBindingAgreement } from "./binding-agreement.js";
+import { createBindingAgreement, readsAsModule } from "./binding-agreement.js";
 import {
   describeError,
   ErrorCode,
@@ -42,8 +42,9 @@ import {
 } from "./protocol.js";
 import {
   encodeSegments,
+  mappedSegments,
   offsetEncoder,
-  segmentsForExpansion,
+  regionSegments,
   type Segment,
 } from "./span-mappings.js";
 
@@ -141,7 +142,8 @@ interface ExpandedFile {
   readonly text: string;
   readonly extension: VirtualExtension;
   readonly sourceText: string;
-  readonly segments: readonly Segment[];
+  /** Worked out when it is asked for, which may be never. */
+  segments(): readonly Segment[];
   readonly errors: readonly RaisedError[];
   /** What it asked, checked against the file system whose answers made it. */
   readonly consulted: readonly CheckedInput[];
@@ -228,6 +230,11 @@ interface ConfigState {
    * been walked too recently to look again, so the next open should.
    */
   walkAgain: boolean;
+  /**
+   * The round in which it last looked for a file it had not heard of: a file
+   * first asked about is looked for, and many of them at once by one walk.
+   */
+  lookedIn: InputCheckRound | undefined;
   /** What was read by the expansions that failed, while any file has. */
   readonly failureInputs: Map<string, ExpansionInput>;
   /**
@@ -257,6 +264,19 @@ class FailedExpansion extends Error {
   ) {
     super(messageOf(failure));
     this.stack = describeError(failure);
+  }
+}
+
+/** A file's segments, whose failure is the failure of expanding it. */
+function segmentsOf(file: ExpandedFile): readonly Segment[] {
+  try {
+    return file.segments();
+  } catch (error) {
+    throw new FailedExpansion(
+      error,
+      file.consulted.map(({ input }) => input),
+      nowNanoseconds(),
+    );
   }
 }
 
@@ -380,21 +400,35 @@ function expandedFile(
     );
   // Where its macros did not run, what was generated is the file as written, and
   // their syntax would bury the reason under TypeScript's parse errors.
-  const text = inspection.macrosFailed ? "" : inspection.generated.text;
+  const generated = inspection.macrosFailed ? "" : inspection.generated.text;
+  // Its imports for syntax are gone, and without another import or an export
+  // TypeScript reads it as a script, whose names every other script shares.
+  const text =
+    inspection.macrosFailed || readsAsModule(generated, extension)
+      ? generated
+      : `${generated}\nexport {};\n`;
+  const { sourceText } = inspection;
+  const regions = inspection.macrosFailed
+    ? []
+    : regionSegments({
+        index: inspection.index,
+        generatedText: text,
+        sourceText,
+        sourceId: inspection.sourceId as number,
+        origins: inspection.origins,
+      });
+  let segments: readonly Segment[] | undefined;
   return {
     text,
     extension,
-    sourceText: inspection.sourceText,
-    segments: inspection.macrosFailed
-      ? []
-      : segmentsForExpansion({
-          index: inspection.index,
-          generatedText: text,
-          sourceText: inspection.sourceText,
-          sourceId: inspection.sourceId as number,
-          agreement: createBindingAgreement(text, extension),
-          origins: inspection.origins,
-        }),
+    sourceText,
+    segments: () =>
+      (segments ??= mappedSegments(
+        regions,
+        createBindingAgreement(text, extension),
+        text,
+        sourceText,
+      )),
     // Errors only, which is what an inspection's diagnostics are: the protocol
     // has no severity, so a warning would arrive as an error and fail a build
     // that should pass.
@@ -644,6 +678,7 @@ export class SweetenerContentMapper {
     if (kept !== undefined && kept.sourceText !== request.content)
       this.#round = new InputCheckRound();
     let file: ExpandedFile | undefined;
+    let segments: readonly Segment[] = [];
     try {
       file = this.#expansionFor(state, fileName);
       // A file changed on disk while it was read is expanded from the disk, and
@@ -662,6 +697,7 @@ export class SweetenerContentMapper {
             nowNanoseconds(),
           );
       }
+      if (file !== undefined) segments = segmentsOf(file);
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
       // Thrown back as a failed request, TypeScript would report that the
@@ -688,12 +724,7 @@ export class SweetenerContentMapper {
     return {
       text: file.text,
       extension: file.extension,
-      mappings: encodeSegments(
-        file.segments,
-        file.text,
-        file.sourceText,
-        encoding,
-      ),
+      mappings: encodeSegments(segments, file.text, file.sourceText, encoding),
       diagnostics: reportedErrors(file, fileName, encoding),
     };
   }
@@ -836,6 +867,7 @@ export class SweetenerContentMapper {
       identity: undefined,
       failed: new Map(),
       walkAgain: false,
+      lookedIn: undefined,
       failureInputs: new Map(),
       unlisted: new Map(),
       nowListed: 0,
@@ -976,10 +1008,10 @@ export class SweetenerContentMapper {
 
   /**
    * Load the config again for a file it did not list, which may be a file it
-   * would list now: one newly written, or, since a folder renamed into place
-   * keeps its files' times, any on disk once `include` was last walked a while
-   * ago. Asked at once about many files outside it, as a project importing them
-   * does, it walks `include` no more than that, and typing in one no more often.
+   * would list now, a folder renamed into place keeping its files' times. Asked
+   * at once about many files outside it, as a project importing them does, it
+   * walks `include` for the first; after that for one newly written, or once
+   * `include` was last walked a while ago, so typing in one is no more often.
    * The load may find the config can no longer be used, which is then what the
    * file hears.
    */
@@ -988,13 +1020,19 @@ export class SweetenerContentMapper {
     const onDisk = stats?.isFile() === true;
     const walkedAWhileAgo =
       nowNanoseconds() - state.loadedAt >= lookAgainNanoseconds;
+    const unheardOf = state.unlisted.get(fileName) !== onDisk;
     const newlyWritten =
-      stats !== undefined &&
-      state.unlisted.get(fileName) !== onDisk &&
-      !statIsSettled(stats, state.loadedAt);
-    if (onDisk && (walkedAWhileAgo || newlyWritten)) {
+      stats !== undefined && unheardOf && !statIsSettled(stats, state.loadedAt);
+    if (
+      onDisk &&
+      (walkedAWhileAgo ||
+        newlyWritten ||
+        (unheardOf && state.lookedIn !== this.#round))
+    ) {
       this.#round = new InputCheckRound();
       this.#problemsWith(state.configFileName, true);
+      const looked = this.#configs.get(state.configFileName);
+      if (looked !== undefined) looked.lookedIn = this.#round;
     } else if (onDisk) state.walkAgain = true;
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
@@ -1027,8 +1065,8 @@ export class SweetenerContentMapper {
   /**
    * Bring a kept state up to the project as just loaded. A file made or gone
    * changes what expands only for the files that looked for it, which their
-   * inputs say, so only a file newly listed is expanded here -- unless binding
-   * literals were resolved, over a program of the whole file list.
+   * inputs say, and those that read binding literals, over a program of the whole
+   * file list; so only those and a file newly listed are expanded here.
    */
   #relist(state: ConfigState, project: LoadedSweetProject): void {
     state.project = project;
@@ -1055,9 +1093,9 @@ export class SweetenerContentMapper {
     for (const name of state.failed.keys())
       if (!listed.has(name)) state.failed.delete(name);
     if (state.failed.size === 0) state.failureInputs.clear();
-    if (state.literalReaders.size > 0)
-      this.#expandOrForget(state, this.#expandable(state));
-    else if (added.length > 0) this.#expandOrForget(state, added);
+    this.#expandOrForget(state, [
+      ...new Set([...state.literalReaders, ...added]),
+    ]);
   }
 
   /**

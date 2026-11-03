@@ -115,6 +115,20 @@ describe("TypeScript scanner adapter", () => {
     expect(result.tokens[5]).toMatchObject({ raw: "0x2a", value: 42 });
   });
 
+  it("keeps the line and paragraph separators TypeScript's scanner steps over", () => {
+    const source = "// note\u2028let a = 1\u2029let b;\u2028";
+    const result = scanTypeScript(source, { sourceId });
+    expect(reconstructScannedSource(result.tokens)).toBe(source);
+    expect(result.tokens[0]?.leadingTrivia.map(({ kind }) => kind)).toEqual([
+      "line-comment",
+      "whitespace",
+    ]);
+    expect(result.tokens[0]?.leadingTrivia[1]).toMatchObject({
+      raw: "\u2028",
+      hasLineBreak: true,
+    });
+  });
+
   it("preserves byte-exact spelling, offsets, comments, and line breaks", () => {
     const source =
       "#!/usr/bin/env node\r\n// note\nlet café = 'x'; /* tail */\n";

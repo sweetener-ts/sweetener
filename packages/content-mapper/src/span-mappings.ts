@@ -1,4 +1,7 @@
-import type { SourceExpansionInspection } from "@sweetener/compiler";
+import {
+  typescript as ts,
+  type SourceExpansionInspection,
+} from "@sweetener/compiler";
 import {
   SpanMapFeature,
   SpanMapKind,
@@ -24,26 +27,24 @@ export interface Segment {
 
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
-/** The comments in text that is nothing but those and whitespace. */
+/**
+ * The comments in text that is nothing but those and whitespace, as TypeScript
+ * reads them: it has more ways for a line to end than a newline.
+ */
 function commentsAlone(
   text: string,
 ): readonly { readonly start: number; readonly end: number }[] | undefined {
   const comments: { start: number; end: number }[] = [];
   let at = 0;
-  while (at < text.length) {
-    if (/\s/u.test(text[at]!)) at += 1;
-    else if (text.startsWith("//", at)) {
-      const end = text.indexOf("\n", at);
-      comments.push({ start: at, end: end === -1 ? text.length : end });
-      at = end === -1 ? text.length : end + 1;
-    } else if (text.startsWith("/*", at)) {
-      const end = text.indexOf("*/", at + 2);
-      if (end === -1) return undefined;
-      comments.push({ start: at, end: end + 2 });
-      at = end + 2;
-    } else return undefined;
+  for (const { pos, end, kind } of ts.getLeadingCommentRanges(text, 0) ?? []) {
+    const closed =
+      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      (end - pos >= 4 && text.startsWith("*/", end - 2));
+    if (!closed || text.slice(at, pos).trim().length > 0) return undefined;
+    comments.push({ start: pos, end });
+    at = end;
   }
-  return comments;
+  return text.slice(at).trim().length > 0 ? undefined : comments;
 }
 
 /**
@@ -435,14 +436,15 @@ function joinedAsWritten(
   return joined;
 }
 
-/** The segments for one expanded file, in virtual order. */
-export function segmentsForExpansion(options: {
+/**
+ * What each printed region of one expanded file stands for, in virtual order:
+ * plain values, with nothing of the expansion they came from.
+ */
+export function regionSegments(options: {
   readonly index: OriginQueryIndex;
   readonly generatedText: string;
   readonly sourceText: string;
   readonly sourceId: number;
-  /** What the names at places in the expansion mean. */
-  readonly agreement: BindingAgreement;
   /** Where each printed region's text came from. */
   readonly origins: Origins;
 }): Segment[] {
@@ -457,18 +459,28 @@ export function segmentsForExpansion(options: {
         options.origins,
       ),
     );
+  return compatibleSegments(segments);
+}
+
+/**
+ * What a file's regions come to as TypeScript takes them. It asks for only the
+ * files open in an editor, and deciding what names mean can take a program per
+ * file, so this waits to be asked.
+ */
+export function mappedSegments(
+  regions: readonly Segment[],
+  agreement: BindingAgreement,
+  generatedText: string,
+  sourceText: string,
+): Segment[] {
   return compatibleSegments(
     joinedAsWritten(
       withoutCopiedEdits(
-        withoutAmbiguousRename(
-          compatibleSegments(segments),
-          options.agreement,
-          options.generatedText,
-        ),
-        options.generatedText,
+        withoutAmbiguousRename([...regions], agreement, generatedText),
+        generatedText,
       ),
-      options.generatedText,
-      options.sourceText,
+      generatedText,
+      sourceText,
     ),
   );
 }

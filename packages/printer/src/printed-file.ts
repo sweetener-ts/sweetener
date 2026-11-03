@@ -1288,15 +1288,15 @@ export function printExpandedFile<Trace>(
   let lineStarted = false;
   const trackLine = (text: string) => {
     let tail = text;
-    if (text.includes("\n") || text.includes("\r")) {
-      const lines = text.split(/\r\n|[\n\r]/u);
+    if (/[\r\n\u2028\u2029]/u.test(text)) {
+      const lines = text.split(/\r\n|[\n\r\u2028\u2029]/u);
       lineNumber += lines.length - 1;
       lineIndent = "";
       lineStarted = false;
       tail = lines[lines.length - 1]!;
     }
     if (lineStarted) return;
-    const blank = /^[^\S\r\n]*/u.exec(tail)![0];
+    const blank = /^[^\S\r\n\u2028\u2029]*/u.exec(tail)![0];
     lineIndent += blank;
     if (blank.length < tail.length) lineStarted = true;
   };
@@ -1970,8 +1970,7 @@ export function printExpandedFile<Trace>(
       /^\s/u.test(text) ||
       // A line break the author wrote where a statement may end is kept:
       // automatic semicolon insertion reads it.
-      ((trivia.includes("\n") || trivia.includes("\r")) &&
-        mayEndStatement(lastPrinted!)) ||
+      (/[\r\n\u2028\u2029]/u.test(trivia) && mayEndStatement(lastPrinted!)) ||
       // A template's own token written directly against a placeholder stays
       // against the capture that took its place: `$name<$parameter>` keeps
       // `Result<T>` together.
@@ -2229,7 +2228,13 @@ export function printExpandedFile<Trace>(
             options.partedTypeArguments?.has(child.id) === true,
         );
         if (parted < 0)
-          pushChildren(item.children, undefined, held, false, withoutIn.has(item));
+          pushChildren(
+            item.children,
+            undefined,
+            held,
+            false,
+            withoutIn.has(item),
+          );
         else {
           // `x < ((void 0, R))`, pushed last piece first.
           const written = (text: string): PrintItem => ({

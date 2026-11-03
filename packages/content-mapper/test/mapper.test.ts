@@ -363,7 +363,8 @@ describe("transform", () => {
   test("a macro module expands to what it leaves at runtime", () => {
     const { config, file } = project();
     const result = opened(config).transform(file("macros.sts"));
-    expect(result.text.trim()).toBe("");
+    // Nothing, and that it is a module, as every Sweetener source is.
+    expect(result.text.trim()).toBe("export {};");
     expectAcceptable(result, macros);
   });
 
@@ -1264,7 +1265,7 @@ describe("what it does not expand again", () => {
     ]);
   });
 
-  test("a file made expands everything where binding literals read the file list", () => {
+  test("a file made expands what reads binding literals, and no more", () => {
     const { config, file } = project({
       "local.ts": "export const Circle = 1;\n",
       "macros.sts": [
@@ -1278,12 +1279,13 @@ describe("what it does not expand again", () => {
       ].join("\n"),
       "main.sts":
         'import { kind } from "./macros.sts" for syntax;\nimport { Circle } from "./local";\nexport const answer = kind(Circle);\n',
+      "plain.sts": "export const p = 1;\n",
     });
     const { mapper } = opened(config);
     const asked = expansions();
     writeFileSync(file("added.sts"), "export const a = 1;\n");
     reopen(mapper, config);
-    // Every file it could be asked for, which is all a program of them depends on.
+    // What reads a binding literal, and the new file: not `plain.sts`.
     expect(asked()).toEqual([
       [file("added.sts"), file("macros.sts"), file("main.sts")],
     ]);
@@ -1357,7 +1359,7 @@ describe("a file the config does not list", () => {
     expect(moved.text).toContain("export const m = 1;");
   });
 
-  test("written before the config was loaded is not looked for", () => {
+  test("written before the config was loaded walks the project for the first of many", () => {
     const { config, file } = project();
     writeFileSync(
       config,
@@ -1367,15 +1369,17 @@ describe("a file the config does not list", () => {
       }),
     );
     writeFileSync(file("outside.sts"), "export {};\n");
+    writeFileSync(file("beside.sts"), "export {};\n");
     // Opened long enough after every file was written for its stat to say so.
     const later = Date.now() + 60_000;
     vi.spyOn(Date, "now").mockImplementation(() => later);
     const { transform } = opened(config);
     const walked = vi.spyOn(ts.sys, "readDirectory");
-    expect(transform(file("outside.sts")).diagnostics).toEqual([
-      expect.objectContaining({ code: 6202 }),
-    ]);
-    expect(walked).not.toHaveBeenCalled();
+    for (const name of ["outside.sts", "beside.sts"])
+      expect(transform(file(name)).diagnostics).toEqual([
+        expect.objectContaining({ code: 6202 }),
+      ]);
+    expect(walked).toHaveBeenCalledTimes(1);
   });
 
   test("hears what is wrong with a config that has since broken", () => {
@@ -1662,7 +1666,7 @@ describe("a file asked about just after the config was loaded", () => {
     vi.restoreAllMocks();
   });
 
-  test("is looked for at the next open, its times saying nothing", () => {
+  test("is found at once, its times saying nothing", () => {
     const { config, directory, file } = project();
     mkdirSync(join(directory, "src"));
     writeFileSync(
@@ -1677,18 +1681,9 @@ describe("a file asked about just after the config was loaded", () => {
     writeFileSync(file("elsewhere/moved.sts"), "export const m = 1;\n");
     const later = Date.now() + 60_000;
     vi.spyOn(Date, "now").mockImplementation(() => later);
-    const { mapper, transform } = opened(config);
+    const { transform } = opened(config);
     renameSync(join(directory, "elsewhere"), join(directory, "src", "moved"));
-    const moved = file("src/moved/moved.sts");
-    expect(transform(moved).diagnostics).toEqual([
-      expect.objectContaining({ code: 6202 }),
-    ]);
-    mapper.openProject({
-      configFileName: config,
-      projectHandle: "p",
-      compilerOptions: {},
-    });
-    expect(transform(moved).diagnostics).toEqual([]);
+    expect(transform(file("src/moved/moved.sts")).diagnostics).toEqual([]);
   });
 });
 

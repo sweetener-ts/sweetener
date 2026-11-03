@@ -22,6 +22,7 @@ async function activate(context) {
   let registeredWith;
   let registration;
   let saidNoSupport = false;
+  let disposed = false;
   // Cleared first: disposing against an old client may throw, and that is no
   // reason to go on trying it, or not to register with a new one.
   const release = () => {
@@ -49,6 +50,8 @@ async function activate(context) {
     }
     try {
       const api = await extension.activate();
+      // Gone while that ran: nothing would let go of a registration made now.
+      if (disposed) return;
       if (typeof api?.registerContentMappers !== "function") {
         if (!saidNoSupport)
           console.error(
@@ -79,7 +82,7 @@ async function activate(context) {
     again = true;
     if (running) return;
     running = true;
-    while (again) {
+    while (again && !disposed) {
       again = false;
       await attempt();
     }
@@ -90,7 +93,12 @@ async function activate(context) {
   context.subscriptions.push(
     vscode.extensions.onDidChange(() => void register()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void register()),
-    { dispose: release },
+    {
+      dispose: () => {
+        disposed = true;
+        release();
+      },
+    },
   );
   await register();
 }

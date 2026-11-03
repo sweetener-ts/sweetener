@@ -128,6 +128,34 @@ describe("activation", () => {
     logged.mockRestore();
   });
 
+  test("registers nothing once it has gone away while TypeScript 7 was starting", async () => {
+    const registered: unknown[] = [];
+    let started = () => {};
+    const starting = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const api = {
+      registerContentMappers: (id: string) => {
+        registered.push(id);
+        return watching;
+      },
+    };
+    const { extension } = load({
+      "TypeScriptTeam.native-preview": {
+        activate: async () => {
+          await starting;
+          return api;
+        },
+      },
+    });
+    const context = { subscriptions: [] as unknown[] };
+    const activating = extension.activate(context);
+    (context.subscriptions[2] as { dispose(): void }).dispose();
+    started();
+    await activating;
+    expect(registered).toEqual([]);
+  });
+
   test("lets go of a TypeScript 7 uninstalled, and registers with one put back", async () => {
     const registered: unknown[] = [];
     let disposed = 0;

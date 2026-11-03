@@ -258,6 +258,25 @@ describe("tsc", () => {
     ]);
   });
 
+  test("reads a line comment as ending where TypeScript does", () => {
+    const { directory } = mappedProject({
+      "main.sts": "// a\u2028export const x: string = 1;\n",
+    });
+    expect(check(directory).lines).toEqual([
+      "src/main.sts(2,14): error TS2322: Type 'number' is not assignable to type 'string'.",
+    ]);
+  });
+
+  test("reads a file whose only import was for syntax as a module", () => {
+    const use = `${main.split("\n")[0]!}\nconst q = 1;\nawait q;\n`;
+    const { directory } = mappedProject({
+      "macros.sts": macros,
+      "a.sts": use,
+      "b.sts": use,
+    });
+    expect(check(directory).lines).toEqual([]);
+  });
+
   test("accepts an option only TypeScript 7 knows", () => {
     const { directory } = mappedProject(
       { "macros.sts": macros, "main.sts": main },

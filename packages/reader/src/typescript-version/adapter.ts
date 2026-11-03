@@ -1579,6 +1579,30 @@ export function scanWithSupportedTypeScript(
       kind = scanner.scanJsxAttributeValue();
     } else {
       kind = scanner.scan();
+      // TypeScript's scanner steps over a line or paragraph separator without
+      // a token for it. It is whitespace like any other, and without it a line
+      // comment it ended printed as running on over the code after it.
+      const skipped = source.slice(scanStart, scanner.getTokenStart());
+      if (skipped.length > 0) {
+        const whitespace = ts.SyntaxKind.WhitespaceTrivia;
+        const mode = tokenLexicalMode(whitespace, jsxMode);
+        tokens.push(
+          Object.freeze({
+            kind: whitespace,
+            kindName: ts.SyntaxKind[whitespace],
+            projectKind: projectTokenKind(whitespace, mode),
+            triviaKind: projectTriviaKind(whitespace),
+            lexicalMode: mode,
+            start: scanStart,
+            end: scanner.getTokenStart(),
+            raw: skipped,
+            value: skipped,
+            precededByLineBreak: false,
+            unterminated: false,
+          }),
+        );
+        if (/[\r\n\u2028\u2029]/u.test(skipped)) lineBreakBefore = true;
+      }
       if (
         kind === ts.SyntaxKind.PrivateIdentifier &&
         scanner.getTokenText() === "#"

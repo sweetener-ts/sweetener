@@ -31,6 +31,23 @@ function abbreviatesTwo(name: ts.Node): boolean {
   );
 }
 
+/**
+ * Whether TypeScript reads a text as a module whatever its config says. Every
+ * Sweetener source is one, which `sweetener check` says by its `moduleDetection`.
+ */
+export function readsAsModule(text: string, extension: string): boolean {
+  return (
+    /\b(?:import|export)\b/u.test(text) &&
+    ts.isExternalModule(
+      ts.createSourceFile(
+        `/sweetener-expansion${extension}`,
+        text,
+        ts.ScriptTarget.Latest,
+      ),
+    )
+  );
+}
+
 /** What can be asked of names at places in one expanded file. */
 export interface BindingAgreement {
   /** Whether names copied from one source token all mean the same thing. */

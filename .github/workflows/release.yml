@@ -103,9 +103,22 @@ jobs:
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             for tarball in $ordered; do
               name=$(tar -xOzf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
-              if ! npm view "$name" version > /dev/null; then
-                echo "::error::$name is not on the registry, so it has no trusted publisher yet. Its first publish needs NPM_TOKEN; see docs/release/versioning.md."
-                exit 1
+              if ! answer=$(npm view "$name" version 2>&1); then
+                case "$answer" in
+                  *E404*)
+                    message="$name is not on the registry, so it has no trusted publisher yet. Its first publish needs NPM_TOKEN; see docs/release/versioning.md."
+                    if [ "${DRY_RUN:-false}" = "true" ]; then
+                      echo "::warning::$message"
+                    else
+                      echo "::error::$message"
+                      exit 1
+                    fi
+                    ;;
+                  *)
+                    echo "::error::Could not ask the registry about $name: $answer"
+                    exit 1
+                    ;;
+                esac
               fi
             done
           fi
