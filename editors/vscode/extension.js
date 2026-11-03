@@ -22,13 +22,31 @@ async function activate(context) {
   let registeredWith;
   let registration;
   let saidNoSupport = false;
+  // Cleared first: disposing against an old client may throw, and that is no
+  // reason to go on trying it, or not to register with a new one.
+  const release = () => {
+    const previous = registration;
+    registration = undefined;
+    registeredWith = undefined;
+    try {
+      previous?.dispose();
+    } catch (error) {
+      console.error(
+        `Sweetener could not let go of its old registration with ${typescriptExtension}:`,
+        error,
+      );
+    }
+  };
   const attempt = async () => {
     // Registering starts TypeScript's server and, through a tsconfig, a mapper
     // out of node_modules: not for a folder not trusted. Highlighting needs none
     // of that, which is why this extension is supported there at all.
     if (!vscode.workspace.isTrusted) return;
     const extension = vscode.extensions.getExtension(typescriptExtension);
-    if (extension === undefined) return;
+    if (extension === undefined) {
+      release();
+      return;
+    }
     try {
       const api = await extension.activate();
       if (typeof api?.registerContentMappers !== "function") {
@@ -40,18 +58,7 @@ async function activate(context) {
         return;
       }
       if (api === registeredWith) return;
-      // Cleared first: disposing against an old client may throw, and that is no
-      // reason to go on trying it, or not to register with the new one.
-      const previous = registration;
-      registration = undefined;
-      try {
-        previous?.dispose();
-      } catch (error) {
-        console.error(
-          `Sweetener could not let go of its old registration with ${typescriptExtension}:`,
-          error,
-        );
-      }
+      release();
       registration = api.registerContentMappers("sweetener", [
         { extensions: [".sts", ".stsx"] },
       ]);
@@ -83,7 +90,7 @@ async function activate(context) {
   context.subscriptions.push(
     vscode.extensions.onDidChange(() => void register()),
     vscode.workspace.onDidGrantWorkspaceTrust(() => void register()),
-    { dispose: () => registration?.dispose() },
+    { dispose: release },
   );
   await register();
 }

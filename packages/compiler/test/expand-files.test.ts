@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   createDefaultProjectExpansionProvider,
+  InputRecorder,
   loadSweetProject,
 } from "../src/index.js";
 
@@ -121,6 +122,53 @@ export syntax later:expr { rule { later } => { 7 } }
     );
     expect(alone.inspectSource(fileName)?.diagnostics).toEqual([]);
   }
+});
+
+/**
+ * Reading again for a slash that turned out otherwise is reading all the same:
+ * failing there, every other file that reads every source would fail the same.
+ */
+test("a failure reading again is a failure reading every source", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "sweet-alone-")));
+  const write = (name: string, text: string) => {
+    writeFileSync(join(directory, name), text);
+    return join(directory, name);
+  };
+  write(
+    "base.sts",
+    "export syntax stmt:stmt { rule { stmt($v:expr) } => { $v; } }\n",
+  );
+  write(
+    "m.sts",
+    `import { stmt } from "./base.sts" for syntax;
+stmt(1) /{/.test("x");
+export syntax foo:expr { rule { foo($v:expr) } => { $v } }
+`,
+  );
+  const config = write(
+    "tsconfig.json",
+    JSON.stringify({
+      compilerOptions: { noEmit: true, target: "ES2022", module: "ESNext" },
+      files: ["base.sts", "m.sts"],
+    }),
+  );
+  const project = loadSweetProject(config);
+  const failing = createDefaultProjectExpansionProvider();
+  // What the end of reading asks for: the second time, having read again.
+  const inputs = Object.getOwnPropertyDescriptor(
+    InputRecorder.prototype,
+    "inputs",
+  )!.get!;
+  let finished = 0;
+  const readings = vi
+    .spyOn(InputRecorder.prototype, "inputs", "get")
+    .mockImplementation(function (this: InputRecorder) {
+      if (++finished === 2) throw new Error("gone");
+      return inputs.call(this) as ReturnType<typeof inputs>;
+    });
+  expect(() => failing.expandProject(project)).toThrow("gone");
+  readings.mockRestore();
+  expect(failing.failedReadingEverySource()).toBe(true);
 });
 
 /**

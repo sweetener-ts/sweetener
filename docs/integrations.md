@@ -154,9 +154,10 @@ Where it differs from `sweetener check`:
   it is next edited, and the saved file says it is not opted in until it is
   edited or the project next opens: TypeScript takes no event for a file open in
   the editor.
-- A macro that copies a name to where it stands for two, or tokens more than
-  once, keeps TypeScript's formatter out: Format Document leaves such a file as
-  it is. `@sweetener/prettier-plugin` formats it.
+- TypeScript's formatter reaches only text that expands to itself. Format Document
+  formats the rest of a file and leaves an invocation as written, along with the
+  whitespace beside it, tokens a macro copied more than once, and a name it copied
+  to where it stands for two. `@sweetener/prettier-plugin` formats all of it.
 - The protocol carries errors only. Sweetener's warnings, such as an item the
   reader passed through unread, are left out rather than reported as errors.
 - `sweetener check` adds what expansion knows to TypeScript's "cannot find

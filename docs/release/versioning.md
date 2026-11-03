@@ -35,6 +35,14 @@ npm's trusted publishing does not authorize
 ([npm/cli#8547](https://github.com/npm/cli/issues/8547)), so the workflow does
 not maintain a second tag.
 
+A new published name needs `NPM_TOKEN` for its first publish, because npm
+configures a trusted publisher on a package's settings page, which a name does
+not have until it exists. Set the secret again for that release, configure the
+new package's trusted publisher afterwards, and delete the secret. The release
+workflow stops before publishing anything if a name is not on the registry and
+the secret is not set, since a version cannot be published twice.
+`@sweetener/content-mapper` is the first name this applies to.
+
 A prerelease also does not satisfy an ordinary range: `^0.1.0` does not match
 `0.1.0-alpha.0`, and neither does `~0.1.0`. Only an exact version resolves one,
 or a range carrying its own prerelease such as `^0.1.0-alpha.0`. Staged

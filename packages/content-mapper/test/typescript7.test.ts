@@ -32,6 +32,39 @@ const shout = (value: string) => value.toUpperCase();
 export const result = "  hello  " |> trim |> shout;
 `;
 
+/** What a file comes to with the formatting the language server asks for. */
+async function formatted(
+  server: LanguageServerClient,
+  fileName: string,
+  text: string,
+): Promise<string> {
+  server.open(fileName, text);
+  await server.diagnostics(fileName);
+  const edits = (await server.request("textDocument/formatting", {
+    textDocument: { uri: pathToFileURL(fileName).href },
+    options: { tabSize: 2, insertSpaces: true },
+  })) as {
+    newText: string;
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+  }[];
+  const lines = text.split("\n");
+  const at = ({ line, character }: { line: number; character: number }) =>
+    lines.slice(0, line).reduce((sum, each) => sum + each.length + 1, 0) +
+    character;
+  return [...edits]
+    .sort((left, right) => at(right.range.start) - at(left.range.start))
+    .reduce(
+      (result, { newText, range }) =>
+        result.slice(0, at(range.start)) +
+        newText +
+        result.slice(at(range.end)),
+      text,
+    );
+}
+
 describe("tsc", () => {
   test("checks a project that expands cleanly", () => {
     const { directory } = mappedProject({
@@ -212,6 +245,16 @@ describe("tsc", () => {
     });
     expect(check(directory).lines).toEqual([
       "src/main.sts(2,1): error TS2578: Unused '@ts-expect-error' directive.",
+    ]);
+  });
+
+  test("keeps a directive's place where a macro import stands between comments", () => {
+    const { directory } = mappedProject({
+      "macros.sts": macros,
+      "main.sts": `// A header.\n${main.split("\n")[0]!}\n// @ts-expect-error\nexport const w = 1;\n`,
+    });
+    expect(check(directory).lines).toEqual([
+      "src/main.sts(3,1): error TS2578: Unused '@ts-expect-error' directive.",
     ]);
   });
 
@@ -461,39 +504,34 @@ describe("the language server", () => {
     const text = "function f( x:number ){  return x+1  }\nexport { f };\n";
     const { directory, file } = mappedProject({ "main.sts": text });
     client = await LanguageServerClient.start(directory);
-    client.open(file("main.sts"), text);
-    await client.diagnostics(file("main.sts"));
-    const edits = (await client.request("textDocument/formatting", {
-      textDocument: { uri: pathToFileURL(file("main.sts")).href },
-      options: { tabSize: 2, insertSpaces: true },
-    })) as {
-      newText: string;
-      range: {
-        start: { line: number; character: number };
-        end: { line: number; character: number };
-      };
-    }[];
-    const lines = text.split("\n");
-    const at = ({ line, character }: { line: number; character: number }) =>
-      lines.slice(0, line).reduce((sum, each) => sum + each.length + 1, 0) +
-      character;
-    const formatted = [...edits]
-      .sort((left, right) => at(right.range.start) - at(left.range.start))
-      .reduce(
-        (result, { newText, range }) =>
-          result.slice(0, at(range.start)) +
-          newText +
-          result.slice(at(range.end)),
-        text,
-      );
-    expect(formatted).toBe(
+    expect(await formatted(client, file("main.sts"), text)).toBe(
       "function f(x: number) { return x + 1 }\nexport { f };\n",
     );
   });
 
+  // The printer lays out the whitespace beside an invocation for itself, so
+  // TypeScript sees that already formatted, and has nothing to say of what is
+  // written there.
+  test("formats what the author wrote, leaving an invocation and what is beside it", async () => {
+    const twice = `export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }\n`;
+    const head = `import { twice } from "./macros.sts" for syntax;\n`;
+    const { directory, file } = mappedProject({
+      "macros.sts": twice,
+      "main.sts": `${head}export const v  =  twice( 1 );\n`,
+    });
+    client = await LanguageServerClient.start(directory);
+    expect(
+      await formatted(
+        client,
+        file("main.sts"),
+        `${head}export const v  =  twice( 1 );\nexport   const w = 1;\n`,
+      ),
+    ).toBe(`${head}export const v =  twice( 1 );\nexport const w = 1;\n`);
+  });
+
   test("will not double an edit through text a macro copied", async () => {
     const twice = `export syntax twice:expr { rule { twice($v:expr) } => { [$v, $v] } }\n`;
-    const use = `import { twice } from "./macros.sts" for syntax;\nexport const o = twice(  1+2  );\n`;
+    const use = `import { twice } from "./macros.sts" for syntax;\nexport const o = twice(  1+2  );\nexport   const w = 1;\n`;
     const { directory, file } = mappedProject({
       "macros.sts": twice,
       "main.sts": use,
@@ -504,9 +542,16 @@ describe("the language server", () => {
     const edits = (await client.request("textDocument/formatting", {
       textDocument: { uri: pathToFileURL(file("main.sts")).href },
       options: { tabSize: 2, insertSpaces: true },
-    })) as { range: { start: unknown; end: unknown } }[] | null;
-    const places = (edits ?? []).map(({ range }) => JSON.stringify(range));
-    expect(new Set(places).size).toBe(places.length);
+    })) as { range: { start: unknown; end: unknown } }[];
+    // None through the copies, and the rest of the file formatted.
+    expect(edits).toEqual([
+      expect.objectContaining({
+        range: {
+          start: { line: 2, character: 6 },
+          end: { line: 2, character: 9 },
+        },
+      }),
+    ]);
   });
 
   test("hears a file saved that the project did not list, when the project next opens", async () => {

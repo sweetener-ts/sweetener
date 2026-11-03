@@ -98,6 +98,17 @@ jobs:
               *) ordered="$ordered $tarball" ;;
             esac
           done
+          # A version cannot be published twice, so a name that cannot go out
+          # has to stop the release before the first one does.
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            for tarball in $ordered; do
+              name=$(tar -xOzf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
+              if ! npm view "$name" version > /dev/null; then
+                echo "::error::$name is not on the registry, so it has no trusted publisher yet. Its first publish needs NPM_TOKEN; see docs/release/versioning.md."
+                exit 1
+              fi
+            done
+          fi
           for tarball in $ordered; do
             if [ "${DRY_RUN:-false}" = "true" ]; then
               npm publish "$tarball" --tag latest --access public --dry-run

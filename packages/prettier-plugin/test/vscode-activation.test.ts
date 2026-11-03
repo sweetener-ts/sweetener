@@ -98,6 +98,9 @@ describe("activation", () => {
       ["sweetener", [{ extensions: [".sts", ".stsx"] }]],
     ]);
     expect(context.subscriptions).toHaveLength(3);
+    // Once: another extension changing registers nothing again.
+    await changed();
+    expect(registered).toHaveLength(1);
     // Going away takes the registration with it.
     let disposed = false;
     disposable.dispose = () => {
@@ -105,9 +108,45 @@ describe("activation", () => {
     };
     (context.subscriptions[2] as { dispose(): void }).dispose();
     expect(disposed).toBe(true);
-    // Once: another extension changing registers nothing again.
+  });
+
+  test("going away says so, rather than throwing, where the client is gone", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { extension } = load({
+      "TypeScriptTeam.native-preview": typescript7([], {
+        dispose() {
+          throw new Error("the client is gone");
+        },
+      }),
+    });
+    const context = { subscriptions: [] as unknown[] };
+    await extension.activate(context);
+    expect(() => {
+      (context.subscriptions[2] as { dispose(): void }).dispose();
+    }).not.toThrow();
+    expect(logged).toHaveBeenCalledTimes(1);
+    logged.mockRestore();
+  });
+
+  test("lets go of a TypeScript 7 uninstalled, and registers with one put back", async () => {
+    const registered: unknown[] = [];
+    let disposed = 0;
+    const installed: Record<string, unknown> = {
+      "TypeScriptTeam.native-preview": typescript7(registered, {
+        dispose() {
+          disposed += 1;
+        },
+      }),
+    };
+    const typescript = installed["TypeScriptTeam.native-preview"];
+    const { extension, changed } = load(installed);
+    await extension.activate({ subscriptions: [] });
+    delete installed["TypeScriptTeam.native-preview"];
     await changed();
-    expect(registered).toHaveLength(1);
+    expect(disposed).toBe(1);
+    installed["TypeScriptTeam.native-preview"] = typescript;
+    await changed();
+    expect(registered).toHaveLength(2);
   });
 
   test("does nothing where TypeScript 7 is missing", async () => {

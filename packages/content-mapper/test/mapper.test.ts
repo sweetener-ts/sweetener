@@ -343,6 +343,23 @@ describe("transform", () => {
     expectAcceptable(result, main);
   });
 
+  test("a name a template wrote is not the name of the invocation, through another macro", () => {
+    const main = `import { outer } from "./outer.sts" for syntax;\nconst helper = 1;\nexport const x = outer();\n`;
+    const { config, file } = project({
+      "inner.sts": `export syntax inner:expr { rule { inner($v:expr) } => { [$v] } }\n`,
+      "outer.sts": `import { inner } from "./inner.sts" for syntax;\nexport syntax outer:expr { rule { outer() } => { inner(helper) } }\n`,
+      "nested.sts": main,
+    });
+    const result = opened(config).transform(file("nested.sts"));
+    expect(result.text).toContain("[helper]");
+    const start = result.text.indexOf("[helper]") + 1;
+    const copy = result.mappings.find(([virtual]) => virtual === start);
+    expect(copy?.[2]).toBe(main.lastIndexOf("outer"));
+    expect(copy?.[4]).toBe(SpanMapKind.Atom);
+    expect(copy?.[5]).toBe(SpanMapFeature.None);
+    expectAcceptable(result, main);
+  });
+
   test("a macro module expands to what it leaves at runtime", () => {
     const { config, file } = project();
     const result = opened(config).transform(file("macros.sts"));

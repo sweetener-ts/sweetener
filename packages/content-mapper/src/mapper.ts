@@ -224,11 +224,6 @@ interface ConfigState {
    */
   readonly failed: Map<string, readonly CheckedInput[]>;
   /**
-   * What the expansion that threw read, and when it began, until that is recorded:
-   * it holds the text of everything read, and is not to outlive the failure.
-   */
-  threw: ThrownExpansion;
-  /**
    * Whether a file it asked about was taken at the config's word, `include` having
    * been walked too recently to look again, so the next open should.
    */
@@ -248,13 +243,27 @@ interface ConfigState {
   nowListed: number;
 }
 
-/** What an expansion that threw had read, and when it began. */
-interface ThrownExpansion {
-  readonly inputs: readonly ExpansionInput[];
-  readonly at: bigint;
+/**
+ * An expansion that failed, and what it had read, which is what could mend it.
+ * It holds the text of everything read, so it goes no further than to where the
+ * failure is recorded.
+ */
+class FailedExpansion extends Error {
+  constructor(
+    failure: unknown,
+    readonly inputs: readonly ExpansionInput[],
+    /** When the expansion began. */
+    readonly at: bigint,
+  ) {
+    super(messageOf(failure));
+    this.stack = describeError(failure);
+  }
 }
 
-const nothingThrown: ThrownExpansion = { inputs: [], at: 0n };
+/** Whether a config has Sweetener expand a file of this name, listed or not. */
+function expandsExtensionOf(state: ConfigState, fileName: string): boolean {
+  return state.project.sweet.macroExtensions.includes(extname(fileName));
+}
 
 /**
  * A project's identity, and the answers it was made from: what the config
@@ -384,6 +393,7 @@ function expandedFile(
           sourceText: inspection.sourceText,
           sourceId: inspection.sourceId as number,
           agreement: createBindingAgreement(text, extension),
+          origins: inspection.origins,
         }),
     // Errors only, which is what an inspection's diagnostics are: the protocol
     // has no severity, so a warning would arrive as an error and fail a build
@@ -643,16 +653,14 @@ export class SweetenerContentMapper {
         holdText(this.#overlay, fileName, request.content);
         this.#expand(state, [fileName]);
         file = state.expanded.get(fileName);
-        if (file !== undefined && file.sourceText !== request.content) {
-          // Its expansion did not throw, and what it read is what to look at.
-          state.threw = {
-            inputs: file.consulted.map(({ input }) => input),
-            at: nowNanoseconds(),
-          };
-          throw new Error(
-            `${fileName} went on changing on disk while it was expanded`,
+        if (file !== undefined && file.sourceText !== request.content)
+          throw new FailedExpansion(
+            new Error(
+              `${fileName} went on changing on disk while it was expanded`,
+            ),
+            file.consulted.map(({ input }) => input),
+            nowNanoseconds(),
           );
-        }
       }
     } catch (error) {
       // A failure inside the compiler is still an answer about this file.
@@ -662,7 +670,7 @@ export class SweetenerContentMapper {
       process.stderr.write(
         `Sweetener failed to expand ${fileName}:\n${describeError(error)}\n`,
       );
-      this.#recordFailure(state, [fileName]);
+      this.#recordFailure(state, [fileName], error);
       return failedTransform(
         request,
         expansionFailedCode,
@@ -673,7 +681,7 @@ export class SweetenerContentMapper {
       return failedTransform(
         request,
         notOptedInCode,
-        !state.project.sweet.macroExtensions.includes(extname(fileName))
+        !expandsExtensionOf(state, fileName)
           ? `${state.configFileName} maps ${extname(fileName)} to Sweetener's content mapper, but its \`sweet.macroExtensions\` does not list ${extname(fileName)}, so Sweetener does not expand it. Add it there.`
           : `This file is not opted into Sweetener expansion by ${state.configFileName}. List it there, under "files" or "include".`,
       );
@@ -739,7 +747,7 @@ export class SweetenerContentMapper {
       [...kept.unlisted].every(
         ([name, onDisk]) => ts.sys.fileExists(name) === onDisk,
       ) &&
-      new InputCheckRound().hold(kept.configuration)
+      this.#round.hold(kept.configuration)
     ) {
       this.#refresh(kept);
       return undefined;
@@ -827,7 +835,6 @@ export class SweetenerContentMapper {
       references: new Set(existing?.references),
       identity: undefined,
       failed: new Map(),
-      threw: nothingThrown,
       walkAgain: false,
       failureInputs: new Map(),
       unlisted: new Map(),
@@ -899,6 +906,16 @@ export class SweetenerContentMapper {
     return [...seen];
   }
 
+  /** This config and those it references, as far as each could be used. */
+  #withReferences(state: ConfigState): ConfigState[] {
+    return [
+      state,
+      ...this.#referencesOf(state).flatMap(
+        (reference) => this.#configs.get(reference) ?? [],
+      ),
+    ];
+  }
+
   /**
    * A file as the project spells it, where the disk does not tell cases apart and
    * TypeScript was told it by an import that does not: `./Util.sts` for `util.sts`
@@ -912,13 +929,7 @@ export class SweetenerContentMapper {
     )
       return fileName;
     const folded = fileName.toLowerCase();
-    const projects = [
-      state,
-      ...this.#referencesOf(state).flatMap(
-        (reference) => this.#configs.get(reference) ?? [],
-      ),
-    ];
-    for (const project of projects)
+    for (const project of this.#withReferences(state))
       for (const name of project.listed)
         if (name.toLowerCase() === folded) return name;
     return fileName;
@@ -981,9 +992,10 @@ export class SweetenerContentMapper {
       stats !== undefined &&
       state.unlisted.get(fileName) !== onDisk &&
       !statIsSettled(stats, state.loadedAt);
-    if (onDisk && (walkedAWhileAgo || newlyWritten))
+    if (onDisk && (walkedAWhileAgo || newlyWritten)) {
+      this.#round = new InputCheckRound();
       this.#problemsWith(state.configFileName, true);
-    else if (onDisk) state.walkAgain = true;
+    } else if (onDisk) state.walkAgain = true;
     const loaded = this.#configs.get(state.configFileName);
     if (loaded !== undefined && !loaded.listed.has(fileName))
       loaded.unlisted.set(fileName, onDisk);
@@ -996,7 +1008,7 @@ export class SweetenerContentMapper {
    * not transform.
    */
   #refresh(state: ConfigState): void {
-    const round = new InputCheckRound();
+    const round = this.#round;
     const stale = [...state.expanded]
       .filter(([, file]) => !round.hold(file.consulted))
       .map(([name]) => name);
@@ -1031,9 +1043,7 @@ export class SweetenerContentMapper {
       [...listed].some((name) => !state.listed.has(name));
     if (!changed) return;
     const added = [...listed].filter(
-      (name) =>
-        !state.listed.has(name) &&
-        state.project.sweet.macroExtensions.includes(extname(name)),
+      (name) => !state.listed.has(name) && expandsExtensionOf(state, name),
     );
     state.listed = listed;
     for (const name of state.expanded.keys())
@@ -1070,7 +1080,7 @@ export class SweetenerContentMapper {
       process.stderr.write(
         `Sweetener failed to expand ${fileNames[0] ?? state.configFileName}:\n${describeError(error)}\n`,
       );
-      this.#recordFailure(state, fileNames);
+      this.#recordFailure(state, fileNames, error);
     }
   }
 
@@ -1096,18 +1106,24 @@ export class SweetenerContentMapper {
    * nothing.
    */
   #expandable(state: ConfigState): string[] {
-    return [...state.listed].filter((name) =>
-      state.project.sweet.macroExtensions.includes(extname(name)),
-    );
+    return [...state.listed].filter((name) => expandsExtensionOf(state, name));
   }
 
   /**
-   * Leaves these files to be expanded alone when asked for, or when what the last
-   * expansion to throw read says something different. What that read is added to
-   * what counts: a batch that throws may not have reached what another file read.
+   * Leaves these files to be expanded alone when asked for, or when what the
+   * expansion that failed read says something different. What that read is added
+   * to what counts: a batch that throws may not have reached what another file
+   * read.
    */
-  #recordFailure(state: ConfigState, fileNames: Iterable<string>): void {
-    const { inputs, at } = state.threw;
+  #recordFailure(
+    state: ConfigState,
+    fileNames: Iterable<string>,
+    failure: unknown,
+  ): void {
+    const { inputs, at } =
+      failure instanceof FailedExpansion
+        ? failure
+        : { inputs: [], at: nowNanoseconds() };
     const consulted = checkedInputs(state.provider.fileSystem, at)(inputs);
     for (const input of inputs)
       state.failureInputs.set(`${input.kind}\0${input.path}`, input);
@@ -1116,7 +1132,6 @@ export class SweetenerContentMapper {
       state.literalReaders.delete(name);
       state.failed.set(name, consulted);
     }
-    state.threw = nothingThrown;
   }
 
   /**
@@ -1129,7 +1144,6 @@ export class SweetenerContentMapper {
     onlyNarrowly = false,
   ): void {
     const expandedAt = nowNanoseconds();
-    state.threw = nothingThrown;
     // What the state keeps is plain by now, and each inspection holds the whole
     // project: kept in the provider, one per config would stay.
     try {
@@ -1154,9 +1168,8 @@ export class SweetenerContentMapper {
         );
       }
     } catch (error) {
-      // What it read is what could mend it, gone once the provider lets go.
-      state.threw = { inputs: state.provider.readInputs(), at: expandedAt };
-      throw error;
+      // What it read is gone once the provider lets go.
+      throw new FailedExpansion(error, state.provider.readInputs(), expandedAt);
     } finally {
       state.provider.releaseInspections();
     }
@@ -1177,10 +1190,7 @@ export class SweetenerContentMapper {
     state: ConfigState,
     fileName: string,
   ): ExpandedFile | undefined {
-    if (
-      !state.listed.has(fileName) ||
-      !state.project.sweet.macroExtensions.includes(extname(fileName))
-    )
+    if (!state.listed.has(fileName) || !expandsExtensionOf(state, fileName))
       return undefined;
     const cached = state.expanded.get(fileName);
     if (cached !== undefined && this.#round.hold(cached.consulted))
@@ -1257,12 +1267,7 @@ export class SweetenerContentMapper {
     const asked = [...questions.keys()].sort();
     // What TypeScript asked for that the config does not list: nothing changes
     // for it otherwise when one is saved, and it keeps the file emptied.
-    const readers = [
-      state,
-      ...this.#referencesOf(state).flatMap(
-        (reference) => this.#configs.get(reference) ?? [],
-      ),
-    ];
+    const readers = this.#withReferences(state);
     const unlisted = readers.flatMap((reader) => [
       String(reader.nowListed),
       ...[...reader.unlisted]

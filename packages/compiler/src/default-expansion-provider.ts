@@ -986,7 +986,6 @@ export class DefaultProjectExpansionProvider
     this.#recorder = recorder;
     const settled = (reading: ReadonlySet<string> | undefined) => {
       this.#readEverySource = reading === undefined;
-      this.#finishedReading = false;
       const history: ReadingHistory = new Map();
       return settleReadings<
         DefaultProjectExpansionOutput | undefined,
@@ -1038,6 +1037,8 @@ export class DefaultProjectExpansionProvider
     DefaultProjectExpansionOutput | undefined,
     ReadonlyMap<string, TokenReadings>
   > {
+    // Each pass reads again, and one that throws doing so has not finished.
+    this.#finishedReading = false;
     this.#inspections.clear();
     const origins = new OriginStore();
     const scopes = new ScopeStore();

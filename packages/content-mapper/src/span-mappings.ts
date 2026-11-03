@@ -8,6 +8,7 @@ import {
 import type { BindingAgreement } from "./binding-agreement.js";
 
 type OriginQueryIndex = SourceExpansionInspection["index"];
+type Origins = SourceExpansionInspection["origins"];
 
 /** A segment in JavaScript string indices, before any encoding. */
 export interface Segment {
@@ -23,22 +24,26 @@ export interface Segment {
 
 const identifier = /^#?[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
 
-/** Whether text is nothing but whitespace and comments. */
-function isCommentsAlone(text: string): boolean {
+/** The comments in text that is nothing but those and whitespace. */
+function commentsAlone(
+  text: string,
+): readonly { readonly start: number; readonly end: number }[] | undefined {
+  const comments: { start: number; end: number }[] = [];
   let at = 0;
   while (at < text.length) {
     if (/\s/u.test(text[at]!)) at += 1;
     else if (text.startsWith("//", at)) {
       const end = text.indexOf("\n", at);
-      if (end === -1) return true;
-      at = end + 1;
+      comments.push({ start: at, end: end === -1 ? text.length : end });
+      at = end === -1 ? text.length : end + 1;
     } else if (text.startsWith("/*", at)) {
       const end = text.indexOf("*/", at + 2);
-      if (end === -1) return false;
+      if (end === -1) return undefined;
+      comments.push({ start: at, end: end + 2 });
       at = end + 2;
-    } else return false;
+    } else return undefined;
   }
-  return true;
+  return comments;
 }
 
 /**
@@ -47,6 +52,54 @@ function isCommentsAlone(text: string): boolean {
  * it refuses the mapping, and all of the file with it.
  */
 const undecodable = /\ufffd/u;
+
+/**
+ * Whether what an origin stands for is text the author wrote, however many macros
+ * copied it. One a macro's template wrote and another macro copied is not: what
+ * it leads to is the invocation, which has another name.
+ */
+function writtenByAuthor(
+  origins: Origins,
+  origin: ReturnType<OriginQueryIndex["regions"]>[number]["origin"],
+): boolean {
+  let current = origins.get(origin);
+  while (current?.kind === "copied") current = origins.get(current.parent);
+  return current?.kind === "source";
+}
+
+/**
+ * The comments of a region that has nothing else, each at its own place in the
+ * source: the last place before `before` that has it, and before the one after
+ * it. A region may hold comments the source has apart, around an import or a
+ * macro definition that is not printed. A comment the source does not have has
+ * no place in this file.
+ */
+function commentSegments(
+  comments: NonNullable<ReturnType<typeof commentsAlone>>,
+  virtual: string,
+  virtualStart: number,
+  sourceText: string,
+  before: number,
+): Segment[] {
+  const segments: Segment[] = [];
+  let limit = before;
+  for (const { start, end } of [...comments].reverse()) {
+    const text = virtual.slice(start, end);
+    const from = sourceText.lastIndexOf(text, limit - text.length);
+    if (from === -1 || from + text.length > limit) continue;
+    limit = from;
+    if (!undecodable.test(text))
+      segments.push({
+        virtualStart: virtualStart + start,
+        virtualEnd: virtualStart + end,
+        originalStart: from,
+        originalEnd: from + text.length,
+        kind: SpanMapKind.Verbatim,
+        features: SpanMapFeature.All,
+      });
+  }
+  return segments.reverse();
+}
 
 /**
  * How one printed region of the expansion relates to the source it came from.
@@ -63,41 +116,35 @@ const undecodable = /\ufffd/u;
  * Returns nothing for a region with no place in this file: layout the printer
  * inserted, or text whose source is a macro module.
  */
-function segmentFor(
+function segmentsFor(
   region: ReturnType<OriginQueryIndex["regions"]>[number],
   generatedText: string,
   sourceText: string,
   sourceId: number,
-): Segment | undefined {
+  origins: Origins,
+): readonly Segment[] {
   const virtual = generatedText.slice(
     region.generatedStart,
     region.generatedEnd,
   );
-  if (virtual.trim().length === 0) return undefined;
-  if ((region.primary.sourceId as number) !== sourceId) return undefined;
+  if (virtual.trim().length === 0) return [];
+  if ((region.primary.sourceId as number) !== sourceId) return [];
   const { start, end } = region.primary.span;
   // A comment printed on its own has the token after it for an origin. Read as
   // that token, an error reported on the comment landed on what follows it, and
-  // the token's span had a second use. Where the source has it there too, the
-  // two are one text; where it does not, it has no place in this file.
-  // JSX text may read like a comment, and is its own origin.
-  if (virtual !== sourceText.slice(start, end) && isCommentsAlone(virtual)) {
-    const from = start - virtual.length;
-    return from >= 0 &&
-      sourceText.slice(from, start) === virtual &&
-      !undecodable.test(virtual)
-      ? {
-          virtualStart: region.generatedStart,
-          virtualEnd: region.generatedEnd,
-          originalStart: from,
-          originalEnd: start,
-          kind: SpanMapKind.Verbatim,
-          features: SpanMapFeature.All,
-        }
-      : undefined;
-  }
+  // the token's span had a second use. JSX text may read like a comment, and is
+  // its own origin.
   const original = sourceText.slice(start, end);
-  const written = region.kind === "source" || region.kind === "copied";
+  const comments = virtual === original ? undefined : commentsAlone(virtual);
+  if (comments !== undefined)
+    return commentSegments(
+      comments,
+      virtual,
+      region.generatedStart,
+      sourceText,
+      start,
+    );
+  const written = writtenByAuthor(origins, region.origin);
   const [kind, features] =
     written && virtual === original && !undecodable.test(virtual)
       ? [SpanMapKind.Verbatim, SpanMapFeature.All]
@@ -106,15 +153,17 @@ function segmentFor(
           // they wrote, so rename and references follow it.
           [SpanMapKind.Alias, SpanMapFeature.All]
         : [SpanMapKind.Atom, SpanMapFeature.None];
-  return {
-    virtualStart: region.generatedStart,
-    virtualEnd: region.generatedEnd,
-    originalStart: start,
-    originalEnd: end,
-    kind,
-    features,
-    copied: region.kind === "copied",
-  };
+  return [
+    {
+      virtualStart: region.generatedStart,
+      virtualEnd: region.generatedEnd,
+      originalStart: start,
+      originalEnd: end,
+      kind,
+      features,
+      copied: region.kind === "copied",
+    },
+  ];
 }
 
 /** Which segment keeps its original span when two spans collide. */
@@ -317,8 +366,8 @@ function withoutAmbiguousRename(
  * Verbatim, each copy maps positions one to one, so an edit TypeScript makes to
  * each -- formatting them, say -- comes back as several at one place in the
  * source: `twice(1+2)` was written `twice(1  +  2)`. As an atom it still answers
- * hover and the like, and TypeScript writes no formatting at all where one edit
- * cannot be mapped exactly, which leaves such a file alone rather than damaged.
+ * hover and the like, and TypeScript makes no edit it cannot map exactly, which
+ * leaves that text as it is and goes on to format the rest of the file.
  * A name stays as it is: rename goes only through verbatim text, and is decided
  * by what the name means.
  */
@@ -394,17 +443,20 @@ export function segmentsForExpansion(options: {
   readonly sourceId: number;
   /** What the names at places in the expansion mean. */
   readonly agreement: BindingAgreement;
+  /** Where each printed region's text came from. */
+  readonly origins: Origins;
 }): Segment[] {
   const segments: Segment[] = [];
-  for (const region of options.index.regions()) {
-    const segment = segmentFor(
-      region,
-      options.generatedText,
-      options.sourceText,
-      options.sourceId,
+  for (const region of options.index.regions())
+    segments.push(
+      ...segmentsFor(
+        region,
+        options.generatedText,
+        options.sourceText,
+        options.sourceId,
+        options.origins,
+      ),
     );
-    if (segment !== undefined) segments.push(segment);
-  }
   return compatibleSegments(
     joinedAsWritten(
       withoutCopiedEdits(
