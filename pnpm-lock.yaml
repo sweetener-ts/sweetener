@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  typescript@7.1.0-beta: 52c7075cfffeff7c6d04e54e2799d5eea526ef70991e01e0b269c325f8a301b7
+
 importers:
 
   .:
@@ -450,7 +453,7 @@ importers:
     devDependencies:
       typescript7:
         specifier: npm:typescript@7.1.0-beta
-        version: typescript@7.1.0-beta
+        version: typescript@7.1.0-beta(patch_hash=52c7075cfffeff7c6d04e54e2799d5eea526ef70991e01e0b269c325f8a301b7)
 
   packages/deno:
     dependencies:
@@ -19290,7 +19293,7 @@ snapshots:
   '@typescript/typescript-win32-x64@7.1.0-beta':
     optional: true
 
-  typescript@7.1.0-beta:
+  typescript@7.1.0-beta(patch_hash=52c7075cfffeff7c6d04e54e2799d5eea526ef70991e01e0b269c325f8a301b7):
     optionalDependencies:
       '@typescript/typescript-aix-ppc64': 7.1.0-beta
       '@typescript/typescript-android-arm64': 7.1.0-beta

@@ -25,3 +25,8 @@ minimumReleaseAgeExclude:
   - "prettier@3.9.6"
   - "typescript-eslint@8.65.0"
   - "vitest@4.1.10"
+
+patchedDependencies:
+  # The beta launcher omits execve's environment, which Node 24.0.0 defaults
+  # to empty. Pass it explicitly so TypeScript can start the mapper via node.
+  typescript@7.1.0-beta: patches/typescript@7.1.0-beta.patch

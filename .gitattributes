@@ -1,0 +1,2 @@
+# Dependency patches retain the upstream file's CRLF line endings in hunks.
+patches/*.patch whitespace=cr-at-eol

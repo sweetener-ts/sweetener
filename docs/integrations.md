@@ -73,6 +73,12 @@ npm install --save-dev typescript@beta @sweetener/content-mapper
 TypeScript 7.1 is in beta (`7.1.0-beta`); 7.0 has no content mappers. The
 mapper's tests run against that beta.
 
+On Node 24.0.0, that beta's `tsc` launcher loses its environment when it starts
+the native compiler, which then cannot find `node` to start a content mapper.
+Use a newer Node 24 release or Node 26 when running the unpatched beta. This
+repository carries a pnpm patch that passes the environment explicitly, so
+its compatibility tests still cover Node 24.0.0.
+
 ```json
 {
   "compilerOptions": { "strict": true, "noEmit": true },

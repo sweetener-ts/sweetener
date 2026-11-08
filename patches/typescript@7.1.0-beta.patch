@@ -1,0 +1,13 @@
+diff --git a/lib/tsc.js b/lib/tsc.js
+index eb869b715737e45fcf1af33d1af3157b59ba08de..f5f051207f2da1e705f257dd12de5b2eeafd713f 100644
+--- a/lib/tsc.js
++++ b/lib/tsc.js
+@@ -8,7 +8,7 @@ const exe = getExePath();
+ if (process.platform !== "win32" && typeof process.execve === "function") {
+     // > v22.15.0
+     try {
+-        process.execve(exe, [exe, ...process.argv.slice(2)]);
++        process.execve(exe, [exe, ...process.argv.slice(2)], process.env);
+     }
+     catch {
+         // may not be available, ignore the error and fallback
